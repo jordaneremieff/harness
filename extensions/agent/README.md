@@ -1669,7 +1669,8 @@ use `results: []` with its request and note. This retains open work without
 dependencies; it withdraws nothing. No dependency event wakes that item.
 It does not complete merely because the current run ends. If the declaring
 input ends `unanswered` instead of a state note, the host omits the open item;
-the original unanswered receipt supplies that outcome.
+the original unanswered receipt supplies that outcome. A later `complete` for
+that request refuses and names this cause.
 
 Finish the work with its original request ID and the complete final report:
 
@@ -1693,6 +1694,12 @@ this is not an exactly-once context-delivery claim. An arrived dependency and a
 settled input never invoke completion. Closed items do not reopen. The work
 record does not cancel its producers.
 
+Completion does not depend on the answer of the declaring input. A run can
+complete its work and then stop or fail before it answers. The input then
+settles `unanswered` and keeps that status; the closed item and its final
+report stay, and the report is the result of the request. The host writes no
+answer for that input and does not change its status.
+
 The work document retains every open item and the newest 16 closed items.
 For an older close or a request that never declared work, completion returns
 an error that names both possible causes. It changes nothing and sends
@@ -1708,7 +1715,9 @@ offset: 0})` on the declaring input. It returns the retained report text,
 including its label line, in pages; see Result pages. The read stays
 available after the recipient acknowledged the report and after the closed
 item left the work document, because it reads the retained report row by its
-fixed key.
+fixed key. It does not depend on the status of the declaring input: the
+report is readable while that input is still placed and after it ended
+unanswered.
 
 Read `agent_status({sessionId, detail: true})` for `openWork`. Each item names
 its original route, note, state and dependencies. A dependency is `open` while
@@ -1748,14 +1757,18 @@ state of every request that the answer covers, one line per request (at most
   report <id>`: the answer is a state note, and the line names the exact
   final-report read call;
 - `native input failed without an answer` or `native input stopped without an
-  answer`: no result arrived.
+  answer`: no result arrived;
+- the same words followed by `declared work completed (<status>) with final
+  report <id>`: the run closed its work before it ended without an answer. The
+  final report is the result of the request, and the line names the exact
+  final-report read call.
 
 The ordinary-primary headline says `completed native input`, never that the
 agent finished. A grouped answer with mixed states names each request with its
 own state. The producer host derives each line from its committed work facts;
 the producer's prose and the hidden structured details do not decide it.
-Ordinary-primary details also carry `work` (`open` or `closed`) and
-`workLabel` for the first request.
+Ordinary-primary details also carry `work` (`open` or `closed`) for the first
+request, and `workLabel` when its receipt has an answer.
 
 A delivered final report starts with `Work completed with a final report
 (<status>) for request <id>` and says that the report is the result of that
@@ -1918,16 +1931,22 @@ note, not the result. The page then carries `work`: `state` (`open` or
 `closed`), `answer: "state-note"`, the state-note `label`, and for closed work
 `finalReport` with the report request ID, reply recipient, close status,
 delivery state and `read` call. The page never presents the state note as the
-final report. The work facts come from the retained work item, or, after that
+final report. An input without an answer (`queued`, `placed` or `unanswered`)
+has no state note: its `work` carries `state` and `finalReport` only, and the
+page keeps the status and the reason of the input. The work facts come from the retained work item, or, after that
 item left the bounded work document, from the retained final report row.
 
 - `finalReport: true` selects the final report instead of the answer. The
   page returns `finalReport` with `text`, `length`, `offset`, `nextOffset` and
   `truncated`, in pages of the same 4,096 UTF-16 code units, and
   `finalReportContinuation` while text remains. The pages join to the
-  retained report text exactly. A page for open work returns `reason` and no
-  text; a request without declared work refuses. `finalReport` refuses
-  outside the result view and with `receiptCursor`.
+  retained report text exactly. The retained report decides this page, not
+  the settlement of the input: the report of closed work is readable while
+  its input is still placed and after that input ended unanswered. `status`
+  stays the status of the input, and the page carries no answer. A page for
+  open work returns `reason` and no text; a request without closed declared
+  work refuses. `finalReport` refuses outside the result view and with
+  `receiptCursor`.
 
 Execute each returned call unchanged. A complete result page, including its
 identity, body and receipt metadata, fits 65,536 serialised UTF-8 bytes; a

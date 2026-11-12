@@ -407,8 +407,10 @@ export type FinalReportFact = {
 	readonly read: FinalReportRead;
 };
 /**
- * Declared work of one request. `open`: the settled answer is a state note and no final report exists yet.
- * `closed`: the settled answer is a state note and `finalReport` names the separate final report.
+ * Declared work of one request. `open`: no final report exists yet. `closed`: `finalReport` names the
+ * separate final report. An answer of the request's input is a state note in both states, and `label`
+ * is the label of that answer. The close needs no answer: the input of closed work can still be placed,
+ * or can have ended unanswered, and its final report stays the result of the request.
  */
 export type RequestWork =
 	| { readonly work: "open"; readonly label: string }
@@ -419,9 +421,10 @@ export type RequestWork =
  * The retained item answers first. A closed item can leave the bounded work document, but its final
  * report row stays at its fixed key, so that row answers after the item is gone: the bound of the
  * document never changes what a settled answer was. `ownerId` is the reply recipient of the request's
- * retained receipt, which admission keeps equal to the route's reply recipient; the conversation's own
- * identity covers a report retained for itself. It takes the snapshot reader only: a transaction read
- * would create the absent rows that it probes.
+ * retained receipt, which admission keeps equal to the route's reply recipient; an unsettled input has
+ * no receipt yet, and its retained route names the reply recipient. The conversation's own identity
+ * covers a report retained for itself. It takes the snapshot reader only: a transaction read would
+ * create the absent rows that it probes.
  */
 export async function requestWork(reader: SnapshotReader, storageId: string, conversationId: ConversationId, input: { readonly requestId: string; readonly submissionId: number; readonly ownerId?: string }): Promise<RequestWork | undefined> {
 	const self = canonicalIdentity(storageId, conversationId);
@@ -435,7 +438,8 @@ export async function requestWork(reader: SnapshotReader, storageId: string, con
 		...(report === undefined ? {} : { report }),
 	});
 	if (item?.close !== undefined) return closed(item.replyTo, item.close.status, await readFinalReport(reader, item.replyTo, reportRequestId));
-	for (const ownerId of new Set([input.ownerId ?? self, self])) {
+	const route = input.ownerId === undefined ? (await reader.harness.snapshot(RequestContextDoc, conversationId, reader.context))?.requests.find((candidate) => candidate.requestId === input.requestId) : undefined;
+	for (const ownerId of new Set([input.ownerId ?? route?.replyTo ?? self, self])) {
 		const report = await readFinalReport(reader, ownerId, reportRequestId);
 		if (report !== undefined && report.senderIdentity === self) return closed(ownerId, labelledStatus(report.message, input.requestId), report);
 	}
@@ -547,14 +551,16 @@ export type CompletedWork = { item: OpenWorkView; deduped: boolean; report?: Del
 
 /**
  * Refusal without a retained item. For an input of this conversation it names the read call of a final
- * report that an earlier close may have retained; the read itself reports whether one exists. The
- * transaction reads no delivery row here: a transaction read creates an absent row.
+ * report that an earlier close may have retained; the read itself reports whether one exists. For an
+ * input that ended unanswered it also names the void declaration as a cause. The transaction reads no
+ * delivery row here: a transaction read creates an absent row.
  */
 async function missingItem(tx: Tx, storageId: string, conversationId: ConversationId, requestId: string, rejection: Rejection): Promise<Rejection> {
 	const record = await tx.submissionByRequest(conversationId, requestId);
 	if (record?.type !== "input") return rejection;
 	const { tool: _tool, ...read } = finalReportRead(canonicalIdentity(storageId, conversationId), record.id);
-	return { error: `${rejection.error}. A final report of an earlier close stays readable: agent_inspect(${JSON.stringify(read)})` };
+	const voided = record.status === "unanswered" ? ". The input of this request ended unanswered: a declaration that was still open then is void, and the unanswered receipt is its outcome" : "";
+	return { error: `${rejection.error}${voided}. A final report of an earlier close stays readable: agent_inspect(${JSON.stringify(read)})` };
 }
 
 /**

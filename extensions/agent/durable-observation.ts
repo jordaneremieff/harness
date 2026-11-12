@@ -2047,11 +2047,14 @@ interface ResultPage {
 	readonly usage: UsageState;
 }
 
-/** Declared work of the selected request: its answer is a state note, and the final report is separate. */
+/**
+ * Declared work of the selected request; the final report is separate from the answer. `answer` and
+ * `label` mark an existing answer as a state note, so an input without an answer carries neither.
+ */
 interface ResultWork {
 	readonly state: "open" | "closed";
-	readonly answer: "state-note";
-	readonly label: string;
+	readonly answer?: "state-note";
+	readonly label?: string;
 	readonly finalReport?: FinalReportFact;
 }
 interface FinalReportPage {
@@ -2065,30 +2068,45 @@ interface FinalReportPage {
 	readonly truncated: boolean;
 }
 
-function resultWork(work: RequestWork): ResultWork {
-	return { state: work.work, answer: "state-note", label: work.label, ...(work.work === "closed" ? { finalReport: work.finalReport } : {}) };
+type InputRecord = Extract<SubmissionRecord, { type: "input" }>;
+
+function resultWork(work: RequestWork, record: InputRecord): ResultWork {
+	return { state: work.work, ...(record.status === "done" ? { answer: "state-note" as const, label: work.label } : {}), ...(work.work === "closed" ? { finalReport: work.finalReport } : {}) };
 }
 
-async function selectedWork(harness: Harness, storageId: string, record: Extract<SubmissionRecord, { type: "input" }>, context: Context): Promise<RequestWork | undefined> {
-	if (record.status !== "done" || record.requestId === undefined) return undefined;
+/**
+ * Declared work of the selected input in any status. The close of a work item retains its final report,
+ * and that close needs no answer: the input can still be placed, or can end unanswered afterwards.
+ */
+async function selectedWork(harness: Harness, storageId: string, record: InputRecord, context: Context): Promise<RequestWork | undefined> {
+	if (record.requestId === undefined) return undefined;
 	const ownerId = (await snapshotReceipt(harness, record.id, context))?.ownerId;
 	return requestWork({ harness, context }, storageId, record.conversationId, { requestId: record.requestId, submissionId: record.id, ...(ownerId === undefined ? {} : { ownerId }) });
 }
 
-/** One page of the retained final report; the answer and the receipt group stay on their own pages. */
-function finalReportPage(base: ResultPage, record: Extract<SubmissionRecord, { type: "input" }>, work: RequestWork | undefined, offset: number): ResultPage {
-	if (record.status !== "done") throw new InspectionRequestError("finalReport requires a native input that settled with an answer");
-	const identity = { ...base, entryId: record.entry, answerEntryId: record.answer };
-	if (work === undefined) throw new InspectionRequestError(`Request ${record.requestId ?? `of submission ${record.id}`} declared no work: its answer is its result, and no final report exists`);
-	if (work.work === "open") return boundedResult({ ...identity, work: resultWork(work), reason: "The declared work of this request is open; its final report does not exist yet" });
+function inputEntryIds(record: InputRecord): Pick<ResultPage, "entryId" | "answerEntryId"> {
+	return { ...optionalParam("entryId", record.entry), ...(record.status === "done" ? { answerEntryId: record.answer } : {}) };
+}
+
+/**
+ * One page of the retained final report; the answer and the receipt group stay on their own pages. The
+ * retained report decides the page, and `status` stays the status of the input.
+ */
+function finalReportPage(base: ResultPage, record: InputRecord, work: RequestWork | undefined, offset: number): ResultPage {
+	const identity = { ...base, ...inputEntryIds(record) };
+	const request = `Request ${record.requestId ?? `of submission ${record.id}`}`;
+	if (work === undefined) throw new InspectionRequestError(record.status === "done"
+		? `${request} declared no work: its answer is its result, and no final report exists`
+		: `${request} has no closed declared work, so no final report exists; its input is ${record.status}`);
+	if (work.work === "open") return boundedResult({ ...identity, work: resultWork(work, record), reason: "The declared work of this request is open; its final report does not exist yet" });
 	const text = work.report?.message;
-	if (text === undefined) return boundedResult({ ...identity, work: resultWork(work), reason: `Final report ${work.finalReport.requestId} is not retained for ${work.finalReport.ownerId}` });
+	if (text === undefined) return boundedResult({ ...identity, work: resultWork(work, record), reason: `Final report ${work.finalReport.requestId} is not retained for ${work.finalReport.ownerId}` });
 	if (offset > text.length) throw new RangeError("result offset exceeds the retained final report length");
 	const cut = fragment(text, offset, RESULT_PAGE_UNITS);
 	const { requestId, ownerId, status } = work.finalReport;
 	return boundedResult({
 		...identity,
-		work: resultWork(work),
+		work: resultWork(work, record),
 		finalReport: { requestId, ownerId, ...(status === undefined ? {} : { status }), text: cut.text, length: text.length, offset: cut.start, nextOffset: cut.nextOffset, truncated: cut.truncated },
 		...(cut.nextOffset === null ? {} : { finalReportContinuation: { ...work.finalReport.read, offset: cut.nextOffset } }),
 	});
@@ -2201,18 +2219,23 @@ async function readResult(harness: Harness, storageId: string, conversation: Con
 		...optionalParam("operationId", target.operationId),
 		usage,
 	};
-	if (record.type !== "input" || (record.status !== "done" && record.status !== "unanswered")) {
-		if (params.receiptCursor !== undefined || params.finalReport === true) throw new InspectionRequestError(`${params.finalReport === true ? "finalReport" : "receiptCursor"} requires a settled native input`);
-		return boundedResult({ ...base, ...("entry" in record ? optionalParam("entryId", record.entry) : {}) });
-	}
-	return settledResult(harness, storageId, base, record, params, context);
-}
-
-async function settledResult(harness: Harness, storageId: string, base: ResultPage, record: Extract<SubmissionRecord, { type: "input"; status: "done" | "unanswered" }>, params: DurableInspectParams, context: Context): Promise<ResultPage> {
+	if (record.type !== "input") return otherResult(base, record, params);
 	const work = await selectedWork(harness, storageId, record, context);
 	if (params.finalReport === true) return finalReportPage(base, record, work, params.offset ?? 0);
+	if (record.status === "done" || record.status === "unanswered") return settledResult(harness, storageId, base, record, work, params, context);
+	if (params.receiptCursor !== undefined) throw new InspectionRequestError("receiptCursor requires a settled native input");
+	return boundedResult({ ...base, ...inputEntryIds(record), ...(work === undefined ? {} : { work: resultWork(work, record) }) });
+}
+
+/** A submission that is not an input has no answer, receipt group or declared work. */
+function otherResult(base: ResultPage, record: Exclude<SubmissionRecord, { type: "input" }>, params: DurableInspectParams): ResultPage {
+	if (params.receiptCursor !== undefined || params.finalReport === true) throw new InspectionRequestError(`${params.finalReport === true ? "finalReport" : "receiptCursor"} requires a native input`);
+	return boundedResult({ ...base, ...("entry" in record ? optionalParam("entryId", record.entry) : {}) });
+}
+
+async function settledResult(harness: Harness, storageId: string, base: ResultPage, record: Extract<InputRecord, { status: "done" | "unanswered" }>, work: RequestWork | undefined, params: DurableInspectParams, context: Context): Promise<ResultPage> {
 	const receiptGroup = await resultReceiptGroup(harness, storageId, record, base.sessionId, params.receiptCursor, context);
-	const selected = { ...base, ...optionalParam("receiptGroup", receiptGroup), ...(work === undefined ? {} : { work: resultWork(work) }) };
+	const selected = { ...base, ...optionalParam("receiptGroup", receiptGroup), ...(work === undefined ? {} : { work: resultWork(work, record) }) };
 	if (record.status === "done") return readResultBody(harness, selected, record, params, context);
 	const providerBlock = await observedInputProviderBlock(harness, record.id, context);
 	return boundedResult({ ...selected, ...(record.entry === undefined ? {} : { entryId: record.entry }), reason: modelFailureText(record.reason, record.detail, providerBlock), ...(providerBlock === undefined ? {} : { providerBlock }) });

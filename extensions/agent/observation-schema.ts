@@ -610,7 +610,8 @@ const retainedResultProperties = {
 	answer: opt(string),
 	offset: opt(count), nextOffset: opt(nullableCount), truncated: opt(boolean),
 	answerContinuation: opt(AnswerContinuationSchema), receiptGroup: opt(ReceiptGroupSchema),
-	work: opt(obj({ state: union([lit("open"), lit("closed")]), answer: lit("state-note"), label: string, finalReport: opt(FinalReportFactSchema) })),
+	/** `answer` and `label` are present only for an input that settled with an answer. */
+	work: opt(obj({ state: union([lit("open"), lit("closed")]), answer: opt(lit("state-note")), label: opt(string), finalReport: opt(FinalReportFactSchema) })),
 	finalReport: opt(obj({
 		requestId: string, ownerId: string, status: opt(union([lit("done"), lit("failed"), lit("stopped"), lit("reset")])),
 		text: string, length: count, offset: count, nextOffset: nullableCount, truncated: boolean,

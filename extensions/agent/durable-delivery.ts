@@ -420,16 +420,29 @@ function inspectCallText(call: FinalReportRead): string {
 
 /**
  * The state of one request in host words: native input completed with its result, work still open with a
- * state note, or work closed with a separate final report. Producer prose never decides it.
+ * state note, or work closed with a separate final report. An input without an answer keeps that outcome;
+ * when its work closed before the run ended, the line also names the retained final report. Producer
+ * prose never decides it.
  */
 function receiptStateLine(state: ReceiptState): string {
 	const { receipt, work } = state;
 	const request = `Request ${receipt.requestId} (submission ${receipt.submissionId})`;
-	if (receipt.status !== "done") return `${request}: native input ${receiptOutcome(receipt)} without an answer; no result arrived.`;
+	if (receipt.status !== "done") {
+		const outcome = `${request}: native input ${receiptOutcome(receipt)} without an answer`;
+		if (work?.work !== "closed") return `${outcome}; no result arrived.`;
+		const { finalReport } = work;
+		return `${outcome}; declared work completed${finalReport.status === undefined ? "" : ` (${finalReport.status})`} with final report ${finalReport.requestId}. The final report is the result of this request. Read the final report: ${inspectCallText(finalReport.read)}`;
+	}
 	if (work === undefined) return `${request}: native input completed; no declared work. This answer is its result: dependency arrived.`;
 	if (work.work === "open") return `${request}: native input completed; declared work remains open. This answer is a state note, not the final result; the final report arrives as a separate report.`;
 	const { finalReport } = work;
 	return `${request}: native input completed; declared work completed${finalReport.status === undefined ? "" : ` (${finalReport.status})`} with final report ${finalReport.requestId}. This answer is a state note, not the final result. Read the final report: ${inspectCallText(finalReport.read)}`;
+}
+
+/** Work facts of observation details. The label marks an answer as a state note; a receipt without an answer has none. */
+function receiptWorkDetails(receipt: DeliveryReceipt, work: RequestWork | undefined): { work?: RequestWork["work"]; workLabel?: string } {
+	if (work === undefined) return {};
+	return receipt.status === "done" ? { work: work.work, workLabel: work.label } : { work: work.work };
 }
 
 function receiptStateText(states: readonly ReceiptState[]): string {
@@ -796,7 +809,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const receiptStates = async (row: ReceiptRow): Promise<ReceiptState[]> => {
 		const states: ReceiptState[] = [];
 		for (const [index, receipt] of row.receipts.entries()) {
-			const work = index >= RECEIPT_STATE_LINES || receipt.status !== "done" ? undefined
+			const work = index >= RECEIPT_STATE_LINES ? undefined
 				: await requestWork(workReader, metadata.storageId, receipt.conversationId, { requestId: receipt.requestId, submissionId: receipt.submissionId, ownerId: receipt.ownerId });
 			states.push({ receipt, ...(work === undefined ? {} : { work }) });
 		}
@@ -937,7 +950,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			const work = (await receiptStates({ ...row, receipts: [receipt] })).at(0)?.work;
 			return {
 				...shared,
-				...(work === undefined ? {} : { work: work.work, workLabel: work.label }),
+				...receiptWorkDetails(receipt, work),
 				submissions: row.receipts.map((member) => ({
 					submissionId: member.submissionId,
 					requestId: member.requestId,

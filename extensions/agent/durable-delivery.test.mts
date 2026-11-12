@@ -12,18 +12,21 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { LiveDoc, type ConversationId, type EntryId, type SubmissionId } from "@earendil-works/pi-durable";
+import { LiveDoc, defineTool, type ConversationId, type EntryId, type SubmissionId, type ToolRegistration } from "@earendil-works/pi-durable";
+import { obj } from "@earendil-works/pi-schema";
 import { AgentCatalog } from "./catalog.ts";
 import { ThreadDeliveryDoc, type AgentDeliveryState, recordReport, richSubmitConversation, settleDeliveries, undeliveredReports } from "./durable-controls.ts";
 import { observeDeliveryEligibility, startDurableDelivery } from "./durable-delivery.ts";
 import { mutateCollaboration } from "./collaboration.ts";
 import { DurableHost, type RequestParams } from "./durable-host.ts";
 import { retainProviderRetryNotices } from "./provider-notices.ts";
-import { completeOpenWork, declareOpenWork } from "./open-work.ts";
+import { completeOpenWork, declareOpenWork, executeAgentWork } from "./open-work.ts";
+import { readableControlText } from "./control-result.ts";
+import { matchesSchema } from "./schema-check.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, gateTool, hostOptions, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import type { HostConnection } from "./host-client.ts";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
-import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { InspectOutputSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import { parseHostMetadata } from "./host-protocol.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
@@ -1233,6 +1236,109 @@ it("names the work state of each request of a shared answer and continues a cut 
 			next = page.finalReportContinuation;
 		}
 		assert.equal(head + rest, exact, "the continuation reads the rest of the report exactly");
+	} finally { await watcher.close(); }
+});
+
+/** The production `agent_work` execution, bound to the calling task as the native tool binds it. */
+function workTool(storageId: string): ToolRegistration {
+	return defineTool({
+		name: "agent_work",
+		description: "Declare background work for a request, or complete it.",
+		parameters: obj({}, { open: true }),
+		execute: async (args, api, context) => executeAgentWork(args, { harness: api, storageId, conversationId: api.conversationId, now: api.now() }, context),
+	});
+}
+function toolCall(id: string, name: string, args: Record<string, string | string[]> = {}) {
+	const message = toolCallMessage(name, args);
+	return { ...message, content: message.content.map((part) => part.type === "toolCall" ? { ...part, id } : part) };
+}
+
+it("reads the final report of a run that completed its work and then ended without an answer", { timeout: 20000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const path = join(root, "source.sqlite");
+	const sessionsRoot = join(root, "sessions");
+	const owner = randomUUID();
+	const received = eventLog<PrimaryDelivery>();
+	const channel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	const started = eventLog<void>();
+	const storageId = "11111111-1111-4111-8111-111111111111";
+	// A report of three pages with a surrogate pair across the first page boundary.
+	const label = "Final work result (done) for request task-a\n\n";
+	const message = `${"r".repeat(4095 - label.length)}😀${"s".repeat(6000)}`;
+	const source = await DurableHost.open({ storagePath: path, storageId, cwd: root,
+		models: await scriptedRuntime([
+			toolCall("declare-a", "agent_work", { action: "continue", request: "task-a", results: [], note: "the survey continues" }),
+			toolCall("complete-a", "agent_work", { action: "complete", request: "task-a", status: "done", message }),
+			toolCall("hold-a", "gate"),
+			toolCall("declare-b", "agent_work", { action: "continue", request: "task-b", results: [], note: "this work never completes" }),
+			toolCall("hold-b", "gate"),
+		]), registry: fixtureRegistry([workTool(storageId), gateTool(new Promise<void>(() => {}), () => started.push(undefined))]),
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
+	t.after(() => source.close());
+	type Page = { status: string; answer?: string; reason?: string; work?: { state: string; answer?: string; label?: string; finalReport?: { requestId: string; ownerId: string; status?: string; read: Record<string, unknown> } }; finalReport: { text: string; length: number }; finalReportContinuation?: Record<string, unknown> };
+	const inspect = (params: Record<string, unknown>) => source.request("inspect", params) as Promise<Page>;
+	const readAll = async (first: Record<string, unknown>, status: string): Promise<string> => {
+		let text = "";
+		let pages = 0;
+		let next: Record<string, unknown> | undefined = first;
+		while (next !== undefined) {
+			const { tool: _tool, ...params } = next;
+			const page = await inspect(params);
+			assert.ok(matchesSchema(InspectOutputSchema, page), "the page matches the published response schema");
+			assert.deepEqual([page.status, page.answer, page.finalReport.length], [status, undefined, label.length + message.length], "the page keeps the status of the input and carries no answer");
+			text += page.finalReport.text;
+			pages += 1;
+			next = page.finalReportContinuation;
+		}
+		assert.equal(pages, 3);
+		return text;
+	};
+
+	const completed = await source.request("task-submit", { message: "survey", requestId: "task-a", requester: owner, origin: "model" }) as { submissionId: SubmissionId };
+	await started.waitForCount(1);
+	const read = { tool: "agent_inspect", view: "result", sessionId: storageId, submissionId: completed.submissionId, finalReport: true, offset: 0 };
+	const fact = { requestId: "work-final:1:task-a", ownerId: owner, status: "done", delivery: "active", read };
+	assert.equal(await readAll(read, "placed"), label + message, "the report is complete while its input is still placed");
+	const running = await inspect({ view: "result", submissionId: completed.submissionId });
+	assert.deepEqual([running.status, running.answer, running.work], ["placed", undefined, { state: "closed", finalReport: fact }], "a placed input has no answer, so its work names no state note");
+
+	await source.request("abort", {});
+	assert.equal((await source.wait(completed.submissionId, BACKGROUND_CONTEXT)).status, "unanswered");
+	const stopped = await inspect({ view: "result", submissionId: completed.submissionId });
+	assert.deepEqual([stopped.status, stopped.answer, stopped.work], ["unanswered", undefined, { state: "closed", finalReport: fact }], "the input keeps its unanswered outcome beside the final report");
+	assert.ok(typeof stopped.reason === "string" && stopped.reason.length > 0);
+	assert.match(readableControlText(stopped), /Declared work: closed\.\n\nFinal report: .*\n\nRead the final report: agent_inspect\(/u);
+	assert.doesNotMatch(readableControlText(stopped), /State note/u);
+	assert.equal(await readAll(read, "unanswered"), label + message, "the report is complete after its input ended unanswered");
+	const status = await source.request("status", { sessionId: storageId }) as { conversation: { openWork?: Array<{ requestId: string; state: string; close?: { status: string; read: unknown } }> } };
+	assert.deepEqual(status.conversation.openWork?.map((item) => [item.requestId, item.state, item.close?.status, item.close?.read]), [["task-a", "closed", "done", read]], "the abort leaves the closed item and its read call");
+
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, storageId, path), catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal });
+	try {
+		const kind = (delivery: PrimaryDelivery) => (delivery.details as { kind?: string }).kind;
+		await received.waitForCount(2);
+		assert.deepEqual(received.map(kind).sort(), ["receipt", "report"]);
+		const receipt = received.find((delivery) => kind(delivery) === "receipt");
+		const line = new RegExp(`Request task-a \\(submission ${completed.submissionId}\\): native input stopped without an answer; declared work completed \\(done\\) with final report work-final:1:task-a\\. The final report is the result of this request\\. Read the final report: agent_inspect\\((\\{.*\\})\\)`, "u").exec(receipt?.text ?? "");
+		assert.ok(line, receipt?.text);
+		assert.doesNotMatch(receipt?.text ?? "", /no result arrived|state note/u);
+		const details = receipt?.details as { status?: string; work?: string; workLabel?: string } | undefined;
+		assert.deepEqual([details?.status, details?.work, details?.workLabel], ["unanswered", "closed", undefined]);
+		assert.equal(await readAll({ tool: "agent_inspect", ...JSON.parse(line[1]) as Record<string, unknown> }, "unanswered"), label + message, "the call of the delivered receipt reads the complete report");
+
+		// A declaration that its run never completes is void when that run ends unanswered.
+		const unfinished = await source.request("task-submit", { message: "second survey", requestId: "task-b", requester: owner, origin: "model" }) as { submissionId: SubmissionId };
+		await started.waitForCount(2);
+		assert.equal((await inspect({ view: "result", submissionId: unfinished.submissionId })).work?.state, "open");
+		await source.request("abort", {});
+		assert.equal((await source.wait(unfinished.submissionId, BACKGROUND_CONTEXT)).status, "unanswered");
+		const voided = await inspect({ view: "result", submissionId: unfinished.submissionId });
+		assert.deepEqual([voided.status, voided.work], ["unanswered", undefined]);
+		await assert.rejects(inspect({ view: "result", submissionId: unfinished.submissionId, finalReport: true }), /no closed declared work/u);
+		await received.waitForCount(3);
+		assert.match(received[2]?.text ?? "", new RegExp(`Request task-b \\(submission ${unfinished.submissionId}\\): native input stopped without an answer; no result arrived\\.`, "u"));
+		assert.equal((await deliveryState(source))?.reports.some((report) => report.requestId === "work-final:1:task-b"), false, "a void declaration leaves no final report");
 	} finally { await watcher.close(); }
 });
 

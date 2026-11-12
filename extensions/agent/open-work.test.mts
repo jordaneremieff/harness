@@ -478,3 +478,72 @@ it("reads the exact final report in pages after acknowledgement and after the cl
 	await assert.rejects(inspect({ submissionId: id, finalReport: true, receiptCursor: "x" }), /finalReport and receiptCursor select different pages/u);
 	await assert.rejects(readInspection(harness, STORAGE, conversation, { view: "history", finalReport: true }, context), /finalReport selects only the result view/u);
 });
+
+it("reads the final report of an input without an answer after acknowledgement, after the closed item left, and for a report to itself", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	const host = (now: number) => ({ harness, storageId: STORAGE, conversationId: conversation.id, now });
+	const inspect = async (params: Record<string, unknown>) => await readInspection(harness, STORAGE, conversation, { view: "result", ...params }, context) as ResultFields & { status: string };
+	const report = async (submissionId: SubmissionId) => {
+		const page = await inspect({ submissionId, finalReport: true });
+		assert.ok(matchesSchema(InspectToolOutputSchema, page));
+		return [page.status, page.answer, page.finalReport.text, page.finalReport.ownerId, page.finalReportContinuation];
+	};
+	const stop = (id: SubmissionId) => harness.commit(async (tx) => {
+		tx.settleSubmission(id, { status: "unanswered", reason: "aborted" });
+		delete (await tx.doc(LiveDoc, conversation.id)).run;
+	}, context);
+	/** One request that completes its declared work while its input is still placed. */
+	const completedWhilePlaced = async (request: RequestContext, now: number): Promise<SubmissionId> => {
+		const id = await harness.commit((tx) => placed(tx, conversation.id, request), context);
+		await harness.commit((tx) => declareOpenWork(tx, STORAGE, conversation.id, { results: [], note: "own work remains" }, now), context);
+		assert.equal((await executeAgentWork({ action: "complete", request: request.requestId, status: "done", message: `report of ${request.requestId}` }, host(now + 1), context)).isError, undefined);
+		return id;
+	};
+	const exact = (requestId: string) => `${finalReportLabel("done", requestId)}\n\nreport of ${requestId}`;
+
+	const stopped = await completedWhilePlaced(route("task-a"), 10);
+	assert.deepEqual(await report(stopped), ["placed", undefined, exact("task-a"), "recipient-c", undefined], "a placed input keeps its status beside the retained report");
+	await stop(stopped);
+	await harness.commit((tx) => storeDeliveryRow(tx, "receipt", { submissionId: stopped, requestId: "task-a", ownerId: "recipient-c", conversationId: conversation.id, operationId: null, origin: "model", status: "unanswered", entryId: null, answerEntryId: null, answer: null, reason: "aborted", acknowledged: false }, true), context);
+	assert.deepEqual(await report(stopped), ["unanswered", undefined, exact("task-a"), "recipient-c", undefined]);
+	const page = await inspect({ submissionId: stopped });
+	assert.deepEqual([page.status, page.answer, page.work?.state, page.work?.answer, page.work?.label, page.work?.finalReport?.read], ["unanswered", undefined, "closed", undefined, undefined, finalReportRead(STORAGE, stopped)], "no state note exists without an answer");
+	assert.deepEqual((await receiptDependencyMarks({ harness, context }, STORAGE, [{ conversationId: conversation.id, submissionId: stopped, requestId: "task-a", ownerId: "recipient-c" }])).map((mark) => mark.state), ["state-note"], "the unanswered receipt is not the result; the final report marks the arrival");
+
+	// The route of a still placed input names the reply recipient: no receipt exists yet.
+	const running = await completedWhilePlaced(route("task-p"), 20);
+
+	// A report to the declaring conversation itself stays readable and never becomes a delivery.
+	const pending = await deliveryPendingCount(harness, context);
+	const own = await completedWhilePlaced({ requestId: "task-s", requester: "operator", replyTo: STORAGE, origin: "operator" }, 30);
+	await stop(own);
+	assert.equal(await deliveryPendingCount(harness, context), pending, "the report to itself is not admitted as an input");
+	assert.deepEqual(await report(own), ["unanswered", undefined, exact("task-s"), STORAGE, undefined]);
+	assert.equal((await inspect({ submissionId: own })).work?.finalReport?.delivery, "retained");
+
+	await acknowledgeReports(harness, "recipient-c", [`report:work-final:${conversation.id}:task-a`], context);
+	for (let index = 0; index <= CLOSED_WORK_LIMIT; index++) {
+		const later = await harness.commit((tx) => placed(tx, conversation.id, route(`later-${index}`)), context);
+		await harness.commit((tx) => declareOpenWork(tx, STORAGE, conversation.id, { results: [], note: "own work remains" }, 40 + index), context);
+		await harness.commit((tx) => answered(tx, conversation.id, later), context);
+		assert.equal((await executeAgentWork({ action: "complete", request: `later-${index}`, status: "done", message: `later ${index}` }, host(100 + index), context)).isError, undefined);
+	}
+	assert.deepEqual((await harness.snapshot(OpenWorkDoc, conversation.id, context))?.items.filter((item) => ["task-a", "task-p", "task-s"].includes(item.requestId)), [], "the closed items left the work document");
+	assert.deepEqual(await report(stopped), ["unanswered", undefined, exact("task-a"), "recipient-c", undefined], "acknowledgement and eviction keep the report of an unanswered input readable");
+	assert.equal((await inspect({ submissionId: stopped })).work?.finalReport?.delivery, "delivered");
+	assert.deepEqual(await report(running), ["placed", undefined, exact("task-p"), "recipient-c", undefined], "the retained route finds the report of a placed input after its item left");
+	assert.deepEqual(await report(own), ["unanswered", undefined, exact("task-s"), STORAGE, undefined]);
+
+	// An unfinished declaration is void when its input ends unanswered: no work, no report.
+	const unfinished = await harness.commit((tx) => placed(tx, conversation.id, route("task-v")), context);
+	await harness.commit((tx) => declareOpenWork(tx, STORAGE, conversation.id, { results: [], note: "own work remains" }, 200), context);
+	assert.equal((await inspect({ submissionId: unfinished })).work?.state, "open");
+	assert.match((await inspect({ submissionId: unfinished, finalReport: true })).reason, /open; its final report does not exist yet/u);
+	await stop(unfinished);
+	assert.equal((await inspect({ submissionId: unfinished })).work, undefined);
+	await assert.rejects(inspect({ submissionId: unfinished, finalReport: true }), /Request task-v has no closed declared work, so no final report exists; its input is unanswered/u);
+	const late = await executeAgentWork({ action: "complete", request: "task-v", status: "done", message: "late" }, host(300), context);
+	assert.equal(late.isError, true);
+	assert.match(late.output?.[0]?.type === "text" ? late.output[0].text : "", /The input of this request ended unanswered: a declaration that was still open then is void, and the unanswered receipt is its outcome\. A final report of an earlier close stays readable: agent_inspect\(/u);
+	assert.equal(await harness.commit((tx) => retainedReportRequest(tx, "recipient-c", `work-final:${conversation.id}:task-v`), context), undefined);
+});
