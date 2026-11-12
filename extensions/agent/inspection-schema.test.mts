@@ -6,7 +6,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesSchema } from "./schema-check.ts";
 import register from "./index.ts";
 import { parseInspectParams } from "./durable-observation.ts";
-import { AGENT_CONTROL_TOOL_NAMES, AGENT_CONTROL_GUIDANCE } from "./control-guidance.ts";
+import { AGENT_CONTROL_TOOL_NAMES, agentControlGuidance } from "./control-guidance.ts";
 import { StatusToolOutputSchema, InspectToolOutputSchema } from "./observation-schema.ts";
 
 interface ToolDeclaration { name: string; parameters: Schema; outputSchema?: Schema; promptSnippet?: string; promptGuidelines?: string[] }
@@ -26,8 +26,9 @@ it("declares shared task guidance and exact observation results on primary tools
 	for (const name of AGENT_CONTROL_TOOL_NAMES) {
 		const declaration = tools.get(name);
 		assert.ok(declaration);
-		assert.equal(declaration.promptSnippet, AGENT_CONTROL_GUIDANCE[name].snippet);
-		assert.deepEqual(declaration.promptGuidelines, [...AGENT_CONTROL_GUIDANCE[name].guidelines ?? []]);
+		const guidance = agentControlGuidance(name, "ordinary");
+		assert.equal(declaration.promptSnippet, guidance.snippet);
+		assert.deepEqual(declaration.promptGuidelines, [...guidance.guidelines ?? []]);
 	}
 	assert.deepEqual(tools.get("agent_list")?.outputSchema, ProfiledListOutputSchema);
 	assert.deepEqual(tools.get("agent_status")?.outputSchema, StatusToolOutputSchema);
