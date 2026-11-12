@@ -5,7 +5,6 @@ import { readFileSync, readdirSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
-import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { acquireHost, waitForHostRelease, type HostConnection } from "./host-client.ts";
 import { hostPaths } from "./host-protocol.ts";
 import { observeClaim, readClaimFile } from "./claims.ts";
@@ -84,6 +83,17 @@ async function committed<T>(t: TestContext, host: HostConnection, read: () => Pr
 	unsubscribe();
 	const found = events.find((row) => predicate(row.value)); assert.ok(found); return found;
 }
+/** The committed provider retry of a conversation, read from its status. */
+function retrying(t: TestContext, host: HostConnection, sessionId: string) {
+	return committed(t, host, () => host.request("status", { sessionId }), (value) => (value as { conversation?: { live?: { generation?: { retry?: unknown } } | null } }).conversation?.live?.generation?.retry !== undefined);
+}
+/**
+ * The settled result of an input. The delivery driver acknowledges a receipt whose owner is a live primary in the
+ * commit round of the run end, so an unacknowledged receipt is not a stable event to wait for.
+ */
+async function settled(t: TestContext, host: HostConnection, submissionId: number): Promise<Result> {
+	return (await committed(t, host, () => result(host, submissionId), (row) => row.status === "done" || row.status === "unanswered")).value;
+}
 async function requester(t: TestContext, f: RuntimeFixture) {
 	const owner = randomUUID();
 	const notices = eventLog<{ at: number; message: PrimaryDelivery }>();
@@ -91,21 +101,13 @@ async function requester(t: TestContext, f: RuntimeFixture) {
 	t.after(() => channel.close());
 	return { owner, notices };
 }
-/** The consumer has no admitted work until the producer host is up and its request is on the wire; idle retirement is out of scope here. */
-async function consumer(t: TestContext, f: RuntimeFixture) {
-	const record = new AgentCatalog(f.root).create({ cwd: f.cwd, agentDir: f.agentDir, packageDir: f.metadata.packageDir, model: { provider: "durable-runtime-fixture", modelId: "fixture-model" }, thinkingLevel: "off", name: "HTTP result requester", trust: true, ownerId: f.ownerId }, "http-requester");
-	const host = await acquireHost(hostMetadata(record), { env: { ...f.env("await-reference"), PI_AGENT_IDLE_MINUTES: "0" } }); trackHost(t, host.pid);
-	t.after(() => host.close().catch(() => {}));
-	return { record, host };
-}
-
 const limits = [
 	{ name: "1308 usage", error: { code: "1308", message: "Usage limit reached for 5 hour. Your limit will reset at 2030-01-01 19:35:19" } },
 	{ name: "1310 subscription", error: { code: "1310", message: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2030-01-01 20:14:57" } },
 	{ name: "generic account", error: { code: "account_limit", message: "Account balance exhausted; billing credits depleted" } },
 	{ name: "insufficient quota", error: { code: "insufficient_quota", message: "You exceeded your current quota; check billing" } },
 ];
-for (const limit of limits) it(`stops ${limit.name} through the real adapter and notifies a requester without await`, { timeout: 60000 }, async (t) => {
+for (const limit of limits) it(`stops ${limit.name} through the real adapter and notifies the requester`, { timeout: 60000 }, async (t) => {
 	const http = await endpoint(t); const f = fixture(t, http.url); const { owner, notices } = await requester(t, f);
 	const host = await acquireHost(f.metadata, { env: f.env("answer") }); trackHost(t, host.pid);
 	try {
@@ -142,61 +144,13 @@ for (const limit of limits) it(`stops ${limit.name} through the real adapter and
 	} finally { await host.close().catch(() => {}); }
 });
 
-it("releases a default exact await on unknown retry without false success or producer cancellation", { timeout: 60000 }, async (t) => {
-	const http = await endpoint(t); const f = fixture(t, http.url); const waiting = await consumer(t, f);
-	const host = await acquireHost(f.metadata, { env: f.env("answer") }); trackHost(t, host.pid);
-	try {
-		const admitted = await host.request("submit", { message: "Unknown transient request", requestId: "unknown-retry", ownerId: waiting.record.storageId, origin: "model" }) as Submission;
-		await http.requests.waitForCount(1);
-		const reference = { sessionId: f.metadata.storageId, submissionId: admitted.submissionId, requestId: "unknown-retry" };
-		const requested = await waiting.host.request("submit", { message: `AWAIT_REFERENCE:${JSON.stringify(reference)}`, requestId: "await-unknown", ownerId: f.ownerId, origin: "operator" }) as Submission;
-		await committed(t, waiting.host, () => waiting.host.request("status", { sessionId: waiting.record.storageId }), (value) => (value as { conversation?: { awaiting?: unknown } }).conversation?.awaiting !== undefined);
-		const retry = committed(t, host, () => host.request("await-state", { results: [reference] }), (value) => (value as { execution?: { attempt: number } }).execution?.attempt === 1);
-		fail(http.requests[0], { code: "unrecognized_busy", message: "Temporary request throttling; retry this request" });
-		const retried = await retry;
-		await f.marker("await-return");
-		const returned = JSON.parse(readFileSync(join(f.testDir, "await-return.json"), "utf8"));
-		assert.match(JSON.stringify(returned.result), /producerRetries/u); assert.match(JSON.stringify(returned.result), /released/u);
-		assert.equal((await result(host, admitted.submissionId)).status, "placed", "the producer remains admitted and unsettled");
-		assert.equal(http.requests.length, 1, "Durable retains the producer's long retry delay");
-		const receipt = await waitForReceipt(waiting.host, f.ownerId, requested.submissionId, 5000); assert.equal(receipt.answer, "AWAIT_FINISHED");
-		const error = exposed(f); assert.ok(returned.at - error.at < 5000);
-		const retryCommit = checkpoints(f).find((row) => row.type === "retry"); assert.ok(retryCommit);
-		t.diagnostic(`latency ms ${JSON.stringify({ exposureToRetryCommit: retryCommit.at - error.at, exposureToRetryObservation: retried.at - error.at, exposureToAwaitReturn: returned.at - error.at })}`);
-		await host.request("abort", {});
-	} finally { await host.close().catch(() => {}); }
-});
-
-it("returns a known quota block from an exact await without a successful source result", { timeout: 60000 }, async (t) => {
-	const http = await endpoint(t); const f = fixture(t, http.url); const waiting = await consumer(t, f);
-	const host = await acquireHost(f.metadata, { env: f.env("answer") }); trackHost(t, host.pid);
-	try {
-		const admitted = await host.request("submit", { message: "Exhausted awaited request", requestId: "awaited-quota", ownerId: waiting.record.storageId, origin: "model" }) as Submission;
-		await http.requests.waitForCount(1);
-		const reference = { sessionId: f.metadata.storageId, submissionId: admitted.submissionId, requestId: "awaited-quota" };
-		const requested = await waiting.host.request("submit", { message: `AWAIT_REFERENCE:${JSON.stringify(reference)}`, requestId: "await-quota", ownerId: f.ownerId, origin: "operator" }) as Submission;
-		await committed(t, waiting.host, () => waiting.host.request("status", { sessionId: waiting.record.storageId }), (value) => (value as { conversation?: { awaiting?: unknown } }).conversation?.awaiting !== undefined);
-		fail(http.requests[0], limits[3].error);
-		await f.marker("await-return");
-		const returned = JSON.parse(readFileSync(join(f.testDir, "await-return.json"), "utf8"));
-		assert.match(JSON.stringify(returned.result), /unanswered/u); assert.match(JSON.stringify(returned.result), /model_error/u); assert.match(JSON.stringify(returned.result), /providerBlock/u);
-		assert.equal((await result(host, admitted.submissionId)).status, "unanswered");
-		const receipt = await waitForReceipt(waiting.host, f.ownerId, requested.submissionId, 5000); assert.equal(receipt.answer, "AWAIT_FINISHED");
-		assert.equal(http.requests.length, 1);
-		const error = exposed(f); const terminal = checkpoints(f).find((row) => row.type === "terminal" && row.submission?.id === admitted.submissionId); assert.ok(terminal);
-		assert.ok(returned.at - error.at < 5000);
-		t.diagnostic(`latency ms ${JSON.stringify({ exposureToTerminalCommit: terminal.at - error.at, exposureToAwaitReturn: returned.at - error.at })}`);
-	} finally { await host.close().catch(() => {}); }
-});
-
-it("keeps a requester without await silent during an active unknown native retry", { timeout: 60000 }, async (t) => {
+it("keeps a requester silent during an active unknown native retry", { timeout: 60000 }, async (t) => {
 	const http = await endpoint(t); const f = fixture(t, http.url); const { owner, notices } = await requester(t, f);
 	const host = await acquireHost(f.metadata, { env: f.env("answer") }); trackHost(t, host.pid);
 	try {
 		const admitted = await host.request("submit", { message: "No-await unknown transient request", requestId: "no-await-retry", ownerId: owner, origin: "model" }) as Submission;
 		await http.requests.waitForCount(1);
-		const reference = { sessionId: f.metadata.storageId, submissionId: admitted.submissionId, requestId: "no-await-retry" };
-		const retry = committed(t, host, () => host.request("await-state", { results: [reference] }), (value) => (value as { execution?: { attempt: number } }).execution?.attempt === 1);
+		const retry = retrying(t, host, f.metadata.storageId);
 		fail(http.requests[0], { code: "unfamiliar_overload", message: "Temporary request throttling; retry this request" });
 		await retry;
 		assert.equal(notices.length, 0, "an active retry burst does not send a preterminal report");
@@ -214,8 +168,7 @@ it("keeps ordinary transient 429 recovery in Durable, outside the HTTP adapter",
 	try {
 		const admitted = await host.request("submit", { message: "Transient then success", requestId: "transient-success", ownerId: f.ownerId, origin: "operator" }) as Submission;
 		await http.requests.waitForCount(1);
-		const reference = { sessionId: f.metadata.storageId, submissionId: admitted.submissionId, requestId: "transient-success" };
-		const retry = committed(t, host, () => host.request("await-state", { results: [reference] }), (value) => (value as { execution?: { attempt: number } }).execution?.attempt === 1);
+		const retry = retrying(t, host, f.metadata.storageId);
 		fail(http.requests[0], { code: "rate_limit_exceeded", message: "Too many requests; try again" });
 		const retried = await retry;
 		await http.requests.waitForCount(2, 10000);
@@ -232,13 +185,13 @@ it("retains immutable blocked results across restart, deduplicates notices, and 
 	try {
 		const admitted = await host.request("submit", { message: "Preserve original quota result", requestId: "retained-block", ownerId: owner, origin: "model" }) as Submission;
 		await http.requests.waitForCount(1); fail(http.requests[0], limits[0].error);
-		await waitForReceipt(host, owner, admitted.submissionId, 5000); await notices.waitForCount(1);
+		await settled(t, host, admitted.submissionId); await notices.waitForCount(1);
 		await committed(t, host, () => host.request("receipts", { ownerId: owner }), (value) => (value as { receipts: unknown[] }).receipts.length === 0);
 		const before = await result(host, admitted.submissionId); assert.equal(before.status, "unanswered");
 		assert.ok(before.providerBlock);
 		const blockId = before.providerBlock.blockId;
 		const blockedAgain = await host.request("submit", { message: "Do not bypass the retained provider block", requestId: "before-explicit-recovery", ownerId: owner, origin: "model" }) as Submission;
-		const blockedReceipt = await waitForReceipt(host, owner, blockedAgain.submissionId, 5000);
+		const blockedReceipt = await settled(t, host, blockedAgain.submissionId);
 		assert.equal(blockedReceipt.status, "unanswered"); assert.equal(blockedReceipt.reason, "model_error");
 		assert.equal(blockedReceipt.providerBlock?.source, "host-block"); assert.equal(blockedReceipt.providerBlock?.blockId, blockId);
 		assert.equal(http.requests.length, 1, "a new input cannot bypass the retained provider block");
@@ -285,7 +238,7 @@ it("retains immutable blocked results across restart, deduplicates notices, and 
 		const recovered = await host.request("submit", { message: "Deliberate recovery request", requestId: "new-recovery-reference", ownerId: owner, origin: "model" }) as Submission;
 		assert.notEqual(recovered.submissionId, admitted.submissionId);
 		await http.requests.waitForCount(2, 10000); succeed(http.requests[1]);
-		const receipt = await waitForReceipt(host, owner, recovered.submissionId, 5000); assert.equal(receipt.status, "done"); assert.equal(receipt.answer, "RECOVERED_HTTP_ANSWER");
+		const receipt = await settled(t, host, recovered.submissionId); assert.equal(receipt.status, "done"); assert.equal(receipt.answer, "RECOVERED_HTTP_ANSWER");
 		const retained = await result(host, admitted.submissionId); assert.equal(retained.status, "unanswered"); assert.equal(retained.reason, "model_error"); assert.equal(retained.answerEntryId, undefined); assert.equal(retained.providerBlock?.blockId, blockId);
 		assert.equal(http.requests.length, 2);
 		await notices.waitForCount(originalNotifications.length + 1);
