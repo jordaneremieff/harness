@@ -2504,12 +2504,16 @@ a token request after close.
 - Each storage has one descriptor-held writer lease on a permanent inode. The
   runner takes one nonblocking Darwin lock before it opens SQLite or resumes the
   Durable scheduler. A busy lease prevents a second runtime from opening. Normal
-  release writes the holder's complete diagnostic record with canonical
-  `endedAt` through the held descriptor at byte offset zero after runtime
-  closure and owned socket removal, then closes the descriptor. It never
-  removes or replaces the inode. The end time must not precede `createdAt`, and
-  the writer token must be a nonempty bounded identity. Runtime-close or
-  end-record write failure retains exclusion until actual process exit. A new
+  release closes the runtime, removes the owned socket and verifies that the
+  claim pathname still names the held inode. It then writes the holder's complete
+  diagnostic record with canonical `endedAt` through the held descriptor at byte
+  offset zero and closes the descriptor. It never removes or replaces the inode.
+  The end time must not precede `createdAt`, and the writer token must be a
+  nonempty bounded identity. A runtime-close, named-path validation or end-record
+  write failure leaves the descriptor held until actual process exit. The
+  dedicated runner reports the shutdown failure and exits with status 1.
+  Removing or replacing the permanent pathname breaks the same-inode premise:
+  the old descriptor does not exclude a new inode at that pathname. A new
   holder rewrites the record without `endedAt`. The bounded JSON record is
   diagnostic metadata, not ownership or current process-liveness evidence. Its
   PID, hostname, age and continued existence grant no takeover. An unopened
