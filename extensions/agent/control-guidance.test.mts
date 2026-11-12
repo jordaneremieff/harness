@@ -6,12 +6,40 @@
  */
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_GUIDANCE, AGENT_CONTROL_TOOL_NAMES, agentControlGuidanceLines } from "./control-guidance.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import register from "./index.ts";
+import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_GUIDANCE, AGENT_CONTROL_TOOL_NAMES, agentControlGuidance, agentControlGuidanceLines } from "./control-guidance.ts";
+
+it("ordinary delegation guidance names only registered controls and native guidance retains open-work declarations", async () => {
+	const tools = new Map<string, { description: string; promptGuidelines?: string[] }>();
+	await register({
+		events: { emit() {}, on: () => () => {} }, on: () => () => {},
+		registerTool: (tool: { name: string; description: string; promptGuidelines?: string[] }) => tools.set(tool.name, tool),
+		registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, registerCommand() {},
+		getThinkingLevel: () => "off",
+	} as unknown as ExtensionAPI);
+	assert.equal(tools.has("agent_work"), false);
+	for (const [name, tool] of tools) {
+		const text = [tool.description, ...(tool.promptGuidelines ?? [])].join("\n");
+		for (const mentioned of text.matchAll(/\bagent_[a-z]+\b/gu)) assert.ok(tools.has(mentioned[0]), `${name} names unavailable ${mentioned[0]}`);
+	}
+	for (const name of ["agent_spawn", "agent_send"] as const) {
+		const actual = tools.get(name)?.promptGuidelines;
+		assert.deepEqual(actual, agentControlGuidance(name, "ordinary").guidelines);
+		const ordinary = actual?.join("\n") ?? "";
+		assert.match(ordinary, /end your turn with a short state note/u);
+		assert.match(ordinary, /Results arrive as events/u);
+		assert.match(ordinary, /no repeated status or inspection call/u);
+		assert.doesNotMatch(ordinary, /agent_work/u);
+		const native = agentControlGuidance(name, "native").guidelines?.join("\n") ?? "";
+		assert.match(native, /agent_work continue/u);
+	}
+	assert.match(agentControlGuidance("agent_send", "native").guidelines?.join("\n") ?? "", /agent_work complete/u);
+});
 
 const CURRENT_TOOLS = [
 	"agent_abort",
 	"agent_attach",
-	"agent_await",
 	"agent_collaborate",
 	"agent_command",
 	"agent_compact",
@@ -90,30 +118,28 @@ it("keeps the contract, reporting, polling, live-work, and authority guidance", 
 	assert.match(all, /Do not stop unrelated, standing, or background agents merely to finish this request/u);
 	assert.match(all, /continue useful work, redirect changed work, or abort superseded work/u);
 	assert.match(all, /informational reports and blocking questions/u);
-	assert.match(all, /Do not replace the terminal result with an interim report/u);
+	assert.match(all, /only agent_work complete sends the final report, to the original reply recipient/u);
 	assert.match(all, /A terminal answer settles the current request/u);
-	assert.match(all, /substantive result or exact blocker, not a waiting note/u);
+	assert.match(all, /give the substantive result or exact blocker/u);
+	assert.match(all, /state note whose first words say that it is not the result/u);
 	assert.match(all, /Never poll with sleeps or repeated status\/inspection calls/u);
 	assert.match(all, /Settlement notices arrive automatically/u);
-	assert.match(all, /report to a busy Durable agent normally waits for the current run to end/u);
-	assert.match(all, /Use steer to change a busy agent's work at its next tool boundary/u);
+	assert.match(all, /report to a running agent is placed at the recipient's next tool boundary/u);
+	assert.match(all, /Use steer when the recipient must change its current work/u);
 });
 
-it("distinguishes normal follow-up timing from admitted await interaction", () => {
+it("places follow-ups and reports at tool boundaries without holding the run", () => {
 	const send = AGENT_CONTROL_GUIDANCE.agent_send.guidelines?.join("\n") ?? "";
-	assert.match(send, /followUp normally waits for the current run to end/u);
-	assert.match(send, /admitted explicit followUp releases an active agent_await/u);
-	assert.match(send, /input already queued when the wait starts/u);
+	assert.match(send, /followUp to a running agent is placed at the recipient's next tool boundary/u);
+	assert.match(send, /end of its current round of tool calls, not at the end of its run/u);
 	assert.match(send, /both inputs may share one answer/u);
-	assert.match(send, /A report sent from an ordinary primary uses explicit admission/u);
-	assert.match(send, /even from an unrelated sender/u);
-	assert.match(send, /A report sent from a native Durable agent uses retained report provenance/u);
-	assert.match(send, /only a named awaited producer's report releases the wait/u);
-	assert.match(send, /unrelated native reports stay queued/u);
-	assert.match(send, /Automatic native Reporter result copies remain raw follow-ups/u);
-	assert.match(send, /Model-origin reports to ordinary primaries use steer/u);
-	assert.match(send, /steer does not interrupt a running tool/u);
-	assert.doesNotMatch(send, /this report waits for its current run to end/u);
+	assert.match(send, /report to a running agent is placed at the recipient's next tool boundary/u);
+	assert.match(send, /It does not interrupt a running tool, and it starts no answer-bearing task/u);
+	assert.match(send, /A report is an event for the recipient/u);
+	assert.match(send, /declare the open work with agent_work continue/u);
+	assert.match(send, /Each result, report, or message starts your next run/u);
+	assert.match(send, /Never hold a run open for agent output/u);
+	assert.doesNotMatch(send, /agent_await|waits for the current run to end/u);
 });
 
 
@@ -190,7 +216,7 @@ it("keeps frequent controls direct and defers infrequent ones", () => {
 			.filter(([, exposure]) => exposure === "model-only")
 			.map(([name]) => name)
 			.sort(),
-		["agent_await", "agent_compact"],
+		["agent_compact"],
 	);
 	assert.deepEqual(Object.keys(AGENT_CONTROL_EXPOSURE).sort(), CURRENT_TOOLS);
 });

@@ -35,6 +35,7 @@ import { THINKING_LEVELS, isThinkingLevel, parseConfigurationArguments } from ".
 import {
 	AGENT_CONTROL_EXPOSURE,
 	AGENT_CONTROL_GUIDANCE,
+	agentControlGuidance,
 	FOLLOW_UP_DELIVERY_BOUNDARY,
 	MODEL_SELECTION_GUIDANCE,
 	REPORT_DELIVERY_BOUNDARY,
@@ -357,7 +358,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		parameters: Schema<Record<string, unknown>>,
 		execute: (input: Record<string, unknown>, ctx: ExtensionContext, callId: string, admissionCaller?: AgentCaller) => Promise<unknown>,
 	): void => {
-		const guidance = AGENT_CONTROL_GUIDANCE[name];
+		const guidance = agentControlGuidance(name, "ordinary");
 		const exposure: AgentControlExposure = AGENT_CONTROL_EXPOSURE[name];
 		const schema = observationSchemas[name];
 		const presetAware = ["agent_spawn", "agent_place", "agent_configure"].includes(name);

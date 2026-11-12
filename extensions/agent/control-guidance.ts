@@ -83,6 +83,11 @@ export const INPUT_CLASS_GUIDANCE = "Read each placed input by its class. A stee
 /** Open delegated work is declared, the run ends with a state note, and each arriving result starts the next run. */
 export const OPEN_WORK_GUIDANCE = "After you send work, do the useful work that remains for you. When none remains, declare the open work with agent_work continue (the request and its exact result references), then end the run with a short state note. Do ready independent work before the run ends. A routed task that stays blocked or deferred gets its own record: agent_work continue with its request and an empty results list. Each result, report, or message starts your next run. Never hold a run open for agent output: no sleep, no repeated status or inspection call, no long foreground command. An input reaches you at your next tool boundary, the end of your current round of tool calls, so run a command that can take more than about two minutes as a background job; its completion arrives as an event. Creation records, reports, timers, names, and latest answers are not result references. Preserve known request IDs.";
 
+/** An ordinary session ends its turn instead of declaring native open work. */
+const ORDINARY_OPEN_WORK_GUIDANCE = "After you send work, do the useful independent work that remains for you. When only delegated work remains, end your turn with a short state note that names the open work and its exact result references. Results arrive as events; read them and continue the work. Never hold a turn open for agent output: no sleep, no repeated status or inspection call, no long foreground command. Run a long command as a background job; its completion arrives as an event. Creation records, reports, timers, names, and latest answers are not result references. Preserve known request IDs.";
+const NATIVE_SEND_GUIDANCE = "Send informational reports and blocking questions with agent_send mode: report to the current request's reply recipient. The creating owner is provenance, not every task's requester. Specify a recipient explicitly; several requests can share a run. Reports start no answer-bearing task or check-in. A terminal answer settles the current request: give the substantive result or exact blocker. While declared work is open, end the run with a state note whose first words say that it is not the result; only agent_work complete sends the final report, to the original reply recipient. Use followUp for unrelated new work on a reused expert.";
+const ORDINARY_SEND_GUIDANCE = "Send informational reports and blocking questions with agent_send mode: report to the current request's reply recipient. The creating owner is provenance, not every task's requester. Specify a recipient explicitly. Reports start no answer-bearing task or check-in. Give the substantive result or exact blocker when the work is complete. While only delegated work remains, end your turn with a short state note that says it is not the final result. Results arrive as events. Never poll for them. Use followUp for unrelated new work on a reused expert.";
+
 /**
  * What only the model can carry across a compaction or reset. The host keeps request routes and
  * delivers results itself, so the seed does not ask for them.
@@ -110,7 +115,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 	agent_send: {
 		snippet: "Send a task to an agent session",
 		guidelines: [
-			"Send informational reports and blocking questions with agent_send mode: report to the current request's reply recipient. The creating owner is provenance, not every task's requester. Specify a recipient explicitly; several requests can share a run. Reports start no answer-bearing task or check-in. A terminal answer settles the current request: give the substantive result or exact blocker. While declared work is open, end the run with a state note whose first words say that it is not the result; only agent_work complete sends the final report, to the original reply recipient. Use followUp for unrelated new work on a reused expert.",
+			NATIVE_SEND_GUIDANCE,
 			FOLLOW_UP_DELIVERY_BOUNDARY,
 			REPORT_DELIVERY_BOUNDARY,
 			INPUT_CLASS_GUIDANCE,
@@ -161,6 +166,13 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 	agent_place: { snippet: "Work in the session bound to an area", guidelines: [MODEL_SELECTION_GUIDANCE, EXECUTION_PRESET_GUIDANCE, "A preset supplies creation defaults, not changes to a reused place owner. Configure an idle owner explicitly to change its model."] },
 	agent_collaborate: { snippet: "Find peers and exchange work in a shared purpose thread", guidelines: ["List threads before asking the primary to relay identities. Read the governing frame, join relevant work, and develop or challenge peer contributions. Choose and revise arrangements together; no fixed roles or agreement vote is required.", "Use the shared frame for governing purpose and each member's contribution for its current hold, release or continuing condition. Rejoin to replace your contribution and cite the source exchange. Contributions are declarations, not consensus or permission.", "Keep participation within 256 characters and message within 8,000 characters. Write longer content to a file and post its path.", "A thread preserves purpose, carried authority and source, restrictions, acceptance, and integrator. Agent labels do not prove operator authority. Keep the original decision and its scope distinct from interpretations and proposals.", "Joining opts into bounded passive notices for new thread events at existing conversation boundaries. These notices start no model turn. Posts retain shared evidence without waking a model. Name notify recipients only when their attention matters. Notices do not request automatic replies or check-ins. Inspect the thread or peer evidence rather than poll while useful work continues."] },
 };
+
+/** Select instructions for the controls available on the recipient's execution surface. */
+export function agentControlGuidance(name: AgentControlToolName, surface: "ordinary" | "native"): AgentToolGuidance {
+	const guidance = AGENT_CONTROL_GUIDANCE[name];
+	if (surface === "native" || (name !== "agent_spawn" && name !== "agent_send")) return guidance;
+	return { ...guidance, guidelines: guidance.guidelines?.map((line) => line === OPEN_WORK_GUIDANCE ? ORDINARY_OPEN_WORK_GUIDANCE : line === NATIVE_SEND_GUIDANCE ? ORDINARY_SEND_GUIDANCE : line) };
+}
 
 /** Render the guidance lines for the selected controls, in control order. */
 export function agentControlGuidanceLines(selected: readonly string[]): string[] {
