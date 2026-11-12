@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { canonicalIdentity } from "./native-identity.ts";
 import type { ReceiptReferencePage } from "./result-schema.ts";
 import type { Context } from "@earendil-works/chord/context";
-import { defineDoc, defineDocFamily, type Harness, type Session, type Tx } from "@earendil-works/pi-durable";
+import { defineDoc, defineDocFamily, type Cursor, type Harness, type Session, type Storage, type Tx } from "@earendil-works/pi-durable";
 import type { AgentDeliveryState, DeliveryIntent, DeliveryReceipt, DeliveryReport } from "./durable-controls.ts";
 
 export const DELIVERY_PAGE_SIZE = 64;
@@ -13,6 +13,7 @@ type StoredRow = { kind: Kind; value: Row | null; pendingPage: string | null; ki
 type List = { head: string | null; tail: string | null; count: number };
 type Page = { ownerList: string; refs: string[]; previous: string | null; next: string | null };
 type StoreState = { ready: boolean; nextPage: number; migrationKind: number; migrationOffset: number };
+type StorageReader = Pick<Storage, "scanDocuments" | "findDocument" | "document">;
 
 /** Retained only until a completed representation transition retires it. */
 export const DeliveryArchiveDoc = defineDoc<AgentDeliveryState>({ kind: "agent.delivery", version: 1, scope: "session", initial: () => ({ intents: [], receipts: {}, reports: [] }), checkpointWhen: () => true });
@@ -524,6 +525,100 @@ async function validateMigrationCounts(tx: Tx, groups: readonly (readonly Row[])
 		const list = await tx.doc(DeliveryListDoc, `all:${kind}`, null);
 		if (list.count !== groups[index].length) throw new Error("Delivery migration row count differs");
 	}
+}
+
+/** Owner-less page shape of earlier releases; only the page adoption below reads it. */
+const DeliveryPageV1Doc = defineDocFamily<{ refs: string[]; previous: string | null; next: string | null }, null>({ kind: "agent.delivery-page", version: 1, scope: "session", family: true, initial: () => ({ refs: [], previous: null, next: null }), checkpointWhen: () => true });
+const SESSION_SCOPE = { kind: "session" } as const;
+
+export type DeliveryPageAdoption = {
+	/** Version 1 pages that this call gave their owner list. */
+	adopted: number;
+	/** Reachable pages that already carried their owner list. */
+	current: number;
+	/** Current version 1 pages that no list reaches; they stay unchanged. */
+	unreached: string[];
+	/** Live `agent.reporter` tasks of version 1; Pi blocks them, and the adoption leaves them unchanged. */
+	activeReporterTasks: number[];
+};
+
+async function scanKeys(storage: StorageReader, kind: string, context: Context): Promise<string[]> {
+	const keys: string[] = [];
+	let cursor: Cursor | undefined;
+	do {
+		const page = await storage.scanDocuments({ scope: SESSION_SCOPE, at: "current", kind }, 256, cursor, context);
+		for (const record of page.items) if (record.key !== undefined) keys.push(record.key);
+		cursor = page.next ?? undefined;
+	} while (cursor !== undefined);
+	return keys;
+}
+
+async function storedPage(storage: StorageReader, id: string, context: Context) {
+	const record = await storage.findDocument({ kind: DeliveryPageDoc.definition.kind, scope: SESSION_SCOPE, key: id }, "current", context);
+	return record === undefined ? undefined : storage.document(record.id, "current", context);
+}
+
+/** Each reachable version 1 page with its owner list, from one enumeration of the current lists. */
+async function ownerlessPages(storage: StorageReader, context: Context): Promise<{ owned: Map<string, string>; current: number }> {
+	const owned = new Map<string, string>();
+	const seen = new Set<string>();
+	let current = 0;
+	for (const name of await scanKeys(storage, "agent.delivery-list", context)) current += await walkList(storage, name, seen, owned, context);
+	return { owned, current };
+}
+
+/** Record the version 1 pages of one list; returns its count of pages that already name it. */
+async function walkList(storage: StorageReader, name: string, seen: Set<string>, owned: Map<string, string>, context: Context): Promise<number> {
+	const list = await storage.findDocument({ kind: "agent.delivery-list", scope: SESSION_SCOPE, key: name }, "current", context);
+	let id = list === undefined ? null : ((await storage.document(list.id, "current", context))?.value as List | undefined)?.head ?? null;
+	let current = 0;
+	while (id !== null) {
+		if (seen.has(id)) throw new Error(`Delivery reference page ${id} belongs to more than one list or forms a cycle`);
+		seen.add(id);
+		const stored = await storedPage(storage, id, context);
+		if (stored === undefined) throw new Error(`Delivery list ${name} names an absent page ${id}`);
+		if (stored.version === 1) owned.set(id, name);
+		else {
+			requirePageOwner(stored.value as Page, name);
+			current += 1;
+		}
+		id = (stored.value as { next: string | null }).next;
+	}
+	return current;
+}
+
+/**
+ * Give every retained version 1 reference page its owner list, so a store written by an earlier release accepts
+ * appends and owner-checked reads again. An explicit call of the storage owner runs it; opening a store does not.
+ * Each bounded batch replaces its pages in one commit: the version 1 incarnation is retired and stays in Pi history,
+ * and a version 2 incarnation at the same address keeps its references and links. Rows, pointers and lists are not
+ * rewritten. An interruption leaves whole batches, and a repeated call adopts only the remaining pages; a call on an
+ * adopted store changes nothing. Live version 1 Reporter tasks are reported, never changed.
+ */
+export async function adoptDeliveryPages(harness: Pick<Harness, "commit" | "inspect">, storage: StorageReader, context: Context, afterBatch?: () => void | Promise<void>): Promise<DeliveryPageAdoption> {
+	const { owned, current } = await ownerlessPages(storage, context);
+	const unreached: string[] = [];
+	for (const id of await scanKeys(storage, DeliveryPageDoc.definition.kind, context)) {
+		if (owned.has(id)) continue;
+		if ((await storedPage(storage, id, context))?.version === 1) unreached.push(id);
+	}
+	const pending = [...owned];
+	for (let start = 0; start < pending.length; start += DELIVERY_PAGE_SIZE) {
+		await harness.commit(async (tx) => {
+			for (const [id, name] of pending.slice(start, start + DELIVERY_PAGE_SIZE)) {
+				const old = copy(await tx.doc(DeliveryPageV1Doc, id, null));
+				await tx.retireDoc(DeliveryPageV1Doc, id);
+				const page = await tx.doc(DeliveryPageDoc, id, null);
+				page.ownerList = name;
+				page.refs.push(...old.refs);
+				page.previous = old.previous;
+				page.next = old.next;
+			}
+		}, context);
+		await afterBatch?.();
+	}
+	const activeReporterTasks = (await harness.inspect(context)).tasks.flatMap((task) => task.record.kind === "agent.reporter" && task.record.version === 1 ? [task.record.id] : []);
+	return { adopted: owned.size, current, unreached, activeReporterTasks };
 }
 
 /** Copy one bounded batch with its cursor. The original document remains authoritative until completion. */

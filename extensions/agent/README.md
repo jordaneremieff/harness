@@ -3474,9 +3474,23 @@ migration from version 1. These consequences apply to existing data:
   a task that waits to post its report, before a host with this release opens
   the storage.
 
-No migration or compatibility path exists for either record. Decide the
-treatment of retained delivery pages for each storage, and preserve a storage
-restore point, before adoption.
+`adoptDeliveryPages(harness, storage, context)` in `delivery-store.ts` is the
+explicit transition for retained version 1 pages. Opening a storage never runs
+it; the storage owner calls it. It enumerates the current delivery lists once,
+walks each list from its head, and gives every reachable version 1 page that
+list as its owner. Each bounded batch commits together: the version 1
+incarnation is retired and stays in Pi's document history, and a version 2
+incarnation at the same address keeps the references and links. Rows,
+pointers, lists and request deduplication stay unchanged. An interruption
+leaves whole batches; a repeated call adopts only the remaining pages, and a
+call on an adopted storage changes nothing. A page that two lists reach, or a
+list that names an absent page, refuses the call. The result counts adopted and
+already-owned pages, names version 1 pages that no list reaches (left
+unchanged), and names live version 1 Reporter tasks. The transition never
+changes a task; such a task stays blocked until it is handled separately.
+
+No read path accepts version 1 pages, and no migration exists for the Reporter
+task. Preserve a storage restore point before the transition.
 
 The host completes a retained delivery transition before request admission,
 output observers and native resume. Each bounded batch commits its copied rows
