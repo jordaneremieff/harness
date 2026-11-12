@@ -24,6 +24,7 @@ import { configureProviderRecovery, captureProviderRecovery, linkProviderRecover
 import { modelFailureText, type ProviderBlockFact } from "./provider-block-facts.ts";
 import { AwaitDoc, acknowledgeProviderRetry, classifyAwaitInput, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { prepareAdmittedCapture } from "./communication-retention.ts";
+import { recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
 import { createCheckIn } from "./durable-checkins.ts";
 import { cleanupRequestContexts, recordRequestContext, RequestContextDoc, type RequestContext } from "./request-context.ts";
 import { refreshManagedInstructions } from "./profile.ts";
@@ -311,6 +312,13 @@ export interface DurableSubmitResult {
 	/** True when an earlier submission with this request ID already existed. */
 	readonly deduped: boolean;
 	readonly recipient?: string;
+	/** Committed state at admission: `unplaced` while the input waits in the recipient's inbox for the end of its current tool round. */
+	readonly placement: Placement;
+}
+
+/** Committed placement of one input that an earlier admission already recorded. */
+async function inputPlacement(tx: Tx, submissionId: SubmissionId): Promise<Placement> {
+	return (await tx.submission(submissionId))?.status === "queued" ? "unplaced" : "placed";
 }
 
 /** One admission's delivery identity, written before the submission it describes. */
@@ -521,7 +529,7 @@ async function originalAdmission(tx: Tx, conversationId: ConversationId, params:
 	if (intent.ownerId !== ownerId || intent.origin !== params.origin) throw new Error("The request ID already identifies another delivery recipient or origin");
 	const route = (await tx.doc(RequestContextDoc, conversationId)).requests.find((item) => item.requestId === params.requestId);
 	validateReplayRequest(params.requestContext, params.requestId, intent, route);
-	return { submissionId: input.id, conversationId, deduped: true, recipient: intent.ownerId };
+	return { submissionId: input.id, conversationId, deduped: true, recipient: intent.ownerId, placement: input.status === "queued" ? "unplaced" : "placed" };
 }
 
 async function ownedAdmissionIntent(tx: Tx, conversationId: ConversationId, params: DurableSubmitParams, ownerId: string, now: () => number): Promise<DeliveryIntentState> {
@@ -535,7 +543,8 @@ async function providerNoticeReplay(conversation: Conversation, params: DurableS
 	if (notice === undefined) return undefined;
 	const decision = await conversation.commit((tx) => authorizeProviderNotice(tx, conversation.id, params.requestId, notice), context);
 	if (decision.suppressed) throw new AwaitInputSuppressed();
-	if (decision.existing !== undefined) return { submissionId: decision.existing, conversationId: conversation.id, deduped: true };
+	const existing = decision.existing;
+	if (existing !== undefined) return { submissionId: existing, conversationId: conversation.id, deduped: true, placement: await conversation.commit((tx) => inputPlacement(tx, existing), context) };
 	return undefined;
 }
 
@@ -562,13 +571,14 @@ async function admitConversation(conversation: Conversation, params: DurableSubm
 		}, context);
 	}
 	const recoveryOf = await conversation.commit((tx) => captureProviderRecovery(tx, conversation.id, requestId), context);
+	const label = admissionLabel(params);
 	const submission = await conversation.submit(
 		{
 			type: "input",
 			content: message,
 			requestId,
 			whenBusy: placementMode(whenBusy),
-			entry: inputEntry(origin, inputAuthor(params), admissionLabel(params)),
+			entry: inputEntry(origin, inputAuthor(params), label),
 		},
 		context,
 	);
@@ -581,7 +591,8 @@ async function admitConversation(conversation: Conversation, params: DurableSubm
 		const relinked = await conversation.commit((tx) => linkDeliveryIntent(tx, conversation.id, requestId, submission.id), context);
 		if (relinked) deduped = true;
 	}
-	return { submissionId: submission.id, conversationId: conversation.id, deduped, ...(ownerId === undefined ? {} : { recipient: ownerId }) };
+	const placement = await conversation.commit((tx) => recordUnplacedInput(tx, conversation.id, { submissionId: submission.id, class: label.class, sender: label.sender ?? "", admittedAt: now(), ...(params.senderIdentity === undefined ? {} : { recipient: params.senderIdentity }) }), context);
+	return { submissionId: submission.id, conversationId: conversation.id, deduped, ...(ownerId === undefined ? {} : { recipient: ownerId }), placement };
 }
 
 function assistantTextOf(messages: readonly Message[] | undefined): string {

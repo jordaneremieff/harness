@@ -26,6 +26,7 @@ import { classifyAwaitInput, reconcileInputRelease } from "./awaited-results.ts"
 import { defineDoc, defineDocFamily, defineTask, type ConversationId, type Cursor, type Harness, type SubmissionRecord, type TaskId, type TaskRecord, type TaskState, type TaskOutcome, type Tx } from "@earendil-works/pi-durable";
 import { linkDeliveryIntent, placementMode, recordDeliveryIntent, type DeliveryIntentState, type DeliveryOrigin } from "./durable-controls.ts";
 import { reconcileProfile } from "./profile.ts";
+import { recordUnplacedInput } from "./unplaced-inputs.ts";
 import { validateRequestContext, type RequestContext } from "./request-context.ts";
 import { parseDeliverAt } from "./timer-input.ts";
 
@@ -215,6 +216,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 			await runtime.commit(
 				async (tx) => {
 					await linkDeliveryIntent(tx, conversationId, task.input.requestId, submission.id);
+					await recordUnplacedInput(tx, conversationId, { submissionId: submission.id, class: "timer", sender: task.input.requestContext?.requester ?? "", admittedAt: firedAt, recipient: task.input.identity });
 					await markTimerSettled(tx, Number(task.id), {
 						status: "fired",
 						firedAt,
@@ -270,6 +272,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				await runtime.commit(
 					async (tx) => {
 						await linkDeliveryIntent(tx, conversationId, input.requestId, submission.id);
+						await recordUnplacedInput(tx, conversationId, { submissionId: submission.id, class: "timer", sender: input.requestContext?.requester ?? "", admittedAt: settledAt, recipient: input.identity });
 						await markTimerSettled(tx, Number(task.id), { status: "fired", firedAt: settledAt, overdueMs: result.overdueMs, submissionId: submission.id, settledAt });
 						return { status: "terminal", outcome: { status: "completed", result } };
 					},

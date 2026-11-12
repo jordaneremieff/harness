@@ -29,6 +29,7 @@ import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProve
 import { executeAwait } from "./await-execution.ts";
 import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
+import { recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
 import { AgentMetaDoc, placementMode, publishConversationIntent, recordAdmissionMeta, recordDeliveryIntent, linkDeliveryIntent, seededCompactionInstructions } from "./durable-controls.ts";
 import { recordAdmitted, recordRefused, recordRequested, recordScheduled, recordTimerCancelled, type OutgoingRequest } from "./continuity-admission.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema, profileText } from "./profile-schema.ts";
@@ -836,6 +837,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...(reportTo === undefined ? {} : { reportTo }),
 	});
 
+	/** An unplaced input waits in the recipient's inbox until its current tool round ends. */
+	const placementText = (placement: Placement): string => placement === "unplaced"
+		? "\nPlacement: unplaced. The recipient is busy; the input is placed when its current tool round ends."
+		: "\nPlacement: placed.";
+
 	const LocalAdmission = durable.defineDoc<{ armed: boolean }>({ kind: "agent.local-admission", version: 1, scope: "task", checkpointWhen: () => false, initial: () => ({ armed: false }) });
 
 	type LocalAdmissionApi = {
@@ -844,7 +850,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		conversation(id: Durable.ConversationId, context: Context): Promise<Durable.ConversationHandle | undefined>;
 		commit(change: (tx: Durable.Tx) => Promise<undefined>, context: Context): Promise<unknown>;
 	};
-	const admitLocal = async (api: LocalAdmissionApi, context: Context, reporterTaskId: Durable.TaskId, input: ReporterInput, report: (error: unknown) => void, now: number): Promise<{ submission: Durable.Submission; result: ResultReference }> => {
+	const admitLocal = async (api: LocalAdmissionApi, context: Context, reporterTaskId: Durable.TaskId, input: ReporterInput, report: (error: unknown) => void, now: number): Promise<{ submission: Durable.Submission; result: ResultReference; placement: Placement }> => {
 		const conversation = await api.conversation(input.conversationId, context);
 		if (conversation === undefined) throw new Error("The result producer conversation is missing");
 		const request = { requestId: `agent-deliver:${reporterTaskId}`, requester: identity(api.conversationId), replyTo: identity(input.reportTo ?? api.conversationId), origin: "model" as const };
@@ -889,7 +895,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		await api.commit(async (tx) => { await reconcileInputRelease(tx, input.conversationId, request.requestId); await linkProviderRecovery(tx, submission.id, recoveryOf); return undefined; }, context);
 		const status = await submission.status(context);
 		if (status.id !== submission.id || status.requestId !== request.requestId || status.conversationId !== input.conversationId) throw new Error("Native admission identifiers disagree");
-		return { submission, result: admittedResult(identity(input.conversationId), { submissionId: submission.id, conversationId: status.conversationId, requestId: status.requestId }, request.requestId) };
+		let placement: Placement = status.status === "queued" ? "unplaced" : "placed";
+		await api.commit(async (tx) => {
+			placement = await recordUnplacedInput(tx, input.conversationId, { submissionId: submission.id, class: sentInputClass("model", input.whenBusy), sender: request.requester, admittedAt: now, recipient: identity(input.conversationId) });
+			return undefined;
+		}, context);
+		return { submission, result: admittedResult(identity(input.conversationId), { submissionId: submission.id, conversationId: status.conversationId, requestId: status.requestId }, request.requestId), placement };
 	};
 
 	const Reporter = durable.defineTask<ReporterInput, ReporterState, null>({
@@ -1122,8 +1133,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return textResult(
 			(outcome.deduped
 				? `Reused the agent created by this call: ${child.name} (${identity(child.conversationId)}).`
-				: `Spawned ${child.name} as conversation ${identity(child.conversationId)} in your storage.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (admission === undefined ? "" : `\nResult: ${JSON.stringify(admission.result)}`) + thinkingNotice(child),
-			{ sessionId: identity(child.conversationId), conversationId: child.conversationId, name: child.name, anchorTaskId: child.anchorTaskId, ...selectionSnapshot(child), ...thinkingFacts(child), ...(admission === undefined ? {} : { result: admission.result }) },
+				: `Spawned ${child.name} as conversation ${identity(child.conversationId)} in your storage.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (admission === undefined ? "" : `\nResult: ${JSON.stringify(admission.result)}${placementText(admission.placement)}`) + thinkingNotice(child),
+			{ sessionId: identity(child.conversationId), conversationId: child.conversationId, name: child.name, anchorTaskId: child.anchorTaskId, ...selectionSnapshot(child), ...thinkingFacts(child), ...(admission === undefined ? {} : { result: admission.result, placement: admission.placement }) },
 		);
 	};
 
@@ -1176,8 +1187,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			return { reporterTaskId: reporter };
 		}, context);
 		const admission = await admitLocal(api, context, result.reporterTaskId as Durable.TaskId, reporterInput(name, conversationId, message, whenBusy, reportTo, minutes), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
-		return textResult(`Admitted to ${name}; the answer will report back. Result: ${JSON.stringify(admission.result)}`, {
-			conversationId, submissionId: admission.result.submissionId, result: admission.result,
+		return textResult(`Admitted to ${name}; the answer will report back. Result: ${JSON.stringify(admission.result)}${placementText(admission.placement)}`, {
+			conversationId, submissionId: admission.result.submissionId, result: admission.result, placement: admission.placement,
 		});
 	};
 
