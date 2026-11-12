@@ -1709,12 +1709,18 @@ test("text wait doubles its first refresh intervals", async (t) => {
 	}
 });
 
-test("text wait schedules no refresh after its last allowed snapshot", async () => {
+test("text wait schedules no refresh after its last allowed snapshot", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const mocked = globalThis.setTimeout;
+	const delays: unknown[] = [];
+	globalThis.setTimeout = ((action: () => void, delay?: number) => { delays.push(delay); return mocked(action, delay); }) as typeof setTimeout;
+	t.after(() => { globalThis.setTimeout = mocked; });
 	const f = fixture();
-	const warnings: string[] = [];
-	const onWarning = (warning: Error) => { warnings.push(warning.name); };
-	process.on("warning", onWarning);
+	const caller = new AbortController();
 	let captures = 0;
+	let afterLast = 0;
+	let entered!: () => void;
+	const initial = new Promise<void>((resolve) => { entered = resolve; });
 	const run = f.transport.run.bind(f.transport);
 	f.transport.run = (args, call) => args.includes("events")
 		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }))
@@ -1722,19 +1728,26 @@ test("text wait schedules no refresh after its last allowed snapshot", async () 
 	f.transport.handler = (method) => {
 		if (!method.endsWith(".format")) return undefined;
 		captures++;
+		if (captures === 2) afterLast = delays.length;
+		entered();
 		return reply({ content: "not ready", eof: true });
 	};
-	try {
-		const response = await f.core.execute({ op: "wait", condition: "text", text: "READY", timeoutMs: 1000, maxSnapshots: 2, target }, context);
-		// The wait holds for an event, cancellation or the deadline; it does not end early on a refresh.
-		assert.equal(response.outcome, "timeout");
-		assert.equal(captures, 2);
-		await new Promise<void>((resolve) => setImmediate(resolve));
-		assert.deepEqual(warnings.filter((name) => name === "TimeoutOverflowWarning"), []);
-	} finally {
-		process.off("warning", onWarning);
-		f.core.dispose();
-	}
+	const pending = f.core.execute(
+		{ op: "wait", condition: "text", text: "READY", timeoutMs: 20000, maxSnapshots: 2, target },
+		{ ...context, signal: caller.signal },
+	);
+	let settled = false;
+	void pending.then(() => { settled = true; });
+	t.after(async () => { caller.abort(); await pending; f.core.dispose(); });
+	await initial;
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	t.mock.timers.tick(250);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(captures, 2);
+	assert.deepEqual(delays.slice(afterLast), [], "the last allowed snapshot arms no refresh timer");
+	assert.equal(settled, false, "the wait holds for an event, cancellation or the deadline");
+	caller.abort();
+	assert.equal((await pending).outcome, "cancelled");
 });
 
 function operationTime(total = 1000, caller?: AbortSignal) {

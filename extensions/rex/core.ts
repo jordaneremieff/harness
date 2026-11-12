@@ -827,6 +827,8 @@ export class RexCore {
 		maxSnapshots: number,
 	): Promise<ConditionObservation> {
 		const deadline = context.budget?.workEndsAt ?? performance.now() + timeoutMs;
+		// The budget owns its clock; only a call without a budget reads the process clock.
+		const remainingMs = () => context.budget ? context.budget.remaining("work") : deadline - performance.now();
 		const observation: ConditionObservation = {
 			snapshot: undefined,
 			snapshots: 0,
@@ -844,12 +846,12 @@ export class RexCore {
 			context.budget?.check("observe");
 			observation.snapshots++;
 			observation.matched = !observer.failure && conditionMatches(request, observation.snapshot);
-			if (observation.matched || performance.now() >= deadline || observer.ended) break;
+			if (observation.matched || remainingMs() <= 0 || observer.ended) break;
 			const remaining = maxSnapshots - observation.snapshots;
 			// Early refreshes double from the minimum so quick readiness shows quickly; the even
 			// spread of the remaining snapshots caps them, so the last one reaches the deadline.
 			const refreshMs = request.condition === "text" && remaining > 0
-				? Math.max(TEXT_REFRESH_MIN_MS, Math.ceil(Math.min((deadline - performance.now()) / remaining, TEXT_REFRESH_MIN_MS * 2 ** Math.min(observation.snapshots - 1, 16))))
+				? Math.max(TEXT_REFRESH_MIN_MS, Math.ceil(Math.min(remainingMs() / remaining, TEXT_REFRESH_MIN_MS * 2 ** Math.min(observation.snapshots - 1, 16))))
 				: undefined;
 			await observer.wait(seen, context.signal, refreshMs);
 		}
@@ -1858,7 +1860,7 @@ function conditionOutcome(context: RexCallContext, observation: ConditionObserva
 	if (observation.matched) return "condition_observed";
 	if (context.budget?.stopReason()) return context.budget.stopReason() ?? "timeout";
 	if (context.signal?.aborted) return "cancelled";
-	if (performance.now() >= observation.deadline) return "timeout";
+	if (!context.budget && performance.now() >= observation.deadline) return "timeout";
 	if (observation.observerEnded) return "observer_ended";
 	return "snapshot_limit";
 }
