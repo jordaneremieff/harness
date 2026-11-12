@@ -496,7 +496,7 @@ Overrides and remaining members:
 | resolve-agent | resolve-agent/2.0.0 | resolve-agent/2.0.0 | absent |
 | receipts | receipts/1.1.0 | receipts/1.2.0 | D |
 | inspect | inspect/1.1.0 | H-inspect | D |
-| status | status/1.0.0 | H-status | D |
+| status | status/1.1.0 | H-status | D |
 | list | list/1.0.0 | H-list | absent |
 | fork | fork/1.0.0 | fork/1.0.0 | D |
 | rewind | rewind/1.1.0 | rewind/1.0.0 | D |
@@ -511,6 +511,7 @@ Overrides and remaining members:
 | snapshot | snapshot/1.0.0 | snapshot/2.0.0 | D |
 | observe-open | observe-open/1.0.0 | observe-open/2.0.0 | D |
 | observe-frame | observe-frame/1.0.0 | observe-frame/2.0.0 | D |
+| changes | changes/2.0.0 | changes/2.0.0 | absent |
 | profile-read | profile-read/1.0.0 | H-profile-read | absent |
 | profile-update | profile-update/1.0.0 | H-profile-update | absent |
 | profile-list | profile-list/1.0.0 | H-profile-list | absent |
@@ -521,7 +522,7 @@ Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema
 
 ```text
 H-inspect       671fa063aab1424eba635272c95977761450c735d34efd2def12a7de7689ff70
-H-status        a41cd066d24faf50cd6357c1e18c7e25b6071bebf92a2187193b04b8407d8c0c
+H-status        a00753e0770f9cf315e673140269e8ac0ad515a335d8aca765fd2319b71a3f24
 H-list          1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6
 H-dashboard     9708e679163a10e256a4854a0d6b5347f8533d28d35efb707647fda100032b04
 H-profile-read  396c6aa90325ba4f92e72f38538561c810d31eb6dde087341591b34af479400b
