@@ -43,6 +43,7 @@ import {
 import { dashboardPreferences } from "./dashboard-preferences.ts";
 import { readableControlText, projectReportReceipt } from "./control-result.ts";
 import { projectSelectedStatus, validateStatusDetail } from "./status-overview.ts";
+import { fitStorageStatusPage } from "./storage-page-fit.ts";
 import type { AgentContributionHost } from "./durable-agents.ts";
 import {
 	createResetTimerActions,
@@ -198,9 +199,14 @@ const configure = obj(
 	},
 	{},
 );
+/** Compact storage text preserves the projection's measured JSON byte bound. */
+function resultIndent(value: unknown): 2 | undefined {
+	const row = value as { view?: string; format?: string; conversations?: unknown } | null;
+	return row?.view === "fleet" || (row?.format === "compact" && Array.isArray(row.conversations)) ? undefined : 2;
+}
 const result = (value: unknown, schema?: Schema): AgentToolResult<unknown> => ({
 	...((value as { outcome?: string } | null)?.outcome === "failed" ? { isError: true } : {}),
-	content: [{ type: "text", text: (value as { view?: string } | null)?.view === "result" ? readableControlText(value) : typeof value === "string" ? value : JSON.stringify(value, null, (value as { view?: string } | null)?.view === "fleet" ? undefined : 2) }],
+	content: [{ type: "text", text: (value as { view?: string } | null)?.view === "result" ? readableControlText(value) : typeof value === "string" ? value : JSON.stringify(value, null, resultIndent(value)) }],
 	details: value,
 	structuredContent: schema ? structuredObservation(schema, value) : JSON.parse(JSON.stringify(value ?? null)),
 });
@@ -411,7 +417,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			validateStatusDetail(input);
 			const { detail: _detail, ...selectors } = input;
 			validateStatusSelectors(selectors);
-			if (input.view === "storage-page") return getManager().status(storageStatusPageInput(selectors));
+			if (input.view === "storage-page") {
+				const page = storageStatusPageInput(selectors);
+				const { projected } = await fitStorageStatusPage(page.limit, (limit) => getManager().status({ ...page, limit }));
+				return projected;
+			}
 			const sessionId = input.sessionId as string | undefined;
 			const view = input.view as "fleet" | undefined;
 			const selection = validateFleetSelection(input);

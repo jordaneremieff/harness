@@ -50,7 +50,7 @@ it("storage page selectors are closed and keep backend JSON cursors unchanged", 
 	assert.equal(coverage.next?.cursor, cursor);
 });
 
-for (const route of ["connected", "cold"] as const) it(`ordinary and native status registrations continue the same ${route} storage scan`, { timeout: 60000 }, async (t) => {
+for (const route of ["connected", "cold"] as const) it(`ordinary and native status registrations preserve ${route} storage cursor coverage`, { timeout: 60000 }, async (t) => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "storage-status-")));
 	const saved = new Map(["PI_AGENT_SESSIONS_DIR", "PI_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]]));
 	process.env.PI_AGENT_SESSIONS_DIR = root;
@@ -104,23 +104,48 @@ for (const route of ["connected", "cold"] as const) it(`ordinary and native stat
 	assert.equal(matchesSchema(list.parameters, { cursor: { order: "ascending" } }), false);
 	assert.equal(matchesSchema(list.parameters, { cursor: "discovery-cursor" }), true);
 	const toolContext = { cwd: root, sessionManager: SessionManager.create(root, join(root, "sessions")) } as unknown as ExtensionToolContext;
+	const scans: Array<{ input: StorageStatusPageInput; coverage: unknown }> = [];
+	const status = manager.status.bind(manager);
+	t.mock.method(manager, "status", async (...args: Parameters<AgentManager["status"]>) => {
+		const result = await status(...args);
+		if (typeof args[0] === "object") scans.push({ input: args[0], coverage: (result as { coverage?: unknown }).coverage });
+		return result;
+	});
 	const ordinaryRead = async (input: StorageStatusPageInput) => {
 		assert.equal(matchesSchema(ordinary.parameters, input), true);
+		const before = scans.length;
 		const result = await ordinary.execute("storage-status", input, new AbortController().signal, undefined, toolContext);
-		return page(result.details);
+		const text = result.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("");
+		assert.ok(Buffer.byteLength(text, "utf8") <= 16_384);
+		assert.ok(Buffer.byteLength(JSON.stringify(result.structuredContent), "utf8") <= 16_384);
+		assert.deepEqual(JSON.parse(text), result.structuredContent);
+		assert.deepEqual(result.structuredContent, result.details);
+		assert.equal((result.structuredContent as { format: string }).format, "compact");
+		const returned = page(result.structuredContent), attempts = scans.slice(before);
+		assert.ok(attempts.length >= 1 && attempts.length <= 7);
+		assert.equal(attempts[0].input.limit, input.limit ?? 50);
+		for (const [index, scan] of attempts.entries()) {
+			assert.equal(scan.input.cursor, input.cursor);
+			if (index > 0) assert.equal(scan.input.limit, Math.ceil(Number(attempts[index - 1].input.limit) / 2));
+		}
+		assert.deepEqual(returned.coverage, attempts.at(-1)?.coverage);
+		return returned;
 	};
 	const first = await ordinaryRead({ view: "storage-page", storageId: record.storageId });
-	assert.equal(first.conversations.length, 50);
-	assert.equal(first.coverage.scanned, 50);
 	assert.equal(first.coverage.complete, false);
 	assert.ok(first.coverage.next);
 	const { tool: nextTool, ...nextInput } = first.coverage.next;
 	assert.equal(nextTool, "agent_status");
-	const last = await ordinaryRead(nextInput);
-	assert.equal(last.conversations.length, 1);
-	assert.equal(last.coverage.complete, true);
-	assert.equal(last.coverage.next, null);
-	assert.equal(new Set([...first.conversations, ...last.conversations].map((item) => item.identity)).size, 51);
+	const ordinaryPages = [first];
+	for (let index = 1; index < 51 && ordinaryPages.at(-1)?.coverage.next; index++) {
+		const next = ordinaryPages.at(-1)?.coverage.next; assert.ok(next);
+		const { tool, ...input } = next;
+		assert.equal(tool, "agent_status"); ordinaryPages.push(await ordinaryRead(input));
+	}
+	assert.equal(ordinaryPages.at(-1)?.coverage.next, null);
+	const ordinaryIdentities = ordinaryPages.flatMap((result) => result.conversations.map((item) => item.identity));
+	assert.equal(ordinaryIdentities.length, 51);
+	assert.deepEqual(new Set(ordinaryIdentities), expectedIdentities);
 	await assert.rejects(ordinaryRead({ view: "storage-page", storageId: record.storageId, cursor: { invalid: true } }));
 	await assert.rejects(ordinary.execute("mixed-status", { view: "storage-page", storageId: record.storageId, sessionId: record.storageId }, new AbortController().signal, undefined, toolContext), /does not accept sessionId/u);
 
