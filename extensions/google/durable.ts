@@ -3,6 +3,7 @@ import { calendarTools } from "./calendar.ts";
 import { driveTools } from "./drive.ts";
 import { gmailTools } from "./gmail.ts";
 import { GoogleRuntime } from "./gws.ts";
+import { RESULT_MAX_BYTES } from "./result.ts";
 import { publishSettings, type SettingsBus } from "./settings.ts";
 import { sheetsTools } from "./sheets.ts";
 import { guidance, invoke } from "./tools.ts";
@@ -32,6 +33,9 @@ export function googleContribution(source: string, bus: SettingsBus, stopFactory
 						parameters: tool.parameters,
 						replay: tool.replay,
 						deferred: true,
+						// The result is one line within this byte cap, so the host's output bound
+						// never cuts a tool envelope.
+						outputLimits: { maxBytes: RESULT_MAX_BYTES, maxLines: 2000, retain: "head" },
 						execute: async (args, _api, context) => {
 							const result = await invoke(tool, args, runtime, context.abortSignal);
 							return { output: result.content, details: result.details, ...(result.isError ? { isError: true } : {}) };

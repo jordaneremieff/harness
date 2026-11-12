@@ -123,7 +123,9 @@ export function external<T extends Record<string, unknown>>(
 export function toolResult(
 	result: Result<unknown>,
 ): AgentToolResult<{ schemaVersion: 1; status: Result<unknown>["status"] }> {
-	let text = JSON.stringify(result, null, 2);
+	// Compact JSON keeps the envelope on one line, so a consumer that bounds output by
+	// line count can never split it mid-structure.
+	let text = JSON.stringify(result);
 	if (Buffer.byteLength(text) > RESULT_MAX_BYTES) {
 		text = JSON.stringify(
 			failure(
@@ -133,8 +135,6 @@ export function toolResult(
 					true,
 				),
 			),
-			null,
-			2,
 		);
 	}
 	return {
