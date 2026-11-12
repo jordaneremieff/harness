@@ -94,11 +94,10 @@ for settled failures.
 
 ```js
 const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
-const overview = asObject(await tools.agent_status({}));
-// Created agents appear only in a native session's status; an ordinary primary
-// relies on the result references that the dispatch recipes stored.
-const owned = (overview.createdAgents?.agents ?? []).map((a) => a.identity);
-const ids = [...new Set([...owned, ...(load("refs") ?? []).map((r) => r.sessionId)])];
+// No status read lists the agents that a session created: the compact native
+// read omits created-agent detail. The sweep uses the result references that
+// the dispatch recipes stored.
+const ids = [...new Set((load("refs") ?? []).map((r) => r.sessionId))];
 
 const agents = await Promise.all(ids.map(async (sessionId) => {
   try {

@@ -2926,6 +2926,14 @@ and marks each matching request as delivered, also for a replayed body. A
 request whose answer routes to another identity never closes in the sender's
 record.
 
+A scheduled input stays in the note until its result is delivered or its timer
+is cancelled before it fires. A cancellation closes the request only when the
+host's receipt has the status `cancelled` and names the conversation that the
+host resolved. The record closes the scheduled request with that exact identity
+and timer ID. A receipt without an identity closes nothing, and a receipt with
+the status `fired` closes nothing, so the request stays listed until its result
+arrives.
+
 The host loads the retained facts before it schedules work. A host with
 malformed retained facts does not open and sends no provider request. If the
 stored head message does not match the request, the host adds no note and
@@ -3518,8 +3526,11 @@ use 2.0.0 for creation without parent inheritance and receipts with preset names
 and selection origins. Configure requests and responses use 1.3.0 for explicit
 provider-block recovery alongside machine preference snapshots and selection
 receipts; target retention remains unchanged. Task-submit responses use 1.2.0
-for recovery links. Submit requests use 1.4.0 and submit responses use 1.2.0;
-the response names the retained recipient. Report requests use 2.0.0 and report
+for recovery links. Submit requests use 1.5.0 for the delivered result
+references of a result follow-up, and submit responses use 1.2.0; the response
+names the retained recipient. Timer-cancel responses use 1.1.0 for the resolved
+conversation identity; the request identity remains at 1.0.0. Report requests
+use 2.0.0 and report
 responses use 1.1.0 for passive reports and exact producer associations.
 Passive-submit requests use 2.0.0. Receipts requests and responses use 2.0.0
 for recipient-scoped reference pages. Inspect requests use 1.2.0 for
@@ -3528,7 +3539,8 @@ for recipient-scoped reference pages. Inspect requests use 1.2.0 for
 `native-controls/3.0.0` binds the native tool inputs and dispatch behavior to
 the loaded Durable release. `primary-delivery/4.0.0` requires verified retained
 primary acceptance and carries retry notices, blocked causes, receipt
-associations and exact continuations.
+associations and exact continuations. Delivered result references travel inside
+the unchanged notice details, so they do not change this identity.
 Older primary endpoints refuse delivery until their Pi process restarts. The
 retained manager contract also changes because its primary callback carries the
 transport source identity. Host operation identities are checked independently.

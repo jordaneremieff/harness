@@ -76,7 +76,7 @@ answers win over this table.
 
 | Moment | Control | Decision | Pitfall | Anchor |
 |---|---|---|---|---|
-| What runs now | `agent_status` without target | Shows efforts, claims, and, inside an agent, a Created agents section | Created agents is a creation record, not a live task roster | `#agent-collaboration-and-placement` |
+| What runs now | `agent_status` without target | An ordinary primary sees efforts and claims; inside an agent it returns compact rows for the conversations of its storage | The compact native read omits host inventory, effort awareness, and created-agent detail; keep the identities and result references that dispatch returned | `#agent-collaboration-and-placement` |
 | One agent's state | `agent_status` with `sessionId` | Busy state, current tools, open submissions, pending timers | Settled failures appear in `agent_inspect` results, not here | `#controls` |
 | Recent provider failures | `agent_status` `view: "fleet"` | Sampled machine-local evidence | Partial lower bounds; missing evidence is unknown, not zero | `#controls` |
 | Find stored agents | `agent_list` | Paged catalog with query | Repeat the same query with the cursor | `#controls` |
