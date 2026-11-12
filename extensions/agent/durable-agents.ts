@@ -80,10 +80,6 @@ import {
 export type AgentControlMethod =
 	| "profile-read" | "profile-update" | "profile-list" | "resolve-agent" | "task-submit" | "report"
 	| "submit"
-	| "await-native"
-	| "observe-producer-await"
-	| "await-state"
-	| "await-release"
 	| "spawn"
 	| "place"
 	| "inspect"

@@ -8,7 +8,6 @@ import * as Durable from "@earendil-works/pi-durable";
 import { obj } from "@earendil-works/pi-schema";
 import { createAgentContribution } from "./durable-agents.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
-import { waitForReceipts } from "./durable-controls.ts";
 import { AgentCatalog } from "./catalog.ts";
 import type { FleetStatus } from "./fleet-status.ts";
 import { matchesSchema } from "./schema-check.ts";
@@ -139,20 +138,4 @@ it("places a display-only write during a busy tool without changing model contex
 		assert.deepEqual((await root.context(context)).messages, before.messages);
 	} finally { release.resolve(); }
 	assert.equal((await busy.wait(context)).status, "done");
-});
-
-it("rejects a pending receipt wait with SessionFailed after a fatal storage read", { timeout: 10000 }, async (t) => {
-	const cause = new Error("synthetic storage read failure");
-	const storage = new Durable.MemoryStorage();
-	const harness = await Durable.Harness.open(storage, { models: await scriptedRuntime([]), registry: Durable.createRegistry() }, context);
-	t.after(() => harness.close(context));
-	await harness.root(context);
-	const pending = waitForReceipts(harness, "unserved-owner", context);
-	const failed = (error: unknown) => error instanceof Durable.SessionFailed && error.cause === cause;
-	const rejected = assert.rejects(pending, failed);
-	storage.conversation = async () => { throw cause; };
-	await assert.rejects(harness.conversation(999 as Durable.ConversationId, context), (error) => error === cause);
-	await rejected;
-	assert.deepEqual(await harness.closed, { kind: "failed", error: cause });
-	await assert.rejects(harness.root(context), failed);
 });

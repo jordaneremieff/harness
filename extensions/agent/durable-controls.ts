@@ -42,7 +42,6 @@ import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel 
 import {
 	AssistantEntry,
 	CompactionEntry,
-	SessionFailed,
 	defineDoc,
 	defineDocFamily,
 	type AgentChange,
@@ -1301,71 +1300,4 @@ export async function reconcileDeliveries(harness: Harness, context: Context): P
 		}, context);
 	}
 	await settleDeliveries(harness, context);
-}
-
-function abortWatch(signals: readonly AbortSignal[], reason: (signal: AbortSignal | undefined) => Error): { readonly promise: Promise<never>; readonly dispose: () => void } {
-	const listeners: { signal: AbortSignal; listener: () => void }[] = [];
-	const promise = new Promise<never>((_, reject) => {
-		for (const signal of signals) {
-			const listener = () => reject(reason(signals.find((candidate) => candidate.aborted)));
-			listeners.push({ signal, listener });
-			if (signal.aborted) {
-				listener();
-				break;
-			}
-			signal.addEventListener("abort", listener, { once: true });
-		}
-	});
-	return { promise, dispose: () => { for (const { signal, listener } of listeners) signal.removeEventListener("abort", listener); } };
-}
-
-/** First cancellation reason among the signals, if any. */
-function cancellationReason(signals: readonly AbortSignal[]): Error | undefined {
-	const aborted = signals.find((signal) => signal.aborted);
-	if (aborted === undefined) return undefined;
-	return aborted.reason instanceof Error ? aborted.reason : new Error("request cancelled while waiting for receipts");
-}
-
-/**
- * Resolve when this owner has at least one unacknowledged receipt or report.
- * The wait is event-based on committed publications; it never polls and never
- * sleeps. A cancelled request or a closing host rejects with that signal's
- * reason, never with a later storage error from the same shutdown.
- */
-export async function waitForReceipts(
-	harness: Harness,
-	ownerId: string,
-	context: Context,
-	closeSignal?: AbortSignal,
-): Promise<OwnerDeliveries> {
-	for (;;) {
-		let wake!: () => void;
-		const woke = new Promise<void>((resolve) => {
-			wake = resolve;
-		});
-		const observation = harness.observeCommits({ advance: () => { queueMicrotask(wake); }, end: () => {} });
-		let end!: (error: Error) => void;
-		const ended = new Promise<never>((_resolve, reject) => { end = reject; });
-		const unsubscribeClose = harness.subscribeClose(() => {
-			void harness.closed.then((result) => end(result.kind === "failed" ? new SessionFailed(result.error) : new Error("Session closed while waiting for receipts")));
-		});
-		void ended.catch(() => {});
-		const signals = [context.abortSignal, closeSignal].filter((signal): signal is AbortSignal => signal !== undefined);
-		const abort = abortWatch(signals, () => cancellationReason(signals) ?? new Error("request cancelled while waiting for receipts"));
-		// The race attaches later, after the read below; keep an early rejection handled.
-		void abort.promise.catch(() => {});
-		try {
-			const deliveries = await undeliveredForOwner(harness, ownerId, context);
-			if (deliveries.receipts.length > 0 || deliveries.reports.length > 0) return deliveries;
-			await Promise.race([woke, abort.promise, ended]);
-		} catch (error) {
-			const cancelled = cancellationReason(signals);
-			if (cancelled !== undefined) throw cancelled;
-			throw error;
-		} finally {
-			observation.detach();
-			unsubscribeClose();
-			abort.dispose();
-		}
-	}
 }

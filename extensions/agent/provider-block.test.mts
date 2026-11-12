@@ -18,7 +18,7 @@ import { ProviderRetryNoticeSchema, providerNoticeRequestId, retainProviderRetry
 import { submitConversation, providerRetryReportSettled } from "./durable-controls.ts";
 import { RequestContextDoc } from "./request-context.ts";
 import { LiveDoc } from "@earendil-works/pi-durable";
-import { producerRetryFact } from "./await-observation.ts";
+import { producerRetryFact } from "./await-facts.ts";
 
 it("classifies account exhaustion across providers without treating throttle or context rejection as exhaustion", () => {
 	for (const error of ["429 Weekly/Monthly Limit Exhausted", "usage limit reached", "insufficient_quota", "insufficient balance", "credit balance depleted", "billing_hard_limit_reached", "billing limit exhausted", "GoUsageLimitError", "FreeUsageLimitError", "subscription_sharing_usage_limit_exceeded", '{"error":{"code":"1308","message":"weekly usage limit reached"}}', '{"error":{"code":"1310","message":"insufficient balance"}}']) assert.equal(isProviderExhaustion(error), true, error);

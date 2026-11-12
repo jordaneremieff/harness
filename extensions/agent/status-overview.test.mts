@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { AgentPriorityPage, AgentPrioritySummary } from "./dashboard-types.ts";
-import type { AwaitFact } from "./await-facts.ts";
 import { coverage as rosterCoverage } from "./dashboard-test-fixture.mts";
 
-const awaiting: AwaitFact = {
+const awaiting = {
 	runId: 1, heldInputs: [2], results: [{ result: { sessionId: "producer:3", submissionId: 4, requestId: "exact-request" }, status: "pending" }],
 	queuedInputCount: 1, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 0, results: 0 },
 	producers: [{ sessionId: "producer:3", observedAt: 1, source: "producer await-state", unavailable: "Source connection closed" }],
