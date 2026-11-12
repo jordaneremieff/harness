@@ -107,8 +107,10 @@ and a thread notice are events: read them and continue. Send a busy agent a
 
 A terminal answer from a contributor carries the result or the exact blocker.
 One case differs: a run that ends while work the contributor sent is open.
-The contributor declares that work with `agent_work` `continue` and ends the
-run with a state note. Its first words say that it is a state note and not the
+The contributor does its ready independent work first, declares the open work
+with `agent_work` `continue`, and ends the run with a state note. An empty
+`results` is valid: it records a blocked or deferred task that depends on no
+producer, and no later run starts by itself for it. Its first words say that it is a state note and not the
 result; it names the open work and what the contributor does when each result
 arrives. A state note is not a result. `agent_work` `complete`, with `status`
 `done` or `failed` and the result or exact blocker as `message`, sends the

@@ -41,10 +41,11 @@ answers win over this table.
 
 | Moment | Control | Decision | Pitfall | Anchor |
 |---|---|---|---|---|
-| Work is sent and other work remains for you | none | Do your own part; each result, report, or message arrives as an event | No call waits for a result; do not poll status or inspect in a loop | `#recovery-and-delivery` |
+| Work is sent and other work remains for you | none | Do your own part, ready independent work included, before the run ends; each result, report, or message arrives as an event | No call waits for a result; do not poll status or inspect in a loop | `#recovery-and-delivery` |
 | Work is sent and nothing remains for you | `agent_work` `continue`, then a state note | Declare the request, the exact result references (at most 16), and a note; end the run with a short state note; an arriving result starts your next run | The declaration is not the answer; do not hold the run open for agent output | `#recovery-and-delivery` |
+| A routed task stays blocked or deferred and depends on no producer | `agent_work` `continue` with an empty `results` | Records open work without a dependency; it stays in the status until `complete` | No later run starts by itself for it; an empty `results` withdraws nothing | `#recovery-and-delivery` |
 | Declared work is done or failed | `agent_work` `complete` with `status` and `message` | Sends the final report to the reply recipient of the original request | It is the only act that completes declared work; arrived results and a settled input do not | `#recovery-and-delivery` |
-| A command can take more than about two minutes | a background job (`bash` with `background`) | Its completion arrives as an event; an input reaches you at your next tool boundary | A chain of long foreground calls keeps every sender out for its whole length | `#controls` |
+| A command can take more than about two minutes | a background job (`bash` with `background`) | Its completion arrives as an event; an input reaches you at the end of your current tool round, and nothing is placed between two parallel calls of one round | A chain of long foreground calls keeps every sender out for its whole length | `#controls` |
 | A contributor ends a run with a state note | `agent_status` with `sessionId` | The note means open work, not completion; read each open item and its dependencies there | Do not poll; the final report arrives when the contributor completes the work | `#controls` |
 | A long answer is cut | `agent_inspect` `view: "result"` with the `submissionId` | Read the complete answer from the retained result | A truncated answer is not a failed one | `#live-conversation-and-history` |
 

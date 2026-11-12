@@ -47,6 +47,8 @@ it as open work, not as completion:
   names the request and the status, `done` or `failed`. Act on that.
 - Declared work that never completes stays visible in the status. Steer the
   agent to complete it or to name the blocker.
+- A record without a dependency gets no later run by itself. Send the agent
+  the input that it needs; only `agent_work` `complete` closes the item.
 - An answer that is neither a result nor a marked state note falls under "The
   displaced-answer pitfall".
 
@@ -65,7 +67,7 @@ submissions. Common causes:
   next tool boundary; the agent finishes its current step first.
 - **Unplaced input:** the send receipt returns `placement: "unplaced"`, or
   the status shows `unplaced: n` and `oldest: <age>`. No boundary exists
-  inside one running tool call, a provider retry, or a compaction. After 5
+  inside one running tool round, a provider retry, or a compaction. After 5
   minutes one notice names the recipient's current step. Abort a hung tool;
   otherwise let the step end. Do not send the input again.
 

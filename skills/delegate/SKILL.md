@@ -252,14 +252,20 @@ Results, reports, and check-ins arrive as events. Do not hold a run open for
 agent output. No call waits for a result; do not poll status, sleep, or repeat
 inspections as a wait. After you send work:
 
-- **Do the work that remains for you.** When none remains, declare the open
-  work with `agent_work` `continue`: the request, the exact result references,
-  and a note. Then end the run with a short state note: what is open, and what
-  you do when each result arrives. A result, a report, or a message starts
-  your next run.
+- **Do the work that remains for you.** Do ready independent work before the
+  run ends. When none remains, declare the open work with `agent_work`
+  `continue`: the request, the exact result references, and a note. A task
+  that stays blocked or deferred and depends on no producer takes an empty
+  `results`: that records open work and withdraws nothing. Then end the run
+  with a short state note: what is open, and what you do when each result
+  arrives. A result, a report, or a message starts your next run. A record
+  without a dependency gets no later run by itself; it stays open in the
+  status until `agent_work` `complete`, which alone closes an item.
 - **Stay reachable.** An input reaches a running agent at its next tool
-  boundary, the end of its current round of tool calls. The reach of the
-  operator and of every other agent is therefore one tool call of yours. Run a
+  boundary, the end of its current round of tool calls. With parallel calls
+  nothing is placed between two tool completions of one round. The reach of
+  the operator and of every other agent is therefore one tool round of yours.
+  Run a
   command that can take more than about two minutes as a background job
   (`bash` with `background`); its completion arrives as an event. Do not chain
   long foreground calls.
