@@ -57,10 +57,11 @@ describe("compact observation cards", () => {
 		const result = { content: [{ type: "text" as const, text: controlText(details) }], details };
 		const output = screen(cards.agent_status.renderResult(result, { expanded: false, isPartial: false }, theme, context()));
 		assert.match(output, /Activity: working · source retained · 1 queued inputs · 0 timers/u);
-		assert.ok(output.includes(`agent_status(${JSON.stringify({ sessionId: id, detail: true })})`));
+		const expanded = screen(cards.agent_status.renderResult(result, { expanded: true, isPartial: false }, theme, context({ expanded: true })));
+		assert.ok(expanded.includes(`agent_status(${JSON.stringify({ sessionId: id, detail: true })})`));
 		const primary = projectSelectedStatus({ kind: "ordinary-primary", sessionId: "primary", presence: {} });
 		const unknown = screen(cards.agent_status.renderResult({ content: [], details: primary }, { expanded: false, isPartial: false }, theme, context()));
-		assert.match(unknown, /Activity: unknown/u);
+		assert.doesNotMatch(unknown, /unknown|unavailable/u);
 		assert.doesNotMatch(unknown, /Activity: idle/u);
 	});
 
@@ -148,7 +149,8 @@ describe("compact observation cards", () => {
 			const output = screen(card.renderResult(result, { expanded, isPartial: false }, theme, context({ expanded })));
 			assert.match(output, /Acknowledged/u);
 			assert.doesNotMatch(output, /Secret report body/u);
-			assert.match(output, /does not establish model consumption/u);
+			if (expanded) assert.match(output, /does not establish model\s+consumption/u);
+			else assert.doesNotMatch(output, /consumed|accepted|model consumption/u);
 		}
 	});
 

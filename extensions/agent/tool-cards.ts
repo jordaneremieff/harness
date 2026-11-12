@@ -837,6 +837,15 @@ function unplacedText(status: Record<string, unknown>): string {
 	return `unplaced: ${unplaced}, oldest: ${age}`;
 }
 
+function openWorkText(status: Record<string, unknown>): string {
+	const open = count(status.openWorkCount), oldest = count(status.openWorkOldest);
+	if (open === undefined) return "";
+	if (open === 0 || oldest === undefined) return `work open: ${open}`;
+	const seconds = Math.floor(oldest / 1000), minutes = Math.floor(seconds / 60);
+	const age = seconds < 60 ? `${seconds}s` : minutes < 60 ? `${minutes}m ${seconds % 60}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+	return `work open: ${open}, oldest: ${age}`;
+}
+
 function snapshotLabel(identity: string, name: string, context: AgentCardContext): string {
 	return name ? displayPreview(name, 120) : targetLabel(identity, context);
 }
@@ -882,19 +891,26 @@ function compactRecoveryLines(status: Record<string, unknown>, details: Record<s
 	return lines;
 }
 
+function compactActivityFacts(status: Record<string, unknown>): string[] {
+	const queue = record(status.queue);
+	return [status.busy === true ? "working" : status.busy === false ? "idle" : "",
+		text(status.availability) && status.availability !== "unknown" ? `source ${text(status.availability)}` : "",
+		count(status.unplaced) === undefined && count(queue.inbox) !== undefined ? `${queue.inbox} queued inputs` : "",
+		count(status.timers) === undefined ? "" : `${status.timers} timers`, unplacedText(status), openWorkText(status)].filter(Boolean);
+}
+
 function compactStatusLines(status: Record<string, unknown>, details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
-	const model = record(status.model), queue = record(status.queue);
-	const lines = [theme.fg("accent", snapshotLabel(text(status.identity), text(status.name), context))];
-	const configuration = resolvedModelLine(text(model.provider), text(model.modelId), text(status.thinkingLevel));
-	if (configuration) lines.push(muted(theme, configuration));
-	lines.push(muted(theme, `Activity: ${status.busy === true ? "working" : status.busy === false ? "idle" : "unknown"} · source ${text(status.availability) || "unknown"} · ${queue.inbox === null ? "unknown" : String(queue.inbox)} queued inputs · ${status.timers === null ? "unknown" : String(status.timers)} timers${unplacedText(status) ? ` · ${unplacedText(status)}` : ""}`));
+	const model = record(status.model);
+	const lines = snapshotIdentityLines({ ...status, agent: { model, thinkingLevel: status.thinkingLevel } }, theme, context, false);
+	const activity = compactActivityFacts(status);
+	if (activity.length) lines.push(theme.fg("toolOutput", `Activity: ${activity.join(" · ")}`));
 	lines.push(...compactRecoveryLines(status, details, theme));
 	const block = record(status.providerBlock);
 	if (text(block.blockId)) lines.push(theme.fg("warning", `Provider block ${text(block.blockId)} · ${text(block.recovery)}`));
-	if (array(status.omitted).length) lines.push(muted(theme, `Omitted: ${array(status.omitted).join(", ")}`));
-	if (array(details.omitted).length) lines.push(muted(theme, `Omitted envelope fields: ${array(details.omitted).join(", ")}`));
+	if (context.expanded && array(status.omitted).length) lines.push(muted(theme, `Omitted: ${array(status.omitted).join(", ")}`));
+	if (context.expanded && array(details.omitted).length) lines.push(muted(theme, `Omitted envelope fields: ${array(details.omitted).join(", ")}`));
 	const detail = record(status.detail);
-	if (detail.tool === "agent_status" && typeof detail.sessionId === "string") lines.push(muted(theme, `Full detail: agent_status(${JSON.stringify({ sessionId: detail.sessionId, detail: true })})`));
+	if (context.expanded && detail.tool === "agent_status" && typeof detail.sessionId === "string") lines.push(muted(theme, `Full detail: agent_status(${JSON.stringify({ sessionId: detail.sessionId, detail: true })})`));
 	return lines;
 }
 
@@ -945,25 +961,22 @@ function primaryMessageLines(details: Record<string, unknown>, theme: Theme, con
 	if (details.admitted !== true || !text(details.sessionId)) return undefined;
 	const kind = record(context.args).mode === "report" ? "Report" : "Message";
 	if (receiptPlacement(details) === "withdrawn") return [theme.fg("toolOutput", `${kind} withdrawn for ${targetLabel(text(details.sessionId), context)}`), muted(theme, WITHDRAWN_INPUT_LINE)];
-	return [theme.fg("toolOutput", `${kind} ${kind === "Report" ? "queued for" : "delivered to"} ${targetLabel(text(details.sessionId), context)}`),
-		...(kind === "Report" && text(details.boundary) ? [muted(theme, text(details.boundary))] : [])];
+	return [theme.fg("toolOutput", `${kind} ${kind === "Report" ? "queued for" : "delivered to"} ${targetLabel(text(details.sessionId), context)}`)];
 }
 
 function reportPlacementLines(details: Record<string, unknown>, theme: Theme): string[] {
 	const placement = receiptPlacement(details);
 	if (placement === "withdrawn") return [muted(theme, WITHDRAWN_INPUT_LINE)];
 	// A parked or terminal delivery does not reach the recipient's next tool boundary.
-	if (details.delivery === "parked" || details.delivery === "terminal") return [theme.fg("warning", `Delivery ${details.delivery}; the report is not placed`)];
+	if (details.delivery === "parked" || details.delivery === "terminal") return [theme.fg(details.delivery === "terminal" ? "warning" : "muted", `Delivery ${details.delivery}; the report is not placed`)];
 	return placement === "unplaced" ? [muted(theme, UNPLACED_INPUT_LINE)] : [];
 }
 
 function reportReceiptLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	if (!text(details.sourceId) || typeof details.acknowledged !== "boolean") return undefined;
 	const placement = receiptPlacement(details);
-	return [theme.fg("toolOutput", `Report retained${text(details.ownerId) ? targetSuffix(text(details.ownerId), context) : ""}`),
-		muted(theme, `${details.acknowledged ? "Acknowledged" : "Acknowledgement pending"}${details.passive === true ? " · passive" : ""}${placement === undefined ? "" : ` · ${placement}`}`),
-		...reportPlacementLines(details, theme),
-		muted(theme, text(details.boundary) || "Retention or acknowledgement does not establish model consumption or task acceptance.")];
+	return [theme.fg("toolOutput", `Report retained${text(details.ownerId) ? targetSuffix(text(details.ownerId), context) : ""} · ${details.acknowledged ? "Acknowledged" : "Acknowledgement pending"}${details.passive === true ? " · passive" : ""}${placement === undefined ? "" : ` · ${placement}`}`),
+		...reportPlacementLines(details, theme)];
 }
 
 function messageResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext, labels: { error: string; partial: string; receipt: string }): Component {
