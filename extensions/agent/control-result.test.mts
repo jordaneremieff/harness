@@ -81,6 +81,8 @@ it("keeps a stated placement on report receipts, omits any other value and marks
 	for (const placement of [undefined, "placed", "unplaced"])
 		assert.deepEqual(projectReportReceipt({ ...retained, acknowledged: false, placement }), { ...retained, acknowledged: false, placement: "unplaced", delivery: "pending", boundary: REPORT_RECEIPT_BOUNDARY });
 	assert.deepEqual(projectReportReceipt({ ...retained, acknowledged: false, delivery: "admitted" }), { ...retained, acknowledged: false, delivery: "admitted", boundary: REPORT_RECEIPT_BOUNDARY });
+	for (const delivery of ["parked", "terminal"])
+		assert.deepEqual(projectReportReceipt({ ...retained, acknowledged: false, delivery, placement: "unplaced" }), { ...retained, acknowledged: false, delivery, placement: "unplaced", boundary: REPORT_RECEIPT_BOUNDARY });
 	assert.deepEqual(projectReportReceipt({ ...retained, delivery: "admitted" }), { ...retained, delivery: "admitted", boundary: REPORT_RECEIPT_BOUNDARY });
 });
 

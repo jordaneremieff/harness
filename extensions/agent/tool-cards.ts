@@ -949,9 +949,11 @@ function primaryMessageLines(details: Record<string, unknown>, theme: Theme, con
 function reportReceiptLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	if (!text(details.sourceId) || typeof details.acknowledged !== "boolean") return undefined;
 	const placement = receiptPlacement(details);
+	// A parked or terminal delivery does not reach the recipient's next tool boundary.
+	const stopped = details.delivery === "parked" || details.delivery === "terminal" ? details.delivery : undefined;
 	return [theme.fg("toolOutput", `Report retained${text(details.ownerId) ? targetSuffix(text(details.ownerId), context) : ""}`),
 		muted(theme, `${details.acknowledged ? "Acknowledged" : "Acknowledgement pending"}${details.passive === true ? " · passive" : ""}${placement === undefined ? "" : ` · ${placement}`}`),
-		...(placement === "unplaced" ? [muted(theme, UNPLACED_INPUT_LINE)] : []),
+		...(stopped !== undefined ? [theme.fg("warning", `Delivery ${stopped}; the report is not placed`)] : placement === "unplaced" ? [muted(theme, UNPLACED_INPUT_LINE)] : []),
 		muted(theme, text(details.boundary) || "Retention or acknowledgement does not establish model consumption or task acceptance.")];
 }
 

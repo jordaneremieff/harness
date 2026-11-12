@@ -53,6 +53,8 @@ const REPORT_RECEIPT_KEYS = [
 ] as const;
 /** Whether the input is in the recipient's context; an unplaced input enters it at the recipient's next tool boundary. */
 const REPORT_PLACEMENTS: readonly unknown[] = ["placed", "unplaced"];
+/** The state of the retained row at its recipient; only an admitted row can be placed. */
+const REPORT_DELIVERIES: readonly unknown[] = ["pending", "parked", "terminal", "admitted"];
 
 /** Only successful report sender replies pass through this projection; the recipient body stays intact. */
 export function projectReportReceipt(value: unknown): unknown {
@@ -66,7 +68,7 @@ export function projectReportReceipt(value: unknown): unknown {
 	const result: Record<string, unknown> = {};
 	for (const key of REPORT_RECEIPT_KEYS) if (Object.hasOwn(source, key)) result[key] = structuredClone(source[key]);
 	if (REPORT_PLACEMENTS.includes(source.placement)) result.placement = source.placement;
-	if (source.delivery === "pending" || source.delivery === "admitted") result.delivery = source.delivery;
+	if (REPORT_DELIVERIES.includes(source.delivery)) result.delivery = source.delivery;
 	if (retained) {
 		result.boundary = REPORT_RECEIPT_BOUNDARY;
 		// Without a stated delivery, an unacknowledged retained report is not delivered, so it cannot be in the recipient's context.

@@ -323,6 +323,9 @@ describe("agent result cards", () => {
 		const retained = screen(renderSendResult(result({ sourceId: "report:one", ownerId: "storage-a", acknowledged: false, placement: "unplaced" }), options, theme, context({ args: { mode: "report" } })), 180);
 		assert.match(retained, /Acknowledgement pending · unplaced/u);
 		assert.match(retained, line);
+		const parked = screen(renderSendResult(result({ sourceId: "report:one", ownerId: "storage-a", acknowledged: false, placement: "unplaced", delivery: "parked" }), options, theme, context({ args: { mode: "report" } })), 180);
+		assert.match(parked, /Delivery parked; the report is not placed/u);
+		assert.doesNotMatch(parked, line);
 	});
 
 	it("shows a declared work item with its dependencies and a closed item with its final report row", () => {
