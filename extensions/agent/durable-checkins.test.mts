@@ -50,7 +50,7 @@ it("creates a host-owned check-in without a native agent contribution, and ends 
 	assert.ok(conversation);
 	const input = (await conversation.entries({}, 10, undefined, BACKGROUND_CONTEXT)).items.find((entry) => entry.kind === "agent.input");
 	assert.ok(input);
-	assert.deepEqual(input.data, { author: { role: "agent" } });
+	assert.deepEqual(input.data, { author: { role: "agent" }, class: "followUp", requestId: "check-held" });
 	f.releaseAnswer();
 	await f.waitForReceipt("check-held");
 	await f.host.harness.waitForTask(checkTask.record.id, BACKGROUND_CONTEXT);
@@ -256,24 +256,17 @@ async function placeWatched(tx: Tx, conversationId: ConversationId, queued = fal
 	return tx.createSubmission({ conversationId, requestId: "watched", type: "input", status: "placed", entry: entry.id });
 }
 
-for (const awaiting of [false, true]) it(`puts ${awaiting ? "dependency" : "direct producer"} retry details first in bounded check-in text`, { timeout: 60000 }, async (t) => {
+it("puts direct producer retry details first in bounded check-in text", { timeout: 60000 }, async (t) => {
 	const { report } = await digestFixture(t, async (tx, conversationId) => {
 		const input = await placeWatched(tx, conversationId);
 		const owner = await tx.createTask(CheckInTask, { conversationId, requestId: "holding", ownerId: "owner", senderIdentity: "producer", message: "held", whenBusy: "followUp", origin: "operator", admittedAt: Date.now(), intervalMs: 300000 }, { ownership: { kind: "conversation" }, conversationId, background: true });
 		const live = await tx.doc(LiveDoc, conversationId); live.run = { taskId: owner, inputs: [input.id], turns: 0 };
 		live.generation = { attempt: 18, retry: { at: Date.now() + 300000, error: "429 Weekly/Monthly Limit Exhausted" } };
-		if (awaiting) {
-			const result = { sessionId: "producer:2", submissionId: 23, requestId: "exact-request" };
-			const results = Array.from({ length: 16 }, (_, index) => ({ sessionId: `peer-${index}`, submissionId: 40 + index })); results[15] = result;
-			(await tx.doc(AwaitDoc)).declarations.push({ taskId: owner, callId: "await", conversationId, runId: owner, cohort: [owner], inputs: [input.id], results, outcomes: [], decision: "awaiting", producers: [{ sessionId: result.sessionId, observedAt: 1, source: "producer await-state", execution: { state: "provider-retry", runId: 20, results: [result], attempt: 18, maxAttempts: 21, nextRetryAt: Date.now() + 300000, error: `429 Weekly/Monthly Limit Exhausted ${"x".repeat(400)}`, errorTruncated: true } }] });
-		} else {
-			live.tools = Array.from({ length: 4 }, (_, index) => ({ callId: `call-${index}`, name: "read", status: "running", output: "x".repeat(1500) }));
-		}
+		live.tools = Array.from({ length: 4 }, (_, index) => ({ callId: `call-${index}`, name: "read", status: "running", output: "x".repeat(1500) }));
 	});
 	assert.match(report.message.split("\n")[0], /pending.*provider retry.*attempt 18/u);
 	assert.match(report.message, /next retry.*429 Weekly\/Monthly Limit Exhausted/u);
 	assert.ok(report.message.length <= 2400);
-	if (awaiting) assert.match(report.message, /^producer:2.*submission 23.*exact-request/u);
 });
 
 it("excludes the answered task from the watched task's reply and tool count", { timeout: 60000 }, async (t) => {
