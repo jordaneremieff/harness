@@ -241,12 +241,3 @@ export function hostRequestVersionError(method: string, contract: RuntimeContrac
 	return refusal ? new HostError(refusal.message, "unavailable") : undefined;
 }
 
-/**
- * True only for an observational wait whose caller may withdraw it. The client
- * passes the caller's abort signal to the wire for these calls, so the public
- * cancel envelope reaches the host. Other requests never carry an abort signal;
- * admitted Durable work is never cancelled by a client disconnect or abort.
- */
-export function isCancelableHostWait(method: string, params: unknown): boolean {
-	return method === "receipts" && isRecord(params) && params.wait === true;
-}

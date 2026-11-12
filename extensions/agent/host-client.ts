@@ -20,7 +20,6 @@ import {
 	HostLeaseBusyError,
 	hostRequestVersionError,
 	hostPaths,
-	isCancelableHostWait,
 	isRetrySafeHostMethod,
 	parseHostMetadata,
 	parseHostHello,
@@ -153,7 +152,6 @@ interface Link {
 
 interface PendingCall {
 	readonly method: string;
-	readonly params: unknown;
 	readonly call: TransportRequest;
 	readonly signal: AbortSignal | undefined;
 	attempts: number;
@@ -599,7 +597,6 @@ class HostConnectionImpl implements HostConnection {
 		return new Promise<unknown>((resolveCall, rejectCall) => {
 			const call: PendingCall = {
 				method,
-				params,
 				call: { method, ...(params === undefined ? {} : { params }), requestId: id, contract: HOST_CONTRACT.operations[method] },
 				signal,
 				attempts: 0,
@@ -631,12 +628,10 @@ class HostConnectionImpl implements HostConnection {
 
 	private startCall(call: PendingCall): void {
 		if (this.closedValue || !this.pending.has(call)) return;
-		// The wire sees a caller signal only for observational waits, so a
-		// cancel envelope can never reach admitted Durable work.
-		const wireSignal = isCancelableHostWait(call.method, call.params) ? call.signal : undefined;
+		// Caller cancellation stays local and never cancels admitted Durable work.
 		const client = this.client;
 		const ownedExit = this.ownedExitValue;
-		void client.request(call.call, wireSignal).then(
+		void client.request(call.call).then(
 			(result) => {
 				if (call.method === "close") {
 					if (client === this.client) { this.ownerReleasedValue = true; this.clearPublication("The host owner released the writer"); }

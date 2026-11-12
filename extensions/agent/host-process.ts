@@ -17,7 +17,7 @@ import { ChordError, PluginError, invalid, isChordError } from "@earendil-works/
 import { createTransportServer, type TransportServer, type TransportRequest } from "../../transport/index.ts";
 import { tryNativeWriterLease, type NativeWriterLease } from "./native-lease.ts";
 import { validNativeWriterId } from "./claims.ts";
-import { formatHostReady, HostError, HOST_CONTRACT_MEMBER, hostPaths, isCancelableHostWait, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady, type HostBusy, formatHostBusy } from "./host-protocol.ts";
+import { formatHostReady, HostError, HOST_CONTRACT_MEMBER, hostPaths, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady, type HostBusy, formatHostBusy } from "./host-protocol.ts";
 import { HOST_CONTRACT, parseOperationContract, operationContractMismatch } from "./version-contract.ts";
 import { isObservationFrame } from "./live-frames.ts";
 import type { CatalogView } from "./catalog-view.ts";
@@ -198,7 +198,6 @@ class HostProcessServer implements HostProcess {
 	private releaseAgain = false;
 	private unsubscribeRelease: (() => void) | undefined;
 	private closing = false;
-	private readonly cancelableRequests = new AbortController();
 	private closePromise: Promise<void> | undefined;
 	private readonly writerReleased: Promise<void>;
 	private resolveWriterReleased: () => void = () => {};
@@ -258,7 +257,7 @@ class HostProcessServer implements HostProcess {
 		}
 		const server = createTransportServer({
 			serverId: this.paths.serverId, path: this.paths.socket,
-			request: (request, peer, signal) => this.invoke(request, signal, this.attachment(peer)),
+			request: (request, peer) => this.invoke(request, this.attachment(peer)),
 			subscribe: async (kind, token, peer, publish) => {
 				const state = this.attachment(peer);
 				if (this.closing) throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
@@ -324,11 +323,11 @@ class HostProcessServer implements HostProcess {
 		}
 	}
 
-	private async invoke(request: TransportRequest, signal: AbortSignal, state: AttachmentState): Promise<unknown> {
+	private async invoke(request: TransportRequest, state: AttachmentState): Promise<unknown> {
 		if (this.closing) throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
 		const active = request.method !== HOST_CONTRACT_MEMBER && request.method !== "close";
 		if (active) this.beginActivity();
-		try { return await this.dispatch(request, signal, state); }
+		try { return await this.dispatch(request, state); }
 		finally { if (active) this.endActivity(); }
 	}
 
@@ -425,11 +424,8 @@ class HostProcessServer implements HostProcess {
 		entry.close();
 	}
 
-	/**
-	 * Dispatch one negotiated operation with its stable request ID. Only receipts
-	 * waits receive the call signal; disconnect never cancels admitted Durable work.
-	 */
-	private async dispatch(request: TransportRequest, callerSignal: AbortSignal, state: AttachmentState): Promise<unknown> {
+	/** Dispatch one negotiated operation; caller cancellation never reaches admitted Durable work. */
+	private async dispatch(request: TransportRequest, state: AttachmentState): Promise<unknown> {
 		const { method, params, contract: rawContract } = request;
 		const requestId = request.requestId ?? randomUUID();
 		// Negotiate before parsing or dispatching an operation payload.
@@ -445,11 +441,8 @@ class HostProcessServer implements HostProcess {
 		if (this.closing) throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
 		const token = this.prepareObservationToken(method, params, state);
 		try {
-			// Only an observational wait receives the disconnect or cancel signal;
-			// admitted Durable work never sees one.
-			const signal = isCancelableHostWait(method, params) ? this.waitSignal(callerSignal) : undefined;
 			if (method === "observe-close" && token !== undefined) await state.closingTokens.get(token);
-			const result = await this.runtime.request(method, params, requestId, signal);
+			const result = await this.runtime.request(method, params, requestId);
 			if (this.releasePending && isRecord(result) && result.retiring === true) this.releaseRequesters.add(state);
 			this.trackObservationResult(method, params, result, state);
 			return result;
@@ -504,10 +497,6 @@ class HostProcessServer implements HostProcess {
 		this.closing = true;
 		// Let the service response reach the client before shutdown closes transport.
 		setImmediate(() => { void this.shutdown().catch(() => {}); });
-	}
-
-	private waitSignal(caller?: AbortSignal): AbortSignal {
-		return caller ? AbortSignal.any([caller, this.cancelableRequests.signal]) : this.cancelableRequests.signal;
 	}
 
 	private beginActivity(): void {
@@ -641,7 +630,6 @@ class HostProcessServer implements HostProcess {
 		this.unsubscribeRelease = undefined;
 		// Stop admitting observation work before the runtime that answers it closes.
 		this.observationPump.dispose();
-		this.cancelableRequests.abort(new Error("The durable host process is shutting down"));
 		try {
 			await closeRuntime(this.runtime, this.exit);
 			this.unpublishSocket();
