@@ -11,8 +11,8 @@ import { createAssistantMessageEventStream, isContextOverflow, isRetryableAssist
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureRegistry, hostOptions, scriptedRuntime, fixtureProvider, fixtureModelId } from "./durable-host-fixture.mts";
 import { ProviderModels } from "./provider-models.ts";
-import { isProviderContentRefusal, isProviderExhaustion, captureProviderAttempt, retainProviderBlock, readProviderBlock, ProviderControlDoc, retainDeferredAttempt, readDeferredAttempt } from "./provider-block.ts";
-import { PROVIDER_BLOCK_ERROR, STALE_PROVIDER_ERROR, ProviderBlockFactSchema } from "./provider-block-facts.ts";
+import { isProviderExhaustion, captureProviderAttempt, retainProviderBlock, readProviderBlock, ProviderControlDoc, retainDeferredAttempt, readDeferredAttempt } from "./provider-block.ts";
+import { isProviderContentRefusal, PROVIDER_BLOCK_ERROR, STALE_PROVIDER_ERROR, ProviderBlockFactSchema } from "./provider-block-facts.ts";
 import { safeProviderError } from "./primary-observation.ts";
 import { ProviderRetryNoticeSchema, providerNoticeRequestId, retainProviderRetryNotices } from "./provider-notices.ts";
 import { submitConversation, providerRetryReportSettled } from "./durable-controls.ts";

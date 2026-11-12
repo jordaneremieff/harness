@@ -1,6 +1,5 @@
 import { str, int, bool, lit, union, arr, obj, type Static } from "@earendil-works/pi-schema";
 import { ResultReferenceSchema } from "./result-schema.ts";
-import { isProviderContentRefusal } from "./provider-block.ts";
 import { safeProviderError } from "./primary-observation.ts";
 
 export const PROVIDER_BLOCK_ERROR = "Agent host: quota exceeded; explicit recovery required.";
@@ -15,6 +14,12 @@ export const ProviderBlockFactSchema = obj({
 	originalResults: arr(ResultReferenceSchema, { maxItems: 16 }), omittedOriginalResults: int({ minimum: 0 }),
 });
 export type ProviderBlockFact = Static<typeof ProviderBlockFactSchema>;
+
+/** OpenAI Codex's explicit content-refusal wording; other wording stays unclassified. */
+const CONTENT_REFUSAL_WORDINGS = ["This content was flagged for possible cybersecurity risk"];
+export function isProviderContentRefusal(error: string): boolean {
+	return CONTENT_REFUSAL_WORDINGS.some((wording) => error.includes(wording));
+}
 
 /** Present retained model failure detail without changing the native settlement. */
 export function modelFailureText(reason: string, detail: unknown, block?: ProviderBlockFact): string {

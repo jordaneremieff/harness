@@ -17,12 +17,6 @@ function detached<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as 
 export const ProviderControlDoc = defineDocFamily<ProviderControlState, null>({ kind: "agent.provider-control", family: true, version: 1, scope: "session", checkpointWhen: () => false, initial: () => ({ epoch: 0 }) });
 export const ProviderInputDoc = defineDocFamily<{ providerBlock?: ProviderBlockFact; recoveryOf?: string }, null>({ kind: "agent.provider-input", family: true, version: 1, scope: "session", checkpointWhen: () => false, initial: () => ({}) });
 
-/** OpenAI Codex's explicit content-refusal wording; other wording stays unclassified. */
-const CONTENT_REFUSAL_WORDINGS = ["This content was flagged for possible cybersecurity risk"];
-export function isProviderContentRefusal(error: string): boolean {
-	return CONTENT_REFUSAL_WORDINGS.some((wording) => error.includes(wording));
-}
-
 /** Positive exhaustion evidence is distinct from transient throttling and context-size rejection. */
 export function isProviderExhaustion(error: string, provider?: string): boolean {
 	if (/(?:per[ _-]?(?:minute|second)|requests?\/min|tokens?\/min|\b[rt]pm\b|context (?:window|length)|maximum context|billing (?:service|infrastructure).{0,40}(?:unavailable|timeout|error))/iu.test(error)) return false;
