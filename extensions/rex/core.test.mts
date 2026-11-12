@@ -1545,6 +1545,138 @@ test("catalogue bounds and kind-specific fields are rejected without native effe
 	assert.equal(f.store.state.records.length, 0);
 });
 
+test("text wait refreshes output when no event announces readiness", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const f = fixture();
+	const caller = new AbortController();
+	let captures = 0;
+	let entered!: () => void;
+	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = (args, call) => args.includes("events")
+		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }))
+		: run(args, call);
+	f.transport.handler = (method) => {
+		if (!method.endsWith(".format")) return undefined;
+		captures++;
+		entered();
+		return reply({ content: captures >= 2 ? "service ready" : "starting", eof: true });
+	};
+	const pending = f.core.execute(
+		{ op: "wait", condition: "text", text: "service ready", timeoutMs: 2000, target },
+		{ ...context, signal: caller.signal },
+	);
+	t.after(async () => { caller.abort(); await pending; f.core.dispose(); });
+	await initial;
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(captures, 1);
+	t.mock.timers.tick(250);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(captures, 2, "the wait takes a fresh output snapshot without an event");
+	const response = await pending;
+	assert.equal(response.outcome, "condition_observed");
+	assert.equal(response.ok, true);
+});
+
+test("text wait returns on a valid event without the refresh delay", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const f = fixture();
+	const caller = new AbortController();
+	let eventCall!: CliCall;
+	let captures = 0;
+	let ready = false;
+	let entered!: () => void;
+	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = (args, call) => {
+		if (!args.includes("events")) return run(args, call);
+		eventCall = call;
+		return new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }));
+	};
+	f.transport.handler = (method) => {
+		if (!method.endsWith(".format")) return undefined;
+		captures++;
+		entered();
+		return reply({ content: ready ? "service ready" : "starting", eof: true });
+	};
+	const pending = f.core.execute(
+		{ op: "wait", condition: "text", text: "service ready", timeoutMs: 2000, target },
+		{ ...context, signal: caller.signal },
+	);
+	t.after(async () => { caller.abort(); await pending; f.core.dispose(); });
+	await initial;
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	ready = true;
+	eventCall.onLine?.(JSON.stringify({ payload: { event: { type: "custom", payload: { block_id: block } } } }));
+	const response = await pending;
+	assert.equal(response.outcome, "condition_observed");
+	assert.equal(captures, 2, "the event triggers the next snapshot before a timer tick");
+});
+
+test("text wait timeout keeps refresh snapshots within the deadline and count cap", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const f = fixture();
+	let captures = 0;
+	let entered!: () => void;
+	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = (args, call) => args.includes("events")
+		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }))
+		: run(args, call);
+	f.transport.handler = (method) => {
+		if (!method.endsWith(".format")) return undefined;
+		captures++;
+		entered();
+		return reply({ content: "not ready", eof: true });
+	};
+	const pending = f.core.execute({ op: "wait", condition: "text", text: "READY", timeoutMs: 1000, maxSnapshots: 6, target }, context);
+	t.after(async () => { await pending; f.core.dispose(); });
+	await initial;
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	for (const elapsed of [250, 250, 250, 150]) {
+		t.mock.timers.tick(elapsed);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
+	const response = await pending;
+	assert.equal(response.outcome, "timeout");
+	assert.ok(captures >= 2 && captures <= 6, `captured ${captures} bounded snapshots`);
+	const settled = captures;
+	t.mock.timers.tick(10000);
+	assert.equal(captures, settled, "no refresh survives the completed wait");
+});
+
+test("text wait cancellation stops the event source and scheduled refresh", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const f = fixture();
+	const caller = new AbortController();
+	let captures = 0;
+	let entered!: () => void;
+	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = (args, call) => args.includes("events")
+		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }))
+		: run(args, call);
+	f.transport.handler = (method) => {
+		if (!method.endsWith(".format")) return undefined;
+		captures++;
+		entered();
+		return reply({ content: "not ready", eof: true });
+	};
+	const pending = f.core.execute(
+		{ op: "wait", condition: "text", text: "READY", timeoutMs: 2000, target },
+		{ ...context, signal: caller.signal },
+	);
+	t.after(async () => { caller.abort(); await pending; f.core.dispose(); });
+	await initial;
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	t.mock.timers.tick(100);
+	caller.abort();
+	const response = await pending;
+	assert.equal(response.outcome, "cancelled");
+	t.mock.timers.tick(10000);
+	assert.equal(captures, 1);
+});
+
 function operationTime(total = 1000, caller?: AbortSignal) {
 	let now = 0;
 	const tasks = new Set<{ at: number; action: () => void }>();

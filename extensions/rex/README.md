@@ -233,9 +233,12 @@ shutdown. `observation_failed` retains the CLI or event-source cause. A normal e
 end without the condition is `observer_ended`. An evidence cap is `snapshot_limit`.
 
 Text and status observations resume on relevant events, event-process exit, cancellation
-or the deadline. They use current snapshots, not a polling interval. The event source
-remains available through the work window; the same operation allowance includes its
-teardown. A budget-caused stop retains timeout or cancelled, not an event-source failure.
+or the deadline. Text observations also refresh the current output snapshot on a bounded
+cadence because Rex publishes no output-change event. The interval is at least 250 ms
+and lengthens when needed to spread the remaining snapshots across the remaining work
+window. `maxSnapshots` still bounds the total. Status observations remain event-driven.
+The event source remains available through the work window; the same operation allowance
+includes its teardown. A budget-caused stop retains timeout or cancelled, not an event-source failure.
 A failed or interrupted capture, or an unverified end, does not match text. A valid EOF
 tail remains matchable when only its older prefix is omitted. Live events have no replay
 guarantee. A bounded timeout does not establish that the condition never occurred.

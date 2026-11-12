@@ -843,7 +843,10 @@ export class RexCore {
 			observation.snapshots++;
 			observation.matched = !observer.failure && conditionMatches(request, observation.snapshot);
 			if (observation.matched || performance.now() >= deadline || observer.ended) break;
-			await observer.wait(seen, context.signal);
+			const refreshMs = request.condition === "text"
+				? Math.max(250, Math.ceil((deadline - performance.now()) / (maxSnapshots - observation.snapshots)))
+				: undefined;
+			await observer.wait(seen, context.signal, refreshMs);
 		}
 		observation.observerEnded = observer.ended;
 		return observation;
@@ -1943,16 +1946,19 @@ class EventObserver {
 		this.generation++;
 		this.wake?.();
 	}
-	wait(seen: number, signal?: AbortSignal): Promise<void> {
+	wait(seen: number, signal?: AbortSignal, refreshMs?: number): Promise<void> {
 		if (this.generation !== seen || signal?.aborted || this.ended) return Promise.resolve();
 		return new Promise((resolve) => {
+			let timer: ReturnType<typeof setTimeout> | undefined;
 			const done = () => {
+				if (timer !== undefined) clearTimeout(timer);
 				this.wake = undefined;
 				signal?.removeEventListener("abort", done);
 				resolve();
 			};
 			this.wake = done;
 			signal?.addEventListener("abort", done, { once: true });
+			if (refreshMs !== undefined) timer = setTimeout(done, refreshMs);
 			if (signal?.aborted || this.generation !== seen) done();
 		});
 	}
