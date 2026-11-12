@@ -748,7 +748,8 @@ export async function readConversationStatus(
 	const liveTaskIds = new Set(inspection.tasks.map((task) => Number(task.record.id)));
 	const backlog = await backlogFacts(harness, conversationId, options.now ?? Date.now(), context);
 	const providerBlock = frozenObservations.has(harness) ? await snapshotProviderBlock(harness, conversationId, context) : await harness.commit((tx) => readProviderBlock(tx, conversationId), context);
-	const openWork = frozenObservations.has(harness) ? await openWorkStatus({ harness, context }, storageId, conversationId) : await harness.commit((tx) => openWorkStatus(tx, storageId, conversationId), context);
+	// A status read commits nothing: a transaction read would create the document of a conversation that has none.
+	const openWork = await openWorkStatus({ harness, context }, storageId, conversationId);
 	return {
 		...(openWork.length === 0 ? {} : { openWork }),
 		...(providerBlock === undefined ? {} : { providerBlock }),
@@ -1064,9 +1065,8 @@ interface BacklogFacts {
 async function backlogFacts(harness: Harness, conversationId: ConversationId, now: number, context: Context): Promise<BacklogFacts> {
 	const age = (since: number): number => Math.max(0, Math.round(now - since));
 	const unplaced = await readUnplacedSummary(harness, conversationId, context);
-	// A commit's items are drafts that end with it, so the times are copied inside the read.
-	const declared = (items: readonly { readonly declaredAt: number }[]): number[] => items.map((item) => item.declaredAt);
-	const open = frozenObservations.has(harness) ? declared(await openWorkItems({ harness, context }, conversationId)) : await harness.commit(async (tx) => declared(await openWorkItems(tx, conversationId)), context);
+	// A snapshot read: a commit would create the open-work document of a conversation that has none.
+	const open = (await openWorkItems({ harness, context }, conversationId)).map((item) => item.declaredAt);
 	return {
 		unplaced: unplaced.unplaced,
 		...(unplaced.oldestAdmittedAt === undefined ? {} : { oldest: age(unplaced.oldestAdmittedAt) }),

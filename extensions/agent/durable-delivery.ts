@@ -735,6 +735,9 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	};
 
 	/** Automatic notices recheck exact source settlement after asynchronous route preparation. */
+	/** Snapshot reads of open work: a transaction read would create the document of a conversation that has none. */
+	const workReader = { harness: host.harness, context: BACKGROUND_CONTEXT };
+
 	/** Dependency marks of an active report for the recipient's open work; a passive report carries none. */
 	const reportMarks = async (report: DeliveryReport): Promise<{ dependencyMarks?: Awaited<ReturnType<typeof reportDependencyMarks>> }> => {
 		if (report.passive) return {};
@@ -764,8 +767,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			const requestId = receiptRequestId(metadata, row.receipt);
 			const communicationParams = deliveryCommunicationParams(row, host);
 			const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
-			const work = await host.harness.commit((tx) => receiptWork(tx, row.receipt.conversationId, row.receipt.requestId), BACKGROUND_CONTEXT);
-			const dependencyMarks = await host.harness.commit((tx) => receiptDependencyMarks(tx, metadata.storageId, row.receipts), BACKGROUND_CONTEXT);
+			const work = await receiptWork(workReader, row.receipt.conversationId, row.receipt.requestId);
+			const dependencyMarks = await receiptDependencyMarks(workReader, metadata.storageId, row.receipts);
 			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row, continuity, work), requestId, provenance: { classification: "automatic" }, ...communicationParams, deliveredResults: deliveredResults(metadata, row), dependencyMarks, whenBusy: "followUp" });
 			return;
 		}
@@ -861,7 +864,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const shared = sharedRowDetails(row, identity, originalOwnerId, deliveryRecipient, liveOwner, fallback, status, body);
 		if (row.kind === "receipt") {
 			const receipt = row.receipt;
-			const work = await host.harness.commit((tx) => receiptWork(tx, receipt.conversationId, receipt.requestId), BACKGROUND_CONTEXT);
+			const work = await receiptWork(workReader, receipt.conversationId, receipt.requestId);
 			return {
 				...shared,
 				...(work === undefined ? {} : { work: work.work, workLabel: work.label }),
@@ -1088,8 +1091,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			const requestId = receiptRequestId(metadata, row.receipt);
 			const communicationParams = deliveryCommunicationParams(row, host);
 			const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
-			const work = await host.harness.commit((tx) => receiptWork(tx, row.receipt.conversationId, row.receipt.requestId), BACKGROUND_CONTEXT);
-			const dependencyMarks = await host.harness.commit((tx) => receiptDependencyMarks(tx, metadata.storageId, row.receipts), BACKGROUND_CONTEXT);
+			const work = await receiptWork(workReader, row.receipt.conversationId, row.receipt.requestId);
+			const dependencyMarks = await receiptDependencyMarks(workReader, metadata.storageId, row.receipts);
 			await connection.request(
 				"submit",
 				{
