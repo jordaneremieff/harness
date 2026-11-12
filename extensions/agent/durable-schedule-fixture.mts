@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
 import { runHost } from "./host-process.ts";
+import { eventLog } from "./host-fixture.mts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -215,14 +216,25 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 			firstGate?.release();
 		},
 		waitForReceipt: async (requestId: string, timeoutMs = 20000) => {
+			const host = fixture.host;
 			const signal = AbortSignal.timeout(timeoutMs);
-			for (;;) {
-				const page = (await fixture.host.request("receipts", { ownerId, wait: true }, signal)) as { receipts: DeliveryReceipt[] };
-				const found = page.receipts.find((receipt) => receipt.requestId === requestId);
-				// A delivered receipt stays pending until its owner acknowledges it; ack every read so the next wait blocks.
-				if (page.receipts.length > 0) await fixture.host.request("acknowledge", { ownerId, submissionIds: page.receipts.map((receipt) => receipt.submissionId) });
-				if (found !== undefined) return found;
-			}
+			const deadline = performance.now() + timeoutMs;
+			const changes = eventLog<void>();
+			let closed = false;
+			const stopClose = host.harness.subscribeClose(() => { closed = true; changes.push(undefined); });
+			const stop = onStoredCommit(host.harness, (publication) => { if (publication.changes.length > 0) changes.push(undefined); });
+			try {
+				for (;;) {
+					signal.throwIfAborted();
+					if (closed) throw new Error(`host closed before receipt for request ${requestId}`);
+					const next = changes.length + 1;
+					const page = (await host.request("receipts", { ownerId }, signal)) as { receipts: DeliveryReceipt[] };
+					const found = page.receipts.find((receipt) => receipt.requestId === requestId);
+					if (page.receipts.length > 0) await host.request("acknowledge", { ownerId, submissionIds: page.receipts.map((receipt) => receipt.submissionId) });
+					if (found !== undefined) return found;
+					await changes.waitForCount(next, Math.max(1, deadline - performance.now()));
+				}
+			} finally { stop(); stopClose(); }
 		},
 		searchCount: async (query: string) => {
 			const page = (await fixture.host.request("inspect", { view: "search", query })) as { matches: unknown[] };

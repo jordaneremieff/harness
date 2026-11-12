@@ -21,6 +21,7 @@ import { readClaimFile } from "./claims.ts";
 import type { DeliveryReceipt } from "./durable-controls.ts";
 import type { HostConnection } from "./host-client.ts";
 import type { HostMetadata } from "./host-protocol.ts";
+import { eventLog } from "./host-fixture.mts";
 
 export interface RuntimeFixture {
 	readonly root: string;
@@ -460,10 +461,24 @@ export async function fixtureTeardown(root: string, agentDir: string, createdAt:
 	rmSync(root, { recursive: true, force: true });
 }
 
-/** Wait for the delivery receipt of one submission; the host waits on commits, not polling. */
+/** Read the selected receipt after each stored-commit notification until it exists. */
 export async function waitForReceipt(host: HostConnection, ownerId: string, submissionId: string | number, timeoutMs = 60000): Promise<DeliveryReceipt> {
-	const response = await host.request("receipts", { ownerId, wait: true }, { signal: AbortSignal.timeout(timeoutMs) }) as { receipts: DeliveryReceipt[] };
-	const receipt = response.receipts.find((item) => String(item.submissionId) === String(submissionId));
-	if (!receipt) throw new Error(`no delivery receipt for submission ${submissionId}`);
-	return receipt;
+	if (!host.subscribeChanges) throw new Error("host connection does not publish commit notifications");
+	const deadline = performance.now() + timeoutMs;
+	const signal = AbortSignal.timeout(timeoutMs);
+	const changes = eventLog<void>();
+	const stopClose = host.onClose(() => changes.push(undefined));
+	let unsubscribe: (() => void) | undefined;
+	try {
+		unsubscribe = await host.subscribeChanges(() => changes.push(undefined), signal);
+		for (;;) {
+			signal.throwIfAborted();
+			if (host.closed) throw new Error(`host closed before receipt for submission ${submissionId}`);
+			const next = changes.length + 1;
+			const response = await host.request("receipts", { ownerId }, { signal }) as { receipts: DeliveryReceipt[] };
+			const receipt = response.receipts.find((item) => String(item.submissionId) === String(submissionId));
+			if (receipt) return receipt;
+			await changes.waitForCount(next, Math.max(1, deadline - performance.now()));
+		}
+	} finally { unsubscribe?.(); stopClose(); }
 }

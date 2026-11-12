@@ -13,6 +13,7 @@ import { createRegistry, defineExtension, defineTool, type JsonObject, type Regi
 import { obj } from "@earendil-works/pi-schema";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { DurableHost, type DurableHostOptions } from "./durable-host.ts";
+import { UnplacedWatchTask } from "./unplaced-inputs.ts";
 
 export const fixtureProvider = testModel.provider;
 export const fixtureModelId = testModel.id;
@@ -116,7 +117,7 @@ export function hangingTool(onStarted?: () => void): ToolRegistration {
 
 export function fixtureRegistry(tools: ToolRegistration[] = [], name = "durable-host-fixture"): Registry {
 	const registry = createRegistry();
-	registry.install(defineExtension({ name, tools }));
+	registry.install(defineExtension({ name, tools, tasks: [UnplacedWatchTask] }));
 	return registry;
 }
 
