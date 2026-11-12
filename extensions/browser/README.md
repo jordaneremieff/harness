@@ -201,6 +201,17 @@ cancellation, or a failed read after the dispatch it reports the dispatch as
 `unknown`, `not-dispatched`, or `dispatched` as observed, and never repeats the
 action; inspect the page before any retry.
 
+The page keeps a small record of each scheduled element action (its state and
+any error), and page reads never remove it, so a lost read reply is answered by
+the next read. When the action reply itself is lost after the request may have
+reached the browser (a transport timeout or exit, an Apple Events timeout, or a
+reply with no page result), the tool reads that record during the ordinary wait
+instead of resending the action. The report carries `dispatchReply.status:
+"lost"` and the transport failure; `dispatch.status` comes from the record, or
+stays `unknown` when no read finds one. Each new action in a document removes
+the oldest finished records while more than 32 remain. A `navigate` has no page record; a lost
+reply leaves its dispatch `unknown`.
+
 ## Evaluation
 
 `browser_evaluate` checks the expression's syntax locally, then runs it once in

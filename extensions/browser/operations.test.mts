@@ -473,34 +473,44 @@ it("reports a failed postcondition with the observed 500 response", async () => 
 	assert.equal(obj(report.dispatch).status, "dispatched");
 });
 
-it("reports an unknown dispatch after a transport timeout and never replays the action", async () => {
+it("reports an unknown dispatch when the action reply and every record read are lost, and never replays the action", async () => {
 	const run = runFrom({
 		execute: () => {
 			throw new TransportError("timeout", "unknown", "No reply within 300 ms.");
 		},
 	});
 	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
-	const result = await browserAct(ACT_PARAMS, undefined, deps);
+	const result = await browserAct({ ...ACT_PARAMS, observeMs: 100 }, undefined, deps);
 	const report = reportOf(result);
 	assert.equal(result.isError, true);
+	assert.equal(result.details.status, "transport-failed");
 	assert.equal(obj(report.dispatch).status, "unknown");
-	assert.equal(typeof report.replay, "string");
+	assert.equal(obj(report.dispatchReply).status, "lost");
 	assert.equal(requests.filter((request) => scriptKind(request) === "action").length, 1);
 });
 
-it("treats an Apple Event timeout on the action as an unknown dispatch, not a refusal", async () => {
+it("recovers the dispatch from the page record after an Apple Event timeout on the action, not a refusal", async () => {
 	const run = actRunner(
-		() => {
-			throw new Error("poll must not be sent");
+		(request) => {
+			assert.match(String(request.script), /"actionId":"[0-9a-f-]{36}"/);
+			return executed({
+				kind: "ok",
+				page: PAGE,
+				action: { state: "dispatched", error: null },
+				condition: null,
+				responses: [],
+			});
 		},
 		() => ({ ok: false, error: { code: null, number: -1712, message: "timed out", extra: null } }),
 	);
 	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
-	const result = await browserAct(ACT_PARAMS, undefined, deps);
+	const result = await browserAct({ ...ACT_PARAMS, observeMs: 100 }, undefined, deps);
 	const report = reportOf(result);
-	assert.equal(result.details.status, "transport-failed");
-	assert.equal(obj(report.dispatch).status, "unknown");
+	assert.equal(result.details.status, "ok");
+	assert.equal(blockedReason(result), undefined);
+	assert.equal(obj(report.dispatch).status, "dispatched");
 	assert.equal(obj(report.transport).delivery, "unknown");
+	assert.equal(obj(report.dispatchReply).status, "lost");
 	assert.equal(requests.filter((request) => scriptKind(request) === "action").length, 1);
 });
 
@@ -755,21 +765,43 @@ it("keeps the scheduled action when a page read returns no result", async () => 
 	assert.equal(requests.filter((request) => scriptKind(request) === "action").length, 1);
 });
 
-it("keeps the action unknown when its own page reply has no readable result", async () => {
+it("keeps the action unknown when its own page reply has no readable result and the page has no record", async () => {
 	const run = actRunner(
-		() => {
-			throw new Error("poll must not be sent");
-		},
+		() =>
+			executed({ kind: "ok", page: PAGE, action: null, condition: { met: false, checks: [] }, responses: [] }),
 		() => ok({ window: "1", url: "https://a.example/page", title: "Example", result: null }),
 	);
 	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
-	const result = await browserAct({ ...ACT_PARAMS, waitFor: { selector: "#done", timeoutMs: 500 } }, undefined, deps);
+	const result = await browserAct({ ...ACT_PARAMS, waitFor: { selector: "#done", timeoutMs: 150 } }, undefined, deps);
 	const report = reportOf(result);
 	assert.equal(result.details.status, "observation-failed");
 	assert.equal(result.isError, true);
 	assert.equal(obj(report.dispatch).status, "unknown");
-	assert.equal(obj(report.observation).reason, "no-page-result");
-	assert.equal(typeof report.replay, "string");
+	assert.match(String(obj(report.dispatch).note), /no record/);
+	assert.equal(obj(report.dispatchReply).reason, "no-page-result");
+	assert.equal(requests.filter((request) => scriptKind(request) === "action").length, 1);
+});
+
+it("reads the action state again after a lost poll reply", async () => {
+	let polls = 0;
+	const run = actRunner(() => {
+		polls += 1;
+		if (polls === 1) throw new TransportError("timeout", "unknown", "No reply.");
+		return executed({
+			kind: "ok",
+			page: PAGE,
+			action: { state: "dispatched", error: null },
+			condition: { met: true, checks: [] },
+			responses: [],
+		});
+	});
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserAct({ ...ACT_PARAMS, waitFor: { selector: "#done", timeoutMs: 1_000 } }, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "ok");
+	assert.equal(obj(report.dispatch).status, "dispatched");
+	assert.equal(obj(report.application).documentReplaced, false);
+	assert.equal(obj(report.postcondition).status, "verified");
 	assert.equal(requests.filter((request) => scriptKind(request) === "action").length, 1);
 });
 

@@ -509,6 +509,23 @@ interface Dispatched {
 	/** Time from which resource responses are reported; null when no dispatch happened. */
 	mark: number | null;
 	startDoc: unknown;
+	/** Set when the action reply was lost after the script may have reached the page. */
+	lostReply?: LostReply;
+}
+
+/** A reply that never arrived or held no result, after the script may have reached the page. */
+interface LostReply {
+	transport: Facts;
+	reason: string;
+}
+
+/** A lost transport reply that a page record can still answer: delivery is possible and the caller did not cancel. */
+function lostTransportReply(error: unknown): LostReply | null {
+	if (!(error instanceof TransportError) || error.delivery !== "unknown" || error.kind === "cancelled") return null;
+	return {
+		transport: { status: "failed", kind: error.kind, delivery: error.delivery, message: error.message },
+		reason: error.kind,
+	};
 }
 
 /**
@@ -573,26 +590,16 @@ async function dispatchNavigate(
 	};
 }
 
-/** The action script reached the page but its reply held no readable result; the action may have run. */
-function unreadableAction(params: ActParams, subject: Subject): BrowserResult {
-	return result(
-		"browser_act",
-		"observation-failed",
-		`${params.action} sent, but the page returned no readable result; the outcome is unknown. ${UNTRUSTED}`,
-		{
-			target: subject.facts,
-			action: describeAction(params),
-			transport: { status: "ok" },
-			dispatch: {
-				status: "unknown",
-				note: "The page script was delivered but returned no readable result; the action may have run.",
-			},
-			observation: { status: "failed", phase: "read-after-dispatch", reason: "no-page-result" },
-			postcondition: { status: "unknown" },
-			replay: "not attempted; inspect the page before any repeat",
-		},
-		true,
-	);
+/** The action reply was lost; the caller reads the page record of the action instead of resending it. */
+function lostAction(actionId: string, lostReply: LostReply): Dispatched {
+	return {
+		actionId,
+		dispatch: { status: "unknown", note: "The action reply was lost; the page record decides whether it ran." },
+		element: null,
+		mark: null,
+		startDoc: null,
+		lostReply,
+	};
 }
 
 async function dispatchElementAction(
@@ -612,14 +619,21 @@ async function dispatchElementAction(
 		value: params.value ?? null,
 		key: params.key ?? null,
 	});
-	const reply = await executeInTab(deps, spec, target, script, signal);
+	let reply: ExecuteReply;
+	try {
+		reply = await executeInTab(deps, spec, target, script, signal);
+	} catch (error) {
+		const lost = lostTransportReply(error);
+		if (lost) return lostAction(actionId, lost);
+		throw error;
+	}
 	let data: Facts;
 	try {
 		data = envelope(reply);
 	} catch (error) {
 		if (!(error instanceof Blocked) || error.reason !== "no-page-result") throw error;
 		subject.update(target, { url: reply.url, title: reply.title }, reply.window);
-		return unreadableAction(params, subject);
+		return lostAction(actionId, { transport: { status: "ok" }, reason: "no-page-result" });
 	}
 	const page = record(data.page);
 	subject.update(target, page, reply.window);
@@ -665,6 +679,11 @@ function applyPoll(state: Observation, data: Facts, sent: Dispatched): void {
 	const action = record(data.action);
 	if (action) {
 		state.dispatch = { ...state.dispatch, status: action.state, ...(action.error ? { error: action.error } : {}) };
+	} else if (sent.lostReply) {
+		state.dispatch = {
+			status: "unknown",
+			note: "The action reply was lost and the page holds no record of the action; it may or may not have run.",
+		};
 	} else if (sent.actionId && state.dispatch.status === "scheduled" && state.documentReplaced) {
 		state.dispatch = {
 			...state.dispatch,
@@ -832,10 +851,17 @@ async function dispatchAct(
 	}
 }
 
-function actStatus(state: Observation, postcondition: Facts): string {
+function actStatus(sent: Dispatched, state: Observation, postcondition: Facts): string {
 	if (state.cancelled) return "cancelled";
 	if (state.failedRead) return state.failedRead.kind === "unavailable" ? "observation-failed" : "target-closed";
+	if (unsettledLostReply(sent, state, postcondition))
+		return sent.lostReply?.transport.status === "failed" ? "transport-failed" : "observation-failed";
 	return postcondition.status === "failed" ? "postcondition-failed" : "ok";
+}
+
+/** A lost action reply that neither the page record nor a verified postcondition settled. */
+function unsettledLostReply(sent: Dispatched, state: Observation, postcondition: Facts): boolean {
+	return Boolean(sent.lostReply) && state.dispatch.status === "unknown" && postcondition.status !== "verified";
 }
 
 function actResult(
@@ -855,7 +881,16 @@ function actResult(
 		target: subject.facts,
 		action: describeAction(params),
 		...(sent.element ? { element: sent.element } : {}),
-		transport: { status: "ok", ...unanswered },
+		transport: { ...(sent.lostReply?.transport ?? { status: "ok" }), ...unanswered },
+		...(sent.lostReply
+			? {
+					dispatchReply: {
+						status: "lost",
+						reason: sent.lostReply.reason,
+						note: "The action reply was lost; the tool read the page record of this action and did not resend it.",
+					},
+				}
+			: {}),
 		dispatch: state.dispatch,
 		...(state.failedRead
 			? {
@@ -880,10 +915,10 @@ function actResult(
 	const headline = `${params.action} ${String(state.dispatch.status)}; postcondition ${String(postcondition.status)}. ${UNTRUSTED}`;
 	return result(
 		"browser_act",
-		actStatus(state, postcondition),
+		actStatus(sent, state, postcondition),
 		headline,
 		report,
-		state.cancelled || Boolean(state.failedRead),
+		state.cancelled || Boolean(state.failedRead) || unsettledLostReply(sent, state, postcondition),
 	);
 }
 
@@ -1092,18 +1127,10 @@ function unreadableEvaluation(subject: Subject, note: string): BrowserResult {
 	);
 }
 
-/** A start reply that never arrived or held no result, after the script may have reached the page. */
-interface LostStart {
-	transport: Facts;
-	reason: string;
-}
-
-function failedStart(error: unknown, subject: Subject): { early: BrowserResult } | { lost: LostStart } {
+function failedStart(error: unknown, subject: Subject): { early: BrowserResult } | { lost: LostReply } {
 	if (!(error instanceof TransportError)) throw error;
-	if (error.delivery === "unknown" && error.kind !== "cancelled") {
-		const transport = { status: "failed", kind: error.kind, delivery: error.delivery, message: error.message };
-		return { lost: { transport, reason: error.kind } };
-	}
+	const lost = lostTransportReply(error);
+	if (lost) return { lost };
 	const early = transportResult("browser_evaluate", error, {
 		target: subject.facts,
 		execution: { status: error.delivery === "none" ? "not-started" : "unknown" },
@@ -1125,7 +1152,7 @@ async function startEvaluation(
 	timeoutMs: number,
 	deps: BrowserDeps,
 	signal?: AbortSignal,
-): Promise<{ data: Facts } | { early: BrowserResult } | { lost: LostStart }> {
+): Promise<{ data: Facts } | { early: BrowserResult } | { lost: LostReply }> {
 	const { spec, target, expectOrigin } = resolved;
 	let reply: ExecuteReply;
 	try {
@@ -1156,7 +1183,7 @@ function evaluationResult(
 	subject: Subject,
 	settlement: Settlement,
 	elapsedMs: number,
-	lost: LostStart | null,
+	lost: LostReply | null,
 ): BrowserResult {
 	const status = settledStatus(settlement);
 	const { state: _state, ...outcome } = settlement.outcome ?? {};
@@ -1189,7 +1216,7 @@ async function settle(
 	resolved: Resolved,
 	runId: string,
 	data: Facts | null,
-	lost: LostStart | null,
+	lost: LostReply | null,
 	deadline: number,
 	signal?: AbortSignal,
 ): Promise<Settlement> {
