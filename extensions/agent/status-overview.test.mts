@@ -16,7 +16,7 @@ import {
 	UsageSchema,
 	UsageStateSchema,
 } from "./observation-schema.ts";
-import { buildStatusOverview, STATUS_OVERVIEW_BYTE_LIMIT, STATUS_OVERVIEW_DISCOVERY } from "./status-overview.ts";
+import { buildStatusOverview, projectSelectedStatus, STATUS_OVERVIEW_BYTE_LIMIT, STATUS_OVERVIEW_DISCOVERY } from "./status-overview.ts";
 
 function summary(index: number, fields: Partial<AgentPrioritySummary> = {}): AgentPrioritySummary {
 	return {
@@ -68,6 +68,33 @@ it("keeps a small overview complete with an exact strict output schema", () => {
 	assert.deepEqual(result.coverage.reasons, []);
 	check(result);
 	assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...result, unexpected: true }));
+});
+
+it("retains idle open work beyond quiet samples and distinguishes absent counts from zero", () => {
+	const open = { ...summary(1), openWorkCount: 2, openWorkOldest: 300000 };
+	const empty = { ...summary(2, { state: "working" }), openWorkCount: 0 };
+	const unavailable = summary(3, { state: "working" });
+	const result = buildStatusOverview(page([...Array.from({ length: 7 }, (_, index) => summary(index + 10)), open, empty, unavailable]), [], []);
+	const retained = result.sessions.find((row) => row.id === open.id);
+	const { rosterOrder: _rank, ...published } = open;
+	assert.deepEqual(retained, published);
+	check(result);
+	for (const source of [open, empty, unavailable]) {
+		const row = result.sessions.find((item) => item.id === source.id); assert.ok(row);
+		const selected = projectSelectedStatus({ conversation: { ...source, identity: `${source.id}:1`, conversationId: 1, busy: false } });
+		assert.equal(selected.format, "compact");
+		if (selected.format !== "compact") return;
+		for (const key of ["openWorkCount", "openWorkOldest"] as const) {
+			const expected = Object.getOwnPropertyDescriptor(source, key)?.value;
+			assert.equal(Object.getOwnPropertyDescriptor(row, key)?.value, expected);
+			assert.equal(Object.getOwnPropertyDescriptor(selected.conversation, key)?.value, expected);
+			assert.equal(Object.hasOwn(row, key), Object.hasOwn(source, key));
+			assert.equal(Object.hasOwn(selected.conversation, key), Object.hasOwn(source, key));
+		}
+		structuredObservation(StatusToolOutputSchema, selected);
+	}
+	assert.equal(result.summary.sessions.working, 2);
+	assert.equal(result.summary.sessions.attention, 0);
 });
 
 it("uses catalog recency and identity independently of working and attention summary groups", () => {

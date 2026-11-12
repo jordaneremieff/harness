@@ -157,7 +157,7 @@ function initialOverview(
 	const quiet = ordered.length - working - attention;
 	let sampledQuiet = 0;
 	const selected = ordered.filter((row) => {
-		if (row.rosterOrder.priority || priority(row) < 2) return true;
+		if (row.rosterOrder.priority || priority(row) < 2 || (count(record(row).openWorkCount) ?? 0) > 0) return true;
 		return sampledQuiet++ < QUIET_SAMPLE;
 	});
 	const sessions = selected.map(compact);
@@ -360,6 +360,7 @@ function compactConversation(source: unknown, availability: CompactConversation[
 	if (typeof agent.thinkingLevel === "string") result.thinkingLevel = agent.thinkingLevel;
 	if ((count(run.taskId) ?? 0) > 0) result.runId = Number(run.taskId);
 	addCompactUnplaced(result, row);
+	addCompactOpenWork(result, row);
 	const block = record(row.providerBlock);
 	if (typeof block.blockId === "string") {
 		result.providerBlock = { blockId: block.blockId, recovery: `agent_configure({sessionId:${JSON.stringify(row.identity)},model:<explicit provider/model>}), then a new agent_send follow-up` };
@@ -375,6 +376,15 @@ function addCompactUnplaced(result: CompactConversation, row: Record<string, unk
 	result.unplaced = unplaced;
 	const oldest = count(row.oldest);
 	if (unplaced > 0 && oldest !== undefined) result.oldest = oldest;
+}
+
+/** Declared work remains visible even when the conversation has no active run. */
+function addCompactOpenWork(result: CompactConversation, row: Record<string, unknown>): void {
+	const openWorkCount = count(row.openWorkCount);
+	if (openWorkCount === undefined) return;
+	Object.assign(result, { openWorkCount });
+	const openWorkOldest = count(row.openWorkOldest);
+	if (openWorkCount > 0 && openWorkOldest !== undefined) Object.assign(result, { openWorkOldest });
 }
 
 /** Accept descriptive-field reduction only when its omission metadata also fits within the original size. */
