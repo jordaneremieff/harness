@@ -51,7 +51,9 @@ records provenance; it does not detect or prevent prompt injection.
 The extension never starts a sign-in and never asks for more scope. Before a
 tool calls Google, it reads the granted scopes from `gws auth status`. A tool
 whose scopes are absent returns `SCOPE_REQUIRED` with the scopes that would
-satisfy it.
+satisfy it. The observed identity is cached briefly per credentials file and
+expected account; a changed `expectedAccount` is checked against the observed
+identity again before the next call that depends on it.
 
 | Capability | Accepted scopes (`https://www.googleapis.com/auth/` prefix) |
 |---|---|

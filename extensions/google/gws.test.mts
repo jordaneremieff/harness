@@ -104,6 +104,19 @@ test("auth status must confirm the expected account, scopes and a valid token", 
 	}
 });
 
+test("a changed expectedAccount setting is checked again before the next call", async () => {
+	const fake = await createFake({ responses: { "gmail users labels list": { stdout: { labels: [] } } } });
+	try {
+		assert.equal((await fake.tool("gmail_labels_list", {})).status, "ok");
+		const authCalls = methodCalls(await fake.calls(), "auth status").length;
+		fake.env.PI_GOOGLE_EXPECTED_ACCOUNT = "other@example.com";
+		assert.equal(errorCode(await fake.tool("gmail_labels_list", {})), "WRONG_ACCOUNT");
+		assert.equal(methodCalls(await fake.calls(), "auth status").length, authCalls + 1);
+	} finally {
+		await fake.cleanup();
+	}
+});
+
 test("a tool without a granted scope returns SCOPE_REQUIRED and makes no API call", async () => {
 	const fake = await createFake({ scopes: [SCOPES.gmailRead] });
 	try {

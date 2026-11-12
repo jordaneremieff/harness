@@ -363,7 +363,9 @@ export class GoogleRuntime {
 	}
 
 	private async authenticate(prepared: Prepared, signal?: AbortSignal): Promise<Auth> {
-		const credentialKey = await this.checkCredentialFiles(prepared.configDir);
+		// The cache key includes the expected account: a changed setting must be checked
+		// against the observed identity again before the next operation uses it.
+		const credentialKey = `${await this.checkCredentialFiles(prepared.configDir)}:${prepared.expectedAccount.toLowerCase()}`;
 		if (this.authCache && this.authCache.key === credentialKey && this.authCache.expires > Date.now())
 			return this.authCache.auth;
 		const result = await executeProcess(prepared.executable, ["auth", "status"], {
