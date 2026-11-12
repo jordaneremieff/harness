@@ -146,31 +146,6 @@ function spawn(context: TranscriptContext) {
 	return completed([{ type: "text", text: "PRIMARY_DONE" }], "stop");
 }
 
-/** Native result waits use real controls; only provider answers are deterministic. */
-function awaited(context: TranscriptContext, mode: string, signal?: AbortSignal) {
-	const minAttempt = process.env.DURABLE_TEST_AWAIT_MIN_ATTEMPT;
-	const release: Record<string, { minAttempt: number }> = minAttempt === undefined ? {} : { releaseOnProviderRetry: { minAttempt: Number(minAttempt) } };
-	const last = context.messages.findLast((item) => item.role === "toolResult");
-	const latestCall = context.messages.findLast((item) => item.role === "assistant" && item.content.some((part) => part.type === "toolCall"));
-	const toolName = latestCall?.role === "assistant" ? latestCall.content.find((part) => part.type === "toolCall")?.name : undefined;
-	const text = userText(context);
-	if (text.includes("HELD_AWAIT_SOURCE")) return process.env.DURABLE_TEST_RETRY === "1" ? retryError() : pending(signal);
-	if (last?.role === "toolResult" && toolName === "agent_await") {
-		writeFileSync(join(controlDir(), "await-return.json"), JSON.stringify({ at: Date.now(), result: last }));
-		mark("await-return");
-		return completed([{ type: "text", text: "AWAIT_FINISHED" }], "stop");
-	}
-	if (last?.role === "toolResult" && toolName === "agent_spawn") {
-		const body = typeof last.content === "string" ? last.content : last.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
-		if (last.isError) throw new Error(`Fixture agent_spawn failed: ${body}`);
-		const result = JSON.parse(body.split("\nResult: ")[1].split("\n")[0]);
-		return completed([{ type: "toolCall", id: "await-local-result", name: "agent_await", arguments: { results: [result], ...release } }], "toolUse");
-	}
-	if (mode === "await-local") return completed([{ type: "toolCall", id: "spawn-await-source", name: "agent_spawn", arguments: { prompt: "HELD_AWAIT_SOURCE", name: "await source", checkInMinutes: 0 } }], "toolUse");
-	const result = JSON.parse(text.split("AWAIT_REFERENCE:")[1].split("\n")[0]);
-	return completed([{ type: "toolCall", id: "await-foreign-result", name: "agent_await", arguments: { results: [result], ...release } }], "toolUse");
-}
-
 /** Marker acknowledgment controls exposure; the native retry scheduler owns the retry delay. */
 function retryError() {
 	const socketPath = process.env.DURABLE_TEST_NOTIFY;
@@ -227,7 +202,6 @@ function stream(_model: unknown, context: TranscriptContext, options?: RequestOp
 	if (mode === "spawn") return spawn(context);
 	if (mode === "intent") return intent(context);
 	if (mode === "storage-pages") return storagePages(context);
-	if (mode === "await-local" || mode === "await-reference") return awaited(context, mode, options?.signal);
 	if (mode === "tool-round" && context.messages.at(-1)?.role !== "toolResult") {
 		return completed([{ type: "toolCall", id: `read-${context.messages.length}`, name: "read", arguments: { path: join(controlDir(), "input.txt") } }], "toolUse");
 	}

@@ -73,8 +73,8 @@ const READ_MCP_RESOURCE_TOOL = "read_mcp_resource";
 const CODEMODE_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
 const CODEMODE_WORKER_WAIT_MS = 60_000;
 const CODEMODE_DEADLINE_MEMO = "agent.codemode.deadline";
-/** Declarations the model keeps when `codemode.mode` is `only`: Pi's code mode and discovery tools, and the Agent's model-only coordination tools that scripts cannot call. */
-const CODEMODE_ONLY_DECLARATIONS = new Set([CODEMODE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME, "agent_await", "agent_compact"]);
+/** Declarations the model keeps when `codemode.mode` is `only`: Pi's code mode and discovery tools, and the Agent's model-only compaction tool that scripts cannot call. */
+const CODEMODE_ONLY_DECLARATIONS = new Set([CODEMODE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME, "agent_compact"]);
 const DEFAULT_READY_TIMEOUT_MS = 10_000;
 
 const MAX_SERVERS_SECTION_CHARS = 4096;

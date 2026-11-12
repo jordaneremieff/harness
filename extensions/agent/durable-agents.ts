@@ -25,8 +25,7 @@ import { storageStatusPageInput, validateStatusSelectors } from "./storage-statu
 import { agentChildrenDoc, type AgentChild } from "./children.ts";
 import { captureProviderRecovery, linkProviderRecovery } from "./provider-block.ts";
 import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
-import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
-import { executeAwait } from "./await-execution.ts";
+import { forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
 import { recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
@@ -59,7 +58,7 @@ import { inputEntry, sentInputClass } from "./input-entry.ts";
 import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
-import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, NATIVE_COMPACTION_SEED, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines, type AgentControlToolName } from "./control-guidance.ts";
+import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_TOOL_NAMES, FOLLOW_UP_DELIVERY_BOUNDARY, NATIVE_COMPACTION_SEED, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines, type AgentControlToolName } from "./control-guidance.ts";
 import { abortScopeContains } from "./abort-scope.ts";
 import { TimerTask, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
@@ -1861,22 +1860,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		),
 	});
 
-	const awaitTool = {
-		...durable.defineTool({
-			name: "agent_await",
-			description: `Keep the original request open until exact admitted results arrive. Native waiting uses no model calls. The first exact producer retry releases by default with partial outcomes, unresolved references and retry facts; releaseOnProviderRetry.minAttempt deliberately selects a later attempt. Unchanged retry evidence does not repeatedly release the same held request. ${AWAIT_INPUT_DELIVERY_BOUNDARY} Release does not stop producers. Abort stops the original request, not its producers.`,
-			parameters: AwaitParams,
-			replay: "safe",
-			execute: async (args, api, context) => {
-				if (dispatch === undefined) return errorResult("Await requires the current native host control binding");
-				const response = await executeAwait(args, api, context, host.storageId, dispatch);
-				return textResult(JSON.stringify(response), response);
-			},
-		}),
-		/** The model calls this directly; a script cannot nest a wait. */
-		callers: ["model"] as const,
-	};
-
 	const guidance = durable.section("agent-controls", (input) => {
 		const selected = input.agent.tools.map((tool) => tool.name);
 		const anyControl = selected.some((name) => (AGENT_CONTROL_TOOL_NAMES as readonly string[]).includes(name));
@@ -1902,7 +1885,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		tasks: [Anchor, Reporter, TimerTask],
 		tools: [
 			structuredControl(spawnTool, DispatchOutputSchema),
-			structuredControl(awaitTool, AwaitOutputSchema),
 			profileTool,
 			intentTool,
 			structuredControl(sendTool, DispatchOutputSchema),
