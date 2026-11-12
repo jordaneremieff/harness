@@ -803,7 +803,7 @@ export class DurableHost {
 			context,
 		);
 		// The recipient's host admits the row later; its placement there appears in the recipient's status.
-		return { ...report, delivery: report.acknowledged ? "admitted" : "pending", ...(report.acknowledged ? {} : { placement: "unplaced" }) };
+		return { ...report, delivery: report.acknowledged ? "admitted" : report.delivery?.state ?? "pending", ...(report.acknowledged ? {} : { placement: "unplaced" }) };
 	}
 
 	private async acknowledgeRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
