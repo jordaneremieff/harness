@@ -119,8 +119,8 @@ async function nativeFixture(t: TestContext) {
 			const id = `input-${++sequence}`;
 			const receipt = await started.request("submit", { message: input, requestId: id }, id, t.signal) as { submissionId: number };
 			assert.equal((await host.wait(receipt.submissionId as SubmissionId, context)).status, "done");
-			// The input is the last user message of its generation request; a summarisation request ends otherwise.
-			const generated = requests.filter((messages) => text(messages.findLast((message) => message.role === "user")) === input);
+			// The input is the last plain user message of its generation request; host notes after it have structured content, and a summarisation request ends otherwise.
+			const generated = requests.filter((messages) => messages.findLast((message) => message.role === "user" && typeof message.content === "string")?.content === input);
 			assert.equal(generated.length, 1, `one provider request ends with the input "${input}"`);
 			return generated[0];
 		},
