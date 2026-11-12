@@ -1,6 +1,6 @@
 import { opendir } from "node:fs/promises";
 import type { AgentCatalog, CatalogRecord } from "./catalog.ts";
-import type { CollaborationList, CollaborationSummary } from "./collaboration-contract.ts";
+import { validateCollaborationAction, type CollaborationList, type CollaborationSummary } from "./collaboration-contract.ts";
 
 export interface RecentCollaborationPage {
 	items: CollaborationSummary[];
@@ -136,6 +136,8 @@ function collect(record: CatalogRecord, cursor: ThreadCursor, state: DiscoverySt
 
 /** Read only bounded published hints. Missing hints remain explicit unknown coverage. */
 export async function discoverCollaboration(catalog: AgentCatalog, input: Record<string, unknown>): Promise<CollaborationList & { sources: DiscoverySource[] }> {
+	if (input.action !== undefined && input.action !== "list") throw new Error("Thread discovery requires action list");
+	validateCollaborationAction({ ...input, action: "list" });
 	const query = typeof input.query === "string" ? input.query : "";
 	if (query.length > 256) throw new Error("Thread query exceeds its bound");
 	const limit = pageLimit(input);

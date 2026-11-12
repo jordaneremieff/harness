@@ -55,19 +55,37 @@ operator decision distinct from your interpretation.
 
 ## Members, posts, and notices
 
-- **Join:** each agent joins itself with a one-line `contribution` naming its
-  task and its hold or release condition. A second join revises it.
+- **Join:** each agent joins itself with a one-line `participation` naming its
+  task and its hold or release condition. Omission preserves its declaration;
+  an empty string clears it. An unchanged join creates no event or notice.
+  Create accepts `participation` too. Join does not accept a discussion `message`;
+  post a separate message for discussion.
 - **Post:** `message` with an optional `source` and `replyTo` event. Use
   `kind: "carried-authority"` with a `source` to relay an operator decision.
-- **Size:** keep `contribution` within 256 characters and `message` within
+- **Size:** keep `participation` within 256 characters and `message` within
   8,000 characters. Write longer content to a file and post its path.
   Do not split the content across repeated posts to evade the caps.
-- **Notify:** named `notify` recipients get a steer and a model wake. Other
-  members get passive notices at existing boundaries, with no model turn.
+- **Notify:** named `notify` recipients get active attention. Other members get
+  body-free passive event facts, with no model turn. At the next normal boundary,
+  verified facts appear as a frozen range marker per thread and recipient.
+  A later event gets a later marker; it does not change an earlier marker.
   Name recipients only when their attention matters now.
-- **Read:** returns the frame, members, chronological events, and
-  `nextBefore` for older pages. Use the digest recipe in
-  `references/codemode.md` to read only new events.
+- **Read:** the default read returns the frame, members, chronological events,
+  and `nextBefore` for older pages. Follow that cursor with `before`.
+  To read new events, use `after: 0` initially, then the last returned sequence.
+  Supply `knownFrameRevision` with `after` to omit an unchanged frame.
+  Forward pages return `direction: "forward"`, page coverage, and an exact `next`
+  call when more events remain. Follow it unchanged. Do not mix `after` and
+  `before`; a revision without `after` refuses.
+- **Time and recovery:** each event read shows its epoch `at` and derived ISO UTC
+  `atUtc`. A null UTC value means the epoch exceeds the date conversion range.
+  Active excerpts mark a cut with `[cut]` and name an exact thread read for the
+  full event. Passive range markers name their read boundary and continuation.
+  The range does not claim that every event inside it was passive.
+
+A read does not acknowledge addressed attention or indicate agreement. A create
+event omits its duplicate frame text in read output and marks that omission;
+the top-level frame and the retained original event stay intact.
 
 No post or notice arms a check-in or requests a reply. A passive notice can
 arrive after a contributor's deliverable; assignments therefore put tool calls

@@ -13,7 +13,7 @@ const other = "44444444-4444-4444-4444-444444444444";
 function thread(id = `${storage}/abcdef`, members = [storage, peer]): CollaborationPage {
 	return { thread: { id, title: "Review current work", purpose: "Read the useful result", authority: "Operator request", source: "Brief", restrictions: "No live changes", acceptance: "Open a participant", integrator: storage, creator: storage, revision: 1, sequence: 20, closed: false, createdAt: 1, updatedAt: 20,
 		members: members.map((identity) => ({ identity, contribution: `Work by ${identity}`, joinedAt: 1 })) },
-		events: Array.from({ length: 20 }, (_, i) => ({ threadId: id, sequence: i + 1, at: i + 1, sender: peer, origin: "model" as const, kind: "contribution", message: `Exchange message ${i + 1}`, source: "", replyTo: null, revision: 1, notify: [] })), nextBefore: null, pending: 0, coverage: { complete: true, bytes: 1000 } };
+		events: Array.from({ length: 20 }, (_, i) => ({ threadId: id, sequence: i + 1, at: i + 1, atUtc: new Date(i + 1).toISOString(), sender: peer, origin: "model" as const, kind: "contribution", message: `Exchange message ${i + 1}`, source: "", replyTo: null, revision: 1, notify: [] })), nextBefore: null, pending: 0, coverage: { complete: true, bytes: 1000 } };
 }
 function discovery(pages: CollaborationPage[]) {
 	return { items: pages.map(({ thread: t }) => ({ id: t.id, title: t.title, purpose: t.purpose, updatedAt: t.updatedAt, closed: false, members: t.members.length })), nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } };

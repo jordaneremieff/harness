@@ -36,7 +36,7 @@ function page(id: string, events: CollaborationEvent[], patch: Partial<Collabora
 			],
 			...patch,
 		},
-		events,
+		events: events.map((event) => ({ ...event, atUtc: new Date(event.at).toISOString() })),
 		nextBefore,
 		pending: 0,
 		coverage: { complete: true, bytes: 100 },

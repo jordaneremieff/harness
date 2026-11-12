@@ -61,7 +61,7 @@ export function threadDiscovery(value: unknown): value is ThreadDiscovery {
 
 /** A thread page in the owner's shape; anything else is refused, never adapted. */
 export function threadPage(value: unknown): value is CollaborationPage {
-	if (!object(value) || !object(value.thread) || !Array.isArray(value.events) || value.events.length > 20 || !object(value.coverage)) return false;
+	if (!object(value) || value.direction !== undefined || !object(value.thread) || !Array.isArray(value.events) || value.events.length > 20 || !object(value.coverage)) return false;
 	const thread = value.thread;
 	return (
 		["id", "title", "purpose", "authority", "source", "restrictions", "acceptance", "integrator", "creator"].every(
@@ -84,6 +84,8 @@ export function threadPage(value: unknown): value is CollaborationPage {
 			(event) =>
 				object(event) &&
 				["threadId", "sender", "kind", "message", "source"].every((key) => typeof event[key] === "string" && event[key].length <= 48 * 1024) &&
+				(event.atUtc === null || typeof event.atUtc === "string") &&
+				(event.frameOmitted === undefined || (event.kind === "create" && event.message === "" && event.frameOmitted === "current-frame-returned-separately")) &&
 				(event.origin === "operator" || event.origin === "model") &&
 				["sequence", "at", "revision"].every((key) => number(event[key])) &&
 				(event.replyTo === null || number(event.replyTo)) &&
