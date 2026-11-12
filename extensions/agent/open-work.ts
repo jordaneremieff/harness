@@ -7,15 +7,20 @@
  * recipient. Arrived dependencies and settled inputs never close an item, and nothing is scheduled
  * for an item: it stays in status and in check-ins until then.
  *
- * Every function that takes a transaction reads submissions. A transaction refuses table reads after its
- * first table write, so call these before an entry, submission or task write of the same commit, or in
- * a commit of their own. Their own writes are documents and delivery rows only.
+ * A dependency whose producer is in this storage is read from that producer's committed facts. For a
+ * producer of another storage the producer's host sends a typed mark with each receipt and final report,
+ * and the admitting host retains it here (`recordDependencyMarks`).
+ *
+ * Every function that takes a transaction reads submissions, except `recordDependencyMarks`. A
+ * transaction refuses table reads after its first table write, so call these before an entry, submission
+ * or task write of the same commit, or in a commit of their own. Their own writes are documents and
+ * delivery rows only.
  */
 import type { Context } from "@earendil-works/chord/context";
 import { arr, bool, int, lit, obj, opt, str, union, type Schema, type Static } from "@earendil-works/pi-schema";
 import { defineDoc, LiveDoc, type ConversationId, type Harness, type SubmissionId, type SubmissionRecord, type ToolExecutionResult, type Tx } from "@earendil-works/pi-durable";
 import { retainedReportRequest } from "./delivery-store.ts";
-import { recordReportInTransaction, type DeliveryReport } from "./durable-controls.ts";
+import { recordReportInTransaction, type DeliveryReceipt, type DeliveryReport } from "./durable-controls.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 import { RequestContextDoc, type RequestContext } from "./request-context.ts";
 import { ResultReferenceSchema, type ResultReference } from "./result-schema.ts";
@@ -28,6 +33,8 @@ export const CLOSED_WORK_LIMIT = 16;
 export const WORK_DEPENDENCY_LIMIT = 16;
 export const WORK_NOTE_CHARS = 1200;
 export const WORK_MESSAGE_CHARS = 100_000;
+/** Marks of one delivery, and retained marks that no retained item names. */
+export const DEPENDENCY_MARK_LIMIT = 64;
 const CLOSE_EXCERPT_CHARS = 600;
 
 export type WorkCloseStatus = "done" | "failed" | "stopped" | "reset";
@@ -45,7 +52,13 @@ export type OpenWorkItem = {
 	updatedAt: number;
 	close?: OpenWorkClose;
 };
-export type OpenWorkState = { items: OpenWorkItem[] };
+/**
+ * Typed evidence of one result that a delivery admitted into the conversation: a labelled state note, or
+ * a result (an ordinary answer or an explicit final report).
+ */
+export type DependencyMark = { sessionId: string; submissionId: number; requestId: string; state: "state-note" | "arrived" };
+/** `arrivals` holds the marks of admitted deliveries; a dependency of another storage reads its state there. */
+export type OpenWorkState = { items: OpenWorkItem[]; arrivals?: DependencyMark[] };
 
 /** A fork starts without items: declared work stays with the conversation that owes its final report. */
 export const OpenWorkDoc = defineDoc<OpenWorkState>({
@@ -92,12 +105,25 @@ export function parseAgentWorkInput(input: unknown): AgentWorkInput {
 	return input;
 }
 
+export const DependencyMarksSchema = arr(obj({
+	sessionId: str({ minLength: 1, maxLength: 256 }),
+	submissionId: submissionNumber,
+	requestId: requestText,
+	state: union([lit("state-note"), lit("arrived")]),
+}), { maxItems: DEPENDENCY_MARK_LIMIT });
+
+/** Marks from a delivery request; a malformed value refuses the request. */
+export function parseDependencyMarks(value: unknown): DependencyMark[] {
+	if (!matchesSchema(DependencyMarksSchema, value)) throw new TypeError("Invalid dependency marks");
+	return value.map(({ sessionId, submissionId, requestId, state }) => ({ sessionId, submissionId, requestId, state }));
+}
+
 export const OpenWorkDependencySchema = obj({
 	sessionId: str({ minLength: 1, maxLength: 256 }),
 	submissionId: submissionNumber,
 	requestId: opt(requestText),
 	state: union([lit("open"), lit("state-note"), lit("arrived")]),
-	/** Present when the state was not read from the producer's committed facts. */
+	/** Present when no committed fact of the producer and no admitted delivery supplied the state. */
 	unavailable: opt(str()),
 	inspect: obj({ tool: lit("agent_inspect"), view: lit("result"), sessionId: str({ minLength: 1, maxLength: 256 }), submissionId: submissionNumber }),
 });
@@ -283,6 +309,34 @@ export function dependencyState(fact: DependencyFact): "open" | "state-note" | "
 	return fact.work === "open" ? "state-note" : "arrived";
 }
 
+function markMatches(reference: ResultReference, mark: DependencyMark): boolean {
+	return reference.sessionId === mark.sessionId && reference.submissionId === mark.submissionId && (reference.requestId === undefined || reference.requestId === mark.requestId);
+}
+
+/** State that admitted deliveries established for one dependency; undefined without a matching mark. */
+export function markedState(arrivals: readonly DependencyMark[], reference: ResultReference): DependencyMark["state"] | undefined {
+	const matches = arrivals.filter((mark) => markMatches(reference, mark));
+	if (matches.length === 0) return undefined;
+	return matches.some((mark) => mark.state === "arrived") ? "arrived" : "state-note";
+}
+
+/**
+ * Retained marks after one delivery. A mark only rises: a state note never replaces an arrived result.
+ * A mark that a retained item names always stays; of the others, which a later declaration can still
+ * name, the newest stay up to the bound.
+ */
+export function withDependencyMarks(arrivals: readonly DependencyMark[], marks: readonly DependencyMark[], items: readonly OpenWorkItem[]): DependencyMark[] {
+	const next = arrivals.map((mark) => ({ ...mark }));
+	for (const mark of marks) {
+		const prior = next.find((candidate) => candidate.sessionId === mark.sessionId && candidate.submissionId === mark.submissionId && candidate.requestId === mark.requestId);
+		if (prior === undefined) next.push({ ...mark });
+		else if (mark.state === "arrived") prior.state = "arrived";
+	}
+	const named = (mark: DependencyMark): boolean => items.some((item) => item.results.some((reference) => markMatches(reference, mark)));
+	let spare = next.filter((mark) => !named(mark)).length - DEPENDENCY_MARK_LIMIT;
+	return next.filter((mark) => named(mark) || spare-- <= 0);
+}
+
 export function reportDelivery(report: Pick<DeliveryReport, "acknowledged" | "delivery" | "fallbackRecipients"> | undefined): FinalReportDelivery {
 	if (report === undefined) return "absent";
 	if (report.acknowledged) return "delivered";
@@ -302,6 +356,11 @@ function isTx(reader: OpenWorkReader): reader is Tx {
 async function readItems(reader: OpenWorkReader, conversationId: ConversationId): Promise<readonly OpenWorkItem[]> {
 	if (isTx(reader)) return await reader.conversation(conversationId) === undefined ? [] : (await reader.doc(OpenWorkDoc, conversationId)).items;
 	return (await reader.harness.snapshot(OpenWorkDoc, conversationId, reader.context))?.items ?? [];
+}
+
+async function readArrivals(reader: OpenWorkReader, conversationId: ConversationId): Promise<readonly DependencyMark[]> {
+	if (isTx(reader)) return await reader.conversation(conversationId) === undefined ? [] : (await reader.doc(OpenWorkDoc, conversationId)).arrivals ?? [];
+	return (await reader.harness.snapshot(OpenWorkDoc, conversationId, reader.context))?.arrivals ?? [];
 }
 
 async function readSubmission(reader: OpenWorkReader, id: number): Promise<SubmissionRecord | undefined> {
@@ -374,29 +433,38 @@ export async function dependencyFact(reader: OpenWorkReader, storageId: string, 
 	return { input: "settled", work: work === undefined ? "none" : work.close === undefined ? "open" : "closed" };
 }
 
-const REMOTE_PRODUCER = "the producer is in another storage; read the result with the inspect call";
+const NO_ADMITTED_RESULT = "the producer is in another storage and no result of this dependency was admitted into this conversation; read it with the inspect call";
 
-async function dependencyViews(reader: OpenWorkReader, storageId: string, item: OpenWorkItem, facts?: ReadonlyMap<string, DependencyFact>): Promise<OpenWorkDependencyView[]> {
+/** Marks of the declaring conversation, and facts that a caller read from producers of other storages. */
+type DependencyEvidence = { readonly arrivals: readonly DependencyMark[]; readonly facts?: ReadonlyMap<string, DependencyFact> };
+
+/**
+ * A producer of this storage is read from its committed facts. A producer of another storage reads from a
+ * caller's fact, else from the marks of the deliveries that this conversation admitted.
+ */
+async function dependencyViews(reader: OpenWorkReader, storageId: string, item: OpenWorkItem, evidence: DependencyEvidence): Promise<OpenWorkDependencyView[]> {
 	const views: OpenWorkDependencyView[] = [];
 	for (const reference of item.results) {
-		const fact = await dependencyFact(reader, storageId, reference) ?? facts?.get(dependencyKey(reference)) ?? { input: "pending" as const, work: "none" as const, unavailable: REMOTE_PRODUCER };
+		const fact = await dependencyFact(reader, storageId, reference) ?? evidence.facts?.get(dependencyKey(reference));
+		const marked = fact === undefined ? markedState(evidence.arrivals, reference) : undefined;
+		const unavailable = fact === undefined ? marked === undefined ? NO_ADMITTED_RESULT : undefined : fact.unavailable;
 		views.push({
 			...copyReference(reference),
-			state: dependencyState(fact),
-			...(fact.unavailable === undefined ? {} : { unavailable: fact.unavailable }),
+			state: fact === undefined ? marked ?? "open" : dependencyState(fact),
+			...(unavailable === undefined ? {} : { unavailable }),
 			inspect: { tool: "agent_inspect", view: "result", sessionId: reference.sessionId, submissionId: reference.submissionId },
 		});
 	}
 	return views;
 }
 
-async function itemView(reader: OpenWorkReader, storageId: string, item: OpenWorkItem, state: OpenWorkView["state"], facts?: ReadonlyMap<string, DependencyFact>): Promise<OpenWorkView> {
+async function itemView(reader: OpenWorkReader, storageId: string, item: OpenWorkItem, state: OpenWorkView["state"], evidence: DependencyEvidence): Promise<OpenWorkView> {
 	const { requestId, submissionId, requester, replyTo, origin, note, declaredAt, updatedAt, close } = item;
 	const delivery = close === undefined || !isTx(reader) ? undefined : reportDelivery(await retainedReportRequest(reader, replyTo, close.reportRequestId));
 	return {
 		requestId, submissionId, requester, replyTo, origin, note, state, declaredAt, updatedAt,
 		...(close === undefined ? {} : { close: { status: close.status, message: close.message, at: close.at, reportRequestId: close.reportRequestId, ...(delivery === undefined ? {} : { delivery }) } }),
-		dependencies: await dependencyViews(reader, storageId, item, facts),
+		dependencies: await dependencyViews(reader, storageId, item, evidence),
 	};
 }
 
@@ -411,12 +479,15 @@ export async function remoteDependencies(reader: OpenWorkReader, storageId: stri
 
 /**
  * Status read: every retained item with its route, note, state, final-report delivery state and
- * dependency states. Committed facts only; it never waits. `facts` supplies dependencies of other
- * storages, keyed by `dependencyKey`; without one such a dependency reads `open` with `unavailable`.
+ * dependency states. Committed facts only; it never waits. A dependency of another storage reads the
+ * mark of the delivery that this conversation admitted: `state-note` for a labelled state note, `arrived`
+ * for an ordinary result or an explicit final report, and `open` with `unavailable` without one.
+ * `facts`, keyed by `dependencyKey`, takes precedence when a caller read the producer's storage.
  */
 export async function openWorkStatus(reader: OpenWorkReader, storageId: string, conversationId: ConversationId, facts?: ReadonlyMap<string, DependencyFact>): Promise<OpenWorkView[]> {
 	const views: OpenWorkView[] = [];
-	for (const item of await currentItems(reader, conversationId)) views.push(await itemView(reader, storageId, item, isOpen(item) ? "open" : "closed", facts));
+	const evidence = { arrivals: await readArrivals(reader, conversationId), ...(facts === undefined ? {} : { facts }) };
+	for (const item of await currentItems(reader, conversationId)) views.push(await itemView(reader, storageId, item, isOpen(item) ? "open" : "closed", evidence));
 	return views;
 }
 
@@ -426,7 +497,7 @@ export async function openWorkCheckInLines(reader: OpenWorkReader, storageId: st
 	if (item === undefined) return [];
 	const lines = [`Declared background work is open (not a final result). Note: ${excerpt(item.note, CLOSE_EXCERPT_CHARS)}`];
 	if (item.results.length === 0) lines.push("No producer dependency: no event wakes this work; it stays open until agent_work complete.");
-	for (const dependency of await dependencyViews(reader, storageId, item)) {
+	for (const dependency of await dependencyViews(reader, storageId, item, { arrivals: await readArrivals(reader, conversationId) })) {
 		const state = dependency.unavailable === undefined ? dependency.state : `${dependency.state} (${dependency.unavailable})`;
 		lines.push(`Dependency ${dependency.sessionId} submission ${dependency.submissionId}: ${state}. Read: agent_inspect view: result, sessionId ${dependency.sessionId}, submissionId ${dependency.submissionId}.`);
 	}
@@ -479,7 +550,7 @@ export async function declareOpenWork(tx: Tx, storageId: string, conversationId:
 	const outcome = continueWork(items, { requestId, ...(route === undefined ? {} : { route }), results: input.results, note: input.note, self: canonicalIdentity(storageId, conversationId), now });
 	if ("error" in outcome) return outcome;
 	state.items = outcome.items;
-	return { change: outcome.change, item: await itemView(tx, storageId, outcome.item, "open") };
+	return { change: outcome.change, item: await itemView(tx, storageId, outcome.item, "open", { arrivals: state.arrivals ?? [] }) };
 }
 
 async function finalReport(tx: Tx, storageId: string, conversationId: ConversationId, item: OpenWorkItem, message: string): Promise<DeliveryReport> {
@@ -510,7 +581,7 @@ export async function completeOpenWork(tx: Tx, storageId: string, conversationId
 		? close === undefined ? undefined : await retainedReportRequest(tx, outcome.item.replyTo, close.reportRequestId)
 		: await finalReport(tx, storageId, conversationId, outcome.item, input.message);
 	if (!outcome.deduped) state.items = outcome.items;
-	return { item: await itemView(tx, storageId, outcome.item, "closed"), deduped: outcome.deduped, ...(report === undefined ? {} : { report }) };
+	return { item: await itemView(tx, storageId, outcome.item, "closed", { arrivals: state.arrivals ?? [] }), deduped: outcome.deduped, ...(report === undefined ? {} : { report }) };
 }
 
 /**
@@ -528,9 +599,56 @@ export async function closeOpenWork(tx: Tx, storageId: string, conversationId: C
 	const views: OpenWorkView[] = [];
 	for (const item of outcome.closed) {
 		await finalReport(tx, storageId, conversationId, item, hostCloseMessage(item, reason));
-		views.push(await itemView(tx, storageId, item, "closed"));
+		views.push(await itemView(tx, storageId, item, "closed", { arrivals: state.arrivals ?? [] }));
 	}
 	return views;
+}
+
+// ─── Delivery evidence ────────────────────────────────────────────────────────
+
+/**
+ * Marks that the producer's host sends with a receipt delivery: a receipt of a request with declared work is
+ * a state note, whether that work is open or closed; every other receipt is the result. Read in the
+ * producer's storage when the delivery is sent.
+ */
+export async function receiptDependencyMarks(reader: OpenWorkReader, storageId: string, receipts: readonly Pick<DeliveryReceipt, "conversationId" | "submissionId" | "requestId">[]): Promise<DependencyMark[]> {
+	const declared = new Map<ConversationId, OpenWorkItem[]>();
+	const marks: DependencyMark[] = [];
+	for (const receipt of receipts.slice(0, DEPENDENCY_MARK_LIMIT)) {
+		const items = declared.get(receipt.conversationId) ?? await currentItems(reader, receipt.conversationId);
+		declared.set(receipt.conversationId, items);
+		const stateNote = items.some((item) => item.requestId === receipt.requestId);
+		marks.push({ sessionId: canonicalIdentity(storageId, receipt.conversationId), submissionId: receipt.submissionId, requestId: receipt.requestId, state: stateNote ? "state-note" : "arrived" });
+	}
+	return marks;
+}
+
+const FINAL_REPORT_ID = /^work-final:([1-9][0-9]*):(.+)$/su;
+
+/**
+ * Mark that the producer's host sends with a report delivery: an explicit final report marks the input
+ * of its request `arrived`. Empty for every other report, and for a final report ID that names no input
+ * of the sending conversation.
+ */
+export async function reportDependencyMarks(tx: Tx, storageId: string, report: Pick<DeliveryReport, "requestId" | "senderIdentity">): Promise<DependencyMark[]> {
+	const match = FINAL_REPORT_ID.exec(report.requestId);
+	if (match === null) return [];
+	const conversationId = Number(match[1]) as ConversationId;
+	if (!Number.isSafeInteger(conversationId) || canonicalIdentity(storageId, conversationId) !== report.senderIdentity || await tx.conversation(conversationId) === undefined) return [];
+	const record = await tx.submissionByRequest(conversationId, match[2]);
+	return record?.type === "input" ? [{ sessionId: report.senderIdentity, submissionId: record.id, requestId: match[2], state: "arrived" }] : [];
+}
+
+/**
+ * Retain the marks of a delivery that the conversation admitted. It reads and writes this conversation's
+ * document only, so it can follow a table write of the same commit. A repeated delivery changes nothing.
+ */
+export async function recordDependencyMarks(tx: Tx, conversationId: ConversationId, marks: readonly DependencyMark[]): Promise<void> {
+	if (marks.length === 0) return;
+	const state = await tx.doc(OpenWorkDoc, conversationId);
+	const prior = state.arrivals ?? [];
+	const next = withDependencyMarks(prior, marks, state.items);
+	if (JSON.stringify(next) !== JSON.stringify(prior)) state.arrivals = next;
 }
 
 // ─── Tool execution ─────────────────────────────────────────────────────────

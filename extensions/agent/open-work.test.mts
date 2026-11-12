@@ -8,7 +8,8 @@ import { inputEntry } from "./input-entry.ts";
 import {
 	AgentWorkOutputSchema, CLOSED_WORK_LIMIT, OPEN_WORK_LIMIT, OpenWorkDoc, boundClosedItems, closeOpenWork, closeWork, completeOpenWork, completeWork, continueWork,
 	declareOpenWork, dependencyState, executeAgentWork, finalReportLabel, finalReportRequestId, openWorkCheckInLines, openWorkItems, openWorkStatus,
-	parseAgentWorkInput, receiptWork, reportDelivery, requestHasOpenWork, stateNoteLabel, withoutVoidItems, type OpenWorkItem, type WorkRoute,
+	DEPENDENCY_MARK_LIMIT, markedState, parseAgentWorkInput, parseDependencyMarks, receiptDependencyMarks, receiptWork, recordDependencyMarks, reportDelivery, reportDependencyMarks,
+	requestHasOpenWork, stateNoteLabel, withDependencyMarks, withoutVoidItems, type OpenWorkItem, type WorkRoute,
 } from "./open-work.ts";
 import { recordRequestContext, type RequestContext } from "./request-context.ts";
 import { matchesSchema } from "./schema-check.ts";
@@ -222,4 +223,80 @@ it("removes the item of an unanswered declaring run and closes later items with 
 	const repeated = await harness.commit((tx) => completeOpenWork(tx, STORAGE, conversation.id, { request: "task-b", status: "done", message: "late" }, 50), context);
 	assert.ok(!("error" in repeated));
 	assert.deepEqual([repeated.deduped, repeated.item.close?.status], [true, "reset"]);
+});
+
+it("raises retained marks only, matches exact identities and bounds unnamed marks", () => {
+	const note = { sessionId: "storage-b:4", submissionId: 90, requestId: "child-task", state: "state-note" as const };
+	const arrived = { ...note, state: "arrived" as const };
+	assert.deepEqual(withDependencyMarks([], [note, note], []), [note]);
+	assert.deepEqual(withDependencyMarks([note], [arrived], []), [arrived]);
+	assert.deepEqual(withDependencyMarks([arrived], [note], []), [arrived], "a state note never replaces an arrived result");
+	assert.equal(markedState([note], dependency()), "state-note");
+	assert.equal(markedState([note], { ...dependency(), requestId: "child-task" }), "state-note");
+	assert.equal(markedState([arrived], { ...dependency(), requestId: "other-task" }), undefined);
+	assert.equal(markedState([arrived], dependency(91)), undefined);
+	assert.equal(markedState([arrived], dependency(90, "storage-b:5")), undefined);
+	const many = Array.from({ length: DEPENDENCY_MARK_LIMIT + 3 }, (_, index) => ({ ...arrived, submissionId: 200 + index }));
+	const bounded = withDependencyMarks([note], many, [declared()]);
+	assert.equal(bounded.length, DEPENDENCY_MARK_LIMIT + 1);
+	assert.deepEqual(bounded[0], note, "a mark that a retained item names stays");
+	assert.equal(bounded[1].submissionId, 203, "the oldest unnamed marks leave first");
+	assert.throws(() => parseDependencyMarks([{ ...note, state: "open" }]), /Invalid dependency marks/u);
+	assert.deepEqual(parseDependencyMarks([{ ...note }]), [note]);
+});
+
+it("reads a dependency of another storage from the marks of admitted deliveries", async (t) => {
+	const REMOTE = "storage-b";
+	const { harness, conversation } = await fixture(t);
+	const remote = await fixture(t);
+	const own = await harness.commit((tx) => placed(tx, conversation.id, route()), context);
+	const child = await remote.harness.commit((tx) => placed(tx, remote.conversation.id, { requestId: "child-task", requester: STORAGE, replyTo: STORAGE, origin: "model" }), context);
+	const plain = await remote.harness.commit((tx) => placed(tx, remote.producer.id, { requestId: "plain-task", requester: STORAGE, replyTo: STORAGE, origin: "model" }), context);
+	const results = [{ sessionId: REMOTE, submissionId: child, requestId: "child-task" }, { sessionId: `${REMOTE}:${remote.producer.id}`, submissionId: plain }];
+	await harness.commit((tx) => declareOpenWork(tx, STORAGE, conversation.id, { results, note: "wait for two remote results" }, 10), context);
+	await harness.commit((tx) => answered(tx, conversation.id, own), context);
+	const read = async () => (await harness.commit((tx) => openWorkStatus(tx, STORAGE, conversation.id), context))[0].dependencies.map((item) => [item.state, item.unavailable === undefined]);
+	const deliver = (marks: unknown) => harness.commit((tx) => recordDependencyMarks(tx, conversation.id, parseDependencyMarks(marks)), context);
+	assert.deepEqual(await read(), [["open", false], ["open", false]]);
+
+	// The remote producer declares work and answers: its receipt is a labelled state note.
+	await remote.harness.commit((tx) => declareOpenWork(tx, REMOTE, remote.conversation.id, { results: [], note: "own work remains" }, 11), context);
+	await remote.harness.commit((tx) => answered(tx, remote.conversation.id, child), context);
+	const stateNote = await remote.harness.commit((tx) => receiptDependencyMarks(tx, REMOTE, [{ conversationId: remote.conversation.id, submissionId: child, requestId: "child-task" }]), context);
+	assert.deepEqual(stateNote, [{ sessionId: REMOTE, submissionId: child, requestId: "child-task", state: "state-note" }]);
+	await deliver(stateNote);
+	assert.deepEqual(await read(), [["state-note", true], ["open", false]]);
+	await deliver(stateNote);
+	assert.deepEqual(await read(), [["state-note", true], ["open", false]], "a state note alone never reads as arrived");
+	assert.deepEqual((await openWorkStatus({ harness, context }, STORAGE, conversation.id))[0].dependencies.map((item) => item.state), ["state-note", "open"]);
+	assert.match((await harness.commit((tx) => openWorkCheckInLines(tx, STORAGE, conversation.id, "task-a"), context)).join("\n"), /submission \d+: state-note\./u);
+
+	// A producer without declared work answers: its receipt is the result.
+	await remote.harness.commit((tx) => answered(tx, remote.producer.id, plain), context);
+	const ordinary = await remote.harness.commit((tx) => receiptDependencyMarks(tx, REMOTE, [{ conversationId: remote.producer.id, submissionId: plain, requestId: "plain-task" }]), context);
+	assert.deepEqual(ordinary.map((mark) => mark.state), ["arrived"]);
+	await deliver(ordinary);
+	assert.deepEqual(await read(), [["state-note", true], ["arrived", true]]);
+
+	// Only the explicit final report of the first producer moves its dependency to arrived.
+	const completed = await remote.harness.commit((tx) => completeOpenWork(tx, REMOTE, remote.conversation.id, { request: "child-task", status: "done", message: "child result" }, 12), context);
+	assert.ok(!("error" in completed) && completed.report !== undefined);
+	const report = completed.report;
+	assert.deepEqual(await remote.harness.commit((tx) => reportDependencyMarks(tx, REMOTE, { requestId: "report:other", senderIdentity: REMOTE }), context), []);
+	assert.deepEqual(await remote.harness.commit((tx) => reportDependencyMarks(tx, REMOTE, { requestId: report.requestId, senderIdentity: `${REMOTE}:${remote.producer.id}` }), context), [], "the sender must be the conversation that the report ID names");
+	const final = await remote.harness.commit((tx) => reportDependencyMarks(tx, REMOTE, report), context);
+	assert.deepEqual(final, [{ sessionId: REMOTE, submissionId: child, requestId: "child-task", state: "arrived" }]);
+	await deliver(final);
+	assert.deepEqual(await read(), [["arrived", true], ["arrived", true]]);
+	await deliver(await remote.harness.commit((tx) => receiptDependencyMarks(tx, REMOTE, [{ conversationId: remote.conversation.id, submissionId: child, requestId: "child-task" }]), context));
+	assert.deepEqual(await read(), [["arrived", true], ["arrived", true]], "a late state-note receipt does not lower the state");
+});
+
+it("keeps a mark that arrived before the declaration", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	await harness.commit((tx) => recordDependencyMarks(tx, conversation.id, [{ sessionId: "storage-b:4", submissionId: 90, requestId: "child-task", state: "arrived" }]), context);
+	await harness.commit((tx) => placed(tx, conversation.id, route()), context);
+	const first = await harness.commit((tx) => declareOpenWork(tx, STORAGE, conversation.id, { results: [dependency(), dependency(91)], note: "one result is already here" }, 10), context);
+	assert.ok(!("error" in first));
+	assert.deepEqual(first.item.dependencies.map((item) => item.state), ["arrived", "open"]);
 });
