@@ -1049,7 +1049,8 @@ export class DurableHost {
 		const timerId = requestPositiveId(params?.timerId, "timerId");
 		if (timerId === undefined) throw new TypeError("timerId is required");
 		const conversation = await this.target(params, context);
-		return cancelTimer(this.harness, timerId, context, conversation.id);
+		// The receipt names the conversation that this host resolved, as the schedule receipt does.
+		return { ...await cancelTimer(this.harness, timerId, context, conversation.id), identity: this.identity(conversation.id) };
 	}
 
 	private async snapshotRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {

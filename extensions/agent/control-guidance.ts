@@ -82,7 +82,6 @@ export const AWAIT_INPUT_DELIVERY_BOUNDARY = "Admitted explicit input, including
 /** Report timing follows the explicit, retained-provenance, or raw native admission path. */
 export const REPORT_DELIVERY_BOUNDARY = "A report to a busy Durable agent normally waits for the current run to end. A report sent from an ordinary primary uses explicit admission and releases active agent_await after admission, even from an unrelated sender. A report sent from a native Durable agent uses retained report provenance: only a named awaited producer's report releases the wait; unrelated native reports stay queued. Automatic native Reporter result copies remain raw follow-ups, not await-release inputs. Model-origin reports to ordinary primaries use steer. Use steer to change a busy agent's work at its next tool boundary; steer does not interrupt a running tool.";
 
-/** Per-tool snippets and guidelines for the current controls. */
 /**
  * What only the model can carry across a compaction or reset. The host keeps request routes and
  * delivers results itself, so the seed does not ask for them.
@@ -92,6 +91,7 @@ export const CONTINUITY_SEED = "Preserve the current purpose; consequential oper
 export const NATIVE_COMPACTION_SEED = `${CONTINUITY_SEED} After the summary, the Agent continuity note lists the requests that this session sent and that have no delivered result here.`;
 const RESET_HANDOFF_GUIDANCE = "A handoff states the current purpose; consequential operator corrections and what they changed; qualified evidence; unresolved questions; and the newest handover or checkpoint identifier.";
 
+/** Per-tool snippets and guidelines for the current controls. */
 export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, AgentToolGuidance>> = {
 	agent_await: { snippet: "Await exact admitted peer results on the original request", guidelines: ["Use agent_await when this request's answer depends on admitted results from other agents. Waiting is a capability, not a staffing rule; you remain free to do substantive work yourself and delegate only the parts that benefit. Ordinary primaries have no native await; they stay responsive and receive each result through normal delivery.", `Use a short codemode script to spawn or send work, return the exact admitted result references, then call agent_await directly with them. A script cannot call agent_await, so waiting keeps no codemode worker. The native wait keeps this request open without provider calls merely to wait. ${AWAIT_INPUT_DELIVERY_BOUNDARY} Apply the input and await unresolved references again on this same request. A terminal answer settles it once; never answer only to wait.`, "Creation records, reports, timers, names, and latest answers are not result references. Preserve known request IDs. Waiting retains a live tool invocation, native records, observers, and the host process. Storage usage is not per-request usage."] },
 	agent_spawn: {

@@ -1363,8 +1363,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					`Cancellation of timer ${timerId} failed`,
 				);
 				// Only a cancellation before firing closes the scheduled request; a fired timer keeps its admitted input.
-				if (cancelled.isError !== true && cancelled.details?.status === "cancelled")
-					await continuityFact(api, context, (tx) => recordTimerCancelled(tx, api.conversationId, args.sessionId, timerId));
+				// The receipt's identity selects the request: a receipt without one closes nothing.
+				const resolved = cancelled.details?.identity;
+				if (cancelled.isError !== true && cancelled.details?.status === "cancelled" && typeof resolved === "string")
+					await continuityFact(api, context, (tx) => recordTimerCancelled(tx, api.conversationId, resolved, timerId));
 				return cancelled;
 			}
 			return abortResolved(args, api, context);

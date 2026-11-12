@@ -56,12 +56,12 @@ export async function recordScheduled(tx: Tx, conversationId: ConversationId, re
 
 /**
  * Call only when the timer's owner reports a cancellation before firing; a fired timer keeps its
- * request. Timer IDs are local to the target's storage, so two listed timers with one ID close
- * only on an exact target match; otherwise the request stays listed.
+ * request. Timer IDs are local to the target's storage, so `sessionId` is the identity that the
+ * cancelling host resolved, in the form its schedule receipt gave. A request listed under another
+ * identity stays listed.
  */
 export async function recordTimerCancelled(tx: Tx, conversationId: ConversationId, sessionId: string, timerId: number): Promise<void> {
 	const state = await tx.doc(ContinuityDoc, conversationId);
-	const scheduled = state.events.filter((event) => event.phase === "requested" && event.timerId === timerId);
-	const selected = new Set(scheduled.map((event) => event.sessionId)).size <= 1 ? scheduled : scheduled.filter((event) => event.sessionId === sessionId);
-	for (const { sessionId: target, requestId, replyTo } of selected) await recordRefused(tx, conversationId, { sessionId: target, requestId, replyTo });
+	const scheduled = state.events.filter((event) => event.phase === "requested" && event.timerId === timerId && event.sessionId === sessionId);
+	for (const { requestId, replyTo } of scheduled) await recordRefused(tx, conversationId, { sessionId, requestId, replyTo });
 }

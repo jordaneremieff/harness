@@ -20,6 +20,7 @@ import { HOST_CONTRACT } from "./version-contract.ts";
 import { answerMessage, completed, fixtureModelId, fixtureProvider, fixtureRegistry, hostOptions, toolCallMessage } from "./durable-host-fixture.mts";
 import { PLANNING_BUDGET_NOTICE_KIND } from "./capacity-reports.ts";
 import { resetConversation } from "./durable-reset.ts";
+import { TimerTask } from "./durable-timers.ts";
 import { parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
 import { TASK_HOOK_REPORT_KIND } from "./task-hook-reports.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
@@ -360,4 +361,20 @@ it("seeds a native compaction with the continuity items before the caller's inst
 	assert.equal(bare.status, "completed");
 	assert.ok(recorded.provider.at(-1)?.includes(escaped(`Additional focus: ${NATIVE_COMPACTION_SEED}`)));
 	assert.ok(!recorded.provider.at(-1)?.includes("Keep the file list."), "without caller instructions the seed stands alone");
+});
+
+it("names the same resolved identity in a timer's schedule receipt and its cancel receipt", { timeout: 30000 }, async (t) => {
+	const recorded = await recorder();
+	const registry = fixtureRegistry();
+	registry.install(defineExtension({ name: "fixture-timers", tasks: [TimerTask] }));
+	const host = await DurableHost.open({ ...hostOptions(join(fixtureRoot(t), "timers.sqlite"), recorded.models, registry), storageId: "66666666-6666-4666-8666-666666666666" }, context);
+	t.after(() => host.close().catch(() => undefined));
+	const other = await host.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, context);
+	for (const sessionId of [host.storageId, host.identity(other.id)]) {
+		const scheduled = await host.request("timer-schedule", { sessionId, message: "later", deliverAt: Date.now() + 3_600_000, mode: "followUp", origin: "model", ownerId: host.storageId, scheduleId: `schedule:${sessionId}`, requestId: `schedule:${sessionId}:delivery` }) as { timerId: number; identity: string };
+		assert.equal(scheduled.identity, sessionId);
+		const cancelled = await host.request("timer-cancel", { sessionId, timerId: scheduled.timerId }) as { status: string; identity: string };
+		assert.equal(cancelled.status, "cancelled");
+		assert.equal(cancelled.identity, scheduled.identity);
+	}
 });

@@ -78,9 +78,12 @@ it("lists a scheduled input with its timer until a cancellation before firing or
 	assert.match(await note(), /Scheduled inputs: \n\{"sessionId":"worker","timerId":12\}\n\{"sessionId":"other","timerId":9\}\n\{"sessionId":"worker","timerId":9\}/u);
 
 	await write((tx) => recordTimerCancelled(tx, id, "@handle", 9));
-	assert.match(await note(), /"sessionId":"other","timerId":9[\s\S]*"sessionId":"worker","timerId":9/u, "an ambiguous timer ID closes nothing without an exact target");
+	assert.match(await note(), /"sessionId":"other","timerId":9[\s\S]*"sessionId":"worker","timerId":9/u, "a target that is not the listed identity closes nothing");
 	await write((tx) => recordTimerCancelled(tx, id, "other", 9));
-	await write((tx) => recordTimerCancelled(tx, id, "@handle", 12));
+	// Timer 12 is listed for one target only; the same timer ID in another storage is another timer.
+	await write((tx) => recordTimerCancelled(tx, id, "other", 12));
+	assert.match(await note(), /Scheduled inputs: \n\{"sessionId":"worker","timerId":12\}\n\{"sessionId":"worker","timerId":9\}\nRouted/u, "a sole listed timer stays listed when another target's timer with that ID is cancelled");
+	await write((tx) => recordTimerCancelled(tx, id, "worker", 12));
 	const cancelled = await note();
 	assert.match(cancelled, /Scheduled inputs: \n\{"sessionId":"worker","timerId":9\}\nRouted/u);
 

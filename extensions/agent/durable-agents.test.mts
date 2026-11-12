@@ -2602,7 +2602,8 @@ it("lists a scheduled input with its timer and closes it only on a cancellation 
 	let timerId = 8;
 	const { registry } = buildRegistry(async (method, params) => {
 		if (method === "timer-schedule") return { timerId: ++timerId, conversationId: 1, identity: "remote-storage", deadline: params.deliverAt, mode: params.mode, origin: "model", scheduleId: params.scheduleId, deduped: false, disposition: "scheduled", status: "sleeping" };
-		if (method === "timer-cancel") return { timerId: params.timerId, outcome: "marked", status: params.timerId === 9 ? "cancelled" : "fired" };
+		// Timer IDs are local to a storage: the other storage has its own timer 10, and one receipt names no identity.
+		if (method === "timer-cancel") return { timerId: params.timerId, outcome: "marked", status: params.timerId === 11 ? "fired" : "cancelled", ...(params.sessionId === "unnamed-storage" ? {} : { identity: params.sessionId === "@handle" ? "remote-storage" : params.sessionId }) };
 		return createDispatch(holder, [])(method, params);
 	});
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
@@ -2612,8 +2613,11 @@ it("lists a scheduled input with its timer and closes it only on a cancellation 
 	const calls: Array<{ tool: string; args: Durable.JsonObject }> = [
 		{ tool: "agent_send", args: { sessionId: "@handle", message: "Later task", deliverAt } },
 		{ tool: "agent_send", args: { sessionId: "@handle", message: "Second later task", deliverAt } },
+		{ tool: "agent_send", args: { sessionId: "@handle", message: "Third later task", deliverAt } },
+		{ tool: "agent_abort", args: { sessionId: "other-storage", timerId: 10 } },
+		{ tool: "agent_abort", args: { sessionId: "unnamed-storage", timerId: 10 } },
+		{ tool: "agent_abort", args: { sessionId: "@handle", timerId: 11 } },
 		{ tool: "agent_abort", args: { sessionId: "@handle", timerId: 9 } },
-		{ tool: "agent_abort", args: { sessionId: "@handle", timerId: 10 } },
 	];
 	for (const call of calls) {
 		route.script.push(call);
@@ -2623,10 +2627,12 @@ it("lists a scheduled input with its timer and closes it only on a cancellation 
 	assert.deepEqual(facts.map(([phase, sessionId, , id]) => [phase, sessionId, id]), [
 		["requested", "remote-storage", 9],
 		["requested", "remote-storage", 10],
+		["requested", "remote-storage", 11],
 		["refused", "remote-storage", undefined],
-	]);
+	], "a cancelled timer of another storage, a receipt without an identity and a fired timer close nothing");
 	assert.match(facts[0][2], /^timer:test-storage:\d+:delivery$/u);
-	assert.equal(facts[2][2], facts[0][2], "the cancelled timer's request closes; the fired timer keeps its request");
+	assert.equal(facts[3][2], facts[0][2], "the handle's cancellation closes the request listed under the identity that the host resolved");
+	assert.equal((await toolOutcomes(harness, root.id)).filter((outcome) => outcome.name === "agent_abort" && !outcome.isError).length, 4, "every cancellation itself succeeded");
 });
 
 it("starts a self-compaction's summarizer instructions with the continuity seed", async (t) => {
