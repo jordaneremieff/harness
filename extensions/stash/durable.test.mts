@@ -850,7 +850,7 @@ test("native stop runs an accepted work-completion call and refuses its other fo
 	const results = (await toolResults(h.root)).filter((result) => result.name === "fake_finish");
 	assert.equal(results.length, 2);
 	assert.equal(results[0].isError, true);
-	assert.match(results[0].text, /Stash stop[\s\S]*declared work-completion tool \(fake_finish\)/);
+	assert.match(results[0].text, /Stash stop[\s\S]*fake_finish is a declared continuity tool, but its producer does not accept this argument form[\s\S]*declared work-completion tool \(fake_finish\)/);
 	assert.equal(results[1].isError, false);
 	assert.equal(results[1].text, "resolved");
 });

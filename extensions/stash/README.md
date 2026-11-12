@@ -593,7 +593,8 @@ target activity, ownership, or authority. A steer still admits input and can wak
 an idle target. A work-completion call closes the caller's own declared work and
 sends its final report, so a finished result can still settle that work at the
 stop threshold. When a producer declares one, the decision and stop refusals name
-it beside compaction, `stash_write` and the final answer.
+it beside compaction, `stash_write` and the final answer. A refused call of a
+declared tool says that its producer does not accept that argument form.
 
 Unknown usage opens the gate. Calls already in flight finish; stored results,
 asynchronous input, reports and human input are never refused. Those inputs can

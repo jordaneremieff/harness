@@ -163,7 +163,9 @@ describe("capacity tool gate", () => {
 			for (const [toolName, args] of [["finish", { action: "continue" }], ["finish", undefined], ["unchecked", { action: "complete" }], ["future", {}], ["read", { path: "x" }]] as const) {
 				const result = gate({ ...input, measure: known(percent), toolName, args });
 				assert.equal(result.kind, "block", `${toolName} at ${percent}%`);
-				if (result.kind === "block") assert.match(result.reason, /close that work before the answer with a declared work-completion tool \(finish, unchecked\); it sends the final report/);
+				if (result.kind !== "block") continue;
+				assert.match(result.reason, /close that work before the answer with a declared work-completion tool \(finish, unchecked\); it sends the final report/);
+				assert.equal(result.reason.includes(`${toolName} is a declared continuity tool, but its producer does not accept this argument form.`), declared.has(toolName));
 			}
 		}
 		const none = gate({ ...input, declared: new Map(), measure: known(96), toolName: "read", args: {} });
