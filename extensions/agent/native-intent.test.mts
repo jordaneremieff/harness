@@ -57,7 +57,7 @@ async function close(client: HostConnection): Promise<void> {
 	await client.close();
 }
 
-test("native intent has a live writer, catalogue peer discovery, exact cwd, persistent clear and no unsolicited peer turn", { timeout: 60000 }, async t => {
+test("native intent has catalogue peer discovery without a liveness claim, exact cwd, persistent clear and no unsolicited peer turn", { timeout: 60000 }, async t => {
 	const cleanup: (() => void)[] = [];
 	const f = runtimeFixture({ after: fn => cleanup.push(fn) }, { withAgentExtension: true });
 	const create = () => {
@@ -92,7 +92,7 @@ test("native intent has a live writer, catalogue peer discovery, exact cwd, pers
 	assert.ok(Array.isArray(beforeDiscovery.entries));
 	let view = await awareness(bClient, bControl, "peer-discovery");
 	assert.deepEqual(view.presence.efforts.find(row => row.id === a.record.storageId)?.intentClaim, saved.claim, JSON.stringify(view));
-	assert.equal(view.presence.efforts.find(row => row.id === a.record.storageId)?.liveness, "live");
+	assert.equal(view.presence.efforts.find(row => row.id === a.record.storageId)?.liveness, "unknown");
 	assert.equal(view.presence.efforts.find(row => row.id === child.identity)?.intentClaim?.purpose, "Child gate plan");
 	const afterDiscovery = await aClient.request("inspect", { sessionId: a.record.storageId, view: "history", limit: 50 }) as { entries: unknown[] };
 	assert.deepEqual(afterDiscovery.entries, beforeDiscovery.entries, "peer discovery admits no input to the publisher");

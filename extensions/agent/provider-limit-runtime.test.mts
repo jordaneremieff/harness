@@ -8,7 +8,7 @@ import { it, type TestContext } from "node:test";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { acquireHost, waitForHostRelease, type HostConnection } from "./host-client.ts";
 import { hostPaths } from "./host-protocol.ts";
-import { observeClaim } from "./claims.ts";
+import { observeClaim, readClaimFile } from "./claims.ts";
 import { eventLog } from "./host-fixture.mts";
 import { createPrimaryChannel, type PrimaryDelivery } from "./primary-channel.ts";
 import type { ProviderBlockFact } from "./provider-block-facts.ts";
@@ -246,12 +246,29 @@ it("retains immutable blocked results across restart, deduplicates notices, and 
 		await committed(t, host, () => host.request("receipts", { ownerId: owner }), (value) => (value as { receipts: unknown[] }).receipts.length === 0);
 		const originalNotifications = notices.map((item) => item.message.sourceId);
 		const previousPid = host.pid;
+		const paths = hostPaths(f.metadata);
+		const initialClaim = readClaimFile(paths.claim);
+		const initialRecord = initialClaim.claim as { token: string; endedAt?: string };
+		assert.equal(typeof initialRecord.token, "string");
+		assert.equal(initialRecord.endedAt, undefined);
 		await waitForHostRelease(f.metadata, { after: host.request("close"), signal: AbortSignal.timeout(10000) });
 		await host.close();
-		const paths = hostPaths(f.metadata);
-		assert.equal(observeClaim(paths.claim, paths.identity).kind, "absent");
+		const ended = observeClaim(paths.claim, paths.identity);
+		assert.ok(ended.kind === "dead");
+		assert.equal(ended.writerId, initialRecord.token);
+		assert.ok(ended.endedAt);
+		const endedClaim = readClaimFile(paths.claim);
+		assert.equal(endedClaim.dev, initialClaim.dev);
+		assert.equal(endedClaim.ino, initialClaim.ino);
 		host = await acquireHost(f.metadata, { env: f.env("answer") }); trackHost(t, host.pid);
 		assert.notEqual(host.pid, previousPid);
+		const reopenedClaim = readClaimFile(paths.claim);
+		const reopenedRecord = reopenedClaim.claim as { token: string; endedAt?: string };
+		assert.equal(reopenedClaim.dev, initialClaim.dev);
+		assert.equal(reopenedClaim.ino, initialClaim.ino);
+		assert.equal(typeof reopenedRecord.token, "string");
+		assert.notEqual(reopenedRecord.token, initialRecord.token);
+		assert.equal(reopenedRecord.endedAt, undefined);
 		assert.equal((await result(host, admitted.submissionId)).entryId, before.entryId);
 		const duplicate = await host.request("submit", { message: "Preserve original quota result", requestId: "retained-block", ownerId: owner, origin: "model" }) as Submission;
 		assert.equal(duplicate.submissionId, admitted.submissionId); assert.equal(duplicate.deduped, true);
@@ -276,6 +293,12 @@ it("retains immutable blocked results across restart, deduplicates notices, and 
 		for (const sourceId of originalNotifications) assert.equal(notices.filter((item) => item.message.sourceId === sourceId).length, 1);
 		assert.ok(readdirSync(f.testDir).filter((name) => name.startsWith("load-proof-")).length >= 2);
 	} catch (error) {
-		throw new Error(`${String(error)}; notices=${JSON.stringify(notices).slice(0, 12000)}; receipts=${JSON.stringify(await host.request("receipts", { ownerId: owner })).slice(0, 12000)}`);
+		let receipts: unknown;
+		try { receipts = await host.request("receipts", { ownerId: owner }); }
+		catch (diagnosticError) {
+			t.diagnostic(`Receipt diagnostics unavailable: ${String(diagnosticError)}`);
+			throw error;
+		}
+		throw new Error(`${String(error)}; notices=${JSON.stringify(notices).slice(0, 12000)}; receipts=${JSON.stringify(receipts).slice(0, 12000)}`, { cause: error });
 	} finally { await host.close().catch(() => {}); }
 });
