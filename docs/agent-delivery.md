@@ -316,6 +316,12 @@ completion returns the close while that close remains retained; it does not
 create another final report. The work document keeps the newest 16 closed items.
 Use this retained declaration, not an informal promise of a later manual report.
 
+An ordinary session has no `agent_work` tool. When only delegated work
+remains, it ends its turn with a short state note. Results arrive as events
+at its next tool boundary or start its next turn; it never polls. Follow the
+[supervision guidance](../skills/delegate/SKILL.md#6-supervise-without-polling)
+for the native and ordinary control paths.
+
 Read the Agent [result contract](../extensions/agent/README.md#read-peer-results)
 for immediate result reads, answer continuations and receipt-reference pages.
 Result inspection neither withdraws nor acknowledges normal delivery. Active
