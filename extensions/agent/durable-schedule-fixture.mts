@@ -141,11 +141,14 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 				events.push({ type: "error", reason: "aborted", error: aborted });
 				events.end(aborted);
 			};
-			requestOptions?.signal?.addEventListener("abort", abort, { once: true });
+			const signal = requestOptions?.signal;
+			// A request whose signal aborted before the provider call gets no abort event, so it ends here.
+			if (signal?.aborted) abort();
+			else signal?.addEventListener("abort", abort, { once: true });
 			void firstGate.promise.then(() => {
 				if (ended) return;
 				ended = true;
-				requestOptions?.signal?.removeEventListener("abort", abort);
+				signal?.removeEventListener("abort", abort);
 				events.push({ type: "done", reason: "stop", message });
 				events.end(message);
 			});
