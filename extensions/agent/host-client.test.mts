@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, it } from "node:test";
@@ -12,7 +12,7 @@ import { acquireHost, connectHost, HostBusyEndpointUnavailableError, HostReadine
 import { fixtureMetadata, readFixtureState, eventLog, waitForFixtureState, waitForConnectionClose } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { HOST_CONTRACT, type RuntimeContract } from "./version-contract.ts";
-import { markerFixture } from "./durable-runtime-fixture.mts";
+import { fixtureTeardown, markerFixture, waitForProcessGone } from "./durable-runtime-fixture.mts";
 import { runHost } from "./host-process.ts";
 import { tryNativeWriterLease } from "./native-lease.ts";
 
@@ -31,13 +31,14 @@ function fixtureRoot(_t: { after(fn: () => void): void }): string {
 	return root;
 }
 
-function track(t: { after(fn: () => void): void }, pid: number): void {
-	t.after(() => {
+function track(t: { after(fn: () => void | Promise<void>): void }, pid: number): void {
+	t.after(async () => {
 		try {
 			process.kill(pid, "SIGKILL");
 		} catch {
 			// The host already exited.
 		}
+		assert.equal(await waitForProcessGone(pid), true, "the owned host exited before fixture root removal");
 	});
 }
 
@@ -404,9 +405,13 @@ it("a busy runner causes one endpoint negotiation without a native runtime open"
 		const metadata = JSON.parse(process.argv[1]);
 		const paths = hostPaths(metadata), writerId = randomUUID(); let calls = 0;
 		const save = () => writeFileSync(${JSON.stringify(evidence)}, JSON.stringify({pid:process.pid,calls}));
+		save();
 		const server = createTransportServer({serverId:paths.serverId,path:paths.socket,request:async request => {calls++;save();return {format:'pi.agent.host-hello/1',writerId,contract:HOST_CONTRACT};}});
 		await server.start(); save(); process.stdout.write(formatHostBusy({storageId:metadata.storageId,socketPath:paths.socket}));`;
-	t.after(() => { try { const saved = JSON.parse(readFileSync(evidence, "utf8")); process.kill(saved.pid, "SIGKILL"); } catch {} });
+	t.after(async () => {
+		try { const saved = JSON.parse(readFileSync(evidence, "utf8")); process.kill(saved.pid, "SIGKILL"); } catch {}
+		await observeOwnedHostExit(metadata);
+	});
 	const client = await acquireHost(metadata, { runner: "--input-type=module", runnerArgs: ["--eval", source], launchTimeoutMs: 5000 });
 	t.after(() => client.close());
 	assert.equal(JSON.parse(readFileSync(evidence, "utf8")).calls, 1);
@@ -420,7 +425,16 @@ it("reports a real BUSY lease without a verified endpoint as distinct unavailabl
 	assert.equal(held.kind, "held");
 	if (held.kind !== "held") throw new Error("The private fixture lease was not acquired");
 	t.after(() => held.lease.release());
-	await assert.rejects(acquireHost(metadata, launch({ launchTimeoutMs: 3000 })), error => {
+	const attempted = acquireHost(metadata, launch({ launchTimeoutMs: 3000 }));
+	t.after(async () => {
+		const client = await attempted.catch(() => undefined);
+		if (client) {
+			await client.request("close").catch(() => undefined);
+			await client.close();
+		}
+		await observeOwnedHostExit(metadata);
+	});
+	await assert.rejects(attempted, error => {
 		assert.ok(error instanceof HostBusyEndpointUnavailableError);
 		assert.equal(error instanceof HostReadinessUnavailableError, false);
 		assert.match(error.message, /runner reported BUSY.*no native host endpoint was verified/u);
@@ -499,9 +513,15 @@ it("keeps a deep agent directory working with a short socket path", { timeout: 3
 	const config = fixtureMetadata(deepRoot);
 	const connection = await acquireHost(config, launch());
 	track(t, connection.pid);
-	assert.ok(Buffer.byteLength(connection.socketPath, "utf8") <= HOST_SOCKET_PATH_LIMIT_BYTES);
-	assert.deepEqual(await connection.request("timer-list", "deep"), "deep");
-	await connection.close();
+	try {
+		assert.ok(Buffer.byteLength(connection.socketPath, "utf8") <= HOST_SOCKET_PATH_LIMIT_BYTES);
+		assert.deepEqual(await connection.request("timer-list", "deep"), "deep");
+	} finally {
+		await connection.request("close").catch(() => undefined);
+		await connection.close();
+		await connection.ownedExit;
+	}
+	assert.equal(existsSync(connection.socketPath), false, "owner close removes this fixture's fallback socket");
 });
 
 it("reports terminal closure through onClose after a kill", { timeout: 30000 }, async (t) => {
@@ -799,7 +819,12 @@ it("wrong-path readiness never establishes an owned-exit source for attachment",
 });
 
 for (const mode of ["invalid", "wrong-path", "connect-failure", "deadline", "cancel"] as const) it(`${mode} startup observation never kills a resumed runtime`, { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);
+	const root = fixtureRoot(t), metadata = fixtureMetadata(root), createdAt = Date.now();
+	t.after(async () => {
+		await fixtureTeardown(root, metadata.agentDir, createdAt, t);
+		await observeOwnedHostExit(metadata);
+	});
+	const markers = markerFixture(t, root);
 	const release = markers.hold("ready");
 	t.after(release);
 	const restore = markers.hold("restore");
