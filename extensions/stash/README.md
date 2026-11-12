@@ -25,6 +25,7 @@ The agent distills an effort into a durable Markdown handover. The extension own
 | `/stash get <id> <note>` | command | Pick up with an operator note: material recalled after the stash was written, delivered ahead of the artifact and authoritative on conflict. The artifact itself is never rewritten. |
 | `/stash release <id>` | command | Return an active stash to open (dead-session cleanup). |
 | `/stash capacity [reset|release]` | command | Inspect capacity, reset request latches, or release the decision and stop gates until compaction. |
+| `/stash budget [<context-tokens> <cost-usd>\|off]` | command | Select, inspect, or disable per-conversation absolute-context and cost notices. |
 
 Pickup is one system action. The command reads the selected artifact and sends it as the next user message through `pi.sendUserMessage()`. The agent does not need to orchestrate a second `stash_read` call. The current working directory is never changed implicitly; the pickup message names both the current workspace and the recorded project, and calls out a mismatch before edits begin. An optional operator note (`/stash get <id> <note…>`, or the browser's `a` key) rides along in the same message as a distinct amendment block placed ahead of the artifact, marked newer than it and authoritative on conflict; the note is trusted operator input, terminal-sanitized, capped at 20,000 characters, and never persisted — the stashed core material stays byte-identical. `stash_write` emits the equivalent fresh-session shortcut:
 
@@ -524,6 +525,61 @@ not reset the latches. In TUI/RPC the command notifies; in print/JSON it returns
 its text through the existing command-error channel because those modes have no
 command-result notification surface.
 
+### Optional absolute-context and cost notices
+
+`/stash budget 120000 5` selects a 120,000-token context budget and a USD 5
+cumulative-cost budget for the current conversation. Both values must be positive;
+the token budget must be a safe integer. `/stash budget` reports the selection,
+and `/stash budget off` disables it. No machine setting enables these notices.
+Selection is opt-in and local to this extension runtime. It survives context reset
+and compaction, but not extension reload, host restart, or a switch to a different
+ordinary session. Another native conversation or fork starts without a selection.
+
+The ordinary `turn_end` hook appends one displayed custom message at each turn
+boundary while a budget is selected. Here a turn is one model round, including a
+tool round, not one submitted user message. The notice reports absolute context
+tokens and unavailable ordinary cost against the selected budgets. The retained
+message reaches the model with its next normal request; it does not force another
+generation. Earlier request bytes remain a prefix of later requests between
+context changes. Disabling the selection stops new notices, not retained ones.
+No budget notice alters the percentage gates, queries a provider, compacts
+automatically, or substitutes a model. Command status uses the ordinary
+custom-message channel and stderr without a UI.
+
+Native `/stash budget` commands return the current conversation's context and
+cost snapshot against its selected budgets through the normal host command
+surface. Native automatic per-turn notices are unavailable. Public generation
+hooks read snapshots and memos but provide no retained append operation after
+every model round. `onYield.continue` starts another generation, and `afterRun`
+only covers completed runs, not every tool round. Stash does not replace that
+missing surface with a disappearing request suffix or another ledger.
+
+Ordinary context tokens come from `ctx.getContextUsage()` and remain labelled as
+a host estimate. Unknown tokens remain unavailable. Native tokens use the newest
+accepted assistant usage plus a text estimate for trailing messages, or the whole
+context text when accepted usage is absent. This is a context estimate, not an
+exact payload measurement. An ordinary boundary with a pending compaction marks
+the old host estimate unavailable.
+
+Native cost reads public `UsageDoc` for exactly the current conversation. It sums
+committed model and tool buckets, including compaction attempts, without a history
+scan. Context reset and compaction do not clear that counter. It does not use
+`Harness.usage()`, storage totals, or effort totals. The number covers committed
+responses and excludes an in-flight response. Pi records provider-reported
+amounts where supported and model-price estimates otherwise; its aggregate does
+not preserve reliable combined price provenance or a price-completeness marker.
+The notice calls the amount recorded cost, not certified billing or quota use.
+An absent counter, invalid amount, or nonempty zero-cost bucket leaves cost
+unavailable: zero alone does not establish free use or price coverage. An empty
+counter reports zero recorded cost. Ordinary cost remains unavailable because
+the extension context exposes no maintained conversation-cost aggregate. Stash
+neither scans history nor builds a second ledger to replace that missing API.
+
+Native retained notices after every model round and ordinary cumulative cost
+remain blocked at their public delivery and aggregate-accounting surfaces,
+respectively. The command snapshots and ordinary retained notices do not claim
+those capabilities.
+
 At the decision threshold, one tool round refuses substantive calls and preserves
 `stash_write` plus declared continuity tools. Later calls below the stop threshold
 run normally. At the stop threshold, new substantive tool calls are refused.
@@ -535,8 +591,8 @@ A steer still admits input and can wake an idle target.
 
 Unknown usage opens the gate. Calls already in flight finish; stored results,
 asynchronous input, reports and human input are never refused. Those inputs can
-still fill the window. Stash never aborts the agent, compacts automatically,
-replaces a session, cancels workers, rewrites a request, or omits stored results.
+still fill the window. The percentage gates never abort the agent, compact automatically,
+replace a session, cancel workers, rewrite a request, or omit stored results.
 The model chooses its authorised continuity act. A checkpoint notice asks it to
 carry the checkpoint identifier into any later compaction summary.
 

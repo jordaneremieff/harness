@@ -27,6 +27,7 @@ import {
 	band, capacityEpisode, continuityTools, gate, gateState, gateStatus, measureUsage, piAutoThreshold,
 	type GateState,
 } from "./capacity.ts";
+import { budgetAction, budgetContext, budgetNotice, budgetStatus, ORDINARY_COST, type SessionBudget } from "./budget.ts";
 import { prepareDistillSource } from "./distill.ts";
 import { stashDurableContribution } from "./durable.ts";
 import { resumeCommand, stateLabel } from "./format.ts";
@@ -264,6 +265,7 @@ const STASH_VERBS: ReadonlyArray<{ value: string; label: string; description: st
 		label: "capacity",
 		description: "[reset] · inspect capacity requests or explicitly start a new episode",
 	},
+	{ value: "budget", label: "budget", description: "[<context-tokens> <cost-usd>|off] · select per-conversation notice budgets" },
 	{ value: "help", label: "help", description: "show /stash usage" },
 ];
 
@@ -289,6 +291,7 @@ const STASH_USAGE = [
 	"  /stash reopen <id>          return a closed stash to open",
 	"  /stash rotate <id>          archive a stale stash (recoverable)",
 	"  /stash capacity [reset|release] inspect requests, reset notices, or lift the gate",
+	"  /stash budget [<context-tokens> <cost-usd>|off] select or inspect notice budgets",
 	"  /stash help                 show this usage",
 	"",
 	"  <id> may be a full stash id or a unique prefix.",
@@ -473,8 +476,10 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	const disposeSettings = publishSettings(pi.events, publicationOptions);
 	const creationStatus = new CreationStatus();
 	const gates = new Map<string, GateState>();
+	const budgets = new Map<string, SessionBudget>();
 	pi.on("session_shutdown", () => {
 		gates.clear();
+		budgets.clear();
 		creationStatus.close();
 		disposeSettings();
 	});
@@ -525,6 +530,13 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 			capacityErrorReported = true;
 			throw error;
 		}
+	});
+	pi.on("turn_end", (event, ctx) => {
+		const budget = budgets.get(ctx.sessionManager.getSessionId());
+		if (!budget || event.entries.some((entry) => entry.type === "custom_message" && entry.customType === "stash-budget")) return;
+		const observation = event.entries.some((entry) => entry.type === "compaction")
+			? { kind: "unavailable" as const } : budgetContext(() => ctx.getContextUsage());
+		return { entries: [...event.entries, { type: "custom_message", customType: "stash-budget", content: budgetNotice(budget, observation, ORDINARY_COST), display: true, details: { turnEntryId: event.messageEntryId } }] };
 	});
 	registerTool<typeof WriteParams, Record<string, unknown>>({
 		name: "stash_write",
@@ -768,7 +780,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	pi.registerCommand("stash", {
 		description: "Create, browse, get, complete, release, reopen, or rotate stashed efforts",
 		getArgumentCompletions: stashArgumentCompletions,
-		handler: (args, ctx) => handleStashCommand(pi, args, ctx, openBrowser, creationStatus, gates),
+		handler: (args, ctx) => handleStashCommand(pi, args, ctx, openBrowser, creationStatus, gates, budgets),
 	});
 	pi.registerShortcut("ctrl+alt+s", {
 		description: "Open the stash browser",
@@ -787,6 +799,7 @@ async function handleStashCommand(
 	openBrowser: (ctx: ExtensionContext) => Promise<void>,
 	creationStatus: CreationStatus,
 	gates: Map<string, GateState>,
+	budgets: Map<string, SessionBudget>,
 ): Promise<void> {
 	const raw = args.trim();
 	const parts = raw.split(/\s+/).filter(Boolean);
@@ -811,6 +824,8 @@ async function handleStashCommand(
 			return helpCommand(ctx, parts, fail);
 		case "capacity":
 			return capacityCommand(pi, ctx, parts, fail, gates);
+		case "budget":
+			return budgetCommand(pi, ctx, parts, fail, budgets);
 		case "get":
 			return getCommand(pi, ctx, parts, fail);
 		case "complete":
@@ -829,6 +844,24 @@ async function handleStashCommand(
 }
 
 type CommandFailure = (message: string) => void;
+
+function budgetCommand(
+	pi: StashExtensionApi,
+	ctx: ExtensionCommandContext,
+	parts: string[],
+	fail: CommandFailure,
+	budgets: Map<string, SessionBudget>,
+): void {
+	let action: ReturnType<typeof budgetAction>;
+	try { action = budgetAction(parts.slice(1)); }
+	catch (error) { fail(error instanceof Error ? error.message : String(error)); return; }
+	const id = ctx.sessionManager.getSessionId();
+	if (action.kind === "set") budgets.set(id, action.budget);
+	else if (action.kind === "off") budgets.delete(id);
+	const message = budgetStatus(budgets.get(id));
+	pi.sendMessage({ customType: "stash-budget-status", content: message, display: true }, { triggerTurn: false });
+	if (!ctx.hasUI) console.error(message);
+}
 
 function capacityCommand(
 	pi: StashExtensionApi,

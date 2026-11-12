@@ -1194,7 +1194,7 @@ describe("stash command grammar", () => {
 		const actions = await complete("");
 		assert.deepEqual(
 			actions?.map((item) => item.value),
-			["new", "get", "complete", "release", "reopen", "rotate", "capacity", "help"],
+			["new", "get", "complete", "release", "reopen", "rotate", "capacity", "budget", "help"],
 		);
 		assert.equal(await complete("20270724"), null, "bare ids must not autocomplete as actions");
 		const ids = await complete("get 20270724");

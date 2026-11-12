@@ -79,6 +79,7 @@ import {
 	writeReplayableStash,
 } from "./store.ts";
 import { boundedOutput, sanitizeTerminalText } from "./text.ts";
+import { budgetAction, budgetNotice, budgetStatus, conversationCost, type BudgetCost, type SessionBudget } from "./budget.ts";
 
 /** What the host supplies to one Durable extension instance. */
 export interface StashDurableHost {
@@ -495,6 +496,7 @@ async function capacityRead<T>(parent: Context, read: (context: Context) => Prom
 interface StashBinding {
 	readonly storeDir: string;
 	readonly gates: Map<string, GateState>;
+	readonly budgets: Map<string, SessionBudget>;
 	readonly releaseObservers: WeakSet<Durable.Harness>;
 	readonly bus: SettingsBus;
 	readonly capacityDoc: Durable.ConversationDocToken<CapacityDocState>;
@@ -522,6 +524,7 @@ const STASH_DURABLE_USAGE = [
 	"  /stash reopen <id>          return a closed stash to open",
 	"  /stash rotate <id>          archive a stale stash (recoverable)",
 	"  /stash capacity [reset|release] inspect requests, reset notices, or lift the gate",
+	"  /stash budget [<context-tokens> <cost-usd>|off] select or inspect notice budgets",
 	"  /stash help                 show this usage",
 	"",
 	"  <id> may be a full stash id or a unique prefix.",
@@ -552,6 +555,23 @@ async function runStashCommand(call: StashDurableCommandCall): Promise<string | 
 			return await lifecycleCommand(binding, call.context, verb, parts);
 		case "capacity":
 			return await capacityCommand(binding, call.conversation, call.context, call.host, call.harness, parts);
+		case "budget": {
+			const action = budgetAction(parts.slice(1));
+			const id = String(call.conversation.id);
+			if (action.kind === "set") binding.budgets.set(id, action.budget);
+			else if (action.kind === "off") binding.budgets.delete(id);
+			const budget = binding.budgets.get(id);
+			if (!budget) return budgetStatus(undefined, "command");
+			const observation = await capacityRead(call.context, async (context) => {
+				const view = await call.conversation.context(context);
+				checkCapacityCancellation(context);
+				const cost = conversationCost(await call.harness.snapshot(call.host.durable.UsageDoc, call.conversation.id, context));
+				checkCapacityCancellation(context);
+				return { estimate: estimateContext(view.messages, call.host.services.modelRuntime, undefined), cost };
+			});
+			const cost: BudgetCost = observation?.cost ?? { kind: "unavailable", reason: "the conversation usage counter is unavailable" };
+			return [budgetStatus(budget, "command"), budgetNotice(budget, observation ? { kind: "request_estimate", tokens: observation.estimate.estimatedTokens } : { kind: "unavailable" }, cost)].join("\n");
+		}
 		case "help":
 		case undefined:
 			return STASH_DURABLE_USAGE;
@@ -931,9 +951,10 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 		}
 	};
 	const gates = new Map<string, GateState>();
+	const budgets = new Map<string, SessionBudget>();
 	const gateReads = new Map<string, NativeGateRead>();
 	const currentGate = (api: Durable.HookApi) => gates.get(String(api.conversationId)) ?? gateState(gates, String(api.conversationId), null);
-	host.onClose(() => { gates.clear(); gateReads.clear(); bindings.delete(host); });
+	host.onClose(() => { gates.clear(); budgets.clear(); gateReads.clear(); bindings.delete(host); });
 	const storeDir = resolveStoreDir(process.env, host.agentDir);
 
 	const capacityDoc = host.durable.defineDoc<CapacityDocState>({
@@ -1274,6 +1295,7 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 	bindings.set(host, {
 		storeDir,
 		gates,
+		budgets,
 		releaseObservers: new WeakSet(),
 		bus,
 		capacityDoc,

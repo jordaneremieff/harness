@@ -1060,6 +1060,43 @@ test("native boundary reads share a deadline and fail open without advancing pas
 	assert.match((await tools.beforeTool(fauxToolCall("stash_list", {}), recovered, context))?.block ?? "", /Stash decision round/);
 });
 
+test("native budget snapshots use only conversation usage without request-time content", { timeout: 30000 }, async (t) => {
+	capacityOff(t);
+	const h = await startHarness(t, 10000);
+	const command = h.contribution.commands?.[0];
+	assert.ok(command);
+	const run = (args: string, conversation = h.root) => command.run({ args, conversation, context, host: h.host, invocationId: args, harness: h.harness });
+	const usage = (total: number) => ({ input: 10, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 11, cost: { input: total, output: 0, cacheRead: 0, cacheWrite: 0, total } });
+	await h.root.commit(async (tx) => { (await tx.doc(Durable.UsageDoc, h.root.id)).models["fixture/source"] = usage(1.25); }, context);
+	const other = await h.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: h.workdir } }, context);
+	await other.commit(async (tx) => { (await tx.doc(Durable.UsageDoc, other.id)).tools.source = usage(500); }, context);
+	assert.match(String(await run("budget")), /disabled/);
+	const selected = String(await run("budget 120000 5"));
+	assert.match(selected, /Native automatic per-turn notices are unavailable/);
+	assert.match(selected, /USD 1\.250000 \/ USD 5/);
+	assert.doesNotMatch(selected, /501\.250000/);
+	const requests: string[] = [];
+	const capture: FauxResponseStep = (request) => {
+		requests.push(JSON.stringify(request.messages));
+		return fauxAssistantMessage("One response.");
+	};
+	await answerWith(h.root, h.faux, [capture], "Use the selected budget.");
+	assert.doesNotMatch(requests[0], /\[stash-budget\]/);
+	assert.doesNotMatch(await modelText(h.root), /\[stash-budget\]/);
+	await h.root.reset("A new context, the same conversation.", context);
+	assert.equal((await h.harness.snapshot(Durable.UsageDoc, h.root.id, context))?.models["fixture/source"]?.cost.total, 1.25);
+	assert.match(String(await run("budget")), /cost: unavailable.*zero-cost usage bucket/);
+	await answerWith(h.root, h.faux, [capture], "Continue after reset.");
+	assert.doesNotMatch(requests[1], /\[stash-budget\]/);
+	await answerWith(other, h.faux, [capture], "No budget selected here.");
+	assert.doesNotMatch(requests[2], /\[stash-budget\]/);
+	await assert.rejects(run("budget 0 5"), /Usage:/);
+	await run("budget off");
+	await answerWith(h.root, h.faux, [capture], "Notices are off.");
+	assert.doesNotMatch(requests[3], /\[stash-budget\]/);
+	assert.equal(h.faux.state.callCount, 4);
+});
+
 test("native capacity notices preserve the complete post-hook request prefix", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t, 2000);
 	gateThresholds(t, "100");

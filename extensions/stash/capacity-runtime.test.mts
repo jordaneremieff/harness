@@ -22,6 +22,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import type { FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
 import { CAPACITY_REQUEST, CAPACITY_STATE, capacityTurnEnd, readCapacityState } from "./capacity.ts";
 import registerStash from "./index.ts";
 import { obj, opt, str } from "@earendil-works/pi-schema";
@@ -172,6 +173,41 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 		},
 	};
 }
+
+test("ordinary budget notices retain exact request prefixes without a continuation", { timeout: 20000 }, async (t) => {
+	process.env.PI_STASH_CAPACITY = "0";
+	t.after(() => { delete process.env.PI_STASH_CAPACITY; });
+	t.mock.method(console, "error", () => {});
+	const host = await runtime(t, { stash: true });
+	const command = host.session.extensionRunner?.getCommand("stash");
+	assert.ok(command);
+	const ctx = host.session.extensionRunner.createCommandContext();
+	const requests: string[] = [];
+	const capture: FauxResponseStep = (request) => {
+		requests.push(JSON.stringify(request.messages));
+		return fauxAssistantMessage("Budget response.");
+	};
+	await host.prompt([capture]);
+	assert.doesNotMatch(requests[0], /\[stash-budget\]/);
+	await command.handler("budget 120000 5", ctx);
+	await host.prompt([capture]);
+	await host.prompt([capture]);
+	const notices = () => host.session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "stash-budget");
+	assert.equal(notices().length, 2);
+	assert.match(JSON.stringify(notices()), /host estimate/);
+	assert.match(JSON.stringify(notices()), /cumulative cost: unavailable/);
+	assert.match(requests[2], /\[stash-budget\]/);
+	assert.equal(host.faux.state.callCount, 3);
+	await assert.rejects(command.handler("budget 0 5", ctx), /Usage:/);
+	await command.handler("budget off", ctx);
+	await host.prompt([capture]);
+	assert.equal(notices().length, 2, "off retains old notices but appends no new notice");
+	for (let index = 1; index < requests.length; index++) {
+		const previous = JSON.parse(requests[index - 1]) as Message[];
+		assert.deepEqual((JSON.parse(requests[index]) as Message[]).slice(0, previous.length), previous);
+	}
+	assert.equal(host.faux.state.callCount, 4);
+});
 
 const reply = () => fauxAssistantMessage("Synthetic response.");
 const calls = (...names: string[]) => fauxAssistantMessage(names.map((name, index) => fauxToolCall(name, name === "stash_read" ? { id: "retained" } : {}, { id: `${name}-${index}` })), { stopReason: "toolUse" });
