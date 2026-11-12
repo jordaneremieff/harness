@@ -84,7 +84,8 @@ describe("agent call cards", () => {
 	});
 
 	it("shows an argument hint only when a collapsed call hides or clips content", () => {
-		assert.equal(screen(renderAgentCall("agent_status", { sessionId: "s" }, theme, context())), "agent_status · s");
+		assert.equal(screen(renderAgentCall("agent_status", { sessionId: "s" }, theme, context())), "agent_status · s\nselected status");
+		assert.match(screen(renderAgentCall("agent_status", { sessionId: "s", detail: true }, theme, context())), /full detail/u);
 		assert.doesNotMatch(screen(renderAgentCall("agent_attach", { sessionId: "s" }, theme, context())), /to expand/u);
 		assert.match(screen(renderAgentCall("agent_attach", { sessionId: "s", model: "p/m" }, theme, context())), /Requested: p\/m/);
 		assert.match(screen(renderAgentCall("agent_spawn", { prompt: "p".repeat(400) }, theme, context())), /\(ctrl\+o to expand\)/);

@@ -15,6 +15,7 @@ import { getMarkdownTheme, type KeybindingHints } from "@earendil-works/pi-codin
 import { Box, Markdown, Spacer, Text, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { dashboardClock, dashboardTime } from "./dashboard-time.ts";
 import type { Communication } from "./communication.ts";
+import { resultContinuationLines } from "./control-result.ts";
 
 /**
  * Observed display facts for cards: the roster rows, and in the dashboard also known thread titles and
@@ -422,6 +423,12 @@ function argumentCard(name: string, subject: string, qualifier: string | undefin
 	return cardLayout({ title: name, label: subject, metadata: [targetConfiguration(text(args.sessionId), context), qualifier ?? ""], body: lines, hint: hidden ? cardHint(context, "call", "arguments") : "" }, theme, { expanded: context.expanded, previous: context.lastComponent });
 }
 
+function statusCallMode(name: string, args: Record<string, unknown>, identity: string): string {
+	if (name !== "agent_status") return "";
+	if (args.detail === true) return "full detail";
+	return identity ? "selected status" : "overview";
+}
+
 /** Generic call card for snapshot and control tools. */
 export function renderAgentCall(name: string, value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
@@ -432,7 +439,7 @@ export function renderAgentCall(name: string, value: unknown, theme: Theme, cont
 	const lines: string[] = [];
 	appendExpandedTarget(lines, args, theme, context);
 	if (context.expanded) lines.push(theme.fg("toolOutput", boundedSource(JSON.stringify(args, null, 2))));
-	return cardLayout({ title: name, label, metadata: [targetConfiguration(identity, context), requestedConfiguration(name, args, context) ?? ""], body: lines, hint: argsHidden(args, subjectKey, subjectValue) ? cardHint(context, "call", "arguments") : "" }, theme, { expanded: context.expanded, previous: context.lastComponent });
+	return cardLayout({ title: name, label, metadata: [targetConfiguration(identity, context), requestedConfiguration(name, args, context) ?? "", statusCallMode(name, args, identity)], body: lines, hint: argsHidden(args, subjectKey, subjectValue) ? cardHint(context, "call", "arguments") : "" }, theme, { expanded: context.expanded, previous: context.lastComponent });
 }
 
 function renderAwaitCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
@@ -574,6 +581,7 @@ function inspectQualifier(args: Record<string, unknown>): { qualifier: string; h
 		else if (key === "limit" && args.view === "activity" && args.limit === undefined) parts.push("limit 4 (default)");
 	}
 	if (text(args.continuation)) parts.push("continuation");
+	if (text(args.receiptCursor)) parts.push("receipt references page");
 	return { qualifier: parts.join(" · "), hidden };
 }
 
@@ -693,10 +701,16 @@ function sessionSummaryLines(sessions: Record<string, unknown>[], theme: Theme):
 	return lines;
 }
 
+function compactActivityLabel(row: Record<string, unknown>): string {
+	const activity = row.busy === null ? "activity unknown" : row.busy === true ? "working" : "idle";
+	const source = row.availability === "retained" ? " (retained; live state unavailable)" : row.availability === "unknown" ? " (source availability unknown)" : "";
+	return `${activity}${source}`;
+}
+
 function conversationListLines(conversations: Record<string, unknown>[], theme: Theme): string[] {
 	const busy = conversations.filter((row) => row.busy === true || Object.keys(record(record(row.live).run)).length > 0).length;
 	const lines = [theme.fg("toolOutput", `${conversations.length} conversation${conversations.length === 1 ? "" : "s"} · ${busy} working`)];
-	for (const row of conversations.slice(0, 4)) lines.push(muted(theme, `${text(row.name) ? displayPreview(text(row.name), 120) : displayIdentity(text(row.identity)) || "conversation"} · ${row.busy === true ? "working" : "idle"}`));
+	for (const row of conversations.slice(0, 4)) lines.push(muted(theme, `${text(row.name) ? displayPreview(text(row.name), 120) : displayIdentity(text(row.identity)) || "conversation"} · ${compactActivityLabel(row)}`));
 	if (conversations.length > 4) lines.push(muted(theme, `${conversations.length - 4} more conversation records`));
 	return lines;
 }
@@ -837,12 +851,36 @@ function snapshotIdentityLines(status: Record<string, unknown>, theme: Theme, co
 }
 
 function snapshotLines(status: Record<string, unknown>, details: Record<string, unknown>, theme: Theme, context: AgentCardContext, namedByReceipt = false): string[] {
+	if (details.format === "compact") return compactStatusLines(status, theme, context);
 	const lines = snapshotIdentityLines(status, theme, context, namedByReceipt);
 	if (status.live === undefined && typeof status.state === "string") lines.push(muted(theme, `State: ${displayPreview(status.state, 40)}`));
 	else lines.push(...activityLines(status, readOnlySnapshot(details), theme));
 	const limits = record(details.inventory ?? record(details.status).inventory ?? record(status.limits));
 	const ordinaryOnly = array(limits.ordinaryOnly).length;
 	if (ordinaryOnly) lines.push(muted(theme, `Capability limits: ${ordinaryOnly} configured extension${ordinaryOnly === 1 ? "" : "s"} without a native form`));
+	return lines;
+}
+
+function compactAwaitLines(awaiting: Record<string, unknown>, theme: Theme): string[] {
+	return array(awaiting.results).map(value => {
+		const item = record(value), result = record(item.result);
+		return muted(theme, `${text(result.sessionId)} · submission ${String(result.submissionId)}${typeof result.requestId === "string" ? ` · request ${result.requestId}` : ""} · ${text(item.status)}`);
+	});
+}
+
+function compactStatusLines(status: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
+	const model = record(status.model), queue = record(status.queue), awaiting = record(status.awaiting);
+	const lines = [theme.fg("accent", snapshotLabel(text(status.identity), text(status.name), context))];
+	const configuration = resolvedModelLine(text(model.provider), text(model.modelId), text(status.thinkingLevel));
+	if (configuration) lines.push(muted(theme, configuration));
+	lines.push(muted(theme, `Activity: ${status.busy === true ? "working" : status.busy === false ? "idle" : "unknown"} · source ${text(status.availability) || "unknown"} · ${queue.inbox === null ? "unknown" : String(queue.inbox)} queued inputs · ${status.timers === null ? "unknown" : String(status.timers)} timers`));
+	lines.push(...compactAwaitLines(awaiting, theme));
+	if ((count(awaiting.omittedResults) ?? 0) > 0) lines.push(muted(theme, `Await references omitted: ${String(awaiting.omittedResults)}`));
+	const block = record(status.providerBlock);
+	if (text(block.blockId)) lines.push(theme.fg("warning", `Provider block ${text(block.blockId)} · ${text(block.recovery)}`));
+	if (array(status.omitted).length) lines.push(muted(theme, `Omitted: ${array(status.omitted).join(", ")}`));
+	const detail = record(status.detail);
+	if (detail.tool === "agent_status" && typeof detail.sessionId === "string") lines.push(muted(theme, `Full detail: agent_status(${JSON.stringify({ sessionId: detail.sessionId, detail: true })})`));
 	return lines;
 }
 
@@ -892,7 +930,15 @@ export function renderAgentResult(result: AgentToolResult<unknown>, options: Too
 function primaryMessageLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	if (details.admitted !== true || !text(details.sessionId)) return undefined;
 	const kind = record(context.args).mode === "report" ? "Report" : "Message";
-	return [theme.fg("toolOutput", `${kind} delivered to ${targetLabel(text(details.sessionId), context)}`)];
+	return [theme.fg("toolOutput", `${kind} ${kind === "Report" ? "queued for" : "delivered to"} ${targetLabel(text(details.sessionId), context)}`),
+		...(kind === "Report" && text(details.boundary) ? [muted(theme, text(details.boundary))] : [])];
+}
+
+function reportReceiptLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
+	if (!text(details.sourceId) || typeof details.acknowledged !== "boolean") return undefined;
+	return [theme.fg("toolOutput", `Report retained${text(details.ownerId) ? targetSuffix(text(details.ownerId), context) : ""}`),
+		muted(theme, `${details.acknowledged ? "Acknowledged" : "Acknowledgement pending"}${details.passive === true ? " · passive" : ""}`),
+		muted(theme, text(details.boundary) || "Retention or acknowledgement does not establish model consumption or task acceptance.")];
 }
 
 function messageResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext, labels: { error: string; partial: string; receipt: string }): Component {
@@ -901,7 +947,7 @@ function messageResult(result: AgentToolResult<unknown>, options: ToolRenderResu
 	const lines: string[] = [];
 	if (context.isError === true) lines.push(theme.fg("error", labels.error));
 	else if (options.isPartial) lines.push(theme.fg("muted", labels.partial));
-	const summary = primaryMessageLines(details, theme, context) ?? timerLines(details, theme, context) ?? controlReceiptLines(details, theme, labels.receipt, context);
+	const summary = reportReceiptLines(details, theme, context) ?? primaryMessageLines(details, theme, context) ?? timerLines(details, theme, context) ?? controlReceiptLines(details, theme, labels.receipt, context);
 	if (summary) lines.push(...summary);
 	if (options.expanded) lines.push(theme.fg("toolOutput", boundedSource(output)));
 	else {
@@ -1075,6 +1121,8 @@ function inspectResultSummary(details: Record<string, unknown>, theme: Theme, co
 	const lines = [theme.fg("toolOutput", headline)];
 	lines.push(muted(theme, `${hasAnswer ? "assistant answer retained" : "no assistant answer"}${reason ? ` · ${displayPreview(reason, 160)}` : ""}`));
 	if (details.providerBlock !== undefined) lines.push(...providerBlockLines(details.providerBlock, theme, true));
+	if (count(details.offset) !== undefined) lines.push(muted(theme, `Answer offset ${String(details.offset)} (UTF-16 units)${details.truncated === true ? " · more answer text remains" : ""}`));
+	for (const continuation of resultContinuationLines(details)) lines.push(muted(theme, continuation));
 	return lines;
 }
 

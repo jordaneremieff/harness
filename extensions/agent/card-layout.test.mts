@@ -172,10 +172,10 @@ it("peer reports and steer cards use identical known configuration subheadings",
 	}
 });
 
-it("primary report receipts show a full-width truthful delivery outcome and raw JSON only expanded", () => {
+it("primary report receipts show a full-width qualified queue outcome and raw JSON only expanded", () => {
 	const result = { sessionId: identity, admitted: true, sourceId: "delivery-source", boundary: "Delivery does not prove action or task acceptance" };
 	const component = nativeTool("agent_send", { sessionId: identity, mode: "report", message: "Review is complete." }, result, []);
-	assert.ok(text(component).includes(`Report delivered to ${identity}`));
+	assert.ok(text(component).includes(`Report queued for ${identity}`));
 	assert.doesNotMatch(text(component), /"sessionId"|"admitted"|01a106df…|^\s*…\s*$/mu);
 	assert.equal((text(component).match(/to expand|expand for full/gu) ?? []).length, 1);
 	component.setExpanded(true);

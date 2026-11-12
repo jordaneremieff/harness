@@ -9,6 +9,9 @@ import type { AgentToolResult, Theme } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import { createAgentToolCards, type AgentCardContext } from "./tool-cards.ts";
+import { projectSelectedStatus, projectStorageStatus } from "./status-overview.ts";
+import { controlText, readableControlText, projectReportReceipt } from "./control-result.ts";
+import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 
 initTheme("dark", false);
 const nativeTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
@@ -21,6 +24,58 @@ const row: AgentConversationSummary = { id, storageId: id, name: "Parser review"
 const details = { identity: id, conversationId: 1, submissionId: 405, deduped: false };
 const receipt: AgentToolResult<unknown> = { content: [{ type: "text", text: JSON.stringify(details) }], details };
 const hintCount = (value: string) => (value.match(/to expand|expand for full/gu) ?? []).length;
+
+describe("compact observation cards", () => {
+	const native = { identity: id, conversationId: 1, busy: true, name: "Reader", live: { run: { taskId: 9 } }, inbox: { items: [1] }, submissions: [], timers: [], agent: { model, thinkingLevel: "high" } };
+	it("shows compact selected facts and an exact full-detail call without inferring unknown primary activity", () => {
+		const cards = createAgentToolCards();
+		const details = projectSelectedStatus({ conversation: native, live: false, storageId: id });
+		const result = { content: [{ type: "text" as const, text: controlText(details) }], details };
+		const output = screen(cards.agent_status.renderResult(result, { expanded: false, isPartial: false }, theme, context()));
+		assert.match(output, /Activity: working · source retained · 1 queued inputs · 0 timers/u);
+		assert.ok(output.includes(`agent_status(${JSON.stringify({ sessionId: id, detail: true })})`));
+		const primary = projectSelectedStatus({ kind: "ordinary-primary", sessionId: "primary", presence: {} });
+		const unknown = screen(cards.agent_status.renderResult({ content: [], details: primary }, { expanded: false, isPartial: false }, theme, context()));
+		assert.match(unknown, /Activity: unknown/u);
+		assert.doesNotMatch(unknown, /Activity: idle/u);
+	});
+
+	it("distinguishes answer pagination from receipt-reference pagination in the card", () => {
+		const details = { view: "result", sessionId: id, conversationId: 1, submissionId: 7, status: "done", answer: "Readable answer", offset: 0, nextOffset: 4096, truncated: true,
+			answerContinuation: { tool: "agent_inspect", view: "result", sessionId: id, submissionId: 7, requestId: "input", offset: 4096 },
+			receiptGroup: { recipient: "reader", results: [], complete: false, next: { tool: "agent_inspect", view: "result", sessionId: id, submissionId: 7, requestId: "input", receiptCursor: "next" } } };
+		const cards = createAgentToolCards();
+		const result = { content: [{ type: "text" as const, text: readableControlText(details) }], details };
+		const output = screen(cards.agent_inspect.renderResult(result, { expanded: false, isPartial: false }, theme, context()));
+		assert.match(output, /Answer offset 0 \(UTF-16 units\)/u);
+		assert.match(output, /Answer continuation: agent_inspect/u);
+		assert.match(output, /Receipt continuation: agent_inspect/u);
+		assert.ok(screen(cards.agent_inspect.renderResult(result, { expanded: true, isPartial: false }, theme, context({ expanded: true }))).includes("Readable answer"));
+		assert.match(screen(cards.agent_inspect.renderCall({ sessionId: id, view: "result", receiptCursor: "next" }, theme, context())), /receipt references page/u);
+	});
+
+	it("shows retained report acknowledgement without a sender body or a consumption claim", () => {
+		const details = projectReportReceipt({ sourceId: "report:one", requestId: "one", ownerId: id, senderIdentity: "sender", createdAt: 1, replyTo: null, acknowledged: true, message: "Secret report body" });
+		const result = { content: [{ type: "text" as const, text: controlText(details) }], details };
+		const card = createAgentToolCards().agent_send;
+		for (const expanded of [false, true]) {
+			const output = screen(card.renderResult(result, { expanded, isPartial: false }, theme, context({ expanded })));
+			assert.match(output, /Acknowledged/u);
+			assert.doesNotMatch(output, /Secret report body/u);
+			assert.match(output, /does not establish model consumption/u);
+		}
+	});
+
+	it("uses the same compact storage presentation in dashboard definitions", () => {
+		const details = projectStorageStatus({ storageId: id, conversations: [native], coverage: { complete: true, returned: 1, scanned: 1, next: null }, live: false });
+		const definition = createDashboardToolDefinitions("/work")("agent_status");
+		assert.ok(definition.renderResult);
+		const output = screen(definition.renderResult({ content: [], details }, { expanded: false, isPartial: false }, theme, context() as never));
+		assert.match(output, /1 conversation · 1 working/u);
+		assert.match(output, /retained; live state unavailable/u);
+		assert.match(output, /Storage scan reached its end/u);
+	});
+});
 
 describe("human-readable agent targets", () => {
 	it("uses observed names, model and provider on every targeted call, with full IDs expanded", () => {

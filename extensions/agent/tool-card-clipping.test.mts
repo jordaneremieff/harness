@@ -170,8 +170,8 @@ it("collapsed clipping uses Pi's grapheme width and leaves exact-fit and zero-wi
 		const component = card.renderCall({ sessionId: identity }, themeModule.theme, context);
 		const source = component.render(240)[0];
 		assert.ok(plain(source).includes(identity));
-		assert.deepEqual(component.render(0), [""]);
-		assert.deepEqual(component.render(-1), [""]);
+		assert.deepEqual(component.render(0), component.render(240).map(() => ""));
+		assert.deepEqual(component.render(-1), component.render(240).map(() => ""));
 		assert.equal(component.render(visibleWidth(source))[0], source);
 		for (const width of [1, 2, 3, 4, 8, 16]) {
 			const line = component.render(width)[0];
