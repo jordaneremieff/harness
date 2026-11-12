@@ -306,7 +306,7 @@ it("preserves unchanged operations and refuses changed contracts across a featur
 	assert.equal(f.requests.length, 0, "refused contracts start no provider request");
 	await send(a, expert.sessionId, "current-admission");
 	let request = await f.next();
-	assert.deepEqual(requestRoutes(request), [{ requestId: "current-admission", requester: a.identity, replyTo: a.identity, origin: "model" }]);
+	assert.deepEqual(requestRoutes(request), [{ requestId: "current-admission", requester: a.identity, replyTo: a.identity, origin: "model", class: "followUp", sender: a.identity }]);
 	assert.ok(request.context.messages.some((message) => message.role === "user" && message.content === "Question current-admission"));
 	request.tool("agent_send", { sessionId: a.identity, message: "BASE_PROGRESS", mode: "report" });
 	request = await f.next();

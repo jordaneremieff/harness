@@ -31,14 +31,14 @@ it("places model and operator requests under distinct kinds without changing mod
 		const entry = (await conversation.entries({ minEntryId: outcome.entryId, maxEntryId: outcome.entryId }, 1, undefined, context)).items[0];
 		assert.equal(entry?.kind, origin === "operator" ? "pi.user" : "agent.input");
 		assert.deepEqual(entry?.model?.[0]?.content, content);
-		assert.deepEqual(entry?.data, origin === "operator" ? undefined : { author: { role: "agent", identity: "caller" } });
+		assert.deepEqual(entry?.data, origin === "operator" ? undefined : { author: { role: "agent", identity: "caller" }, class: "followUp", sender: "caller", requestId: origin });
 		const repeated = await richSubmitConversation(conversation, { message: content, requestId: origin, requester: "caller", origin }, context);
 		assert.equal(repeated.submissionId, admitted.submissionId);
 	}
 	const unknown = await submitConversation(conversation, { requestId: "unowned", message: "Unowned input" }, context);
 	const outcome = await readOutcome(harness, unknown.submissionId, context);
 	const entry = (await conversation.entries({ minEntryId: outcome.entryId, maxEntryId: outcome.entryId }, 1, undefined, context)).items[0];
-	assert.deepEqual(entry?.data, { author: { role: "unknown" } });
+	assert.deepEqual(entry?.data, { author: { role: "unknown" }, class: "followUp", requestId: "unowned" });
 	assert.equal(entry?.kind, "agent.input");
 });
 
@@ -55,7 +55,7 @@ it("recovers delivery intents with their original input origin and author", asyn
 		const outcome = await readOutcome(harness, submission.id, context);
 		const entry = (await conversation.entries({ minEntryId: outcome.entryId, maxEntryId: outcome.entryId }, 1, undefined, context)).items[0];
 		assert.equal(entry?.kind, origin === "operator" ? "pi.user" : "agent.input");
-		if (origin === "model") assert.deepEqual(entry?.data, { author: { role: "agent", identity: "caller" } });
+		assert.deepEqual(entry?.data, origin === "operator" ? undefined : { author: { role: "agent", identity: "caller" }, class: "followUp", sender: "caller", requestId: request.requestId });
 	}
 });
 

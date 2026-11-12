@@ -38,7 +38,7 @@ it("returns the settled original input, recipient and deduplication fact without
 	const before = await harness.inspect(context);
 	const retained = await deliveryState(harness, context, true);
 	const replay = await richSubmitConversation(conversation, { ...original, message: "Different replay text" }, context);
-	assert.deepEqual(replay, { submissionId: first.submissionId, conversationId: conversation.id, deduped: true, recipient: original.replyTo });
+	assert.deepEqual(replay, { submissionId: first.submissionId, conversationId: conversation.id, deduped: true, recipient: original.replyTo, placement: "placed" });
 	assert.equal(admissions(), 1, "settled replay never calls the native submit surface");
 	assert.deepEqual(await readOutcome(harness, replay.submissionId, context), outcome);
 	assert.deepEqual((await harness.inspect(context)).submissions, before.submissions);
@@ -86,7 +86,7 @@ it("leaves an absent historical requester unknown instead of substituting the cr
 	const entryId = outcome.entryId;
 	assert.ok(entryId);
 	const input = (await conversation.entries({}, 20, undefined, context)).items.find((entry) => entry.id === entryId);
-	assert.deepEqual(input?.data, { author: { role: "agent" } });
+	assert.deepEqual(input?.data, { author: { role: "agent" }, class: "followUp", requestId: original.requestId });
 	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), []);
 	const replay = await richSubmitConversation(conversation, { ...original, requester: "replay-requester" }, context);
 	assert.equal(replay.submissionId, first.submissionId);
