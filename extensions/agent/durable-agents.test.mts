@@ -46,6 +46,8 @@ import { readAwaitFact, releaseAwait, recordProducerAwait } from "./await-observ
 
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, gateTool } from "./durable-host-fixture.mts";
+import { ContinuityDoc } from "./continuity-native.ts";
+import { CONTINUITY_SEED } from "./control-guidance.ts";
 import { readInspection } from "./durable-observation.ts";
 import { AgentTimerDoc, scheduleTimer } from "./durable-timers.ts";
 import { modelFailureText } from "./provider-block-facts.ts";
@@ -2507,4 +2509,138 @@ it("dispatches collaboration with actual caller identity and a source-qualified 
 it("keeps the fake model helpers honest", () => {
 	assert.equal(messageText(fauxAssistantMessage("text")), "text");
 	assert.equal(messageText(fauxAssistantMessage([fauxText("one"), fauxToolCall("t", {})])), "one");
+});
+
+/** Retained continuity facts of one conversation as [phase, target, request, submission or timer]. */
+async function continuityFacts(harness: Durable.Harness, conversationId: Durable.ConversationId): Promise<Array<[string, string, string, number | undefined]>> {
+	const state = await harness.snapshot(ContinuityDoc, conversationId, context);
+	return (state?.events ?? []).map((event) => [event.phase, event.sessionId, event.requestId, event.submissionId ?? event.timerId]);
+}
+
+it("records a local request before its admission and then the admission with its exact submission", async (t) => {
+	const route = createRoute();
+	const holder: DispatchHolder = {};
+	const { registry } = buildRegistry(createDispatch(holder, []));
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	holder.harness = harness;
+	t.after(() => harness.close(context));
+	const child = await spawnChild(harness, root, route, "worker", "FIRST");
+	const target = `${storageId}:${child.conversationId}`;
+	const spawned = await continuityFacts(harness, root.id);
+	assert.deepEqual(spawned.map(([phase, sessionId]) => [phase, sessionId]), [["requested", target], ["admitted", target]]);
+	const requestId = spawned[0][2];
+	assert.match(requestId, /^agent-deliver:\d+$/u);
+	assert.equal(spawned[1][2], requestId);
+	const submission = await harness.commit((tx) => tx.submissionByRequest(child.conversationId, requestId), context);
+	assert.equal(spawned[1][3], submission?.id, "the admitted fact names the target's submission of that request");
+	assert.equal((await harness.snapshot(ContinuityDoc, root.id, context))?.events.every((event) => event.replyTo === storageId), true);
+
+	route.script.push({ tool: "agent_send", args: { sessionId: target, message: "CONTRACT: reply SECOND", checkInMinutes: 0 } });
+	await say(root, "SEND");
+	await settle(harness, root.id);
+	const sent = (await continuityFacts(harness, root.id)).slice(2);
+	assert.deepEqual(sent.map(([phase, sessionId]) => [phase, sessionId]), [["requested", target], ["admitted", target]]);
+	assert.notEqual(sent[0][2], requestId);
+	assert.deepEqual(await continuityFacts(harness, child.conversationId), [], "the producer keeps no outgoing fact for work it received");
+});
+
+it("records a foreign request before the dispatch and closes or keeps it by what the receipt proves", async (t) => {
+	const route = createRoute();
+	const holder: DispatchHolder = {};
+	const before: Array<Array<[string, string, string, number | undefined]>> = [];
+	const { registry } = buildRegistry(async (method, params) => {
+		if (method !== "submit") return createDispatch(holder, [])(method, params);
+		assert.ok(holder.harness);
+		before.push(await continuityFacts(holder.harness, Durable.ROOT_CONVERSATION_ID));
+		const requestId = String(params.requestId);
+		if (params.sessionId === "remote-storage") return { submissionId: 41, deduped: false, result: { sessionId: "remote-storage", submissionId: 41, requestId } };
+		if (params.sessionId === "primary-session") return { admitted: true, sourceId: "report:primary" };
+		throw new Error("target unavailable");
+	});
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	holder.harness = harness;
+	t.after(() => harness.close(context));
+	for (const sessionId of ["remote-storage", "primary-session", "broken-storage"]) {
+		route.script.push({ tool: "agent_send", args: { sessionId, message: "A bounded task", checkInMinutes: 0 } });
+		await say(root, `SEND ${sessionId}`);
+	}
+	const facts = await continuityFacts(harness, root.id);
+	const requestOf = (sessionId: string): string => facts.find(([phase, target]) => phase === "requested" && target === sessionId)?.[2] ?? "";
+	assert.deepEqual(before.map((seen) => seen.map(([phase]) => phase)), [["requested"], ["requested", "admitted", "requested"], ["requested", "admitted", "requested", "refused", "requested"]], "each request is retained before its dispatch");
+	assert.deepEqual(facts, [
+		["requested", "remote-storage", requestOf("remote-storage"), undefined],
+		["admitted", "remote-storage", requestOf("remote-storage"), 41],
+		["requested", "primary-session", requestOf("primary-session"), undefined],
+		["refused", "primary-session", requestOf("primary-session"), undefined],
+		["requested", "broken-storage", requestOf("broken-storage"), undefined],
+	]);
+	for (const sessionId of ["remote-storage", "primary-session", "broken-storage"]) assert.match(requestOf(sessionId), /^agent-deliver:test-storage:\d+$/u);
+	const outcomes = await toolOutcomes(harness, root.id);
+	const failed = outcomes.filter((outcome) => outcome.isError);
+	assert.equal(failed.length, 1);
+	assert.match(failed[0].text, /target unavailable/u, "a failed dispatch keeps its request listed as unconfirmed");
+});
+
+it("records the prompt of an agent created in another storage once its identity exists", async (t) => {
+	const route = createRoute();
+	const holder: DispatchHolder = {};
+	const { registry } = buildRegistry(createDispatch(holder, []));
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	holder.harness = harness;
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_spawn", args: { name: "foreign", cwd: "/elsewhere", prompt: "CONTRACT: reply FOREIGN", checkInMinutes: 0 } });
+	await say(root, "SPAWN");
+	const facts = await continuityFacts(harness, root.id);
+	assert.equal(facts.length, 1);
+	assert.deepEqual([facts[0][0], facts[0][1], facts[0][3]], ["admitted", "other-storage", 23]);
+	assert.match(facts[0][2], /^spawn:test-storage:\d+$/u);
+});
+
+it("lists a scheduled input with its timer and closes it only on a cancellation before firing", async (t) => {
+	const route = createRoute();
+	const holder: DispatchHolder = {};
+	let timerId = 8;
+	const { registry } = buildRegistry(async (method, params) => {
+		if (method === "timer-schedule") return { timerId: ++timerId, conversationId: 1, identity: "remote-storage", deadline: params.deliverAt, mode: params.mode, origin: "model", scheduleId: params.scheduleId, deduped: false, disposition: "scheduled", status: "sleeping" };
+		if (method === "timer-cancel") return { timerId: params.timerId, outcome: "marked", status: params.timerId === 9 ? "cancelled" : "fired" };
+		return createDispatch(holder, [])(method, params);
+	});
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	holder.harness = harness;
+	t.after(() => harness.close(context));
+	const deliverAt = new Date(Date.now() + 3_600_000).toISOString();
+	const calls: Array<{ tool: string; args: Durable.JsonObject }> = [
+		{ tool: "agent_send", args: { sessionId: "@handle", message: "Later task", deliverAt } },
+		{ tool: "agent_send", args: { sessionId: "@handle", message: "Second later task", deliverAt } },
+		{ tool: "agent_abort", args: { sessionId: "@handle", timerId: 9 } },
+		{ tool: "agent_abort", args: { sessionId: "@handle", timerId: 10 } },
+	];
+	for (const call of calls) {
+		route.script.push(call);
+		await say(root, `TIMER ${call.tool}`);
+	}
+	const facts = await continuityFacts(harness, root.id);
+	assert.deepEqual(facts.map(([phase, sessionId, , id]) => [phase, sessionId, id]), [
+		["requested", "remote-storage", 9],
+		["requested", "remote-storage", 10],
+		["refused", "remote-storage", undefined],
+	]);
+	assert.match(facts[0][2], /^timer:test-storage:\d+:delivery$/u);
+	assert.equal(facts[2][2], facts[0][2], "the cancelled timer's request closes; the fired timer keeps its request");
+});
+
+it("starts a self-compaction's summarizer instructions with the continuity seed", async (t) => {
+	const route = createRoute();
+	route.batch.push([{ tool: "agent_compact", args: { instructions: "Keep the parser notes." } }]);
+	const holder: DispatchHolder = {};
+	const { registry } = buildRegistry(createDispatch(holder, []));
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route), { compaction: { keepRecentTokens: 1 } });
+	holder.harness = harness;
+	t.after(() => harness.close(context));
+	await say(root, "SELFTEST");
+	const summarizer = route.requests.map((messages) => messages.map((message) => messageText(message)).join("\n")).find((text) => text.includes("conversation to summarize"));
+	assert.ok(summarizer, "the compaction asked the model for a summary");
+	assert.ok(summarizer.includes(`${CONTINUITY_SEED}\n\nKeep the parser notes.`), summarizer.slice(-600));
+	const description = registry.snapshot().tools().find(({ tool }) => tool.name === "agent_compact")?.tool.description ?? "";
+	assert.ok(description.includes(CONTINUITY_SEED));
 });

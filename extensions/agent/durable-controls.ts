@@ -827,6 +827,11 @@ async function compactionSummaryFacts(harness: Harness, result: { entryId?: Entr
 	} catch (error) { return { summarySizeError: error instanceof Error ? error.message : String(error) }; }
 }
 
+/** The summarizer receives the continuity seed first; the caller's instructions follow byte for byte. */
+export function seededCompactionInstructions(instructions: string | undefined): string {
+	return instructions === undefined ? CONTINUITY_SEED : `${CONTINUITY_SEED}\n\n${instructions}`;
+}
+
 /** Run a manual compaction and optionally wait for its placement. */
 export async function compactConversation(
 	harness: Harness,
@@ -843,8 +848,7 @@ export async function compactConversation(
 	readonly submissionId?: SubmissionId;
 	readonly error?: string;
 }> {
-	// The summarizer receives the seed first; the caller's instructions follow byte for byte.
-	const taskId = await conversation.compact(instructions === undefined ? CONTINUITY_SEED : `${CONTINUITY_SEED}\n\n${instructions}`, context);
+	const taskId = await conversation.compact(seededCompactionInstructions(instructions), context);
 	if (!wait) return { taskId, status: "task" };
 	const settled = await harness.waitForTask(taskId, context);
 	const outcome = settled.state.outcome;

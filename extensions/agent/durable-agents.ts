@@ -29,7 +29,8 @@ import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProve
 import { executeAwait } from "./await-execution.ts";
 import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
-import { AgentMetaDoc, publishConversationIntent, recordAdmissionMeta, recordDeliveryIntent, linkDeliveryIntent } from "./durable-controls.ts";
+import { AgentMetaDoc, publishConversationIntent, recordAdmissionMeta, recordDeliveryIntent, linkDeliveryIntent, seededCompactionInstructions } from "./durable-controls.ts";
+import { recordAdmitted, recordRefused, recordRequested, recordScheduled, recordTimerCancelled, type OutgoingRequest } from "./continuity-admission.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema, profileText } from "./profile-schema.ts";
 import { cleanupRequestContexts } from "./request-context.ts";
 import { prepareAdmittedCapture } from "./communication-retention.ts";
@@ -57,7 +58,7 @@ import { inputEntry } from "./input-entry.ts";
 import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
-import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines, type AgentControlToolName } from "./control-guidance.ts";
+import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, CONTINUITY_SEED, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines, type AgentControlToolName } from "./control-guidance.ts";
 import { abortScopeContains } from "./abort-scope.ts";
 import { TimerTask, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
@@ -720,12 +721,39 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			throw new Error("Retained place references disagree");
 		return { area, sessionId: reference.sessionId, result: JSON.parse(JSON.stringify(state.response)) as Record<string, JsonValue> };
 	};
+	/**
+	 * Continuity facts of the calling conversation's outgoing requests. A fact that cannot be
+	 * written becomes a diagnostic; it never fails the admission it describes.
+	 */
+	const continuityFact = async (api: Pick<Durable.ToolExecutionApi<ControlDetails>, "commit" | "diagnostic">, context: Context, write: (tx: Durable.Tx) => Promise<unknown>): Promise<void> => {
+		try { await api.commit(async (tx) => { await write(tx); return undefined; }, context); }
+		catch (error) {
+			if (context.abortSignal?.aborted) throw error;
+			api.diagnostic({ severity: "error", message: `Continuity fact not recorded: ${error instanceof Error ? error.message : String(error)}` });
+		}
+	};
+	/** The request key known before a dispatch to a named target; a handle or a new agent has none. */
+	const outgoingRequest = (api: Durable.ToolExecutionApi<ControlDetails>, method: AgentControlMethod, params: Readonly<Record<string, unknown>>): OutgoingRequest | undefined => {
+		if ((method !== "submit" && method !== "task-submit") || typeof params.sessionId !== "string" || typeof params.requestId !== "string") return undefined;
+		return { sessionId: params.sessionId, requestId: params.requestId, replyTo: typeof params.replyTo === "string" ? params.replyTo : identity(api.conversationId) };
+	};
+	/** Retain the pending dispatch and the request key before the target can admit anything. */
+	const beginInputDispatch = async (capture: DispatchCapture, method: AgentControlMethod, params: Readonly<Record<string, unknown>>): Promise<OutgoingRequest | undefined> => {
+		const outgoing = outgoingRequest(capture.api, method, params);
+		await rememberRunInputs(capture.api, capture.context);
+		await retainDispatch(capture.api, capture.context);
+		if (outgoing !== undefined) await continuityFact(capture.api, capture.context, (tx) => recordRequested(tx, capture.api.conversationId, outgoing));
+		return outgoing;
+	};
+	/** The receipt names the admitted identity; a request without a prior key is recorded under it. */
+	const admittedFact = async (capture: DispatchCapture, outgoing: OutgoingRequest | undefined, admitted: ResultReference | undefined): Promise<void> => {
+		const request = outgoing ?? (admitted?.requestId === undefined ? undefined : { sessionId: admitted.sessionId, requestId: admitted.requestId, replyTo: identity(capture.api.conversationId) });
+		if (request !== undefined) await continuityFact(capture.api, capture.context, (tx) => recordAdmitted(tx, capture.api.conversationId, request, admitted));
+	};
 	const dispatchValue = async (perform: AgentControlDispatch, method: AgentControlMethod, params: Readonly<Record<string, unknown>>, capture?: DispatchCapture): Promise<unknown> => {
 		const input = capture && isInputDispatch(method, params);
-		if (input) {
-			await rememberRunInputs(capture.api, capture.context);
-			await retainDispatch(capture.api, capture.context);
-		}
+		const outgoing = input ? await beginInputDispatch(capture, method, params) : undefined;
+		// A dispatch error does not prove that the target admitted nothing, so the request then stays listed as unconfirmed.
 		const value = await perform(method, params);
 		const placeArea = method === "place" ? params.area as string : undefined;
 		if (method === "submit" || method === "task-submit" || input && method === "place") dispatchFacts(method, params, value);
@@ -734,6 +762,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			await retainDispatch(capture.api, capture.context, facts.result ?? null,
 				method === "place" ? JSON.parse(JSON.stringify(value)) as Record<string, JsonValue> : undefined,
 				placeArea);
+			await admittedFact(capture, outgoing, facts.result);
 		}
 		return value;
 	};
@@ -819,6 +848,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const conversation = await api.conversation(input.conversationId, context);
 		if (conversation === undefined) throw new Error("The result producer conversation is missing");
 		const request = { requestId: `agent-deliver:${reporterTaskId}`, requester: identity(api.conversationId), replyTo: identity(input.reportTo ?? api.conversationId), origin: "model" as const };
+		const outgoing: OutgoingRequest = { sessionId: identity(input.conversationId), requestId: request.requestId, replyTo: request.replyTo };
+		// A continuity fact shares the admission's transaction; one that cannot be written is reported and never fails the admission.
+		const fact = async (write: () => Promise<unknown>): Promise<void> => { try { await write(); } catch (error) { report(error); } };
 		await reconcileProfile(api, input.conversationId, context, report, host.storageId);
 		let recoveryOf: string | undefined;
 		let taskSender: TaskInputSender | undefined;
@@ -828,6 +860,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			taskSender = taskInputSender(request.requester, (await tx.doc(AgentMetaDoc, api.conversationId)).name);
 			recoveryOf = await captureProviderRecovery(tx, input.conversationId, request.requestId);
 			const admission = await tx.doc(LocalAdmission, reporterTaskId);
+			await fact(() => recordRequested(tx, api.conversationId, outgoing));
 			await recordDeliveryIntent(tx, input.conversationId, { requestId: request.requestId, ownerId: request.replyTo, message: input.message, whenBusy: input.whenBusy, origin: request.origin, senderIdentity: request.requester, requestContext: request, checkInMinutes: 0 }, now, "retained");
 			await recordInputProvenance(tx, { conversationId: input.conversationId, requestId: request.requestId, classification: "explicit", sender: request.requester });
 			if (admission.armed) return undefined;
@@ -837,7 +870,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			return undefined;
 		}, context);
 		const submission = await conversation.submit({ type: "input", content: input.message, whenBusy: input.whenBusy, requestId: request.requestId, entry: inputEntry("model", request.requester) }, context).catch(async (error) => {
-			await api.commit(async (tx) => { await forgetFailedAdmission(tx, input.conversationId, request.requestId); return undefined; }, BACKGROUND_CONTEXT);
+			await api.commit(async (tx) => {
+				await forgetFailedAdmission(tx, input.conversationId, request.requestId);
+				// No submission under the request ID proves that nothing was admitted.
+				if (await tx.submissionByRequest(input.conversationId, request.requestId) === undefined) await fact(() => recordRefused(tx, api.conversationId, outgoing));
+				return undefined;
+			}, BACKGROUND_CONTEXT);
 			throw error;
 		});
 		await api.commit(async (tx) => {
@@ -845,6 +883,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			const capture = await prepareAdmittedCapture(tx, host.storageId, input.conversationId, request.requestId, submission.id, undefined, () => now, deduped, taskSender);
 			await recordInputProvenance(tx, { conversationId: input.conversationId, requestId: request.requestId, classification: "explicit", sender: request.requester });
 			await capture();
+			await fact(() => recordAdmitted(tx, api.conversationId, outgoing, { sessionId: outgoing.sessionId, requestId: outgoing.requestId, submissionId: submission.id }));
 			return undefined;
 		}, context);
 		await api.commit(async (tx) => { await reconcileInputRelease(tx, input.conversationId, request.requestId); await linkProviderRecovery(tx, submission.id, recoveryOf); return undefined; }, context);
@@ -991,6 +1030,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			registry.children.push(added);
 			return added;
 		}, context);
+		// The new agent has no identity before its creation, so its prompt has no record before the dispatch.
+		if (reference?.requestId !== undefined) {
+			const request = { sessionId: reference.sessionId, requestId: reference.requestId, replyTo: identity(api.conversationId) };
+			await continuityFact(api, context, (tx) => recordAdmitted(tx, api.conversationId, request, reference));
+		}
 		return { kind: "foreign", child, sessionId, deduped: false };
 	};
 
@@ -1207,8 +1251,15 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	 * ID, so a replayed call reuses the retained timer and a crash after the
 	 * deadline admits the input at most once.
 	 */
+	/** A retained timer lists its input for the caller under the target's canonical identity. */
+	const scheduledFact = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, scheduled: Durable.ToolExecutionResult<ControlDetails>, requestId: string): Promise<void> => {
+		const { identity: targetIdentity, timerId } = scheduled.details ?? {};
+		if (scheduled.isError === true || typeof targetIdentity !== "string" || typeof timerId !== "number") return;
+		await continuityFact(api, context, (tx) => recordScheduled(tx, api.conversationId, { sessionId: targetIdentity, requestId, replyTo: identity(api.conversationId) }, timerId));
+	};
 	const scheduleSend = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
 		args: SendInput,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
 		if (args.deliverAt === undefined) return errorResult("deliverAt is required for a scheduled input.");
@@ -1222,7 +1273,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (args.mode === "report") return errorResult("Reports cannot be scheduled");
 		const mode: TimerMode = args.mode ?? "followUp";
 		const scheduleId = `timer:${host.storageId}:${api.taskId}`;
-		return dispatchControl(
+		const scheduled = await dispatchControl(
 			"timer-schedule",
 			{
 				sessionId: args.sessionId,
@@ -1237,6 +1288,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			},
 			`Scheduling an input for ${args.sessionId} failed`,
 		);
+		await scheduledFact(api, context, scheduled, `${scheduleId}:delivery`);
+		return scheduled;
 	};
 
 	const sendTool = durable.defineTool({
@@ -1251,7 +1304,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				if (args.deliverAt !== undefined || args.replyTo !== undefined || args.checkInMinutes !== undefined) return errorResult("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
 				return dispatchControl("report", { sessionId: args.sessionId, senderIdentity: identity(api.conversationId), message: args.message, requestId: `report:${host.storageId}:${api.taskId}`, ...(args.passive === undefined ? {} : { passive: args.passive }) }, "Report delivery failed");
 			}
-			return args.deliverAt === undefined ? sendTarget(api, context, args.sessionId, args.message, args.mode ?? "steer", args.replyTo, checkInMinutes(args.checkInMinutes, "model", host.agentDir)) : scheduleSend(api, args);
+			return args.deliverAt === undefined ? sendTarget(api, context, args.sessionId, args.message, args.mode ?? "steer", args.replyTo, checkInMinutes(args.checkInMinutes, "model", host.agentDir)) : scheduleSend(api, context, args);
 		},
 	});
 
@@ -1303,11 +1356,16 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			if (args.release === true && args.background === true) return errorResult("release cannot be combined with background; abort with background first, then release");
 			if (args.timerId !== undefined && args.release === true) return errorResult("release cannot be combined with timerId");
 			if (args.timerId !== undefined) {
-				return dispatchControl(
+				const timerId = args.timerId;
+				const cancelled = await dispatchControl(
 					"timer-cancel",
-					{ sessionId: args.sessionId, timerId: args.timerId },
-					`Cancellation of timer ${args.timerId} failed`,
+					{ sessionId: args.sessionId, timerId },
+					`Cancellation of timer ${timerId} failed`,
 				);
+				// Only a cancellation before firing closes the scheduled request; a fired timer keeps its admitted input.
+				if (cancelled.isError !== true && cancelled.details?.status === "cancelled")
+					await continuityFact(api, context, (tx) => recordTimerCancelled(tx, api.conversationId, args.sessionId, timerId));
+				return cancelled;
 			}
 			return abortResolved(args, api, context);
 		},
@@ -1510,14 +1568,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_compact",
 			description:
-				"Compact a conversation. For the calling conversation the summary applies after the whole tool batch and the run continues; another conversation goes through the session host.",
+				`Compact a conversation. For the calling conversation the summary applies after the whole tool batch and the run continues; another conversation goes through the session host. The summarizer first receives this fixed text, then your instructions: ${CONTINUITY_SEED}`,
 			parameters: CompactParams,
 			replay: "unsafe",
 			execute: async (args: CompactInput, api, context) => {
 				if (isSelfCompact(args.sessionId, api.conversationId)) {
 					const input: Durable.CompactionInput = {
 						reason: "manual",
-						...(args.instructions === undefined ? {} : { instructions: args.instructions }),
+						instructions: seededCompactionInstructions(args.instructions),
 					};
 					// The compaction is a child of this tool task. The tool task stays
 					// `completing` until the summary entry is appended, so the generation
