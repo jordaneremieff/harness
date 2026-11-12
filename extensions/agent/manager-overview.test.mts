@@ -9,7 +9,7 @@ import { theme } from "./dashboard-test-fixture.mts";
 import { it } from "node:test";
 import { AgentManager } from "./manager.ts";
 import { StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
-import { buildStatusOverview, type StatusOverview } from "./status-overview.ts";
+import { buildStatusOverview, STATUS_OVERVIEW_BYTE_LIMIT, type StatusOverview } from "./status-overview.ts";
 
 function fixtureRoot(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "manager-overview-"));
@@ -45,14 +45,20 @@ it("returns a partial dashboard page with a cursor at the storage bound instead 
 	assert.equal(page.coverage.inventory?.remainingRows, 1);
 	const continuation = await manager.dashboardPage({ cursor: page.coverage.nextCursor ?? undefined });
 	assert.equal(continuation.rows.length, 1);
-	assert.equal(continuation.coverage.complete, true);
+	assert.equal(continuation.coverage.complete, false, "catalogue exhaustion does not complete unpublished views");
 	assert.equal(continuation.coverage.nextCursor, null);
+	assert.equal(continuation.coverage.inventory?.remaining, 0, "no catalogue records remain after the continuation");
+	assert.equal(continuation.coverage.skipped, 1, "the remaining record has no published view");
 	assert.equal(continuation.rows.some((row) => page.rows.some((previous) => previous.id === row.id)), false);
 	assert.equal(observes, 0);
-	const overview = structuredObservation(StatusToolOutputSchema, buildStatusOverview(page, [], [])) as { coverage: { byteLimitReached: boolean; complete: boolean } };
-	assert.equal(overview.coverage.byteLimitReached, true, "unavailable metadata rows reach the status byte bound");
+	const byteBoundPage = { ...page, rows: page.rows.map((row) => ({ ...row, name: "😀".repeat(160) })) };
+	const overview = structuredObservation(StatusToolOutputSchema, buildStatusOverview(byteBoundPage, [], [])) as StatusOverview;
+	assert.equal(overview.coverage.byteLimitReached, true, "bounded multibyte names force the status byte limit");
 	assert.equal(overview.coverage.complete, false);
-	assert.ok(Buffer.byteLength(JSON.stringify(overview), "utf8") <= 48 * 1024);
+	assert.ok(overview.sessions.length < byteBoundPage.rows.length, "the byte bound omits rows from the supplied page");
+	const bytes = Buffer.byteLength(JSON.stringify(overview), "utf8");
+	assert.equal(overview.coverage.bytes, bytes);
+	assert.ok(bytes <= STATUS_OVERVIEW_BYTE_LIMIT);
 });
 
 it("ranks caller-owned history without PID-derived live priority across roster consumers", async (t) => {
