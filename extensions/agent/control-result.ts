@@ -1,3 +1,74 @@
+import { AnswerContinuationSchema, ReceiptContinuationSchema, ReportReceiptAssociationSchema } from "./observation-schema.ts";
+import { ResultReferenceSchema } from "./result-schema.ts";
+import { ProviderBlockFactSchema, providerBlockText } from "./provider-block-facts.ts";
+import { matchesSchema } from "./schema-check.ts";
+
+function record(value: unknown): Record<string, unknown> | undefined {
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+/** A continuation is executable data, not a prose description of a cursor. */
+function inspectCall(value: unknown): string | undefined {
+	if (!matchesSchema(AnswerContinuationSchema, value) && !matchesSchema(ReceiptContinuationSchema, value)) return undefined;
+	const { tool: _tool, ...args } = value as Record<string, unknown>;
+	return `agent_inspect(${JSON.stringify(args)})`;
+}
+
+/** Body pages and recipient-reference pages have independent selectors and progress. */
+export function resultContinuationLines(value: unknown): string[] {
+	const row = record(value);
+	if (!row) return [];
+	const answer = inspectCall(row.answerContinuation);
+	const receipt = inspectCall(record(row.receiptGroup)?.next);
+	return [...(answer ? [`Answer continuation: ${answer}`] : []), ...(receipt ? [`Receipt continuation: ${receipt}`] : [])];
+}
+
+function readableResult(value: Record<string, unknown>): string {
+	const identity = {
+		sessionId: value.sessionId, conversationId: value.conversationId, submissionId: value.submissionId, requestId: value.requestId,
+		operationId: value.operationId, entryId: value.entryId, status: value.status, answerEntryId: value.answerEntryId, reason: value.reason, recoveryOf: value.recoveryOf,
+		offset: value.offset, nextOffset: value.nextOffset, truncated: value.truncated,
+	};
+	const body = typeof value.answer === "string" ? value.answer : "No answer body is available in this result.";
+	const receipt = record(value.receiptGroup);
+	return [body, `Result: ${JSON.stringify(identity)}`,
+		...(receipt ? [`Receipt references: ${JSON.stringify({ recipient: receipt.recipient, results: receipt.results, complete: receipt.complete })}`] : []),
+		...resultContinuationLines(value),
+		...(value.providerBlock === undefined ? [] : [matchesSchema(ProviderBlockFactSchema, value.providerBlock) ? providerBlockText(value.providerBlock) : "Provider block evidence is unavailable."]),
+	].join("\n\n");
+}
+
+export const REPORT_RECEIPT_BYTE_LIMIT = 16 * 1024;
+export const REPORT_RECEIPT_BOUNDARY = "Retention or acknowledgement does not establish model consumption or task acceptance.";
+const REPORT_RECEIPT_KEYS = [
+	"sourceId", "requestId", "ownerId", "senderIdentity", "createdAt", "acknowledged", "passive", "replyTo", "intervention",
+	"sessionId", "identity", "conversationId", "submissionId", "result", "deduped", "admitted", "queued", "boundary",
+] as const;
+
+/** Only successful report sender replies pass through this projection; the recipient body stays intact. */
+export function projectReportReceipt(value: unknown): unknown {
+	const source = record(value);
+	if (!source || source.error !== undefined || source.isError === true || source.outcome === "failed" || source.admitted === false) return value;
+	const retained = typeof source.sourceId === "string" && typeof source.acknowledged === "boolean";
+	const admitted = source.admitted === true || typeof source.submissionId === "number";
+	if (!retained && !admitted) return value;
+	if ((source.intervention !== undefined && !matchesSchema(ReportReceiptAssociationSchema, source.intervention)) ||
+		(source.result !== undefined && !matchesSchema(ResultReferenceSchema, source.result)))
+		return { format: "refused", reason: "Report receipt association metadata is invalid; the retained delivery is unchanged.", byteLimit: REPORT_RECEIPT_BYTE_LIMIT };
+	const result: Record<string, unknown> = {};
+	for (const key of REPORT_RECEIPT_KEYS) if (Object.hasOwn(source, key)) result[key] = structuredClone(source[key]);
+	if (retained) result.boundary = REPORT_RECEIPT_BOUNDARY;
+	if (Buffer.byteLength(JSON.stringify(result), "utf8") > REPORT_RECEIPT_BYTE_LIMIT)
+		return { format: "refused", reason: "Report receipt identity/state metadata exceeds the output byte limit; the retained delivery is unchanged.", byteLimit: REPORT_RECEIPT_BYTE_LIMIT };
+	return result;
+}
+
+/** Public inspect adapters select readable result text without changing internal control rendering. */
+export function readableControlText(value: unknown): string {
+	const row = record(value);
+	return row?.view === "result" ? readableResult(row) : controlText(value);
+}
+
 /** Render a host control result for the model without losing structure. */
 export function controlText(value: unknown): string {
 	if (value === undefined) return "Host control completed without a result.";

@@ -189,7 +189,7 @@ async function assertProviderStatusParameters(parameters: object): Promise<void>
 	assert.ok(payload);
 	const schema = payload.tools[0].input_schema;
 	assert.equal(schema.type, "object");
-	assert.deepEqual(Object.keys(schema.properties).sort(), ["cursor", "limit", "model", "provider", "sessionId", "storageId", "view"]);
+	assert.deepEqual(Object.keys(schema.properties).sort(), ["cursor", "detail", "limit", "model", "provider", "sessionId", "storageId", "view"]);
 	const { description: cursorDescription, ...cursor } = schema.properties.cursor as Record<string, unknown>;
 	assert.deepEqual(cursor, { type: "object", additionalProperties: {} });
 	assert.equal(typeof cursorDescription, "string");

@@ -2,7 +2,9 @@
 import type { AgentPriorityPage, AgentConversationSummary } from "./dashboard-types.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { CatalogPriorityCoverage } from "./catalog.ts";
-import type { ToolOverviewRow } from "./observation-schema.ts";
+import { CompactConversationSchema, type CompactSelectedStatusSchema, type CompactStorageStatusSchema, StorageStatusCoverageSchema, type ToolOverviewRow } from "./observation-schema.ts";
+import type { Static } from "@earendil-works/pi-schema";
+import { matchesSchema } from "./schema-check.ts";
 
 export interface StatusOverviewPrimary {
 	readonly sessionId: string;
@@ -63,7 +65,7 @@ export interface StatusOverview {
 
 export const STATUS_OVERVIEW_BYTE_LIMIT = 16 * 1024;
 export const STATUS_OVERVIEW_DISCOVERY =
-	"Counts cover the supplied page, not unseen storage. Quiet sessions, primaries, and failures include bounded samples. Call agent_list without a cursor, then repeat its nextCursor to see more. Use agent_status with sessionId for full status; agent_inspect retains full text.";
+	"Counts cover the supplied page, not unseen storage. Quiet sessions, primaries, and failures include bounded samples. Call agent_list without a cursor, then repeat its nextCursor to see more. Use agent_status with sessionId and detail:true for full status; agent_inspect retains full text.";
 const EXCERPT_CHARACTERS = 160;
 const QUIET_SAMPLE = 5;
 const PRIMARY_SAMPLE = 3;
@@ -313,4 +315,119 @@ export function buildStatusOverview(
 		value.coverage.byteLimitReached = true;
 		excludeRow(value, dropped, priorityIds);
 	}
+}
+
+export const SELECTED_STATUS_BYTE_LIMIT = 8 * 1024;
+type CompactConversation = Static<typeof CompactConversationSchema>;
+type CompactSelected = Static<typeof CompactSelectedStatusSchema>;
+type CompactStorage = Static<typeof CompactStorageStatusSchema>;
+export interface PresentationRefusal { format: "refused"; reason: string; byteLimit: number }
+function refusal(byteLimit: number, reason: string): PresentationRefusal { return { format: "refused", reason, byteLimit }; }
+function record(value: unknown): Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+function count(value: unknown): number | undefined { return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : undefined; }
+
+/** Detail belongs to one explicit target, not to a page or a fleet selection. */
+export function validateStatusDetail(input: { sessionId?: unknown; detail?: unknown; view?: unknown; storageId?: unknown; cursor?: unknown; limit?: unknown }): void {
+	if (input.detail === undefined) return;
+	if (typeof input.detail !== "boolean" || typeof input.sessionId !== "string" || !input.sessionId ||
+		input.view !== undefined || input.storageId !== undefined || input.cursor !== undefined || input.limit !== undefined)
+		throw new Error("detail requires one explicit sessionId and cannot be combined with fleet or storage-page selectors.");
+}
+
+function addCompactName(row: CompactConversation, name: unknown): void {
+	if (typeof name !== "string") return;
+	row.name = excerpt(name);
+	if (row.name !== name) row.omitted.push("name shortened");
+}
+
+function compactConversation(source: unknown, availability: CompactConversation["availability"]): CompactConversation | undefined {
+	const row = record(source);
+	if (typeof row.identity !== "string" || !row.identity || !(count(row.conversationId) ?? 0)) return undefined;
+	const agent = record(row.agent), model = record(agent.model), live = record(row.live), run = record(live.run);
+	const result: CompactConversation = {
+		identity: row.identity, conversationId: Number(row.conversationId), busy: typeof row.busy === "boolean" ? row.busy : null, availability,
+		queue: { inbox: Array.isArray(record(row.inbox).items) ? (record(row.inbox).items as unknown[]).length : null,
+			submissions: Array.isArray(row.submissions) ? row.submissions.filter(value => ["queued", "placed"].includes(String(record(value).status))).length : null },
+		timers: Array.isArray(row.timers) ? row.timers.length : null, context: "unknown",
+		omitted: ["instructions", "tools", "extensions", "historical tasks and submissions", "usage", "context fact unavailable"],
+		detail: { tool: "agent_status", sessionId: row.identity, detail: true },
+	};
+	addCompactName(result, row.name);
+	if (typeof model.provider === "string" && typeof model.modelId === "string") result.model = { provider: model.provider, modelId: model.modelId };
+	if (typeof agent.thinkingLevel === "string") result.thinkingLevel = agent.thinkingLevel;
+	if ((count(run.taskId) ?? 0) > 0) result.runId = Number(run.taskId);
+	addCompactAwait(result, row.awaiting);
+	const block = record(row.providerBlock);
+	if (typeof block.blockId === "string") {
+		result.providerBlock = { blockId: block.blockId, recovery: `agent_configure({sessionId:${JSON.stringify(row.identity)},model:<explicit provider/model>}), then a new agent_send follow-up` };
+		result.omitted.push("provider evidence; use detail or result view");
+	}
+	return result;
+}
+
+function addCompactAwait(result: CompactConversation, value: unknown): void {
+	const awaiting = record(value);
+	if ((count(awaiting.runId) ?? 0) > 0 && Array.isArray(awaiting.results)) {
+		const items = awaiting.results.slice(0, 4).map(value => { const item = record(value); return { result: structuredClone(item.result), status: item.status }; });
+		const fact = { runId: awaiting.runId, results: items, queuedInputCount: awaiting.queuedInputCount,
+			omittedResults: Math.max(0, awaiting.results.length - items.length) + (count(record(awaiting.omitted).results) ?? 0) };
+		const candidate = { ...result, awaiting: fact };
+		if (matchesSchema(CompactConversationSchema, candidate)) result.awaiting = candidate.awaiting as CompactConversation["awaiting"];
+		result.omitted.push("await producer graph and held-input detail");
+	}
+}
+
+/** Only descriptive fields are expendable; identities, counts, and continuation calls stay exact. */
+function reduceCompact(row: CompactConversation, selectionOptional = true): void {
+	if (row.name !== undefined) { delete row.name; row.omitted.push("name omitted for byte limit"); }
+	if (!selectionOptional) return;
+	if (row.model !== undefined) { delete row.model; row.omitted.push("model omitted for byte limit"); }
+	if (row.thinkingLevel !== undefined) { delete row.thinkingLevel; row.omitted.push("thinking level omitted for byte limit"); }
+}
+
+function compactPrimary(source: Record<string, unknown>): CompactConversation | undefined {
+	if (typeof source.sessionId !== "string") return undefined;
+	const presence = record(source.presence), model = record(presence.model);
+	const conversation: CompactConversation = { identity: source.sessionId, busy: null, availability: "unknown", queue: { inbox: null, submissions: null }, timers: null, context: "unknown",
+		omitted: ["retained ancestry", "live session progress unavailable", "context fact unavailable"], detail: { tool: "agent_status", sessionId: source.sessionId, detail: true } };
+	addCompactName(conversation, presence.name);
+	if (typeof model.provider === "string" && typeof model.modelId === "string") conversation.model = { provider: model.provider, modelId: model.modelId };
+	return conversation;
+}
+function sourceAvailability(source: Record<string, unknown>): CompactConversation["availability"] {
+	if (source.live === false) return "retained";
+	return source.inventory !== undefined || source.pid !== undefined ? "live" : "unknown";
+}
+
+/** Public selected status is separate from the complete host record. */
+export function projectSelectedStatus(value: unknown): CompactSelected | PresentationRefusal {
+	const source = record(value);
+	const conversation = source.kind === "ordinary-primary" ? compactPrimary(source) : compactConversation(source.conversation, sourceAvailability(source));
+	if (!conversation) return refusal(SELECTED_STATUS_BYTE_LIMIT, "Selected status source identity is unavailable.");
+	const result: CompactSelected = { format: "compact", conversation, omitted: ["host inventory", "effort awareness"] };
+	if (typeof source.storageId === "string") result.storageId = source.storageId;
+	if (typeof source.live === "boolean") result.live = source.live;
+	if (measure(result) > SELECTED_STATUS_BYTE_LIMIT) reduceCompact(conversation, false);
+	return measure(result) <= SELECTED_STATUS_BYTE_LIMIT ? result : refusal(SELECTED_STATUS_BYTE_LIMIT, "Mandatory selected identity, state, or recovery metadata exceeds the output byte limit; request detail:true.");
+}
+
+/** Preserve every source-page identity and the backend continuation without another discovery pass. */
+export function projectStorageStatus(value: unknown): CompactStorage | PresentationRefusal {
+	const source = record(value);
+	if (typeof source.storageId !== "string" || !Array.isArray(source.conversations) || !matchesSchema(StorageStatusCoverageSchema, source.coverage))
+		return refusal(STATUS_OVERVIEW_BYTE_LIMIT, "Storage status source identity or coverage is unavailable.");
+	const availability = sourceAvailability(source);
+	const conversations: CompactConversation[] = [];
+	for (const row of source.conversations) {
+		const compact = compactConversation(row, availability);
+		if (!compact) return refusal(STATUS_OVERVIEW_BYTE_LIMIT, "A storage status row has no complete source identity.");
+		conversations.push(compact);
+	}
+	const result: CompactStorage = { format: "compact", storageId: source.storageId, conversations, coverage: structuredClone(source.coverage),
+		omitted: ["host inventory", "effort awareness", "created-agent detail"] };
+	if (typeof source.live === "boolean") result.live = source.live;
+	if (measure(result) > STATUS_OVERVIEW_BYTE_LIMIT) for (const row of conversations) reduceCompact(row);
+	return measure(result) <= STATUS_OVERVIEW_BYTE_LIMIT ? result : refusal(STATUS_OVERVIEW_BYTE_LIMIT, "Mandatory storage identities, state, or coverage exceed the output byte limit; no identities were cut and no continuation was invented.");
 }

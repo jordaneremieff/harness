@@ -1,0 +1,93 @@
+import assert from "node:assert/strict";
+import { it } from "node:test";
+import { controlText, readableControlText, projectReportReceipt, REPORT_RECEIPT_BOUNDARY, resultContinuationLines } from "./control-result.ts";
+import { AnswerContinuationSchema, ReceiptContinuationSchema, ResultToolOutputSchema } from "./observation-schema.ts";
+import { matchesSchema } from "./schema-check.ts";
+
+const answerContinuation = { tool: "agent_inspect", view: "result", sessionId: "producer:2", submissionId: 7, requestId: "input-7", offset: 4096 };
+const receiptContinuation = { tool: "agent_inspect", view: "result", sessionId: "producer:2", submissionId: 7, requestId: "input-7", receiptCursor: "recipient-page" };
+const result = { view: "result", sessionId: "producer:2", conversationId: 2, submissionId: 7, requestId: "input-7", status: "done", answerEntryId: 9,
+	answer: 'First line\n"Quoted" second line 😀', offset: 0, nextOffset: 4096, truncated: true, answerContinuation,
+	receiptGroup: { recipient: "reader", results: [{ sessionId: "producer:2", submissionId: 7, requestId: "input-7" }], complete: false, next: receiptContinuation },
+	usage: { models: {}, tools: {} } };
+
+it("renders readable answer text before compact metadata and independent exact continuation calls", () => {
+	assert.equal(matchesSchema(ResultToolOutputSchema, result), true);
+	const before = structuredClone(result), text = readableControlText(result);
+	assert.ok(text.startsWith(`${result.answer}\n\nResult:`));
+	assert.doesNotMatch(text, /First line\\n/u);
+	assert.deepEqual(result, before);
+	const lines = resultContinuationLines(result);
+	assert.equal(lines.length, 2);
+	assert.match(lines[0], /^Answer continuation: agent_inspect\(/u);
+	assert.match(lines[1], /^Receipt continuation: agent_inspect\(/u);
+	const args = lines.map(line => JSON.parse(line.slice(line.indexOf("(") + 1, -1)));
+	assert.deepEqual(args, [Object.fromEntries(Object.entries(answerContinuation).filter(([key]) => key !== "tool")), Object.fromEntries(Object.entries(receiptContinuation).filter(([key]) => key !== "tool"))]);
+	assert.equal(Object.hasOwn(args[0], "receiptCursor"), false);
+	assert.equal(Object.hasOwn(args[1], "offset"), false);
+});
+
+it("keeps answer and receipt cursor schemas exclusive and bounded", () => {
+	assert.equal(matchesSchema(AnswerContinuationSchema, { ...answerContinuation, receiptCursor: "other" }), false);
+	assert.equal(matchesSchema(ReceiptContinuationSchema, { ...receiptContinuation, offset: 4 }), false);
+	assert.equal(matchesSchema(ReceiptContinuationSchema, { ...receiptContinuation, receiptCursor: "a".repeat(2049) }), false);
+	assert.deepEqual(resultContinuationLines({ answerContinuation: { ...answerContinuation, extra: true } }), []);
+	assert.equal(matchesSchema(ResultToolOutputSchema, { ...result, receiptGroup: { ...result.receiptGroup, results: Array(17).fill(result.receiptGroup.results[0]) } }), false);
+});
+
+it("states unavailable body without fabricating a page or changing exact evidence rendering", () => {
+	const absent = { view: "result", status: "unavailable", reason: "Answer entry unavailable" };
+	assert.match(readableControlText(absent), /^No answer body is available/u);
+	assert.deepEqual(resultContinuationLines(absent), []);
+	const exact = { view: "exact", text: '{"raw":true}', offset: 0 };
+	assert.equal(controlText(exact), JSON.stringify(exact));
+	assert.equal(controlText(undefined), "Host control completed without a result.");
+});
+
+it("removes report body from retained sender receipts and preserves acknowledged replay", () => {
+	for (const acknowledged of [false, true]) {
+		const original = { sourceId: "report:r1", requestId: "r1", ownerId: "recipient", senderIdentity: "sender", replyTo: null, createdAt: 7, acknowledged, passive: true,
+			message: "Private multiline\nreport body", operatorMessage: "Private excerpt" };
+		const before = structuredClone(original), receipt = projectReportReceipt(original) as Record<string, unknown>;
+		assert.deepEqual(receipt, { sourceId: "report:r1", requestId: "r1", ownerId: "recipient", senderIdentity: "sender", replyTo: null, createdAt: 7, acknowledged, passive: true, boundary: REPORT_RECEIPT_BOUNDARY });
+		assert.doesNotMatch(controlText(receipt), /Private|operatorMessage|message/u);
+		assert.deepEqual(original, before);
+	}
+});
+
+it("preserves ordinary admission facts and failures without inventing retention", () => {
+	const admission = { sessionId: "ordinary", admitted: true, sourceId: "source", boundary: "Queued admission only", message: "body" };
+	assert.deepEqual(projectReportReceipt(admission), { sessionId: "ordinary", admitted: true, sourceId: "source", boundary: "Queued admission only" });
+	const nativeAdmission = { identity: "native", conversationId: 1, submissionId: 7, deduped: false, boundary: "Admission only", result: { sessionId: "native", submissionId: 7 } };
+	assert.deepEqual(projectReportReceipt(nativeAdmission), nativeAdmission);
+	for (const failure of [{ error: "failed", sourceId: "r", acknowledged: false }, { admitted: false, reason: "unavailable" }, { outcome: "failed", reason: "uncertain" }, { queued: "unknown" }]) assert.equal(projectReportReceipt(failure), failure);
+});
+
+it("keeps exact report intervention associations and refuses malformed nested metadata", () => {
+	const intervention = { producerRunId: 3, producerResults: [{ sessionId: "producer", submissionId: 7, requestId: "input" }] };
+	const source = { sourceId: "report:one", acknowledged: true, intervention };
+	assert.deepEqual((projectReportReceipt(source) as Record<string, unknown>).intervention, intervention);
+	for (const association of [{ ...intervention, message: "body" }, { producerRunId: 0, producerResults: [] }]) {
+		const value = projectReportReceipt({ ...source, intervention: association }) as Record<string, unknown>;
+		assert.equal(value.format, "refused");
+		assert.doesNotMatch(controlText(value), /message|body/u);
+	}
+});
+
+it("renders provider evidence through its qualified recovery formatter outside result identity metadata", () => {
+	const block = { blockId: "block-one", conversationId: 2, providerSessionId: "provider-session", epoch: 0,
+		model: { provider: "test", modelId: "model" }, error: "Quota exhausted", errorRedacted: false, errorTruncated: false,
+		source: "host-block", timestamp: 0, originalResults: [{ sessionId: "producer:2", submissionId: 7 }], omittedOriginalResults: 0 };
+	const output = readableControlText({ ...result, providerBlock: block });
+	assert.match(output, /1970-01-01T00:00:00.000Z/u);
+	assert.match(output, /did not reach the provider/u);
+	assert.match(output, /agent_configure\(/u);
+	assert.ok(output.startsWith(result.answer));
+});
+
+it("refuses oversized receipt metadata without cutting exact identifiers", () => {
+	const receipt = projectReportReceipt({ sourceId: "a".repeat(17000), acknowledged: true, message: "body" }) as Record<string, unknown>;
+	assert.equal(receipt.format, "refused");
+	assert.ok(Buffer.byteLength(JSON.stringify(receipt)) < 16384);
+	assert.equal(Object.hasOwn(receipt, "sourceId"), false);
+});

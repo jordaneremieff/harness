@@ -26,6 +26,7 @@ import { CommunicationViewSchema } from "./communication.ts";
 import { AwaitFactSchema } from "./await-facts.ts";
 import { STORAGE_STATUS_ID_PATTERN } from "./storage-status.ts";
 import { ProviderBlockFactSchema } from "./provider-block-facts.ts";
+import { ResultReferenceSchema } from "./result-schema.ts";
 
 const string = str();
 const boolean = bool();
@@ -52,7 +53,8 @@ const storageStatusLimit = int({ minimum: 1, maximum: 50 });
 export const StorageStatusPageInputSchema = obj({ view: lit("storage-page"), storageId: storageStatusId, cursor: opt(cursorSchema), limit: opt(storageStatusLimit) });
 /** Object-root parameters survive provider conversion; execution validates selector combinations. */
 export const StatusToolInputSchema = obj({
-	sessionId: opt(str({ minLength: 1, description: "Default: the calling conversation; omit for the storage overview." })),
+	sessionId: opt(str({ minLength: 1, description: "Select one conversation. Omit for the existing overview scope." })),
+	detail: opt(bool({ description: "Request full selected status with an explicit sessionId. Not valid with fleet or storage-page." })),
 	view: opt<Schema<"fleet" | "storage-page">>({ type: "string", enum: ["fleet", "storage-page"], description: "Read sampled machine-local model evidence with fleet, without a sessionId. Optional exact model/provider filters select published evidence, not provider health. Use storage-page for one exact storageId." }),
 	...FleetSelectionProperties,
 	storageId: opt(storageStatusId), cursor: opt(map(unknown(), { description: "Opaque backend cursor. Pass the returned cursor object unchanged." })), limit: opt(storageStatusLimit),
@@ -424,7 +426,37 @@ const toolSelected = all([
 	onlyKeys(["awareness", "conversation", "conversations", "coverage", "createdAgents", "inventory", "pid", "live", "storageId", "deliveryError"]),
 ]);
 const ToolStatusSchema = all([partial(awarenessProperties), union([toolOverview, toolSelected])]);
-export const StatusToolOutputSchema = union([ToolStatusSchema, FleetStatusSchema, OrdinaryPrimaryObservationSchema]);
+/** Exact references stay intact; only descriptive previews are shortened. */
+export const CompactAwaitSchema = obj({
+	runId: id,
+	results: arr(obj({ result: ResultReferenceSchema, status: union([lit("pending"), lit("done"), lit("unanswered"), lit("unavailable")]) }), { maxItems: 4 }),
+	omittedResults: count,
+	queuedInputCount: count,
+});
+export const StatusDetailCallSchema = obj({ tool: lit("agent_status"), sessionId: string, detail: lit(true) });
+export const CompactConversationSchema = obj({
+	identity: string, conversationId: opt(id), busy: nullable(boolean),
+	availability: union([lit("live"), lit("retained"), lit("unknown")]),
+	name: opt(string), model: opt(obj({ provider: string, modelId: string })), thinkingLevel: opt(string),
+	runId: opt(id), queue: obj({ inbox: nullableCount, submissions: nullableCount }), timers: nullableCount,
+	awaiting: opt(CompactAwaitSchema),
+	providerBlock: opt(obj({ blockId: string, recovery: string })),
+	context: lit("unknown"), omitted: arr(string), detail: StatusDetailCallSchema,
+});
+export const PresentationRefusalSchema = obj({ format: lit("refused"), reason: string, byteLimit: count });
+export const ReportReceiptAssociationSchema = obj({ producerRunId: id, producerResults: arr(ResultReferenceSchema, { minItems: 1 }) });
+export const RetainedReportReceiptSchema = obj({
+	sourceId: string, requestId: string, ownerId: string, senderIdentity: string, createdAt: number, acknowledged: boolean,
+	replyTo: nullableText, passive: opt(boolean), intervention: opt(ReportReceiptAssociationSchema), boundary: string,
+});
+const compactEnvelope = {
+	format: lit("compact"), storageId: opt(string), live: opt(boolean), omitted: arr(string),
+};
+export const CompactSelectedStatusSchema = obj({ ...compactEnvelope, conversation: CompactConversationSchema });
+export const CompactStorageStatusSchema = obj({
+	...compactEnvelope, storageId: string, conversations: arr(CompactConversationSchema), coverage: StorageStatusCoverageSchema,
+});
+export const StatusToolOutputSchema = union([ToolStatusSchema, FleetStatusSchema, OrdinaryPrimaryObservationSchema, CompactSelectedStatusSchema, CompactStorageStatusSchema, PresentationRefusalSchema]);
 
 const entrySource = union([lit("user"), lit("assistant"), lit("toolResult"), lit("summary"), lit("custom")]);
 const messageRole = union([lit("system"), lit("user"), lit("assistant"), lit("toolResult")]);
@@ -535,7 +567,20 @@ export const ActivityOutputSchema = obj({
 	detail: string,
 });
 
-const RetainedResultOutputSchema = obj({
+export const AnswerContinuationSchema = obj({
+	tool: lit("agent_inspect"), view: lit("result"), sessionId: string, submissionId: id, requestId: opt(string), offset: count,
+});
+export const ReceiptContinuationSchema = obj({
+	tool: lit("agent_inspect"), view: lit("result"), sessionId: string, submissionId: id, requestId: opt(string), receiptCursor: str({ minLength: 1, maxLength: 2048 }),
+});
+export const ReceiptGroupSchema = obj({
+	recipient: string, results: arr(ResultReferenceSchema, { maxItems: 16 }), complete: boolean, next: nullable(ReceiptContinuationSchema),
+});
+export type AnswerContinuation = Static<typeof AnswerContinuationSchema>;
+export type ReceiptContinuation = Static<typeof ReceiptContinuationSchema>;
+export type ReceiptGroup = Static<typeof ReceiptGroupSchema>;
+
+const retainedResultProperties = {
 	providerBlock: opt(ProviderBlockFactSchema),
 	recoveryOf: opt(string),
 	view: lit("result"),
@@ -550,9 +595,9 @@ const RetainedResultOutputSchema = obj({
 	reason: opt(string),
 	answer: opt(string),
 	usage: UsageStateSchema,
-});
-
-export const ResultOutputSchema = union([RetainedResultOutputSchema, obj({
+};
+const RetainedResultOutputSchema = obj(retainedResultProperties);
+const UnavailableResultOutputSchema = obj({
 	view: lit("result"),
 	sessionId: string,
 	conversationId: id,
@@ -562,13 +607,20 @@ export const ResultOutputSchema = union([RetainedResultOutputSchema, obj({
 	operationId: opt(string),
 	reason: string,
 	usage: UsageStateSchema,
-})]);
+});
+export const ResultOutputSchema = union([RetainedResultOutputSchema, UnavailableResultOutputSchema]);
+/** Readable answer pages are a public tool projection; the host response contract stays complete. */
+export const ResultToolOutputSchema = union([obj({
+	...retainedResultProperties,
+	offset: opt(count), nextOffset: opt(nullableCount), truncated: opt(boolean),
+	answerContinuation: opt(AnswerContinuationSchema), receiptGroup: opt(ReceiptGroupSchema),
+}), UnavailableResultOutputSchema]);
 
 /** `agent_inspect` output: one shape per view, selected by the `view` property. */
 export const InspectOutputSchema = union([HistoryOutputSchema, SearchOutputSchema, ExactOutputSchema, ActivityOutputSchema, ResultOutputSchema]);
 export type InspectOutput = Static<typeof InspectOutputSchema>;
 /** Tool routing also accepts ordinary retained evidence; the native host contract stays separate. */
-export const InspectToolOutputSchema = union([InspectOutputSchema, OrdinaryPrimaryObservationSchema]);
+export const InspectToolOutputSchema = union([InspectOutputSchema, ResultToolOutputSchema, OrdinaryPrimaryObservationSchema]);
 
 /** The schema for one observation method, shared by ordinary and native tool declarations. */
 export function observationSchema(method: "list" | "status" | "inspect"): Schema {
@@ -655,6 +707,8 @@ function selectedStatusDiagnostic(value: Record<string, unknown>, limit: number)
 }
 
 function statusToolDiagnostic(value: Record<string, unknown>, limit: number): ObservationDiagnostic {
+	if (value.format === "refused") return { variant: "refused", errors: schemaErrors(PresentationRefusalSchema, value, limit) };
+	if (value.format === "compact") return { variant: "compact", errors: schemaErrors(has(value, "conversations") ? CompactStorageStatusSchema : CompactSelectedStatusSchema, value, limit) };
 	if (value.kind === "ordinary-primary") return { variant: "ordinary-primary", errors: schemaErrors(OrdinaryPrimaryObservationSchema, value, limit) };
 	if (value.view === "fleet") return { variant: "fleet", errors: schemaErrors(FleetStatusSchema, value, limit) };
 	if (OVERVIEW_KEYS.some((key) => has(value, key))) {
