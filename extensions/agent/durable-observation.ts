@@ -28,7 +28,7 @@ import { snapshotDeliveryState, deliveryState, latestReceipt, migrateDeliverySto
 import { timerStatusRows } from "./durable-timers.ts";
 import { readAwaitFact } from "./await-observation.ts";
 import { snapshotProviderBlock, snapshotInputProviderBlock, snapshotInputRecovery, readProviderBlock, readInputProviderBlock, readInputRecovery } from "./provider-block.ts";
-import { PROVIDER_BLOCK_ERROR, type ProviderBlockFact } from "./provider-block-facts.ts";
+import { modelFailureText, PROVIDER_BLOCK_ERROR, type ProviderBlockFact } from "./provider-block-facts.ts";
 import type { AwaitFact } from "./await-facts.ts";
 import type { CommunicationView } from "./communication.ts";
 import { captureCommunicationReader, type CapturedCommunicationReader } from "./communication-observation.ts";
@@ -2042,7 +2042,7 @@ async function readResult(harness: Harness, storageId: string, conversation: Con
 	if (record.status === "done") return { ...base, entryId: record.entry, answerEntryId: record.answer, ...(await resultAnswer(harness, record.answer, context)) };
 	if (record.status === "unanswered") {
 		const providerBlock = await observedInputProviderBlock(harness, record.id, context);
-		return { ...base, ...(record.entry === undefined ? {} : { entryId: record.entry }), reason: record.reason, ...(providerBlock === undefined ? {} : { providerBlock }) };
+		return { ...base, ...(record.entry === undefined ? {} : { entryId: record.entry }), reason: modelFailureText(record.reason, record.detail, providerBlock), ...(providerBlock === undefined ? {} : { providerBlock }) };
 	}
 	return { ...base, ...(record.entry === undefined ? {} : { entryId: record.entry }) };
 }

@@ -48,6 +48,7 @@ import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, gateTool } from "./durable-host-fixture.mts";
 import { readInspection } from "./durable-observation.ts";
 import { AgentTimerDoc, scheduleTimer } from "./durable-timers.ts";
+import { modelFailureText } from "./provider-block-facts.ts";
 
 const context = BACKGROUND_CONTEXT;
 const storageId = "test-storage";
@@ -839,6 +840,35 @@ it("keeps the original input placed while one native await accepts two exact res
 	const output = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_await");
 	assert.equal(output?.isError, false, output?.text);
 	assert.ok(output?.text.includes("RESULT-ONE") && output.text.includes("RESULT-TWO"));
+});
+
+for (const contentRefusal of [true, false]) it(`delivers retained ${contentRefusal ? "content refusal" : "unclassified failure"} text through the stop notice`, { timeout: 10000 }, async (t) => {
+	const raw = `${contentRefusal ? "This content was flagged for possible cybersecurity risk" : "Unknown request rejection"}; api_key=sk-abcdefghijklmnopqrstuv; ${"x".repeat(2000)}`;
+	const route = createRoute(); let finish!: (message: AssistantMessage) => void; let calls = 0;
+	const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
+	const models = createTestModels((...args) => {
+		const last = args[0].messages.findLast((message) => message.role !== "system");
+		if (last?.role === "user" && messageText(last) === "REFUSED-TASK") { calls++; return held; }
+		return route.route(...args);
+	});
+	const holder: DispatchHolder = {};
+	const { registry } = buildRegistry(createDispatch(holder, []));
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models, { retry: { enabled: true, maxRetries: 3 } }); holder.harness = harness;
+	t.after(async () => { finish(fauxAssistantMessage("FINISHED")); await harness.close(context); });
+	route.script.push({ tool: "agent_spawn", args: { name: "refused-task", prompt: "REFUSED-TASK" } });
+	await say(root, "Dispatch a task");
+	const spawned = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_spawn"); assert.ok(spawned);
+	const result = (spawned.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
+	finish(fauxAssistantMessage([], { stopReason: "error", errorMessage: raw }));
+	const input = await harness.submission(result.submissionId as Durable.SubmissionId, context); assert.ok(input);
+	const native = await input.wait(context); assert.equal(native.status, "unanswered");
+	if (native.status !== "unanswered") assert.fail("Expected a native model failure");
+	assert.equal(native.reason, "model_error"); assert.equal(native.detail, raw);
+	const expected = modelFailureText("model_error", raw);
+	await settle(harness, root.id);
+	assert.ok((await userTexts(harness, root.id)).some((text) => text.includes(`stopped without an answer: ${expected}]`)));
+	assert.equal(calls, 1, "the native host does not retry or substitute the model");
+	assert.ok(Buffer.byteLength(expected) <= 1024); assert.doesNotMatch(expected, /abcdefghijkl/u);
 });
 
 async function waitForAwait(harness: Durable.Harness, predicate: (state: AwaitState) => boolean): Promise<void> {

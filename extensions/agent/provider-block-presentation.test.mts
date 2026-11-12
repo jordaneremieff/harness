@@ -12,7 +12,7 @@ import { AgentCatalog } from "./catalog.ts";
 import { startDurableDelivery } from "./durable-delivery.ts";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, hostOptions, scriptedRuntime } from "./durable-host-fixture.mts";
-import { PROVIDER_BLOCK_ERROR, ProviderBlockFactSchema, providerBlockText, type ProviderBlockFact } from "./provider-block-facts.ts";
+import { modelFailureText, PROVIDER_BLOCK_ERROR, ProviderBlockFactSchema, providerBlockText, type ProviderBlockFact } from "./provider-block-facts.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { eventLog } from "./host-fixture.mts";
 import { parseHostMetadata } from "./host-protocol.ts";
@@ -28,6 +28,29 @@ function fact(overrides: Partial<ProviderBlockFact> = {}): ProviderBlockFact {
 		errorRedacted: false, errorTruncated: false, source: "provider", timestamp,
 		originalResults: [{ sessionId: target, submissionId: 7, requestId: "original-request" }], omittedOriginalResults: 0, ...overrides };
 }
+
+it("presents content refusal with explicit recovery and leaves unknown wording as model_error", () => {
+	const refusal = "This content was flagged for possible cybersecurity risk";
+	assert.equal(modelFailureText("model_error", refusal), `content_refusal: ${refusal} The provider refused this content. Repeating the same task on this provider fails. Choose another explicit provider/model under your existing authority, or change the form of the task. No automatic substitution or host retry.`);
+	assert.equal(modelFailureText("model_error", "Unknown request rejection"), "model_error: Unknown request rejection");
+	assert.equal(modelFailureText("aborted", refusal), "aborted");
+	assert.equal(modelFailureText("model_error", "usage limit reached", fact()), "model_error");
+	assert.equal(modelFailureText("model_error", { message: refusal }), "model_error");
+	assert.equal(modelFailureText("model_error", undefined), "model_error");
+	assert.equal(modelFailureText("model_error", " \n"), "model_error");
+});
+
+it("fits long redacted failure text and recovery into the result communication reason bound", () => {
+	for (const prefix of ["This content was flagged for possible cybersecurity risk", "Unknown request rejection"]) {
+		const text = modelFailureText("model_error", `${prefix}; api_key=sk-abcdefghijklmnopqrstuv; ${"😀".repeat(1500)}`);
+		assert.ok(Buffer.byteLength(text, "utf8") <= 1024);
+		assert.ok(text.startsWith(prefix.startsWith("This content") ? "content_refusal: " : "model_error: "));
+		assert.ok(text.includes("[credential redacted]")); assert.ok(text.includes("[truncated]"));
+		assert.doesNotMatch(text, /abcdefghijkl/u);
+		if (prefix.startsWith("This content")) assert.ok(text.endsWith("No automatic substitution or host retry."));
+	}
+	assert.equal(modelFailureText("model_error", "x".repeat(40000)), "model_error: [text unavailable: scan budget exceeded] [truncated]");
+});
 
 it("quotes zoneless and zoned provider times without conversion and uses the retained UTC receive time", () => {
 	for (const time of ["2026-10-11 00:00", "2026-10-11T00:00:00+05:30", "2026-10-11 00:00 UTC"]) {

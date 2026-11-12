@@ -1,5 +1,7 @@
 import { str, int, bool, lit, union, arr, obj, type Static } from "@earendil-works/pi-schema";
 import { ResultReferenceSchema } from "./result-schema.ts";
+import { isProviderContentRefusal } from "./provider-block.ts";
+import { safeProviderError } from "./primary-observation.ts";
 
 export const PROVIDER_BLOCK_ERROR = "Agent host: quota exceeded; explicit recovery required.";
 export const STALE_PROVIDER_ERROR = "Agent host: request superseded by explicit model configuration.";
@@ -13,6 +15,17 @@ export const ProviderBlockFactSchema = obj({
 	originalResults: arr(ResultReferenceSchema, { maxItems: 16 }), omittedOriginalResults: int({ minimum: 0 }),
 });
 export type ProviderBlockFact = Static<typeof ProviderBlockFactSchema>;
+
+/** Present retained model failure detail without changing the native settlement. */
+export function modelFailureText(reason: string, detail: unknown, block?: ProviderBlockFact): string {
+	if (block !== undefined || reason !== "model_error" || typeof detail !== "string" || detail.trim() === "") return reason;
+	const refusal = isProviderContentRefusal(safeProviderError(detail).text);
+	const prefix = `${refusal ? "content_refusal" : "model_error"}: `;
+	const recovery = refusal ? " The provider refused this content. Repeating the same task on this provider fails. Choose another explicit provider/model under your existing authority, or change the form of the task. No automatic substitution or host retry." : "";
+	// Result communication accepts at most 1,024 UTF-8 bytes for its reason.
+	const evidence = safeProviderError(detail, 1024 - Buffer.byteLength(`${prefix} [credential redacted] [truncated]${recovery}`));
+	return `${prefix}${evidence.text}${evidence.redacted ? " [credential redacted]" : ""}${evidence.truncated ? " [truncated]" : ""}${recovery}`;
+}
 
 function receivedText(block: ProviderBlockFact): string {
 	const date = new Date(block.timestamp);

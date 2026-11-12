@@ -13,7 +13,7 @@ import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { DeliveryArchiveDoc, DeliveryStoreDoc } from "./delivery-store.ts";
 import { completed } from "./durable-host-fixture.mts";
 import { settleDeliveries } from "./durable-controls.ts";
-import { PROVIDER_BLOCK_ERROR } from "./provider-block-facts.ts";
+import { modelFailureText, PROVIDER_BLOCK_ERROR } from "./provider-block-facts.ts";
 import { InspectOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { ACTIVITY_DIGEST_BYTES, ACTIVITY_SCAN_BYTES, DurableObservation, entryRow, fragment, projectEntry, dashboardHealth, readConversationStatus, readDashboard, reduceActivityMetadata, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
 import { answerMessage, failingTool, fixtureRegistry, fixtureRuntime, fixtureStorageId, fixtureProvider, fixtureModelId, gateTool, hostOptions, redactedAnswerMessage, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
@@ -1133,6 +1133,29 @@ it("prioritizes failure rows within the digest bound and exposes excluded failur
   const history=await obs.request("inspect",{view:"history",limit:50}) as {entries:{id:number}[]};
   for(const failure of excluded){assert.ok(history.entries.some(e=>e.id===failure.id));const exact=await obs.request("inspect",{view:"exact",entryId:failure.id}) as {text:string};assert.match(exact.text,/large intentional failure/u);}
  } finally {await obs.close();}
+});
+
+for (const contentRefusal of [true, false]) it(`inspects redacted ${contentRefusal ? "content refusal" : "unclassified failure"} evidence in live and cold result reads`, async (t) => {
+	const storagePath = join(fixtureRoot(t), "provider-content.sqlite");
+	const raw = `${contentRefusal ? "This content was flagged for possible cybersecurity risk" : "Unknown request rejection"}; api_key=sk-abcdefghijklmnopqrstuv; ${"😀".repeat(1500)}`;
+	const host = await DurableHost.open({ ...hostOptions(storagePath, await scriptedRuntime([{ ...answerMessage(), stopReason: "error", errorMessage: raw }]), fixtureRegistry()), settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
+	const admitted = await host.submit({ message: "task", requestId: "provider-content" });
+	const expected = modelFailureText("model_error", raw);
+	const check = (value: unknown): void => {
+		const result = value as { status: string; reason: string };
+		assert.equal(result.status, "unanswered"); assert.equal(result.reason, expected);
+		assert.ok(Buffer.byteLength(result.reason) <= 1024); assert.doesNotMatch(result.reason, /abcdefghijkl/u);
+	};
+	try {
+		await host.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+		check(await host.request("inspect", { view: "result", submissionId: admitted.submissionId }));
+		const native = await (await host.harness.submission(admitted.submissionId, BACKGROUND_CONTEXT))?.status(BACKGROUND_CONTEXT);
+		assert.equal(native?.status, "unanswered");
+		if (native?.status === "unanswered") { assert.equal(native.reason, "model_error"); assert.equal(native.detail, raw); }
+	} finally { await host.close(); }
+	const observation = await observationFor(storagePath);
+	try { check(await observation.request("inspect", { view: "result", submissionId: admitted.submissionId })); }
+	finally { await observation.close(); }
 });
 
 it("dashboard failure causes use retained model error text in live and cold reads", async (t) => {

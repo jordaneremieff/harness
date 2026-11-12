@@ -25,7 +25,7 @@ import { agentRunControlDoc } from "./run-control-state.ts";
 import { storageStatusPageInput, validateStatusSelectors } from "./storage-status.ts";
 import { agentChildrenDoc, type AgentChild } from "./children.ts";
 import { readInputProviderBlock, captureProviderRecovery, linkProviderRecovery } from "./provider-block.ts";
-import { providerBlockText } from "./provider-block-facts.ts";
+import { modelFailureText, providerBlockText } from "./provider-block-facts.ts";
 import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
 import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { executeAwait } from "./await-execution.ts";
@@ -827,7 +827,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const next = (report?: string): ReporterState => ({ phase: "report", report });
 		if (settled.status === "unanswered") {
 			const block = await readInputProviderBlock(tx, settled.id);
-			return next(`[agent ${name} stopped without an answer: ${settled.reason}]${block === undefined ? "" : `\n${providerBlockText(block)}`}`);
+			const reason = modelFailureText(settled.reason, settled.detail, block);
+			return next(`[agent ${name} stopped without an answer: ${reason}]${block === undefined ? "" : `\n${providerBlockText(block)}`}`);
 		}
 		if (settled.type !== "input") return next(`[agent ${name} failed: unexpected settlement]`);
 		const registry = await tx.doc(Children, ownerConversationId);

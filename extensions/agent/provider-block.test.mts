@@ -11,7 +11,7 @@ import { createAssistantMessageEventStream, isContextOverflow, isRetryableAssist
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureRegistry, hostOptions, scriptedRuntime, fixtureProvider, fixtureModelId } from "./durable-host-fixture.mts";
 import { ProviderModels } from "./provider-models.ts";
-import { isProviderExhaustion, captureProviderAttempt, retainProviderBlock, readProviderBlock, ProviderControlDoc, retainDeferredAttempt, readDeferredAttempt } from "./provider-block.ts";
+import { isProviderContentRefusal, isProviderExhaustion, captureProviderAttempt, retainProviderBlock, readProviderBlock, ProviderControlDoc, retainDeferredAttempt, readDeferredAttempt } from "./provider-block.ts";
 import { PROVIDER_BLOCK_ERROR, STALE_PROVIDER_ERROR, ProviderBlockFactSchema } from "./provider-block-facts.ts";
 import { safeProviderError } from "./primary-observation.ts";
 import { ProviderRetryNoticeSchema, providerNoticeRequestId, retainProviderRetryNotices } from "./provider-notices.ts";
@@ -32,6 +32,17 @@ it("recognizes explicit exhaustion inside rate-limit envelopes while preserving 
 	assert.equal(isProviderExhaustion('RateLimitError: {"code":"1308"}', "zai"), true);
 	assert.equal(isProviderExhaustion('RateLimitError: {"code":"1310"}', "zai"), true);
 	for (const text of ['RateLimitError: quota exceeded; requests per minute', 'Rate limit exceeded: TPM', 'RateLimitError: maximum context length exceeded', 'RateLimitError: too many requests']) assert.equal(isProviderExhaustion(text), false, text);
+});
+
+it("recognises explicit content refusal separately from exhaustion and unclassified errors", () => {
+	const refusal = "This content was flagged for possible cybersecurity risk";
+	assert.equal(isProviderContentRefusal(refusal), true);
+	assert.equal(isProviderContentRefusal(`Provider error: ${refusal}.`), true);
+	assert.equal(isProviderExhaustion(refusal), false);
+	for (const error of ["usage limit reached", "connection reset", "Unknown request rejection", "possible cybersecurity risk"]) assert.equal(isProviderContentRefusal(error), false, error);
+	const message = { ...answerMessage(), stopReason: "error" as const, errorMessage: refusal };
+	assert.equal(isRetryableAssistantError(message), false);
+	assert.equal(isContextOverflow(message), false);
 });
 
 it("retains bounded redacted provider evidence without assigning a timezone to reset claims", () => {
