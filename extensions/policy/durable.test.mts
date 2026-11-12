@@ -709,6 +709,31 @@ test("distinct tool tasks with one provider call id each receive their own resul
 	}
 });
 
+test("a result correction is the outcome that completion rules and telemetry observe", async () => {
+	const counter = { executed: 0 };
+	const fixture = await openFixture({ mode: "enforce", extension: verdictExtension(["BAD", "GOOD"], counter) });
+	try {
+		await addRule(fixture.policy, "verdict-bad", badVerdictRule);
+		await addRule(fixture.policy, "verdict-failed", {
+			phase: "completion", selector: { tools: ["verdict_probe"] },
+			when: { op: "eq", path: ["outcome", "kind"], value: "execution-error" },
+			action: { kind: "observe", label: "failed" }, onUnavailable: "skip",
+		});
+		await verdictCall(fixture, "bad-call");
+		await verdictCall(fixture, "good-call");
+		assert.deepEqual((await toolResults(fixture.root, "verdict_probe")).map((result) => result.isError), [true, false]);
+		await fixture.closeHost();
+		const records = (await telemetryLines(fixture.storeDir, localDate(new Date())))
+			.map((line) => JSON.parse(line)).filter((record) => record.tool === "verdict_probe");
+		assert.deepEqual(records.map((record) => [record.callId, record.error, record.outcome, record.policy.resultCorrected]), [
+			["bad-call", true, "execution-error", true],
+			["good-call", false, "success", undefined],
+		]);
+		assert.deepEqual(records[0].policy.metadata, [{ id: "verdict-failed", label: "failed" }]);
+		assert.deepEqual(records[1].policy.metadata, []);
+	} finally { await fixture.close(); }
+});
+
 test("a forked conversation reusing a provider call id observes its own task", async () => {
 	const counter = { executed: 0 };
 	const fixture = await openFixture({ mode: "enforce", extension: verdictExtension(["BAD", "GOOD"], counter) });
@@ -794,7 +819,7 @@ test("a replayed tool task reuses its own correction once and a later task with 
 		await second.harness.close(context);
 		for (const dispose of secondCleanups.splice(0)) await dispose();
 		assert.equal(counter.executed, 3);
-		assert.equal((await verdictRecords(storeDir)).length, 2);
+		assert.deepEqual((await verdictRecords(storeDir)).map((record) => record.error), [true, false]);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 		if (priorDir === undefined) delete process.env.PI_POLICY_DIR;

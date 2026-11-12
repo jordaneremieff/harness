@@ -1318,7 +1318,7 @@ class DurablePolicyRuntime {
 		mode: PolicyMode,
 		result: PolicyResult,
 		now: number,
-	): { correction: boolean; semantic: ProgramEvaluation[]; guides: ProgramEvaluation[]; guidance?: string } {
+	): { correction: boolean; effective: PolicyResult; semantic: ProgramEvaluation[]; guides: ProgramEvaluation[]; guidance?: string } {
 		const semantic = evaluatePrograms(current, "result", this.contextFor(call, observation, now, result)).filter(
 			(evaluation) => evaluation.action.kind !== "guide",
 		);
@@ -1330,7 +1330,7 @@ class DurablePolicyRuntime {
 		const guides = evaluatePrograms(current, "result", this.contextFor(call, observation, now, effective)).filter(
 			(evaluation) => evaluation.action.kind === "guide",
 		);
-		return { correction, semantic, guides, guidance: this.selectGuidance(observation, guides, mode, now, call.turn) };
+		return { correction, effective, semantic, guides, guidance: this.selectGuidance(observation, guides, mode, now, call.turn) };
 	}
 
 	/** Completion-phase evaluations, observation completion, and retained guidance. */
@@ -1407,11 +1407,15 @@ class DurablePolicyRuntime {
 			if (incompleteObservation) state.incomplete += 1;
 			const effects = this.resultEffects(call, observation, current, mode, result, now);
 			if (effects.guidance) call.effects.annotationBytes = Buffer.byteLength(effects.guidance, "utf8");
+			// The model receives the corrected result, so completion and telemetry observe it too. A host outcome
+			// (aborted, interrupted, unexecuted) keeps its execution uncertainty; only an executed success becomes an error.
+			const effectiveOutcome: CallOutcome = effects.correction && outcome === "success" ? "execution-error" : outcome;
+			if (effects.correction) call.effects.policy = { ...call.effects.policy, resultCorrected: true };
 			const completion = this.completionEffects(
 				call,
 				observation,
 				current,
-				this.contextFor(call, observation, now, result, outcome),
+				this.contextFor(call, observation, now, effects.effective, effectiveOutcome),
 				mode,
 				now,
 				state,
@@ -1419,8 +1423,8 @@ class DurablePolicyRuntime {
 			state.stale += completion.stale;
 			const record = this.telemetryRecord(
 				call,
-				result,
-				outcome,
+				effects.effective,
+				effectiveOutcome,
 				mode,
 				effects.semantic,
 				effects.guides,

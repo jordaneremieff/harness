@@ -225,6 +225,13 @@ section, and native task hooks:
   `policy.hostDiagnostic`. Result rules still inspect and annotate these error
   results; completion rules receive the distinct outcome. A policy denial
   already completed by the input hook produces no second record or guidance.
+  An assert-error correction defines the effective result: result guidance,
+  completion rules, observation counters, telemetry (`error`, `outcome`), and
+  the returned result all see `isError:true`, and an executed success becomes
+  `execution-error`. Telemetry marks the correction as
+  `policy.resultCorrected: true`; the backend's own result was a success. A
+  host outcome keeps its kind under a correction. Ordinary sessions reach the
+  same result: Pi's `tool_execution_end` carries the corrected `isError`.
 - `GenerationTask.beforeRequest` is the context phase: context rules and retained
   completion guidance become persistent records in the `policy.guidance`
   document, projected after their original anchor on every later request (see

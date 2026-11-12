@@ -788,6 +788,7 @@ export class PolicyRuntime {
 			usage: event.usage,
 		});
 		this.collect(call, [...semantic, ...guides]);
+		if (correction) call.effects.policy = { ...call.effects.policy, resultCorrected: true };
 		const text = this.guidance(guides);
 		this.notice(call, ctx);
 		if (text) {

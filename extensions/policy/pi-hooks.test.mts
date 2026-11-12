@@ -915,6 +915,10 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 			);
 			assert.equal(records[0].error, true);
 			assert.equal(records[0].outcome, "execution-error");
+			assert.equal(records[0].policy?.resultCorrected, true);
+			assert.equal(records[1].error, false);
+			assert.equal(records[1].outcome, "success");
+			assert.equal(records[1].policy?.resultCorrected, undefined);
 			assert.doesNotMatch(JSON.stringify(records), /private-input|private-output|result-body/);
 			assert.deepEqual(f.errors, []);
 		} finally {
