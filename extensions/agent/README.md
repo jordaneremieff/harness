@@ -93,7 +93,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | Tool | Effect |
 |---|---|
 | `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. |
-| `agent_work` | Inside a native agent, declare background work with `continue`, or close it with `complete` and one final report to its retained reply recipient. Both actions return at once. Results and native settlement do not complete declared work; see [declared background work](#declared-background-work). |
+| `agent_work` | Inside a native agent, declare background work with `continue`, or close it with `complete` and one final report to its retained reply recipient. Both actions return at once. Results and native settlement do not complete declared work; see [declared background work](#declared-background-work). An ordinary session has its own contract: one state note, where `continue` ends the turn; see [state note of an ordinary session](#state-note-of-an-ordinary-session). |
 | `agent_send` | Admit a task or correction. Omitted `mode` means `followUp`, new work, on every path. `mode: "steer"` corrects current work; both reach the same tool-round boundary. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. A busy Durable recipient receives each active input at its next tool boundary, for `steer` and for `followUp`; no input waits for the end of the run. These inputs do not promise separate answers. See [input placement](#input-placement-and-unplaced-notices). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. A successful report returns its identity and state facts (retention, acknowledgement, admission or queue placement) without the message body; these facts do not show that the recipient read the report. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; an unavailable endpoint preserves the attachment error and proves no global host absence. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
@@ -120,7 +120,8 @@ exposure fields carry it.
 
 - Direct controls are declared and callable: `agent_spawn`, `agent_send`,
   `agent_steer`, `agent_abort`, `agent_status`, `agent_intent` and
-  `agent_collaborate`. Native agents also declare `agent_work` as a direct control.
+  `agent_collaborate`. `agent_work` is a direct control in both forms, with a
+  separate contract in each.
 - Model-only controls are declared while active and never callable from a
   script: `agent_compact`.
 - Deferred controls stay registered and callable from other tools, and are not
@@ -1728,6 +1729,39 @@ Sources: `open-work.ts` (`AgentWorkParams`, `declareOpenWork`,
 (`workTool`, `exposedControl`), `durable-observation.ts`
 (`readConversationStatus`), `durable-delivery.ts` (`receiptFollowText`), and
 `durable-checkins.ts` (`CheckInTask`).
+
+#### State note of an ordinary session
+
+A session that a person types into registers its own `agent_work`. It keeps
+one state note for the session. It has no routed request, so it takes no
+request, no dependency reference and no reply route, writes no final report,
+and calls no host.
+
+```ts
+agent_work({ action: "continue", note: "Two workers review the parser; nothing needs you until their results arrive." });
+```
+
+`continue` stores the note as the current state of the session, shows it in
+one widget above the input (a title with the local time of the note, then the
+note on at most three lines), and returns `terminate: true`. Pi sends no
+further model request when that call is the only call of its tool batch, so a
+turn that needs nothing from the operator ends without a chat line. A queued
+steer or follow-up still starts the next request. A repeated `continue`
+replaces the note. Without a UI the tool stores the note and ends the turn.
+
+`complete` clears the note and the widget and does not end the turn. The
+session calls it when the state that the note describes has ended, for example
+in the turn that gives the operator the result, the blocker or the question;
+the chat message follows it. When the state changed but still needs nothing
+from the operator, a new `continue` replaces the note.
+
+The session entry `agent.state-note` keeps the note: a reload restores the
+note and the widget from the newest entry of the branch. The card of the call
+is the note on one line.
+
+Sources: `ordinary-work.ts` (`registerOrdinaryWork`, `ordinaryWorkWidget`),
+`tool-cards.ts` (`ordinaryWorkCard`), and `control-guidance.ts` (the ordinary
+guidance of `agent_spawn` and `agent_send`).
 
 ### Input placement and unplaced notices
 
