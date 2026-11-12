@@ -4,7 +4,7 @@ import { boundOutput } from "@earendil-works/chord/output";
 import * as Durable from "@earendil-works/pi-durable";
 import { googleContribution } from "./durable.ts";
 import { createFake } from "./fake-gws.test-support.mts";
-import { RESULT_MAX_BYTES, toolResult } from "./result.ts";
+import { RESULT_MAX_BYTES, sliceCleanText, toolResult } from "./result.ts";
 import { sheetsTools } from "./sheets.ts";
 import { invoke } from "./tools.ts";
 
@@ -61,4 +61,26 @@ test("an envelope over the byte bound reports one outcome", () => {
 	assert.equal(envelope.error?.retryable, true);
 	assert.deepEqual(large.details, { schemaVersion: 1, status: "error" });
 	assert.equal(large.isError, true);
+});
+
+test("a cleaned slice continues exactly across a multibyte byte bound", () => {
+	const source = `a😀漢\u001bb🙂\r\nc`;
+	const first = sliceCleanText(source, 0, 100, 15);
+	assert.equal(first.text, "a😀漢\\u001bb");
+	assert.equal(first.nextOffset, 5);
+	assert.equal(first.total, 9);
+	const rest = sliceCleanText(source, first.nextOffset ?? 0, 100, 1024);
+	assert.equal(rest.text, "🙂\nc");
+	assert.equal(rest.nextOffset, undefined);
+	assert.equal(`${first.text}${rest.text}`, "a😀漢\\u001bb🙂\nc");
+});
+
+test("a cleaned slice never splits a code point and folds pairs once", () => {
+	const source = "🙂".repeat(5);
+	const page = sliceCleanText(source, 0, 100, 9);
+	assert.equal(page.text, "🙂🙂");
+	assert.equal(page.nextOffset, 2);
+	assert.equal(sliceCleanText("a\r\nb", 0, 100, 1024).text, "a\nb");
+	assert.equal(sliceCleanText("a\r\n\r\nb", 0, 2, 1024).nextOffset, 3);
+	assert.equal(sliceCleanText("abcdef", 4, 100, 1024).text, "ef");
 });

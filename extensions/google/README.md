@@ -38,7 +38,10 @@ JSON, so a consumer that bounds tool output by line count never receives a
 cut envelope. A result that cannot fit the envelope is returned as one
 outcome: a retryable `RESULT_TOO_LARGE` error, with text, details and error
 status derived from it. Lists and bodies are paged with
-cursors and offsets; truncation is explicit.
+cursors and offsets; truncation is explicit. A bounded message body is an
+exact prefix of the decoded source: `text` carries no inline truncation
+marker, and reading on from `nextOffset` loses and repeats nothing, including
+for multibyte characters at the cut.
 
 Content that comes from Google (email headers, snippets and bodies, file names,
 cell values, event titles, descriptions and attendee names, label names) sits

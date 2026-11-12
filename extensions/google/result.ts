@@ -77,20 +77,46 @@ export function cleanText(value: string, maxBytes = RESULT_MAX_BYTES): string {
 	return text;
 }
 
-export function codePointLength(value: string): number {
-	return [...value].length;
-}
-
-export function sliceCodePoints(
-	value: string,
+/**
+ * A cleaned code-point slice of external text with an exact continuation. Cleaning folds CRLF and
+ * CR to LF and neutralises terminal controls; a code point or a folded pair is never split at the
+ * byte bound. `nextOffset` counts the source code points whose cleaned form the emitted text
+ * contains, so reading on from it loses and repeats nothing. `maxBytes` must stay positive while
+ * source text remains, or the continuation stops advancing.
+ */
+export function sliceCleanText(
+	source: string,
 	offset: number,
 	limit: number,
+	maxBytes: number,
 ): { text: string; nextOffset?: number; total: number } {
-	const chars = [...value];
+	const chars = [...source];
 	const start = Math.min(Math.max(0, offset), chars.length);
-	const selected = chars.slice(start, start + limit).join("");
-	const next = start + codePointLength(selected);
-	return { text: selected, ...(next < chars.length ? { nextOffset: next } : {}), total: chars.length };
+	const end = Math.min(start + Math.max(0, limit), chars.length);
+	let text = "";
+	let consumed = 0;
+	for (let index = start; index < end; ) {
+		const current = chars[index];
+		let piece: string;
+		let step = 1;
+		if (current === "\r" && chars[index + 1] === "\n") {
+			piece = "\n";
+			step = 2;
+		} else if (current === "\r") {
+			piece = "\n";
+		} else {
+			const code = current.codePointAt(0) ?? 0;
+			if (code === 0x1b) piece = "\\u001b";
+			else if (code === 9 || code === 10 || (code >= 32 && code !== 127 && !(code >= 128 && code <= 159))) piece = current;
+			else piece = "\uFFFD";
+		}
+		if (Buffer.byteLength(text + piece) > maxBytes) break;
+		text += piece;
+		consumed += step;
+		index += step;
+	}
+	const next = start + consumed;
+	return { text, ...(next < chars.length ? { nextOffset: next } : {}), total: chars.length };
 }
 
 /** A shared byte budget prevents arrays of individually bounded external values from exceeding the result limit. */
@@ -110,6 +136,17 @@ export class TextBudget {
 		this.remaining = Math.max(0, this.remaining - Buffer.byteLength(text));
 		if (this.remaining === 0 && source.length > text.length) truncated = true;
 		return { text, truncated };
+	}
+	/**
+	 * A continuation page that shares this budget: the slice is bounded to the remaining budget with a
+	 * small floor, so every page emits text and the returned `nextOffset` is exact for the source text
+	 * actually emitted.
+	 */
+	page(value: string, offset: number, limit: number, maxBytes: number): { text: string; nextOffset?: number; total: number } {
+		const cap = Math.max(Math.min(maxBytes, this.remaining), Math.min(1024, maxBytes));
+		const page = sliceCleanText(value, offset, limit, cap);
+		this.remaining = Math.max(0, this.remaining - Buffer.byteLength(page.text));
+		return page;
 	}
 }
 

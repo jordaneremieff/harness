@@ -134,6 +134,42 @@ test("gmail_attachment_download writes a new file only", async () => {
 	}
 });
 
+test("gmail_message_get pages a multibyte body with an exact continuation", async () => {
+	const source = "😀漢🙂字".repeat(2000);
+	const payload = {
+		mimeType: "text/plain",
+		headers: headers("Long"),
+		body: { data: base64url(source), size: Buffer.byteLength(source) },
+	};
+	const fake = await createFake({
+		responses: { "gmail users messages get m": { stdout: message("m", payload) } },
+	});
+	try {
+		let offset = 0;
+		let collected = "";
+		let pages = 0;
+		for (;;) {
+			const result = await fake.tool("gmail_message_get", { messageId: "m", offset, limit: 4096 });
+			assert.equal(result.status, "ok", JSON.stringify(result));
+			const body = (result.data as { externalData: { body: { text: string; nextOffset?: number; totalCodePoints: number } } })
+				.externalData.body;
+			assert.ok(body.text.length > 0, "every page must emit text");
+			collected += body.text;
+			pages += 1;
+			if (body.nextOffset === undefined) {
+				assert.equal(body.totalCodePoints, [...source].length);
+				break;
+			}
+			assert.ok(body.nextOffset > offset, "the continuation must advance");
+			offset = body.nextOffset;
+		}
+		assert.ok(pages >= 2, "the body must span several pages");
+		assert.equal(collected, source);
+	} finally {
+		await fake.cleanup();
+	}
+});
+
 test("gmail_labels_modify rejects TRASH so trash stays a separate tool", async () => {
 	const fake = await createFake();
 	try {

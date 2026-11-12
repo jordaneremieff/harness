@@ -28,7 +28,6 @@ import {
 	ok,
 	partial,
 	type Result,
-	sliceCodePoints,
 	TextBudget,
 } from "./result.ts";
 import { receipt, recordResult, SendLedger, type SendRecord } from "./send-ledger.ts";
@@ -172,15 +171,14 @@ async function readBody(
 	budget: TextBudget,
 ) {
 	const decoded = new TextDecoder("utf-8", { fatal: false }).decode(await partBytes(operation, messageId, part));
-	const slice = sliceCodePoints(decoded, range.offset ?? 0, range.limit ?? 4096);
-	const clipped = budget.clip(slice.text, 8192);
+	const page = budget.page(decoded, range.offset ?? 0, range.limit ?? 4096, 8192);
 	return {
 		partId: part.partId,
 		mimeType: part.mimeType,
-		text: clipped.text,
-		truncated: clipped.truncated || slice.nextOffset !== undefined,
-		...(slice.nextOffset !== undefined ? { nextOffset: slice.nextOffset } : {}),
-		totalCodePoints: slice.total,
+		text: page.text,
+		truncated: page.nextOffset !== undefined,
+		...(page.nextOffset !== undefined ? { nextOffset: page.nextOffset } : {}),
+		totalCodePoints: page.total,
 	};
 }
 function attachmentManifest(parts: Part[], cursorText: string | undefined, budget: TextBudget) {
