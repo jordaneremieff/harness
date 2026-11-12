@@ -1,7 +1,23 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { it } from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { ORDINARY_CONTINUITY_ENTRY, continuityText, foldContinuity, nativeContinuityText, ordinaryContinuityText, pruneContinuity, validateContinuityDelivered, validateContinuityFact, type ContinuityEvent, type ContinuityFact } from "./continuity-facts.ts";
+
+it("loads ordinary continuity helpers without resolving the Durable runtime", () => {
+	const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+		import { registerHooks } from 'node:module';
+		let durable = 0;
+		registerHooks({resolve(specifier, context, next) {
+			if (specifier.startsWith('@earendil-works/pi-durable')) durable++;
+			return next(specifier, context);
+		}});
+		for (const module of process.argv.slice(1)) await import(module);
+		console.log(JSON.stringify({durable}));
+	`, ...["continuity-facts.ts", "continuity-projection.ts", "continuity-budget.ts"].map((name) => new URL(name, import.meta.url).href)], { encoding: "utf8", timeout: 20000, maxBuffer: 16384 });
+	assert.equal(child.status, 0, child.stderr || child.error?.message);
+	assert.deepEqual(JSON.parse(child.stdout.trim()), { durable: 0 });
+});
 
 const requested = (requestId = "request-a", replyTo = "owner"): ContinuityFact => ({ phase: "requested", sessionId: "worker:2", requestId, replyTo });
 const admitted = (requestId = "request-a", submissionId = 1): ContinuityFact => ({ ...requested(requestId), phase: "admitted", submissionId });
