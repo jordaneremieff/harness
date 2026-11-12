@@ -132,7 +132,9 @@ it("declares only after successful ordinary registration", { timeout: 20000 }, a
 });
 
 it("advertises only registered tools through the public ordinary resource loader", { timeout: 20000 }, async (t) => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "c-")));
+	const parent = realpathSync(tmpdir());
+	// Keep short private TMPDIR parents; the canonical root must leave room for a UUID primary socket.
+	const root = realpathSync(mkdtempSync(join(Buffer.byteLength(parent) <= 28 ? parent : realpathSync("/tmp"), "c-")));
 	const cwd = join(root, "w");
 	const agentDir = join(root, "a");
 	const sessionsRoot = join(root, "s");

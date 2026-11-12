@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
  * the production `durable-runner.ts` through `acquireHost`. Process-loss cases also
  * use fixed test runners. No real provider is used.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, opendirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, opendirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -54,7 +54,13 @@ function allocateRuntimeRoot(t: FixtureContext, options: RuntimeFixtureOptions):
 	if (options.offlineRecovery && (options.withAgentExtension || options.retry || options.httpEndpoint)) throw new Error("Offline recovery requires fixed non-launching fixture contributions");
 	const offline = options.offlineRecovery ? allocateOfflineFixture("durable-runtime-") : undefined;
 	if (offline) bindOfflineContext(t, offline);
-	const root = offline?.root ?? mkdtempSync(join(tmpdir(), "durable-runtime-"));
+	let root: string;
+	if (offline) root = offline.root;
+	else {
+		const parent = realpathSync(tmpdir());
+		// A 28-byte canonical parent leaves 10 bytes for the root and 62 for a private host or primary socket.
+		root = mkdtempSync(join(Buffer.byteLength(parent) <= 28 ? parent : realpathSync("/tmp"), "dr-"));
+	}
 	return { offline, root };
 }
 /** Build an isolated agent home for one durable runtime test. */

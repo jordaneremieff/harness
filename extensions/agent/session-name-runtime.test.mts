@@ -42,7 +42,9 @@ function completed() {
 }
 
 async function namingFixture(t: TestContext, options: { retainedName?: string } = {}) {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "n-")));
+	const parent = realpathSync(tmpdir());
+	// Keep short private TMPDIR parents; the canonical root must leave room for a UUID primary socket.
+	const root = realpathSync(mkdtempSync(join(Buffer.byteLength(parent) <= 28 ? parent : realpathSync("/tmp"), "n-")));
 	const cwd = join(root, "work");
 	const agentDir = join(root, "agent");
 	const sessionsRoot = join(root, "sessions");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -154,7 +154,9 @@ it("does not construct recovery facts from an invalid saved-result provider bloc
 });
 
 for (const receiveTime of [timestamp, 8_640_000_000_000_001, Number.MAX_SAFE_INTEGER]) it(`delivers separate recovery facts with ${receiveTime > 8_640_000_000_000_000 ? "unavailable" : "UTC"} receive time ${receiveTime} while terminal errors stay classification-safe`, async (t) => {
-	const root = await mkdtemp(join(tmpdir(), "pb-"));
+	const parent = await realpath(tmpdir());
+	// A 28-byte canonical parent leaves 10 bytes for the root and 62 for the private primary socket.
+	const root = await mkdtemp(join(Buffer.byteLength(parent) <= 28 ? parent : await realpath("/tmp"), "pb-"));
 	const models = await scriptedRuntime([]);
 	let calls = 0;
 	models.streamSimple = () => {
