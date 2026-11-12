@@ -17,9 +17,11 @@ it("gives ordinary coordination tools completion and low-message guidance", asyn
 	assert.match(descriptions.get("agent_send") ?? "", /one concise proposal containing its conditions and one answer/u);
 	assert.match(descriptions.get("agent_send") ?? "", /not repeated acknowledgments/u);
 	assert.match(descriptions.get("agent_send") ?? "", /agreements that others must see in a thread when a participant storage exists/u);
+	assert.match(descriptions.get("agent_send") ?? "", /Task check-ins run only when checkInMinutes or agent\.checkInMinutes sets a nonzero interval/u);
+	assert.doesNotMatch(descriptions.get("agent_send") ?? "", /Unanswered tasks send automatic owner check-ins/u);
 });
 
-it("keeps native await off ordinary primaries and treats waiting as a capability, not staffing", async () => {
+it("omits held-await controls from ordinary primaries and retains background spawn",  async () => {
 	const tools = new Set<string>();
 	await register({
 		events: { emit() {}, on: () => () => {} }, on: () => () => {},
