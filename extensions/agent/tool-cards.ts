@@ -1633,6 +1633,39 @@ function observeResult(result: AgentToolResult<unknown>, context: AgentCardConte
 	return snapshotFacts(context, snapshot);
 }
 
+function renderWorkCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
+	const args = record(value);
+	const request = text(args.request), status = text(args.status), results = array(args.results).length;
+	const qualifier = [request ? `request ${displayPreview(request, 80)}` : "", status ? displayPreview(status, 20) : Array.isArray(args.results) ? `${results} result reference${results === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+	return argumentCard("agent_work", displayPreview(text(args.action), 20) || "open work", qualifier || undefined, args, theme, context, true);
+}
+
+const WORK_DEPENDENCY_ROWS = 4;
+
+/** A declared item with its dependencies, or the close of an item with its final report row. */
+function workLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
+	const action = text(details.action), item = record(details.item);
+	const request = text(item.requestId) || text(details.requestId);
+	if ((action !== "continue" && action !== "complete") || !request) return undefined;
+	const subject = `request ${displayPreview(request, 120)}`;
+	if (action === "complete") {
+		const status = text(details.status), report = record(details.report), owner = text(report.ownerId);
+		const lines = [theme.fg(status === "done" ? "toolOutput" : "warning", `Work closed (${displayPreview(status, 20) || "status unknown"}) · ${subject}${details.deduped === true ? " · already closed" : ""}`)];
+		if (text(report.sourceId)) lines.push(muted(theme, `Final report retained${owner ? ` · ${targetLabel(owner, context)}` : ""} · ${report.acknowledged === true ? "acknowledged" : "acknowledgement pending"}`));
+		return lines;
+	}
+	const dependencies = array(item.dependencies).map(record), replyTo = text(item.replyTo), note = text(item.note);
+	const lines = [theme.fg("toolOutput", `Work ${displayPreview(text(item.state), 20) || "declared"} · ${subject} · ${dependencies.length} dependenc${dependencies.length === 1 ? "y" : "ies"}`)];
+	if (replyTo) lines.push(muted(theme, `Final report to ${targetLabel(replyTo, context)}`));
+	if (note) lines.push(muted(theme, `Note: ${displayPreview(note, 160)}`));
+	for (const dependency of dependencies.slice(0, WORK_DEPENDENCY_ROWS)) {
+		const reference = text(dependency.requestId);
+		lines.push(muted(theme, `${targetLabel(text(dependency.sessionId), context)} · submission ${String(count(dependency.submissionId) ?? "unknown")}${reference ? ` · request ${displayPreview(reference, 80)}` : ""} · ${displayPreview(text(dependency.state), 20) || "state unknown"}`));
+	}
+	if (dependencies.length > WORK_DEPENDENCY_ROWS) lines.push(muted(theme, `${dependencies.length - WORK_DEPENDENCY_ROWS} more dependencies`));
+	return lines;
+}
+
 /** Call and result renderers for every registered agent tool, keyed by tool name. */
 export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readonly<Record<string, AgentToolCard>> {
 	const cards: Record<string, AgentToolCard> = {
@@ -1650,6 +1683,7 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 		agent_list: { renderCall: renderListCall, renderResult: renderListResult },
 		agent_send: { renderCall: renderSendCall, renderResult: renderSendResult },
 		agent_steer: { renderCall: renderSteerCall, renderResult: renderSteerResult },
+		agent_work: { renderCall: renderWorkCall, renderResult: (result, options, theme, context) => outcomeCard(result, options, theme, context, { error: "Work error", partial: "Work pending" }, workLines) },
 		agent_command: { renderCall: renderCommandCall, renderResult: (result, options, theme, context) => outcomeCard(result, options, theme, context, { error: "Command error", partial: "Command pending" }, commandLines) },
 		agent_inspect: { renderCall: renderInspectCall, renderResult: renderInspectResult },
 		agent_compact: { renderCall: renderCompactCall, renderResult: renderCompactResult },

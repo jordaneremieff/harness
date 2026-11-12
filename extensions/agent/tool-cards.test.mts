@@ -325,6 +325,27 @@ describe("agent result cards", () => {
 		assert.match(retained, line);
 	});
 
+	it("shows a declared work item with its dependencies and a closed item with its final report row", () => {
+		const card = createAgentToolCards().agent_work, options = { ...cardKeys, expanded: false, isPartial: false };
+		const dependency = (n: number, state: string) => ({ sessionId: `producer-${n}`, submissionId: n, requestId: `input-${n}`, state, inspect: { tool: "agent_inspect", view: "result", sessionId: `producer-${n}`, submissionId: n } });
+		const item = { requestId: "request-1", submissionId: 3, requester: "storage-a", replyTo: "storage-a", origin: "model", note: "Two reviews remain", state: "open", declaredAt: 1,
+			dependencies: [dependency(1, "open"), dependency(2, "state-note"), dependency(3, "arrived"), dependency(4, "open"), dependency(5, "open")] };
+		const open = screen(card.renderResult(result({ action: "continue", item }), options, theme, context()), 180);
+		assert.match(open, /Work open · request request-1 · 5 dependencies/u);
+		assert.match(open, /Final report to storage-a/u);
+		assert.match(open, /Note: Two reviews remain/u);
+		assert.match(open, /producer-2 · submission 2 · request input-2 · state-note/u);
+		assert.match(open, /1 more dependencies/u);
+		assert.doesNotMatch(open, /producer-5/u);
+		const report = { sourceId: "report:work-final", requestId: "work-final:1:request-1", ownerId: "storage-a", acknowledged: false, createdAt: 2 };
+		const closed = screen(card.renderResult(result({ action: "complete", requestId: "request-1", status: "failed", deduped: true, report, item: { ...item, state: "closed" } }), options, theme, context()), 180);
+		assert.match(closed, /Work closed \(failed\) · request request-1 · already closed/u);
+		assert.match(closed, /Final report retained · storage-a · acknowledgement pending/u);
+		const call = screen(card.renderCall({ action: "continue", request: "request-1", results: [{ sessionId: "producer-1", submissionId: 1 }], note: "Two reviews remain" }, theme, context()), 180);
+		assert.match(call, /agent_work/u);
+		assert.match(call, /request request-1 · 1 result reference/u);
+	});
+
 	it("shows admission receipts, fork, rewind, configure, abort, and command outcomes", () => {
 		const receipt = { submissionId: 9, conversationId: 1, deduped: false, identity: "storage-a" };
 		const send = screen(renderSendResult(result(receipt), { ...cardKeys, expanded: false, isPartial: false }, theme, context()));
@@ -646,7 +667,7 @@ describe("agent result notice card", () => {
 describe("agent tool card factory", () => {
 	it("binds call and result renderers for every agent tool", () => {
 		const cards = createAgentToolCards();
-		assert.deepEqual(Object.keys(cards).sort(), ["agent_abort", "agent_attach", "agent_collaborate", "agent_command", "agent_compact", "agent_configure", "agent_fork", "agent_inspect", "agent_intent", "agent_list", "agent_place", "agent_profile", "agent_reset", "agent_rewind", "agent_send", "agent_spawn", "agent_status", "agent_steer"]);
+		assert.deepEqual(Object.keys(cards).sort(), ["agent_abort", "agent_attach", "agent_collaborate", "agent_command", "agent_compact", "agent_configure", "agent_fork", "agent_inspect", "agent_intent", "agent_list", "agent_place", "agent_profile", "agent_reset", "agent_rewind", "agent_send", "agent_spawn", "agent_status", "agent_steer", "agent_work"]);
 		for (const [name, card] of Object.entries(cards)) {
 			assert.equal(typeof card.renderCall, "function", `${name} renderCall`);
 			assert.equal(typeof card.renderResult, "function", `${name} renderResult`);
