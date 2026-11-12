@@ -70,10 +70,7 @@ it("every registered agent tool has shared factory coverage and both renderer re
 	const tools = await registeredTools();
 	assert.ok(tools.has("agent_intent"));
 	const cards = createAgentToolCards();
-	assert.equal(tools.has("agent_await"), false, "ordinary primaries do not register native await");
-	assert.equal(typeof cards.agent_await.renderCall, "function", "native await retains shared card coverage");
-	assert.equal(typeof cards.agent_await.renderResult, "function");
-	assert.deepEqual([...tools.keys()].sort(), Object.keys(cards).filter((name) => name !== "agent_await").sort());
+	assert.deepEqual([...tools.keys()].sort(), Object.keys(cards).sort());
 	for (const [name, tool] of tools) {
 		assert.equal(typeof tool.renderCall, "function", name);
 		assert.equal(typeof tool.renderResult, "function", name);
