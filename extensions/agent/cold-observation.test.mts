@@ -171,7 +171,7 @@ it("keeps fixture event consumers pending before the producer records its event"
 	await events.waitForCount(1);
 });
 
-it("keeps a fixture receipt pending until its release protocol request", async (t) => {
+it("keeps a private transport gate pending until its release protocol request", async (t) => {
 	const f = runtimeFixture(t);
 	const path = join(f.root, "state.json");
 	const runtime = createFixtureRuntime(path);
@@ -187,7 +187,7 @@ it("keeps a fixture receipt pending until its release protocol request", async (
 	const state = waitForFixtureState(observed, path, (value) => (value.waitsStarted ?? 0) >= 1).then(() => { stateReached = true; });
 	assert.equal(stateReached, false);
 	let released = false;
-	const receipt = runtime.request("receipts", {}, "held").then(() => { released = true; });
+	const receipt = runtime.request("receipts", { fixtureGate: true }, "held").then(() => { released = true; });
 	await state;
 	assert.equal(released, false);
 	await runtime.request("timer-cancel", {}, "release");

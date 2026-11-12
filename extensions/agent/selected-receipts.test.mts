@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import type { SubmissionId } from "@earendil-works/pi-durable";
 import { DurableHost } from "./durable-host.ts";
 import { ReceiptAssociationSchema, type ReceiptAssociation, type ReceiptReferencePage, type ResultReference } from "./result-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
@@ -29,7 +30,10 @@ it("returns exact source and recipient pages without another actionable body", {
 		}
 		release();
 		const selected = references[16];
-		const first = await host.request("receipts", { ownerId: owner, result: selected, wait: true, metadataOnly: true }, context) as Selected;
+		const submission = await host.harness.submission(selected.submissionId as SubmissionId, context);
+		assert.ok(submission);
+		await submission.wait(context);
+		const first = await host.request("receipts", { ownerId: owner, result: selected, metadataOnly: true }, context) as Selected;
 		assert.equal(first.outcome.answer, undefined);
 		assert.equal(first.outcome.status, "done");
 		assert.equal(matchesSchema(ReceiptAssociationSchema, first.delivery), true);
@@ -39,7 +43,7 @@ it("returns exact source and recipient pages without another actionable body", {
 		assert.equal(first.receiptGroup.complete, false);
 		const continuation = first.receiptGroup.next;
 		assert.ok(continuation);
-		const last = await host.request("receipts", { ownerId: owner, result: selected, wait: true, metadataOnly: true, receiptCursor: continuation }, context) as Selected;
+		const last = await host.request("receipts", { ownerId: owner, result: selected, metadataOnly: true, receiptCursor: continuation }, context) as Selected;
 		assert.deepEqual(last.receiptGroup.results, [selected]);
 		assert.equal(last.receiptGroup.complete, true);
 		assert.equal(last.receiptGroup.next, null);
