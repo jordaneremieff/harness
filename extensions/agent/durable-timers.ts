@@ -195,6 +195,10 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				context,
 			);
 			const firedAt = runtime.now();
+			await runtime.commit(async (tx) => {
+				await recordUnplacedInput(tx, conversationId, { submissionId: submission.id, class: "timer", sender: task.input.requestContext?.requester ?? "", admittedAt: firedAt, recipient: task.input.identity });
+				return undefined;
+			}, context);
 			const result: TimerResult = {
 				deadline: task.input.deadline,
 				firedAt,
@@ -209,7 +213,6 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 			await runtime.commit(
 				async (tx) => {
 					await linkDeliveryIntent(tx, conversationId, task.input.requestId, submission.id);
-					await recordUnplacedInput(tx, conversationId, { submissionId: submission.id, class: "timer", sender: task.input.requestContext?.requester ?? "", admittedAt: firedAt, recipient: task.input.identity });
 					await markTimerSettled(tx, Number(task.id), {
 						status: "fired",
 						firedAt,
@@ -248,6 +251,10 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					{ type: "input", content: input.message, requestId: input.requestId, whenBusy: placementMode(mode), entry: inputEntry(input.origin, input.requestContext?.requester, { class: "timer", sender: input.requestContext?.requester ?? input.ownerId, requestId: input.requestId }) },
 					context,
 				);
+				await runtime.commit(async (tx) => {
+					await recordUnplacedInput(tx, conversationId, { submissionId: submission.id, class: "timer", sender: input.requestContext?.requester ?? "", admittedAt: settledAt, recipient: input.identity });
+					return undefined;
+				}, context);
 				const result: TimerResult = {
 					deadline: input.deadline,
 					firedAt: settledAt,
@@ -262,7 +269,6 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				await runtime.commit(
 					async (tx) => {
 						await linkDeliveryIntent(tx, conversationId, input.requestId, submission.id);
-						await recordUnplacedInput(tx, conversationId, { submissionId: submission.id, class: "timer", sender: input.requestContext?.requester ?? "", admittedAt: settledAt, recipient: input.identity });
 						await markTimerSettled(tx, Number(task.id), { status: "fired", firedAt: settledAt, overdueMs: result.overdueMs, submissionId: submission.id, settledAt });
 						return { status: "terminal", outcome: { status: "completed", result } };
 					},
