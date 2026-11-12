@@ -1521,15 +1521,16 @@ A new spawn conversation stores the model and thinking values from the common
 execution resolver, not its creator's execution settings, and has a fresh profile. There is
 no generation-depth gate in the creation paths.
 
-A no-target `agent_status` inside an agent appends a bounded newest-first
-`Created agents` section and structured `createdAgents.agents` read from the caller's retained
-creation record, with each recorded agent's identity, creation label, and kind,
-and an explicit omitted count. This includes native spawns, recorded forks
-and rewinds, and foreign spawns, not handles resolved as independent roots.
-It is absent when the caller has none. It is not a recursive creation tree
-or a current task roster. Live state and current names come from selecting
-that identity. The public snapshot reads the retained document before the
-projection bounds its output; it is not a bounded storage scan.
+A no-target `agent_status` inside an agent returns compact rows for the
+conversations of its storage, with the storage coverage unchanged. Each row has
+an exact full-detail call. The result names what it leaves out: host inventory,
+effort awareness, and created-agent detail. It carries no `Created agents`
+section and no `createdAgents` field, and `detail: true` requires an explicit
+`sessionId`, so no `agent_status` call inside a Durable agent returns the
+caller's creation record or its effort awareness. The caller's retained creation
+record covers native spawns, recorded forks and rewinds, and foreign spawns, not
+handles resolved as independent roots. Fleet observations still use that record
+for caller-effort accounting.
 
 Lifecycle boundaries stay with the creating conversation. Its reset or ordinary
 abort does not reach background agent work or its reporters; a background abort
@@ -2293,9 +2294,9 @@ still consume visits without repeating hints. An absent optional priority record
 does not mark the general sample unreadable. Missing hints and unvisited records
 leave global recency unknown.
 
-Ordinary primaries and Durable agents read this view through untargeted
-`agent_status`. Their model context receives a separate current-effort section
-at natural run boundaries. Prompt rows use identity order and omit activity,
+Ordinary primaries read this view through untargeted `agent_status`. Inside a
+Durable agent the compact untargeted read omits it. Both receive a separate
+current-effort section in their model context at natural run boundaries. Prompt rows use identity order and omit activity,
 start, and update timestamps. Traversal counters stay in `agent_status`, not
 the system prefix. Clock and counter changes alone leave section bytes unchanged;
 material purpose, scope, presence, and thread changes still update the section.
