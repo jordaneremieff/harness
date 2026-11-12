@@ -284,7 +284,9 @@ inspections as a wait. After you send work:
   report to the reply recipient of the original request. A run that completes its request without
   declared work answers with the result itself.
 - **Know where your input is.** The send receipt returns `placement`:
-  `"placed"` or `"unplaced"`. `agent_status` shows `unplaced: n` and
+  `"placed"`, `"unplaced"` or `"withdrawn"`; `"withdrawn"` means the input
+  is in neither the recipient's inbox nor its transcript.
+  `agent_status` shows `unplaced: n` and
   `oldest: <age>` for the recipient. After 5 minutes unplaced, one notice with
   the recipient's current step goes to the sender of an explicit send and to
   the recipient's requester. Act on the step that it names; do not send the

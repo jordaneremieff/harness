@@ -34,7 +34,7 @@ answers win over this table.
 | Spawn to host a thread | `agent_spawn` without prompt | Creation-only spawn returns no result reference; send the task after the thread exists | Do not spawn an agent only to hold a thread | `#peer-threads` |
 | New work for a busy Durable agent | `agent_send` `mode: "followUp"` | Placed at the agent's next tool boundary as new work for the same run | It may share one answer with the current work; the answer names each request it covers | `#controls` |
 | Interim notice to an owner | `agent_send` `mode: "report"` | Placed at the owner's next tool boundary as an event; no answer route and no check-in | A report does not complete a native agent's declared work; that agent uses `agent_work` `complete` | `#recovery-and-delivery` |
-| Know where a sent input is | the send receipt, then `agent_status` with `sessionId` | The receipt returns `placement`: `"placed"` or `"unplaced"`; status shows `unplaced: n` and `oldest: <age>` | One notice arrives after 5 minutes unplaced, with the recipient's current step; do not send the input again | `#controls` |
+| Know where a sent input is | the send receipt, then `agent_status` with `sessionId` | The receipt returns `placement`: `"placed"`, `"unplaced"` or `"withdrawn"`; `"withdrawn"` means the input is in neither the recipient's inbox nor its transcript; status shows `unplaced: n` and `oldest: <age>` | One notice arrives after 5 minutes unplaced, with the recipient's current step; do not send the input again | `#controls` |
 | Input at a time | `agent_send` with `deliverAt` | Durable timer; cancel with `agent_abort` `timerId` | Not a wait loop; the storage host must run at the deadline | `#controls` |
 
 ## Receive results
