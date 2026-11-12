@@ -586,10 +586,14 @@ At the decision threshold, one tool round refuses substantive calls and preserve
 `stash_write` plus declared continuity tools. Later calls below the stop threshold
 run normally. At the stop threshold, new substantive tool calls are refused.
 The [continuity tool contract](../../docs/conventions/continuity-tools.md) lets
-producers declare compaction or bounded worker-resolution calls. Resolution
-requires the producer's argument predicate to return exactly true. This checks
-argument shape, not message intent, target activity, ownership, or authority.
-A steer still admits input and can wake an idle target.
+producers declare compaction, bounded worker-resolution, and bounded
+work-completion calls. Resolution and completion require the producer's argument
+predicate to return exactly true. This checks argument shape, not message intent,
+target activity, ownership, or authority. A steer still admits input and can wake
+an idle target. A work-completion call closes the caller's own declared work and
+sends its final report, so a finished result can still settle that work at the
+stop threshold. When a producer declares one, the decision and stop refusals name
+it beside compaction, `stash_write` and the final answer.
 
 Unknown usage opens the gate. Calls already in flight finish; stored results,
 asynchronous input, reports and human input are never refused. Those inputs can

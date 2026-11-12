@@ -1,7 +1,7 @@
 # Continuity tools
 
-A continuity tool lets the model preserve its work or resolve existing work near the
-context limit. Stash consumes declarations from extensions that own these tools.
+A continuity tool lets the model preserve its work, resolve existing work, or close
+finished work near the context limit. Stash consumes declarations from extensions that own these tools.
 The declaration is a package contract, not permission to act.
 
 ## Synchronous declaration
@@ -16,7 +16,7 @@ interface ContinuityToolsRequest {
   readonly version: 1;
   declare(tool: {
     readonly name: string;
-    readonly act: "compaction" | "worker-resolution";
+    readonly act: "compaction" | "worker-resolution" | "work-completion";
     readonly accepts?: (input: unknown) => boolean;
   }): void;
 }
@@ -33,21 +33,30 @@ external content intake:
 
 - `compaction` compacts the caller's own context.
 - `worker-resolution` resolves existing work: stop it, redirect it, or report on it.
+- `work-completion` closes the caller's own declared work with a result that already
+  exists: it settles the work record and sends or retains its final report. It
+  dispatches nothing and declares no new dependency.
 
+Consumers ignore a declaration with an unknown act, so a call of that tool stays
+refused.
 A producer must not declare a spawn tool, `codemode`, `tool_search`, or a generic
 runner that executes other tools.
 
 ## Argument predicates and authority
 
 `accepts` is a pure, bounded, synchronous predicate over raw arguments. It is
-required for `worker-resolution` and optional for `compaction`. The consumer
+required for `worker-resolution` and `work-completion`, and optional for `compaction`. The consumer
 accepts only the exact result `true`. A missing required predicate, `false`, a
 non-boolean result, or a throw refuses the call. The producer refuses scheduling,
-spawn and follow-up forms, and every argument form outside its declared scope.
+spawn and follow-up forms, and every argument form outside its declared scope. A
+`work-completion` predicate accepts only the closing form of its tool; a form that
+opens, extends or re-declares work is outside that scope.
 
 The predicate checks argument shape, not message intent, authority, ownership,
 or whether a target is live. A steer can admit new input and start an idle target.
-The model uses such a call only to resolve already authorised work. Normal
+The model uses such a call only to resolve already authorised work. A
+`work-completion` predicate does not check that the named work exists or is open;
+the tool reports that when it runs. Normal
 permissions, request routes, and tool controls still apply during execution.
 
 ## Gate boundary
@@ -55,5 +64,5 @@ permissions, request routes, and tool controls still apply during execution.
 The gate judges new tool calls only. It does not cancel an in-flight call, remove
 results, or refuse reports, asynchronous messages, or human input. Those inputs
 remain reachable and can still fill the context window. A declaration does not
-prove that compaction or preservation succeeded. The operation's result supplies
+prove that compaction, preservation or completion succeeded. The operation's result supplies
 that evidence.

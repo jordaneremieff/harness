@@ -98,7 +98,7 @@ async function startHarness(
 	const registry = createRegistry();
 	registry.install(extension);
 	if (gateFixture) {
-		registry.install(Durable.defineExtension({ name: "continuity-fixture", tools: ["fake_compact", "fake_resolve", "fake_late"].map((name) => Durable.defineTool({
+		registry.install(Durable.defineExtension({ name: "continuity-fixture", tools: ["fake_compact", "fake_resolve", "fake_late", "fake_finish"].map((name) => Durable.defineTool({
 			name, description: "Synthetic continuity operation", parameters: obj({ mode: opt(str()) }), replay: "safe",
 			execute: async (_args, api, context) => {
 				if (nestedFixture && name === "fake_compact") {
@@ -114,6 +114,7 @@ async function startHarness(
 			const request = value as { declare(tool: { name: string; act: string; accepts?: (input: unknown) => boolean }): void };
 			request.declare({ name: "fake_compact", act: "compaction" });
 			request.declare({ name: "fake_resolve", act: "worker-resolution", accepts: (input) => (input as { mode?: string }).mode === "report" });
+			request.declare({ name: "fake_finish", act: "work-completion", accepts: (input) => (input as { mode?: string }).mode === "complete" });
 			void Promise.resolve().then(() => request.declare({ name: "fake_late", act: "compaction" }));
 		});
 	}
@@ -836,6 +837,22 @@ test("nested refusals stay outside the model round and do not terminate their ex
 	assert.equal(results[2].name, "fake_compact");
 	assert.equal(results[2].isError, false);
 	assert.match(results[2].text, /Stash stop/);
+});
+
+test("native stop runs an accepted work-completion call and refuses its other forms", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 2000, false, true);
+	gateThresholds(t, "0.03");
+	await answerWith(h.root, h.faux, [
+		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+		fauxAssistantMessage([fauxToolCall("fake_finish", { mode: "continue" }), fauxToolCall("fake_finish", { mode: "complete" })], { stopReason: "toolUse" }),
+		fauxAssistantMessage("answer"), fauxAssistantMessage("answer"),
+	], "Retain the task.");
+	const results = (await toolResults(h.root)).filter((result) => result.name === "fake_finish");
+	assert.equal(results.length, 2);
+	assert.equal(results[0].isError, true);
+	assert.match(results[0].text, /Stash stop[\s\S]*declared work-completion tool \(fake_finish\)/);
+	assert.equal(results[1].isError, false);
+	assert.equal(results[1].text, "resolved");
 });
 
 test("native continuity execution resets refusal counts and release lifts the stop", { timeout: 30000 }, async (t) => {

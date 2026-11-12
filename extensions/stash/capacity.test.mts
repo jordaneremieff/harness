@@ -148,6 +148,27 @@ describe("capacity tool gate", () => {
 		assert.equal(isContinuityCall("resolve", "no", declared), false);
 		for (const name of ["missing", "throws", "truthy", "late", "codemode", "tool_search"]) assert.equal(isContinuityCall(name, {}, declared), false);
 	});
+	it("admits only accepted work-completion forms at the stop and names the completion tool", () => {
+		const declared = continuityTools({ emit(_channel, value) {
+			const request = value as { declare(tool: { name: string; act: string; accepts?: (args: unknown) => boolean }): void };
+			request.declare({ name: "compact", act: "compaction" });
+			request.declare({ name: "finish", act: "work-completion", accepts: (args) => (args as { action?: string }).action === "complete" });
+			request.declare({ name: "unchecked", act: "work-completion" });
+			request.declare({ name: "future", act: "future-act", accepts: () => true });
+		} });
+		assert.deepEqual([...declared.keys()], ["compact", "finish", "unchecked"]);
+		const input = { config: defaults, declared, released: false, decisionRoundOpen: true, blockedRounds: 0 };
+		for (const percent of [91, 96]) {
+			assert.equal(gate({ ...input, measure: known(percent), toolName: "finish", args: { action: "complete" } }).kind, "allow");
+			for (const [toolName, args] of [["finish", { action: "continue" }], ["finish", undefined], ["unchecked", { action: "complete" }], ["future", {}], ["read", { path: "x" }]] as const) {
+				const result = gate({ ...input, measure: known(percent), toolName, args });
+				assert.equal(result.kind, "block", `${toolName} at ${percent}%`);
+				if (result.kind === "block") assert.match(result.reason, /close that work before the answer with a declared work-completion tool \(finish, unchecked\); it sends the final report/);
+			}
+		}
+		const none = gate({ ...input, declared: new Map(), measure: known(96), toolName: "read", args: {} });
+		assert.ok(none.kind === "block" && !/work-completion/.test(none.reason));
+	});
 	it("leads Pi compaction using model reserve then ordinary reserve then the default", () => {
 		const model = { provider: "fixture", id: "model", contextWindow: 100000 };
 		assert.equal(piAutoThreshold(undefined, model), 83.616);

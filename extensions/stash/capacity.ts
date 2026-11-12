@@ -24,7 +24,7 @@ export interface CapacityConfig {
 export type Measure = { kind: "unknown" } | { kind: "known"; tokens: number; contextWindow: number; percent: number };
 export type Band = "normal" | "decision" | "stop";
 export type GateDecision = { kind: "allow" } | { kind: "block"; reason: string; terminate: boolean };
-export type ContinuityTool = { name: string; act: "compaction" | "worker-resolution"; accepts?: (input: unknown) => boolean };
+export type ContinuityTool = { name: string; act: "compaction" | "worker-resolution" | "work-completion"; accepts?: (input: unknown) => boolean };
 export type Declared = ReadonlyMap<string, Omit<ContinuityTool, "name">>;
 export const STOP_ROUNDS_BEFORE_TERMINATE = 2;
 export const CONTINUITY_TOOLS = "harness:continuity-tools";
@@ -38,7 +38,7 @@ export function continuityTools(bus: { emit(channel: string, data: unknown): voi
 			version: 1,
 			declare(tool: ContinuityTool) {
 				if (!open || !tool || typeof tool.name !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(tool.name)) return;
-				if (tool.act !== "compaction" && tool.act !== "worker-resolution") return;
+				if (tool.act !== "compaction" && tool.act !== "worker-resolution" && tool.act !== "work-completion") return;
 				if (tool.accepts !== undefined && typeof tool.accepts !== "function") return;
 				declarations.set(tool.name, { act: tool.act, accepts: tool.accepts });
 			},
@@ -75,9 +75,11 @@ export function gate(input: {
 	if (current === "decision" && !input.decisionRoundOpen) return { kind: "allow" };
 	if (measure.kind === "unknown") return { kind: "allow" };
 	const tools = (act: ContinuityTool["act"]) => [...declared].filter(([, value]) => value.act === act).map(([name]) => name).join(", ") || "none declared";
+	const completion = tools("work-completion");
+	const closing = completion === "none declared" ? "" : ` If the result is ready and its work was declared, close that work before the answer with a declared work-completion tool (${completion}); it sends the final report.`;
 	const observed = `${measure.percent.toFixed(1)}% (${Math.round(measure.tokens)} of ${measure.contextWindow} tokens)`;
-	if (current === "decision") return { kind: "block", terminate: false, reason: `Stash decision round: context use is at ${observed}, at or above the ${config.decisionPercent}% decision threshold. This call was not run. In this response choose one continuity act: compaction for the same effort (a declared continuity tool such as ${tools("compaction")}), a handover with stash_write, or the final answer. Your next tool calls run normally until ${config.stopPercent}%.` };
-	return { kind: "block", terminate: input.blockedRounds >= STOP_ROUNDS_BEFORE_TERMINATE, reason: `Stash stop: context use is at ${observed}, at or above the ${config.stopPercent}% stop threshold. This call was not run. Stop substantive work: compact with a declared continuity tool (${tools("compaction")}), write a handover with stash_write, or give the final answer. Settle live workers you own with a declared worker-resolution tool (${tools("worker-resolution")}), and name any that keep running in the handover or answer. The operator can lift this with /stash capacity release, compact with /compact, or start a fresh session.` };
+	if (current === "decision") return { kind: "block", terminate: false, reason: `Stash decision round: context use is at ${observed}, at or above the ${config.decisionPercent}% decision threshold. This call was not run. In this response choose one continuity act: compaction for the same effort (a declared continuity tool such as ${tools("compaction")}), a handover with stash_write, or the final answer.${closing} Your next tool calls run normally until ${config.stopPercent}%.` };
+	return { kind: "block", terminate: input.blockedRounds >= STOP_ROUNDS_BEFORE_TERMINATE, reason: `Stash stop: context use is at ${observed}, at or above the ${config.stopPercent}% stop threshold. This call was not run. Stop substantive work: compact with a declared continuity tool (${tools("compaction")}), write a handover with stash_write, or give the final answer.${closing} Settle live workers you own with a declared worker-resolution tool (${tools("worker-resolution")}), and name any that keep running in the handover or answer. The operator can lift this with /stash capacity release, compact with /compact, or start a fresh session.` };
 }
 
 export type GateState = {
