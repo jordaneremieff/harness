@@ -5,7 +5,7 @@
  * input settles `done` while the item stays open. An item names the results it depends on, or none.
  * Only `complete` closes an item, in the commit that retains one final report for the request's reply
  * recipient. Arrived dependencies and settled inputs never close an item, and nothing is scheduled
- * for an item: it stays in status, in the route listing of later runs and in check-ins until then.
+ * for an item: it stays in status and in check-ins until then.
  *
  * Every function that takes a transaction reads submissions. A transaction refuses table reads after its
  * first table write, so call these before an entry, submission or task write of the same commit, or in
@@ -29,7 +29,6 @@ export const WORK_DEPENDENCY_LIMIT = 16;
 export const WORK_NOTE_CHARS = 1200;
 export const WORK_MESSAGE_CHARS = 100_000;
 const CLOSE_EXCERPT_CHARS = 600;
-const SECTION_NOTE_CHARS = 200;
 
 export type WorkCloseStatus = "done" | "failed" | "stopped" | "reset";
 export type OpenWorkClose = { status: WorkCloseStatus; at: number; message: string; reportRequestId: string };
@@ -432,22 +431,6 @@ export async function openWorkCheckInLines(reader: OpenWorkReader, storageId: st
 		lines.push(`Dependency ${dependency.sessionId} submission ${dependency.submissionId}: ${state}. Read: agent_inspect view: result, sessionId ${dependency.sessionId}, submissionId ${dependency.submissionId}.`);
 	}
 	return lines;
-}
-
-/**
- * Prompt text that lists the open items with their routes, so a later run or a new context knows what the
- * conversation still owes and to whom. Undefined without an open item. The text changes only when an item
- * is declared, replaced or closed.
- */
-export async function openWorkSectionText(harness: Harness, conversationId: ConversationId, context: Context): Promise<string | undefined> {
-	const items = await openWorkItems({ harness, context }, conversationId);
-	if (items.length === 0) return undefined;
-	const lines = items.map((item) => {
-		const { requestId, requester, replyTo, origin } = item;
-		const dependencies = item.results.length === 0 ? "has no producer dependency" : `depends on ${item.results.map((reference) => `${reference.sessionId} submission ${reference.submissionId}`).join(", ")}`;
-		return `- ${JSON.stringify({ requestId, requester, replyTo, origin })} ${dependencies}. Note: ${excerpt(item.note, SECTION_NOTE_CHARS)}`;
-	});
-	return ["Open declared work of this conversation. Each item stays open until agent_work complete names its request; that call sends the final result to the item's replyTo. Arrived results complete nothing. Read dependency states with agent_status.", ...lines].join("\n");
 }
 
 // ─── Committed changes ──────────────────────────────────────────────────────

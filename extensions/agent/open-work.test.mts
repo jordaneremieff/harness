@@ -7,7 +7,7 @@ import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { inputEntry } from "./input-entry.ts";
 import {
 	AgentWorkOutputSchema, CLOSED_WORK_LIMIT, OPEN_WORK_LIMIT, OpenWorkDoc, boundClosedItems, closeOpenWork, closeWork, completeOpenWork, completeWork, continueWork,
-	declareOpenWork, dependencyState, executeAgentWork, finalReportLabel, finalReportRequestId, openWorkCheckInLines, openWorkItems, openWorkSectionText, openWorkStatus,
+	declareOpenWork, dependencyState, executeAgentWork, finalReportLabel, finalReportRequestId, openWorkCheckInLines, openWorkItems, openWorkStatus,
 	parseAgentWorkInput, receiptWork, reportDelivery, requestHasOpenWork, stateNoteLabel, withoutVoidItems, type OpenWorkItem, type WorkRoute,
 } from "./open-work.ts";
 import { recordRequestContext, type RequestContext } from "./request-context.ts";
@@ -158,7 +158,6 @@ it("keeps the request route, reads dependency states and completes with one fina
 	await harness.commit((tx) => answered(tx, conversation.id, ids.own), context);
 	assert.equal(await harness.commit((tx) => requestHasOpenWork(tx, conversation.id, "task-a"), context), true);
 	assert.deepEqual(await harness.commit((tx) => receiptWork(tx, conversation.id, "task-a"), context), { work: "open", label: stateNoteLabel("open") });
-	assert.match(await openWorkSectionText(harness, conversation.id, context) ?? "", /"replyTo":"recipient-c"/u);
 
 	// The producer declares its own work and answers: its settled input is a state note.
 	await harness.commit((tx) => declareOpenWork(tx, STORAGE, producer.id, { results: [{ sessionId: "storage-z:2", submissionId: 6 }], note: "deeper" }, 12), context);
@@ -182,7 +181,6 @@ it("keeps the request route, reads dependency states and completes with one fina
 	assert.equal((await harness.commit((tx) => retainedReportRequest(tx, "recipient-c", `work-final:${conversation.id}:task-a`), context))?.message, row?.message);
 	assert.deepEqual(await harness.commit((tx) => openWorkItems(tx, conversation.id), context), []);
 	assert.deepEqual(await harness.commit((tx) => receiptWork(tx, conversation.id, "task-a"), context), { work: "closed", label: stateNoteLabel("closed", "done") });
-	assert.equal(await openWorkSectionText(harness, conversation.id, context), undefined);
 });
 
 it("selects the single routed input of the run and returns schema-valid details", async (t) => {
@@ -197,7 +195,6 @@ it("selects the single routed input of the run and returns schema-valid details"
 	assert.deepEqual([emptied.details.item.state, emptied.details.item.dependencies, emptied.details.item.note], ["open", [], "own work remains"]);
 	assert.equal((await harness.snapshot(OpenWorkDoc, conversation.id, context))?.items.length, 1);
 	assert.match((await harness.commit((tx) => openWorkCheckInLines(tx, STORAGE, conversation.id, "task-a"), context)).join("\n"), /No producer dependency/u);
-	assert.match(await openWorkSectionText(harness, conversation.id, context) ?? "", /has no producer dependency/u);
 	assert.equal((await executeAgentWork({ action: "complete", request: "task-b", status: "done", message: "m" }, host, context)).isError, true);
 	assert.equal((await executeAgentWork({ action: "complete", request: "task-a", status: "done", message: "m" }, host, context)).details?.item.state, "closed");
 });
