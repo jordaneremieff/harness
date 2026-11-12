@@ -27,6 +27,7 @@ import { prepareAdmittedCapture } from "./communication-retention.ts";
 import { recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
 import { createCheckIn } from "./durable-checkins.ts";
 import { cleanupRequestContexts, recordRequestContext, RequestContextDoc, type RequestContext } from "./request-context.ts";
+import { requestHasOpenWork } from "./open-work.ts";
 import { refreshManagedInstructions } from "./profile.ts";
 import { existsSync } from "node:fs";
 import type { PrimaryIntentClaim } from "./effort-presence.ts";
@@ -1210,7 +1211,7 @@ async function retireAutomaticReports(tx: Tx, reports: readonly DeliveryReport[]
 		}
 		if (report.checkIn === undefined) continue;
 		const watched = await tx.submissionByRequest(report.checkIn.conversationId as ConversationId, report.checkIn.requestId);
-		if (watched?.status === "done" || watched?.status === "unanswered") await storeDeliveryRow(tx, "report", { ...report, acknowledged: true });
+		if ((watched?.status === "done" || watched?.status === "unanswered") && !await requestHasOpenWork(tx, report.checkIn.conversationId as ConversationId, report.checkIn.requestId)) await storeDeliveryRow(tx, "report", { ...report, acknowledged: true });
 	}
 }
 /** Settle answer groups atomically. A null cursor skips a completed automatic traversal. */

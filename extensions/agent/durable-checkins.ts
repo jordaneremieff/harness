@@ -6,6 +6,7 @@ import { placementMode, type DeliveryOrigin, type DeliveryMessage } from "./dura
 import { checkInFallback, currentCheckInReport, retainedReport, storeDeliveryRow } from "./delivery-store.ts";
 import { producerRetryFact, retryFactLines } from "./await-facts.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
+import { openWorkCheckInLines, requestHasOpenWork } from "./open-work.ts";
 
 export type CheckInInput = {
 	conversationId: number;
@@ -84,6 +85,7 @@ async function digest(tx: Tx, input: CheckInInput, inputEntry: EntryId | undefin
 	const lines = [...(retry === undefined ? [] : retryFactLines(retry)), recent.truncated
 		? `Tool calls: at least ${recent.calls} (bounded retained entries for watched task).`
 		: `Tool calls: ${recent.calls} (watched task).`];
+	lines.unshift(...await openWorkCheckInLines(tx, input.senderIdentity.split(":")[0], id, input.requestId));
 	for (const tool of running) lines.push(...runningToolLines(tool, recent.issuedAt.get(tool.callId), now));
 	if (running.length === 0) lines.push(generation ? "Current step: model request." : "Current step: queued or between steps.");
 	const latest = textOf(generation?.message === undefined ? [] : [generation.message]) || recent.latest;
@@ -105,7 +107,7 @@ export const CheckInDeadlineTask = defineTask<CheckInInput & { next: number }, C
 			const maxAttempts = runtime.settings.retry.enabled ? runtime.settings.retry.maxRetries + 1 : 1;
 			await runtime.commit(async (tx) => {
 				const retained = await tx.submissionByRequest(id, input.requestId);
-				if (retained?.status === "done" || retained?.status === "unanswered")
+				if ((retained?.status === "done" || retained?.status === "unanswered") && !await requestHasOpenWork(tx, id, input.requestId))
 					return { status: "terminal", outcome: { status: "completed", result: null } };
 				// Collapse overdue boundaries into one current notice, then return to the admission's fixed cadence.
 				const k = Math.max(task.state.checkpoint.next, Math.floor((now - input.admittedAt) / input.intervalMs));
@@ -124,7 +126,7 @@ export const CheckInDeadlineTask = defineTask<CheckInInput & { next: number }, C
 	abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
-/** The submission wait owns the deadline task, so settlement stops it without waiting for its deadline. */
+/** The submission wait owns the deadline task, so settlement without open declared work stops it without waiting for its deadline. */
 export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 	name: "agent.check-in",
 	version: 1,
@@ -138,19 +140,28 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 			const submission = await conversation.submit({ type: "input", content: message, requestId: input.requestId, whenBusy: placementMode(input.whenBusy), entry: inputEntry(input.origin, input.requester, { class: sentInputClass(input.origin, input.whenBusy), ...(input.requester === undefined ? {} : { sender: input.requester }), requestId: input.requestId }) }, context);
 			const status = await submission.status(context);
 			const deadlines = (await runtime.ownedTasks(context)).filter((child) => child.kind === CheckInDeadlineTask.definition.name);
-			if (status.status === "done" || status.status === "unanswered") {
-				for (const child of deadlines) await runtime.abortOwned(child.id, context);
-				return runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
+			const settled = status.status === "done" || status.status === "unanswered";
+			let deadline = deadlines[0]?.id;
+			const watch = async () => {
+				if (deadline === undefined) await runtime.commit(async (tx) => {
+					deadline = await tx.createTask(CheckInDeadlineTask, { ...input, next: task.state.checkpoint.next }, { ownership: { kind: "task", taskId: task.id } });
+					return undefined;
+				}, context);
+				if (deadline === undefined) throw new Error("check-in deadline task is absent");
+				return deadline;
+			};
+			if (!settled) {
+				await watch();
+				await submission.wait(context);
 			}
-			const existing = deadlines[0];
-			let deadline = existing?.id;
-			if (deadline === undefined) await runtime.commit(async (tx) => {
-				deadline = await tx.createTask(CheckInDeadlineTask, { ...input, next: task.state.checkpoint.next }, { ownership: { kind: "task", taskId: task.id } });
+			// A request with open declared work keeps its check-in: the deadline task ends itself once the item closes.
+			let open = false;
+			await runtime.commit(async (tx) => {
+				open = await requestHasOpenWork(tx, input.conversationId as ConversationId, input.requestId);
 				return undefined;
 			}, context);
-			if (deadline === undefined) throw new Error("check-in deadline task is absent");
-			await submission.wait(context);
-			await runtime.abortOwned(deadline, context);
+			if (open) await runtime.waitForTask(await watch(), context);
+			else for (const child of new Set([...deadlines.map((item) => item.id), ...(deadline === undefined ? [] : [deadline])])) await runtime.abortOwned(child, context);
 			await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);
 		},
 	},
