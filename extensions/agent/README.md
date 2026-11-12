@@ -1619,7 +1619,9 @@ the wait and reaches the original post-tools boundary. It joins the current
 work rather than guaranteeing a separate next answer. Failed admission does not
 release the wait.
 
-Report placement depends on the admission route:
+The release, suppression and withdrawal rules in this section define the native
+wait inside a Durable conversation. Report placement depends on the admission
+route:
 
 - Native Durable `agent_send` with `mode:"report"` uses retained report delivery
   with report provenance. An awaited producer's explicit report releases the
@@ -1631,8 +1633,8 @@ Report placement depends on the admission route:
   not release the wait and starts no turn.
 - The delivery watcher sends each answer copy as an automatic `followUp`,
   without release provenance, including the copy for a recipient in the
-  producer's own storage. That copy does not itself release the await. The
-  covered-delivery withdrawal rules below still apply. The same-storage
+  producer's own storage. That copy does not itself release the native await.
+  The covered-delivery withdrawal rules below still apply. The same-storage
   background `Reporter` task admits the input and waits for its settlement; it
   posts no input of its own.
 
