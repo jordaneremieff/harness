@@ -79,12 +79,23 @@ metadata.
 A busy conversation receives it as a follow-up after its current run; an idle
 conversation starts a run from it. Cancellation settles the task `aborted` and
 admits nothing.
-Job status persists in the task record and survives host restarts; the output
-tail lives in the host process only. If the host stops while a job runs, the
-next host marks the task on restart and admits one completion with status
-`lost`: the command is never run again to recover its result, and `jobs` logs
-for that job are unavailable. Another conversation in the same storage cannot
-read or cancel the job; its requests fail with an unknown job ID. The running
+Before completion delivery, the task commits the terminal execution result and
+its bounded completion payload together in a delivery checkpoint. It then
+submits the completion with the retained request ID and commits the same result
+as the task's terminal outcome. A restart during delivery resumes that retained
+payload, never execution; repeated submission returns the existing completion.
+Job status reads the retained result even before final delivery bookkeeping.
+The completion excerpt survives restart; the full process-local log tail does
+not, so `jobs` logs for a restarted job are unavailable.
+
+If the host stops after execution starts but before result retention, the next
+host admits one completion with status `lost`: the result is uncertain and the
+command is never run again. A task with only the execution-start checkpoint
+follows this safe loss path. A retained delivery checkpoint never follows the
+loss path. Explicit cancellation before delivery settles the task `aborted`
+without a completion, including when an execution result is already retained.
+Another conversation in the same storage cannot read or cancel the job; its
+requests fail with an unknown job ID. The running
 limit includes admitted tasks whose command has not opened live output yet.
 Reservations use launching task identities and transfer once into live output;
 a failure or abort before that transfer releases its reservation.
@@ -312,8 +323,9 @@ The Durable test opens a real `Harness` with the native `bash` tool, a Node
 execution environment, and the faux provider. It checks admission, independent
 foreground work during a job, the single completion input and its continuation
 run, log reads, quiet cancellation with the process gone, isolation between
-conversations, and a host restart that reports a lost job without rerunning
-its command.
+conversations, and host restarts before result retention, before delivery, and after submission.
+It checks safe loss before retention, exact bounded outcome recovery after
+retention, idempotent delivery, quiet cancellation, and no command replay.
 
 The manager tests cover bounded retention and active native process cleanup.
 The adapter tests cover foreground behavior, output-schema conformance,

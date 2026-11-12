@@ -29,7 +29,35 @@ after(() => {
 
 type Script = (lastUserText: string, lastToolResult: { name: string; text: string; isError: boolean } | undefined) => ReturnType<typeof fauxAssistantMessage>;
 
-type JobProbe = { beforeEnv?(id: number): Promise<void>; beforeCommit?(id: number): void; onExec?(id: number): void };
+type JobProbe = {
+	beforeEnv?(id: number): Promise<void>;
+	beforeCommit?(id: number): void;
+	onExec?(id: number): void;
+	beforeRuntimeCommit?(id: number, ordinal: number, signal: AbortSignal): Promise<void>;
+	beforeSubmit?(id: number, signal: AbortSignal): Promise<void>;
+	afterSubmit?(id: number, signal: AbortSignal): Promise<void>;
+};
+
+function probedConversation(conversation: Durable.ConversationHandle, probe: JobProbe, id: number, signal: AbortSignal): Durable.ConversationHandle {
+	return new Proxy(conversation, { get(target, key) {
+		if (key === "submit") return async (draft: Durable.SubmissionDraft, context: Context) => {
+			await probe.beforeSubmit?.(id, signal);
+			const submitted = await conversation.submit(draft, context);
+			await probe.afterSubmit?.(id, signal);
+			return submitted;
+		};
+		const value = Reflect.get(target, key, target);
+		return typeof value === "function" ? value.bind(target) : value;
+	} });
+}
+
+function runtimeFacade<I, S, R, H extends object>(runtime: Durable.TaskRuntime<I, S, R, H>, methods: Pick<Durable.TaskRuntime<I, S, R, H>, "env" | "commit" | "conversation">): Durable.TaskRuntime<I, S, R, H> {
+	return new Proxy(runtime, { get(target, key) {
+		if (Object.hasOwn(methods, key)) return Reflect.get(methods, key);
+		const value = Reflect.get(target, key, target);
+		return typeof value === "function" ? value.bind(target) : value;
+	} });
+}
 
 function probedDurable(probe: JobProbe): typeof Durable {
 	function defineTask<I, S extends { phase: string }, R, H extends object = object>(definition: Durable.TaskDefinition<I, S, R, H>): Durable.Task<I, S, R, H> {
@@ -37,22 +65,25 @@ function probedDurable(probe: JobProbe): typeof Durable {
 		const phases = Object.fromEntries(Object.entries(definition.phases).map(([phase, handler]) => [phase,
 			async (task: Durable.RunningTask<I, S, R>, runtime: Durable.TaskRuntime<I, S, R, H>, context: Context) => {
 				let committed = false;
-				const facade = new Proxy(runtime, { get(target, key) {
-					if (key === "env") return async (...args: Parameters<typeof runtime.env>) => {
-						await probe.beforeEnv?.(Number(task.id));
-						const env = await runtime.env(...args);
-						if (!env || !probe.onExec) return env;
-						const execute = env.exec.bind(env);
-						env.exec = (...args) => { probe.onExec?.(Number(task.id)); return execute(...args); };
-						return env;
-					};
-					if (key === "commit") return (...args: Parameters<typeof runtime.commit>) => {
-						if (!committed) { committed = true; probe.beforeCommit?.(Number(task.id)); }
-						return runtime.commit(...args);
-					};
-					const value = Reflect.get(target, key, target);
-					return typeof value === "function" ? value.bind(target) : value;
-				} });
+				let commits = 0;
+				const env = async (...args: Parameters<typeof runtime.env>) => {
+					await probe.beforeEnv?.(Number(task.id));
+					const env = await runtime.env(...args);
+					if (!env || !probe.onExec) return env;
+					const execute = env.exec.bind(env);
+					env.exec = (...args) => { probe.onExec?.(Number(task.id)); return execute(...args); };
+					return env;
+				};
+				const commit = async (...args: Parameters<typeof runtime.commit>) => {
+					if (!committed) { committed = true; probe.beforeCommit?.(Number(task.id)); }
+					await probe.beforeRuntimeCommit?.(Number(task.id), ++commits, runtime.signal);
+					return runtime.commit(...args);
+				};
+				const conversation = async (...args: Parameters<typeof runtime.conversation>) => {
+					const conversation = await runtime.conversation(...args);
+					return conversation ? probedConversation(conversation, probe, Number(task.id), runtime.signal) : undefined;
+				};
+				const facade = runtimeFacade(runtime, { env, commit, conversation });
 				return (handler as Durable.PhaseHandler<I, S, S, R, H>)(task, facade, context);
 			},
 		])) as typeof definition.phases;
@@ -556,6 +587,97 @@ for (const timing of ["before", "during"] as const) test(`a completion admitted 
 		jobRelease.resolve(); compactRelease.resolve(); ownerRelease.resolve();
 		await instance.close();
 	}
+});
+
+async function holdUntilStop(entered: ReturnType<typeof barrier>, signal: AbortSignal): Promise<void> {
+	entered.resolve();
+	if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+	signal.throwIfAborted();
+}
+
+for (const cut of ["before-retention", "before-delivery", "after-submit", "cancel-retained"] as const) test(`restart at ${cut} never reruns execution and preserves retained outcomes`, { timeout: 30_000 }, async () => {
+	const entered = barrier();
+	let executions = 0;
+	const output = `${"discarded\n".repeat(600)}recorded output\n`;
+	const outputBytes = Buffer.byteLength(output);
+	const storagePath = join(root, `outcome-${cut}.sqlite`);
+	const one = await openHarness(await openNodeSqliteStorage(storagePath), (user, result) => user === "STATUS" && result === undefined
+		? fauxAssistantMessage(fauxToolCall("jobs", { action: "status", id }), { stopReason: "toolUse" })
+		: admissionScript(user, result), {
+		env: (target) => {
+			const env = new NodeExecutionEnv({ cwd: target.cwd ?? root });
+			env.exec = async (_command, options, executionContext) => {
+				executions++;
+				options?.onOutput?.(output, executionContext, { stream: "stdout" });
+				return { ok: true, value: { exitCode: 0 } };
+			};
+			return env;
+		},
+		probe: {
+			beforeRuntimeCommit: async (_id, ordinal, signal) => {
+				if (cut === "before-retention" && ordinal === 2) await holdUntilStop(entered, signal);
+			},
+			beforeSubmit: async (_id, signal) => { if (cut === "before-delivery" || cut === "cancel-retained") await holdUntilStop(entered, signal); },
+			afterSubmit: async (_id, signal) => { if (cut === "after-submit") await holdUntilStop(entered, signal); },
+		},
+	});
+	let id: string;
+	let conversationId: Durable.ConversationId;
+	let recorded: JobCompletionDetails | undefined;
+	try {
+		const conversation = await one.harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } });
+		conversationId = conversation.id;
+		const admitted = await launch(conversation, cut); assert.ok(admitted); id = admitted;
+		await boundedBarrier(entered.promise);
+		const retained = await taskRecord(one.harness, id);
+		assert.equal(retained.state.status, "running");
+		assert.equal((retained.state.checkpoint as { phase: string }).phase, cut === "before-retention" ? "run" : "deliver");
+		if (cut !== "before-retention") {
+			await say(conversation, "STATUS");
+			const status = (await toolResults(conversation)).filter((item) => item.name === "jobs").at(-1);
+			assert.ok(status && !status.isError);
+			assert.equal(JSON.parse(status.text).job.status, "succeeded");
+		}
+		if (cut === "cancel-retained") await one.harness.abortTask(Number(id) as Durable.TaskId, context);
+		if (cut === "after-submit") {
+			await conversation.waitForIdle(context);
+			[recorded] = await completionEntries(conversation);
+			assert.equal(recorded?.job.status, "succeeded");
+		} else assert.deepEqual(await completionEntries(conversation), []);
+	} finally { await one.close(); }
+	const two = await openHarness(await openNodeSqliteStorage(storagePath), admissionScript, { env: (target) => {
+		const env = new NodeExecutionEnv({ cwd: target.cwd ?? root });
+		env.exec = async () => { executions++; throw new Error("Recovery must not execute the command"); };
+		return env;
+	} });
+	try {
+		const conversation = await two.harness.conversation(conversationId, context); assert.ok(conversation);
+		const settled = await two.harness.waitForTask(Number(id) as Durable.TaskId, context);
+		await two.harness.waitForIdle(context);
+		assert.equal(executions, 1);
+		const completions = await completionEntries(conversation);
+		if (cut === "cancel-retained") {
+			assert.equal(settled.state.outcome.status, "aborted");
+			assert.deepEqual(completions, []);
+			return;
+		}
+		assert.equal(completions.length, 1);
+		assert.equal(settled.state.outcome.status, "completed");
+		const result = (settled.state.outcome as { result: { status: string; outputBytes: number; startedAt: number; endedAt: number } }).result;
+		assert.equal(result.status, cut === "before-retention" ? "lost" : "succeeded");
+		assert.equal(completions[0].job.status, result.status);
+		assert.equal(completions[0].tail.outputBytes, result.outputBytes);
+		assert.equal(completions[0].job.startedAt, result.startedAt);
+		assert.equal(completions[0].job.endedAt, result.endedAt);
+		if (cut !== "before-retention") {
+			assert.ok(completions[0].tail.text.endsWith("recorded output"));
+			assert.equal(completions[0].tail.omitted, true);
+			assert.ok(Buffer.byteLength(completions[0].tail.text) <= 4096);
+			assert.equal(completions[0].tail.text.split("\n").length, 40);
+			assert.equal(result.outputBytes, outputBytes);
+		}
+		if (recorded) assert.deepEqual(completions[0], recorded);
+	} finally { await two.close(); }
 });
 
 test("cancellation settles quietly, another conversation cannot reach the job, and a restart reports a lost job without rerunning it", { timeout: 30_000 }, async () => {

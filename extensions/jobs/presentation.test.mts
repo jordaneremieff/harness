@@ -89,7 +89,7 @@ test("a durable record without command identity stays unknown rather than blank"
 		kind: "jobs.run",
 		input,
 		abortRequested: false,
-		state: { status: "running" },
+		state: { status: "running", checkpoint: { phase: "run", startedAt: 100 } },
 	} as never, 150);
 	assert.equal(missing.commandPreview, undefined);
 	assert.equal(missing.cwd, undefined);

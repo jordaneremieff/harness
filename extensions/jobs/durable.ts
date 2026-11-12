@@ -51,8 +51,8 @@ export type JobInput = {
 	requestId: string;
 	callId: string;
 };
-/** `startedAt` is committed before the process spawns, so a rerun can tell a spawned job from one that never ran. */
-export type JobState = { phase: "run"; startedAt?: number };
+/** The execution mark precedes spawn; the retained outcome precedes completion delivery. */
+export type JobState = { phase: "run"; startedAt?: number } | { phase: "deliver"; result: JobResult; completion: JobCompletionDetails };
 export type JobResult = {
 	status: "succeeded" | "failed" | "timed_out" | "lost";
 	exitCode?: number | null;
@@ -225,12 +225,14 @@ export function jobFromRecord(record: JobRecord, observedAt?: number): Completio
 		startedAt: record.startedAt ?? record.input.createdAt,
 		...(record.endedAt === undefined ? {} : { endedAt: record.endedAt }),
 		...(observedAt === undefined ? {} : { observedAt }),
-		cancellationRequested: record.abortRequested, ...timeoutField(record.input),
+		cancellationRequested: record.abortRequested && record.abortReason !== "restart", ...timeoutField(record.input),
 	};
 	const state = record.state;
-	if (state.status !== "terminal" && state.status !== "completing") return { ...base, status: "running" };
+	if (state.status !== "terminal" && state.status !== "completing") {
+		return state.checkpoint.phase === "deliver" ? { ...base, ...jobOf(Number(record.id), record.input, state.checkpoint.result) } : { ...base, status: "running" };
+	}
 	const outcome = state.outcome;
-	if (outcome.status === "completed") return { ...base, ...jobOf(Number(record.id), record.input, outcome.result), cancellationRequested: record.abortRequested || outcome.result.status === "timed_out" };
+	if (outcome.status === "completed") return { ...base, ...jobOf(Number(record.id), record.input, outcome.result), cancellationRequested: base.cancellationRequested || outcome.result.status === "timed_out" };
 	if (outcome.status === "aborted") return { ...base, status: "cancelled", cancellationRequested: true };
 	const error = outcome.status === "orphaned" ? outcome.reason : outcome.error.message;
 	return { ...base, status: "failed", error: boundedError(error) };
@@ -262,23 +264,34 @@ export function createJobsContribution(options: { source: string }): DurableCont
 			host.onClose(() => live.clear());
 
 			/** One completion input per settled job, deduplicated by the job's request ID. */
-			async function admitCompletion(runtime: JobRuntime, input: JobInput, job: CompletionJob, entry: LiveJob | undefined, context: Context): Promise<void> {
+			async function admitCompletion(runtime: JobRuntime, input: JobInput, details: JobCompletionDetails, context: Context): Promise<void> {
 				const conversation = await runtime.conversation(input.conversationId as Durable.ConversationId, context);
 				if (conversation === undefined) return;
-				const read = entry === undefined ? () => EMPTY_LOGS(job.id) : (cursor?: number) => entry.logs(job.id, cursor);
-				const command = presentText(input.preview) ?? presentText(input.command) ?? "";
-				const details: JobCompletionDetails = { job: jsonJob(job), command: command === "" ? "" : commandPreview(command), tail: completionTail(read) };
 				await conversation.submit(
 					{ type: "input", content: completionContent(details), requestId: input.requestId, whenBusy: "followUp", entry: { kind: JOB_COMPLETION_MESSAGE, data: details } },
 					context,
 				);
 			}
 
+			async function deliverOutcome(runtime: JobRuntime, input: JobInput, retained: Extract<JobState, { phase: "deliver" }>, context: Context): Promise<void> {
+				await admitCompletion(runtime, input, retained.completion, context);
+				await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: retained.result } }), context);
+			}
+
+			async function retainOutcome(task: Durable.RunningTask<JobInput, JobState, JobResult>, runtime: JobRuntime, result: JobResult, entry: LiveJob | undefined, context: Context): Promise<void> {
+				const job = jobOf(Number(task.id), task.input, result);
+				const read = entry === undefined ? () => EMPTY_LOGS(job.id) : (cursor?: number) => entry.logs(job.id, cursor);
+				const command = presentText(task.input.preview) ?? presentText(task.input.command) ?? "";
+				const completion: JobCompletionDetails = { job: jsonJob(job), command: command === "" ? "" : commandPreview(command), tail: completionTail(read) };
+				const retained = { phase: "deliver", result, completion } as const;
+				await runtime.commit(() => ({ status: "running", checkpoint: retained }), context);
+				await deliverOutcome(runtime, task.input, retained, context);
+			}
+
 			/** The process is gone with the invocation that spawned it: report the loss once and never rerun the command. */
 			async function settleLost(task: Durable.RunningTask<JobInput, JobState, JobResult>, runtime: JobRuntime, startedAt: number, context: Context): Promise<void> {
 				const lost: JobResult = { status: "lost", startedAt, endedAt: runtime.now(), outputBytes: 0 };
-				await admitCompletion(runtime, task.input, { ...jobOf(Number(task.id), task.input, lost), cancellationRequested: false }, undefined, context);
-				await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: lost } }), context);
+				await retainOutcome(task, runtime, lost, undefined, context);
 			}
 
 			async function jobEnvironment(runtime: JobRuntime, context: Context) {
@@ -309,8 +322,7 @@ export function createJobsContribution(options: { source: string }): DurableCont
 					// An abort mark ends this invocation; the abort handler commits the terminal state.
 					if (runtime.signal.aborted) return;
 					const result = resultOf(exec, startedAt, endedAt, entry.end);
-					await admitCompletion(runtime, input, jobOf(id, input, result), entry, context);
-					await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
+					await retainOutcome(task, runtime, result, entry, context);
 				} finally {
 					live.releaseJobAdmission(id);
 					entry?.settle(runtime.now());
@@ -327,12 +339,16 @@ export function createJobsContribution(options: { source: string }): DurableCont
 						if (startedAt !== undefined) return settleLost(task, runtime, startedAt, context);
 						return runJob(task, runtime, context);
 					},
+					deliver: (task, runtime, context) => deliverOutcome(runtime, task.input, task.state.checkpoint, context),
 				},
 				abort: async (task, runtime, context) => {
 					live.releaseJobAdmission(Number(task.id));
 					live.get(Number(task.id))?.settle(runtime.now());
-					const startedAt = task.state.checkpoint.startedAt;
-					if (task.abortReason === "restart" && startedAt !== undefined) return settleLost(task, runtime, startedAt, context);
+					const checkpoint = task.state.checkpoint;
+					if (task.abortReason === "restart") {
+						if (checkpoint.phase === "deliver") return deliverOutcome(runtime, task.input, checkpoint, context);
+						if (checkpoint.startedAt !== undefined) return settleLost(task, runtime, checkpoint.startedAt, context);
+					}
 					await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
 				},
 			});
