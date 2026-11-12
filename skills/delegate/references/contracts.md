@@ -57,7 +57,8 @@ directory). When a structural check helps, check the filled copy with
   skill that the tool descriptions seem to cover, so name it when it matters.
 - **Thread ID:** an existing thread to join when it serves this assignment;
   otherwise omit this slot. Keep
-  `contribution` within 256 characters and `message` within 8,000 characters.
+  `participation` on create/join within 256 characters and `post.message` within
+  8,000 characters. Join does not accept a discussion message.
   Write longer content to a file and post its path.
 - **Provider or budget notes:** known walls, the substitution order, and what to
   do at a wall (stop and report the exact error text).

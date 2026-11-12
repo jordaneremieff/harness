@@ -28,7 +28,7 @@ import {
 } from "./agent-preferences.ts";
 import { ordinaryReportedUsage } from "./agent-usage.ts";
 import { checkInMinutes } from "./check-in-options.ts";
-import { CollaborationParams } from "./collaboration-contract.ts";
+import { CollaborationParams, validateCollaborationAction } from "./collaboration-contract.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
 import { THINKING_LEVELS, isThinkingLevel, parseConfigurationArguments } from "./configuration.ts";
 import {
@@ -41,6 +41,8 @@ import {
 	type AgentControlToolName,
 } from "./control-guidance.ts";
 import { dashboardPreferences } from "./dashboard-preferences.ts";
+import { readableControlText, projectReportReceipt } from "./control-result.ts";
+import { projectSelectedStatus, validateStatusDetail } from "./status-overview.ts";
 import type { AgentContributionHost } from "./durable-agents.ts";
 import {
 	createResetTimerActions,
@@ -173,6 +175,7 @@ const inspect = obj(
 		source: opt(StringEnum(["user", "assistant", "toolResult", "summary", "custom"])),
 		submissionId: opt(nativeEntryId),
 		operationId: opt(id),
+		receiptCursor: opt(str({ minLength: 1, maxLength: 2048, description: "Recipient reference continuation from a result page. Separate from answer offset and history cursor." })),
 	},
 	{},
 );
@@ -197,7 +200,7 @@ const configure = obj(
 );
 const result = (value: unknown, schema?: Schema): AgentToolResult<unknown> => ({
 	...((value as { outcome?: string } | null)?.outcome === "failed" ? { isError: true } : {}),
-	content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, (value as { view?: string } | null)?.view === "fleet" ? undefined : 2) }],
+	content: [{ type: "text", text: (value as { view?: string } | null)?.view === "result" ? readableControlText(value) : typeof value === "string" ? value : JSON.stringify(value, null, (value as { view?: string } | null)?.view === "fleet" ? undefined : 2) }],
 	details: value,
 	structuredContent: schema ? structuredObservation(schema, value) : JSON.parse(JSON.stringify(value ?? null)),
 });
@@ -339,7 +342,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					({ admitted, admissionCaller } = admitExecutionInput(pi, ctx, name, callId, admitted));
 				}
 				const value = await execute(admitted, ctx, callId, admissionCaller);
-				const output = result(value, schema);
+				const projected = name === "agent_send" && admitted.mode === "report" ? projectReportReceipt(value) : value;
+				const output = result(projected, schema);
 				if (name === "agent_compact" && typeof (value as { text?: unknown })?.text === "string")
 					return { ...output, content: [{ type: "text", text: (value as { text: string }).text }] };
 				return output;
@@ -368,9 +372,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	register(
 		"agent_collaborate",
-		"Discover and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator in an existing participant storage (sessionId). Join, leave and exchange sourced contributions. Joining opts into passive notices at existing boundaries. Posts wake only explicit notify recipients. Read the frame and paged exchange without starting a host.",
+		"Discover and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator in an existing participant storage (sessionId). Create and join accept participation (at most 256 characters); omission preserves an existing declaration and an empty string clears it. Join does not accept message. Use post.message for discussion. Forward reads accept after and optional knownFrameRevision; before is exclusive with after. Follow the returned next call unchanged. Passive facts do not wake a recipient or release its wait; explicit notify stays active. Read the frame and paged exchange without starting a host.",
 		CollaborationParams,
-		(input, ctx, callId) => getManager().collaborate({ ...input, origin: "model", requestId: `collaboration:${ctx.sessionManager.getSessionId()}:${callId}` }, caller(ctx, pi)),
+		(input, ctx, callId) => {
+			if (input.action !== "read") validateCollaborationAction(input);
+			return getManager().collaborate({ ...input, origin: "model", requestId: `collaboration:${ctx.sessionManager.getSessionId()}:${callId}` }, caller(ctx, pi));
+		},
 	);
 	register("agent_profile", "Read or revision-check an agent's durable role and sourced expertise. Saved expertise is evidence, not fresh authority. Profile edits start no model turn.", ProfileParams, (input, ctx, callId) => {
 		if (typeof input.sessionId !== "string") throw new Error("A primary profile control requires an agent sessionId");
@@ -398,24 +405,30 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_status",
-		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. A selected Durable agent returns full state and bounded pending timers. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state. For one storage, use view: storage-page with its exact storageId and call the tool named by coverage.next.tool with its remaining fields unchanged; this backend JSON cursor is separate from agent_list discovery.",
+		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. Selected status is compact by default. Use detail:true with an explicit sessionId for full state and bounded pending timers. An ordinary primary exposes bounded latest-retained ancestry with detail:true, not live idle or selected-branch state. For one storage, use view: storage-page with its exact storageId and call the tool named by coverage.next.tool with its remaining fields unchanged; this backend JSON cursor is separate from agent_list discovery.",
 		StatusToolInputSchema,
-		(input, ctx) => {
-			validateStatusSelectors(input);
-			if (input.view === "storage-page") return getManager().status(storageStatusPageInput(input));
+		async (input, ctx) => {
+			validateStatusDetail(input);
+			const { detail: _detail, ...selectors } = input;
+			validateStatusSelectors(selectors);
+			if (input.view === "storage-page") return getManager().status(storageStatusPageInput(selectors));
 			const sessionId = input.sessionId as string | undefined;
 			const view = input.view as "fleet" | undefined;
 			const selection = validateFleetSelection(input);
 			const selfId = !sessionId ? ctx?.sessionManager?.getSessionId() : undefined;
 			const reportedUsage = view === "fleet" && ctx?.sessionManager?.getEntries ? ordinaryReportedUsage(ctx.sessionManager.getEntries()) : undefined;
-			return getManager().status(sessionId, view, selfId ? { id: selfId, cwd: ctx.cwd, reportedUsage } : undefined, selection);
+			const value = await getManager().status(sessionId, view, selfId ? { id: selfId, cwd: ctx.cwd, reportedUsage } : undefined, selection);
+			return sessionId !== undefined && input.detail !== true ? projectSelectedStatus(value) : value;
 		},
 	);
 	register(
 		"agent_inspect",
 		"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry only, not the live selected branch. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId or operationId. Images, signatures, and redacted thinking stay omitted.",
 		inspect,
-		(input, ctx) => control("inspect", input, ctx),
+		(input, ctx) => {
+			if (input.receiptCursor !== undefined && input.view !== "result") throw new Error("receiptCursor requires result view");
+			return control("inspect", input, ctx);
+		},
 	);
 	register(
 		"agent_send",
