@@ -23,7 +23,6 @@ import { OrdinaryPrimaryObservationSchema } from "./primary-observation.ts";
 import { EffortAwarenessSchema } from "./effort-schema.ts";
 import { CreatedAgentsSchema } from "./agent-lineage.ts";
 import { CommunicationViewSchema } from "./communication.ts";
-import { AwaitFactSchema } from "./await-facts.ts";
 import { STORAGE_STATUS_ID_PATTERN } from "./storage-status.ts";
 import { ProviderBlockFactSchema } from "./provider-block-facts.ts";
 import { ResultReferenceSchema } from "./result-schema.ts";
@@ -229,7 +228,6 @@ export const ConversationStatusSchema = obj({
 	),
 	/** Bounded pending scheduled inputs, nearest deadline first. */
 	timers: opt(arr(timerStatusRow)),
-	awaiting: opt(AwaitFactSchema),
 	forkSource: opt(obj({ conversationId: id, at: id })),
 	ownerTaskId: opt(id),
 });
@@ -258,7 +256,9 @@ export const AgentConversationSummaryProperties = {
 	currentTool: opt(obj({ name: string, argument: string })),
 	durationMs: opt(number),
 	health: opt(dashboardHealth),
-	awaiting: opt(AwaitFactSchema),
+	/** Admitted inputs that are still queued, and the age in milliseconds of the oldest one. */
+	unplaced: opt(count),
+	oldest: opt(count),
 };
 export const AgentConversationSummarySchema = obj(AgentConversationSummaryProperties);
 
@@ -429,13 +429,6 @@ const toolSelected = all([
 	onlyKeys(["awareness", "conversation", "conversations", "coverage", "createdAgents", "inventory", "pid", "live", "storageId", "deliveryError"]),
 ]);
 const ToolStatusSchema = all([partial(awarenessProperties), union([toolOverview, toolSelected])]);
-/** Exact references stay intact; only descriptive previews are shortened. */
-export const CompactAwaitSchema = obj({
-	runId: id,
-	results: arr(obj({ result: ResultReferenceSchema, status: union([lit("pending"), lit("done"), lit("unanswered"), lit("unavailable")]) }), { maxItems: 4 }),
-	omittedResults: count,
-	queuedInputCount: count,
-});
 export const StatusDetailCallSchema = obj({ tool: lit("agent_status"), sessionId: string, detail: lit(true) });
 export const CompactConversationSchema = obj({
 	identity: string, conversationId: opt(id), busy: nullable(boolean),
@@ -443,16 +436,14 @@ export const CompactConversationSchema = obj({
 	name: opt(string), model: opt(obj({ provider: string, modelId: string })), thinkingLevel: opt(string),
 	runId: opt(id), queue: obj({ inbox: nullableCount, submissions: nullableCount }), timers: nullableCount,
 	unplaced: opt(count), oldest: opt(count),
-	awaiting: opt(CompactAwaitSchema),
 	providerBlock: opt(obj({ blockId: string, recovery: string })),
 	runFailure: opt(obj({ reason: str({ maxLength: 128 }), detail: opt(str({ maxLength: 512 })), reasonTruncated: opt(lit(true)), detailTruncated: opt(lit(true)) })),
 	context: lit("unknown"), omitted: arr(string), detail: StatusDetailCallSchema,
 });
 export const PresentationRefusalSchema = obj({ format: lit("refused"), cause: union([lit("byte-limit"), lit("source")]), reason: string, byteLimit: count });
-export const ReportReceiptAssociationSchema = obj({ producerRunId: id, producerResults: arr(ResultReferenceSchema, { minItems: 1 }) });
 export const RetainedReportReceiptSchema = obj({
 	sourceId: string, requestId: string, ownerId: string, senderIdentity: string, createdAt: number, acknowledged: boolean,
-	replyTo: nullableText, passive: opt(boolean), intervention: opt(ReportReceiptAssociationSchema), boundary: string,
+	replyTo: nullableText, passive: opt(boolean), boundary: string,
 	/** `pending`, `parked` or `terminal` until the recipient admits the row; an unadmitted row is unplaced. */
 	delivery: opt(union([lit("pending"), lit("parked"), lit("terminal"), lit("admitted")])), placement: opt(union([lit("placed"), lit("unplaced")])),
 });

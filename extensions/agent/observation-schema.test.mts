@@ -642,8 +642,8 @@ it("leaves diagnostics for unrelated schemas on the ordinary validator errors", 
 
 it("serializes the host status and roster schemas to their published identities", () => {
 	const hash = (schema: unknown) => createHash("sha256").update(JSON.stringify(schema)).digest("hex");
-	assert.equal(hash(StatusOutputSchema), "f172778ae73ddc09018f68403c693c84a3d91c639a2774b68c9dedaf4e8f5b0b");
-	assert.equal(hash(AgentConversationSummarySchema), "9708e679163a10e256a4854a0d6b5347f8533d28d35efb707647fda100032b04");
+	assert.equal(hash(StatusOutputSchema), "f06a91c6f396261a55e5457e727045102db40c27a26d44b2a213fc0744fcdcf8");
+	assert.equal(hash(AgentConversationSummarySchema), "b17aa145d9ddf70804f1ae1c522d8a90b396b0bca91d3e7a498418cd66e3b3e2");
 	assert.equal(JSON.stringify(ToolOverviewRowSchema).includes('"attention"'), true);
 	assert.equal(JSON.stringify(AgentConversationSummarySchema).includes('"attention"'), false);
 });

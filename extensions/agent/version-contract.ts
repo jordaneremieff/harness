@@ -51,9 +51,7 @@ operations["timer-cancel"] = { ...operations["timer-cancel"], response: "timer-c
 operations.place = { request: "place/2.1.0", response: "place/2.2.0" };
 // A spawn, resolve or place result embeds the task-submit response of its prompt admission.
 for (const method of ["spawn", "resolve-agent"]) operations[method] = { ...operations[method], response: `${method}/2.1.0` };
-operations.receipts = { request: "receipts/2.0.0", response: "receipts/2.0.0" };
-for (const method of ["await-state", "await-release"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
-operations["await-state"] = { request: "await-state/1.1.0", response: "await-state/1.1.0" };
+operations.receipts = { request: "receipts/3.0.0", response: "receipts/3.0.0" };
 operations["profile-list"] = { ...operations["profile-list"], response: schemaId(ProfiledListOutputSchema) };
 operations["profile-read"] = { ...operations["profile-read"], response: schemaId(AgentProfileSchema) };
 operations["profile-update"] = { ...operations["profile-update"], response: schemaId(ProfileUpdateSchema) };

@@ -143,39 +143,46 @@ async function writeNotice(tx: Tx, ownerId: string, senderIdentity: string, sour
 	await storeDeliveryRow(tx, "report", { sourceId, requestId: sourceId, ownerId, senderIdentity, message, replyTo: null, ...(passive ? { passive } : {}), acknowledged: false, createdAt: now }, true);
 }
 
+type NoticeContext = { readonly tx: Tx; readonly conversationId: ConversationId; readonly state: UnplacedInputsState; readonly recipient: string; readonly now: number; readonly step: string };
+
+function plural(count: number): string {
+	return `${count} admitted input${count === 1 ? "" : "s"}`;
+}
+
+/** Mark every queued row of the sender; write the notice unless an earlier row of that sender already produced it. */
+async function noticeSender(notice: NoticeContext, row: UnplacedInput): Promise<void> {
+	const { state, recipient } = notice;
+	const own = state.inputs.filter((input) => input.sender === row.sender);
+	const repeat = own.some((input) => input.noticed);
+	for (const input of own) input.noticed = true;
+	if (repeat || row.sender === "" || row.sender === recipient) return;
+	const message = `Unplaced input notice: ${recipient} did not place ${plural(own.length)} from you for more than 5 minutes (oldest admitted ${new Date(row.admittedAt).toISOString()}, request ${row.requestId}). Current step: ${notice.step}. The recipient places queued inputs at the end of its current tool round; nothing was withdrawn.`;
+	await writeNotice(notice.tx, row.sender, recipient, `unplaced:${notice.conversationId}:${row.requestId}`, message, row.class === "thread-notice", notice.now);
+}
+
+/** One notice for each reply recipient of the current run's routed requests that is not a noticed sender. */
+async function noticeRequesters(notice: NoticeContext): Promise<void> {
+	const { tx, conversationId, state, recipient } = notice;
+	const run = (await tx.doc(LiveDoc, conversationId)).run;
+	const requesters = (await runRequesters(tx, conversationId)).filter((requester) => requester !== recipient && !state.inputs.some((input) => input.sender === requester && input.noticed));
+	if (requesters.length === 0) return;
+	const oldest = Math.min(...state.inputs.map((input) => input.admittedAt));
+	const message = `Unplaced input notice: ${recipient}, which serves your request, did not place ${plural(state.inputs.length)} for more than 5 minutes (oldest admitted ${new Date(oldest).toISOString()}). Current step: ${notice.step}. The recipient places queued inputs at the end of its current tool round.`;
+	for (const requester of requesters) await writeNotice(tx, requester, recipient, `unplaced:${conversationId}:run:${run?.taskId ?? 0}`, message, false, notice.now);
+}
+
 /**
  * Notify once for each sender whose explicit input stayed queued for the notice period, and once for each requester of
  * the current run that is not such a sender. Every other due row is marked without a notice.
  */
 async function noticeDue(tx: Tx, conversationId: ConversationId, state: UnplacedInputsState, now: number, maxAttempts: number): Promise<void> {
 	const due = state.inputs.filter((input) => !input.noticed && input.admittedAt + UNPLACED_NOTICE_MS <= now);
-	if (due.length === 0) return;
-	const recipient = state.recipient ?? String(conversationId);
-	let step: string | undefined;
-	let explicit = false;
-	const oldest = Math.min(...state.inputs.map((input) => input.admittedAt));
-	for (const row of due) {
-		if (row.noticed) continue;
-		if (!EXPLICIT_CLASSES.has(row.class)) { row.noticed = true; continue; }
-		explicit = true;
-		const own = state.inputs.filter((input) => input.sender === row.sender);
-		const repeat = own.some((input) => input.noticed);
-		for (const input of own) input.noticed = true;
-		if (repeat || row.sender === "" || row.sender === recipient) continue;
-		step ??= await currentStep(tx, conversationId, maxAttempts);
-		await writeNotice(tx, row.sender, recipient, `unplaced:${conversationId}:${row.requestId}`,
-			`Unplaced input notice: ${recipient} did not place ${own.length} admitted input${own.length === 1 ? "" : "s"} from you for more than 5 minutes (oldest admitted ${new Date(row.admittedAt).toISOString()}, request ${row.requestId}). Current step: ${step}. The input${own.length === 1 ? " stays" : "s stay"} queued and the recipient places ${own.length === 1 ? "it" : "them"} at the end of its current tool round; nothing was withdrawn.`,
-			row.class === "thread-notice", now);
-	}
-	if (!explicit) return;
-	const run = (await tx.doc(LiveDoc, conversationId)).run;
-	for (const requester of await runRequesters(tx, conversationId)) {
-		if (requester === recipient || state.inputs.some((input) => input.sender === requester && input.noticed)) continue;
-		step ??= await currentStep(tx, conversationId, maxAttempts);
-		await writeNotice(tx, requester, recipient, `unplaced:${conversationId}:run:${run?.taskId ?? 0}`,
-			`Unplaced input notice: ${recipient}, which serves your request, did not place ${state.inputs.length} admitted input${state.inputs.length === 1 ? "" : "s"} for more than 5 minutes (oldest admitted ${new Date(oldest).toISOString()}). Current step: ${step}. The inputs stay queued until the end of its current tool round.`,
-			false, now);
-	}
+	const explicit = due.filter((input) => EXPLICIT_CLASSES.has(input.class));
+	for (const row of due) if (!EXPLICIT_CLASSES.has(row.class)) row.noticed = true;
+	if (explicit.length === 0) return;
+	const notice: NoticeContext = { tx, conversationId, state, recipient: state.recipient ?? String(conversationId), now, step: await currentStep(tx, conversationId, maxAttempts) };
+	for (const row of explicit) if (!row.noticed) await noticeSender(notice, row);
+	await noticeRequesters(notice);
 }
 
 /** One background task for each conversation; it ends when no queued row waits for its notice time. */

@@ -7,18 +7,7 @@ const ExecutionSelectionDoc = defineDocFamily<{ input?: string; selection?: Exec
 import { launchIndependentCommand } from "./independent-launch.ts";
 
 function controlRequestId(params: Readonly<Record<string, unknown>>): string { return typeof params.requestId === "string" ? params.requestId : randomUUID(); }
-async function nativeResult(host: DurableHost, reference: ResultReference, context: Context): Promise<unknown> {
-	const submission = await host.harness.submission(reference.submissionId as SubmissionId, context);
-	if (submission === undefined) throw new Error("The native input is not retained");
-	const status = await submission.status(context);
-	if (status.type !== "input" || host.identity(status.conversationId) !== reference.sessionId || (reference.requestId !== undefined && reference.requestId !== status.requestId)) throw new Error("The exact native result does not identify this conversation's admitted input");
-	return host.wait(submission.id, context);
-}
 import type { Context } from "@earendil-works/chord/context";
-import type { SubmissionId } from "@earendil-works/pi-durable";
-import type { ResultReference } from "./result-schema.ts";
-import type { ProducerAwaitFact } from "./await-facts.ts";
-import { observeProducerAwait } from "./await-producer-observer.ts";
 import { collaborationStorage } from "./collaboration-contract.ts";
 import { projectCollaboration } from "./collaboration.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -416,19 +405,6 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		try { return await foreignControl(method, params, sessionId, context); }
 		finally { if (ADMITTING_METHODS.has(method)) activeAdmissions--; activeRequests--; scheduleRecoveryMarker(); notifyActivity(); }
 	}
-	async function observeAwaitProducer(params: Record<string, unknown>, context: Context): Promise<unknown> {
-		const sessionId = String(params.sessionId);
-		if (typeof params.publish !== "function") throw new Error("Producer observation requires an in-process callback");
-		const publish = params.publish as (fact: ProducerAwaitFact) => Promise<void>;
-		if (storageIdOf(sessionId) === metadata.storageId) return observeProducerAwait(sessionId, async () => await host.request("await-state", { sessionId, results: params.results }, context) as import("./await-facts.ts").ProducerState, async (changed) => onStoredCommit(host.harness, (publication) => { if (publication.changes.length) changed(); }), publish, context);
-		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
-		try {
-			const client = await manager.connectNative(sessionId);
-			const subscribe = client.subscribeChanges?.bind(client);
-			if (subscribe === undefined) throw new Error("Producer host has no commit observation capability");
-			return await observeProducerAwait(sessionId, async () => await client.request("await-state", { sessionId, ...(params.results === undefined ? {} : { results: params.results }) }, { signal: context.abortSignal }) as import("./await-facts.ts").ProducerState, (changed) => subscribe(changed, context.abortSignal), publish, context, client.onClose.bind(client));
-		} finally { await manager.close(); }
-	}
 	const readStoragePage = async (params: Record<string, unknown>, context: Context): Promise<unknown> => {
 		const input = storageStatusPageInput(params);
 		if (input.storageId === metadata.storageId) return request("status", { ...input }, controlRequestId(params), context.abortSignal);
@@ -436,8 +412,6 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		try { return await manager.status(input); } finally { await manager.close(); }
 	};
 	const dispatchResolved = async (method: Parameters<AgentControlDispatch>[0], params: Record<string, unknown>, context: Context = BACKGROUND_CONTEXT): Promise<unknown> => {
-		if (method === "await-native") return nativeResult(host, params.result as ResultReference, context);
-		if (method === "observe-producer-await") return observeAwaitProducer(params, context);
 		if (method === "report") return request("report", { ...params, ownerId: params.sessionId }, controlRequestId(params));
 		if (["collaboration-list", "collaboration-read"].includes(method)) return collaborationObservation(method, params);
 		if (typeof params.threadId === "string") params.sessionId = collaborationStorage(params.threadId);

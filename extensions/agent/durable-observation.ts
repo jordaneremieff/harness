@@ -27,11 +27,9 @@ import { AgentMetaDoc, settleDeliveries, type AgentDeliveryState, type DeliveryR
 import { snapshotDeliveryState, deliveryState, latestReceipt, migrateDeliveryStore, retainedReceipt, receiptReferencePage, snapshotReceipt } from "./delivery-store.ts";
 import type { AnswerContinuation, ReceiptGroup } from "./observation-schema.ts";
 import { timerStatusRows } from "./durable-timers.ts";
-import { readAwaitFact } from "./await-observation.ts";
 import { readUnplacedSummary } from "./unplaced-inputs.ts";
 import { snapshotProviderBlock, snapshotInputProviderBlock, snapshotInputRecovery, readProviderBlock, readInputProviderBlock, readInputRecovery } from "./provider-block.ts";
 import { modelFailureText, PROVIDER_BLOCK_ERROR, type ProviderBlockFact } from "./provider-block-facts.ts";
-import type { AwaitFact } from "./await-facts.ts";
 import type { CommunicationView } from "./communication.ts";
 import { captureCommunicationReader, type CapturedCommunicationReader } from "./communication-observation.ts";
 import { TASK_SENDER_ENTRY_KIND } from "./task-senders.ts";
@@ -125,7 +123,6 @@ export interface ConversationSummary {
 export type DurableTextRole = "user" | "assistant" | "toolResult" | "system";
 
 export interface ConversationStatus extends ConversationSummary {
-	readonly awaiting?: AwaitFact;
 	readonly providerBlock?: ProviderBlockFact;
 	readonly cwd?: string;
 	readonly lastText: string | null;
@@ -744,11 +741,9 @@ export async function readConversationStatus(
 	]);
 	const liveTaskIds = new Set(inspection.tasks.map((task) => Number(task.record.id)));
 	const unplaced = await readUnplacedSummary(harness, conversationId, context);
-	const awaiting = frozenObservations.has(harness) ? await readAwaitFact({ harness, context }, storageId, conversationId) : await harness.commit((tx) => readAwaitFact(tx, storageId, conversationId), context);
 	const providerBlock = frozenObservations.has(harness) ? await snapshotProviderBlock(harness, conversationId, context) : await harness.commit((tx) => readProviderBlock(tx, conversationId), context);
 	return {
 		...(providerBlock === undefined ? {} : { providerBlock }),
-		...(awaiting === undefined ? {} : { awaiting }),
 		...summary,
 		...optionalParam("cwd", agent.cwd ?? options.cwd),
 		lastText: messageTextOf(newest.items[0]),
@@ -1087,7 +1082,7 @@ async function dashboardSummary(
 	const replyText = latestReplyOf(entries);
 	const liveExtras = await dashboardLiveExtras(harness, record, live, entries, options, context);
 	const error = await dashboardError(harness, record.id, state, receipt, entries, options.storage, context, live?.runFailure);
-	const awaiting = frozenObservations.has(harness) ? await readAwaitFact({ harness, context }, storageId, record.id) : await harness.commit((tx) => readAwaitFact(tx, storageId, record.id), context);
+	const unplaced = await readUnplacedSummary(harness, record.id, context);
 	const row: AgentConversationSummary = {
 		id: durableIdentity(storageId, record.id === 1 ? undefined : record.id),
 		storageId,
@@ -1104,7 +1099,8 @@ async function dashboardSummary(
 		...(replyText === undefined ? {} : { latestReply: replyText }),
 		...(error === undefined ? {} : { error }),
 		...liveExtras,
-		...(awaiting === undefined ? {} : { awaiting }),
+		unplaced: unplaced.unplaced,
+		...(unplaced.oldestAdmittedAt === undefined ? {} : { oldest: Math.max(0, Math.round((options.now ?? Date.now()) - unplaced.oldestAdmittedAt)) }),
 		toolCalls: countToolCalls(entries),
 	};
 	options.modelEvidence?.observe(record.id, row, usage, entries);

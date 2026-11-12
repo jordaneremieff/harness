@@ -29,14 +29,12 @@ import { ChildCapacityReports, childContinuityFact, continuityLines, type Planni
 import { THREAD_NOTICE_ENTRY_KIND, threadNoticeRequestHooks } from "./thread-notice-request.ts";
 import type { ProviderRetryNotice } from "./provider-block.ts";
 import { readInputProviderBlock, initializeProviderControl, reconcileProviderControls } from "./provider-block.ts";
-import { canonicalIdentity } from "./native-identity.ts";
 import { storageStatusCoverage, storageStatusScanInput } from "./storage-status.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { placeLeftoverWrites, StrandedInputRecovery } from "./stranded-inputs.ts";
 import { admittedResult } from "./result-reference.ts";
 import { ResultReferenceSchema, type ResultReference } from "./result-schema.ts";
 import type { InputProvenance } from "./awaited-results.ts";
-import { ownAwaitFact, producerRetryFact, releaseAwait } from "./await-observation.ts";
 import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
 import { AwaitInputSuppressed, richSubmitConversation } from "./durable-controls.ts";
 import { modelFailureText } from "./provider-block-facts.ts";
@@ -49,9 +47,9 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { ModelEvidenceCollector } from "./model-evidence.ts";
 import { isInputClass, isInputKind, type InputClass } from "./input-entry.ts";
-import { Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type GenerationHooks, type HarnessInspection, type HarnessOptions, type ModelRef, type Submission, type SubmissionRecord, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
+import { Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, type AgentChange, type Conversation, type ConversationId, type EntryId, type GenerationHooks, type HarnessInspection, type HarnessOptions, type ModelRef, type Submission, type SubmissionRecord, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { acknowledgeDeliveries, acknowledgeReports, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
+import { acknowledgeDeliveries, acknowledgeReports, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
 import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseInspectParams, readConversationList, readConversationSnapshotPage, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
 import { LiveObservationService, type ObservationScope } from "./live-observation.ts";
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
@@ -71,6 +69,9 @@ export type DurableCommandHost = DurableContributionHost;
 
 /** One command a Durable contribution registers for the `command` request. */
 export type DurableHostCommand = DurableCommand;
+
+/** A selected result: a settled outcome, or the committed status of an input that has no answer yet. */
+type SelectedOutcome = Omit<DurableRunOutcome, "usage"> | (Pick<DurableRunOutcome, "submissionId" | "conversationId" | "requestId" | "entryId"> & { readonly status: "queued" | "placed" });
 
 export interface DurableHostOptions {
 	/** SQLite file this host owns for its lifetime. The caller owns the writer claim. */
@@ -247,7 +248,6 @@ export class DurableHost {
 	private readonly defaultCwd: string | undefined;
 	private readonly registry: HarnessOptions["registry"];
 	private readonly retryMaxAttempts: number | undefined;
-	private readonly retryCeiling: () => number;
 	private readonly now: () => number;
 	private deliveryError: string | undefined;
 	private communicationDiagnostic: "retention-unavailable" | "invalid-envelope" | undefined;
@@ -256,7 +256,7 @@ export class DurableHost {
 	private recoveryError: ((error: unknown) => void) | undefined;
 	private requestRelease: DurableHostOptions["requestRelease"];
 
-	private constructor(harness: Harness, storage: Storage, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined, settings: HarnessOptions["settings"], now: () => number) {
+	private constructor(harness: Harness, storage: Storage, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined, now: () => number) {
 		this.harness = harness;
 		this.storage = storage;
 		this.storageId = storageId;
@@ -265,7 +265,6 @@ export class DurableHost {
 		this.storagePath = storagePath;
 		this.registry = registry;
 		this.retryMaxAttempts = retryMaxAttempts;
-		this.retryCeiling = () => { const retry = { ...DEFAULT_RETRY_POLICY, ...(typeof settings === "function" ? settings() : settings)?.retry }; return retry.enabled ? retry.maxRetries + 1 : 1; };
 		this.now = now;
 		const commandMap = new Map<string, DurableHostCommand>();
 		if (Array.isArray(commands)) for (const command of commands as readonly DurableHostCommand[]) commandMap.set(command.name, command);
@@ -401,7 +400,7 @@ export class DurableHost {
 			await reconcileProfiles(harness, options.storageId, context, report);
 			await reconcileProviderControls(harness, context);
 			providerModels.bind();
-			const host = new DurableHost(harness, storage, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, options.settings, now);
+			const host = new DurableHost(harness, storage, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, now);
 			host.requestRelease = options.requestRelease;
 			host.providerModels = providerModels;
 			host.continuity = continuity;
@@ -554,8 +553,6 @@ export class DurableHost {
 				});
 			case "receipts":
 				return this.receiptsRequest(params, requestContext);
-			case "await-state": return this.awaitStateRequest(params, requestContext);
-			case "await-release": return this.awaitReleaseRequest(params, requestContext);
 			case "report":
 				return this.reportRequest(params, requestContext);
 			case "acknowledge":
@@ -627,21 +624,6 @@ export class DurableHost {
 		};
 	}
 
-	private async awaitStateRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
-		const target = await this.target(params, context);
-		const results = params?.results ?? [];
-		const identity = canonicalIdentity(this.storageId, target.id);
-		if (!Array.isArray(results) || results.length > 16 || results.some((result) => !matchesSchema(ResultReferenceSchema, result) || result.sessionId !== identity)) throw new Error("Invalid producer result references");
-		return this.harness.commit(async (tx) => {
-			const awaiting = await ownAwaitFact(tx, target.id);
-			const execution = await producerRetryFact(tx, target.id, results, this.retryCeiling());
-			return { ...(awaiting === undefined ? {} : { awaiting }), ...(execution === undefined ? {} : { execution }) };
-		}, context);
-	}
-	private async awaitReleaseRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
-		const target = await this.target(params, context);
-		return this.harness.commit((tx) => releaseAwait(tx, this.storageId, target.id, requestRequiredId(params?.expectedRunId, "expectedRunId")), context);
-	}
 	private async taskSubmitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const origin = this.originParam(params);
 		if (origin === undefined) throw new TypeError("task-submit requires an explicit origin");
@@ -761,22 +743,25 @@ export class DurableHost {
 		const intent = status.requestId === undefined ? undefined : await snapshotIntent(this.harness, status.conversationId, status.requestId, context);
 		if (intent?.ownerId !== ownerId) throw new Error("The selected result is not addressed to this recipient");
 	}
-	private async resultOutcome(submission: Submission, metadataOnly: boolean, context: Context): Promise<Omit<DurableRunOutcome, "usage">> {
+	/** The committed state of the selected input; a queued or placed input returns its status without an answer. */
+	private async resultOutcome(submission: Submission, metadataOnly: boolean, context: Context): Promise<SelectedOutcome> {
+		const status = await submission.status(context);
+		if (status.type !== "input") throw new Error("The selected result is not an input");
+		const common = { submissionId: status.id, conversationId: status.conversationId, ...(status.requestId === undefined ? {} : { requestId: status.requestId }), ...(status.entry === undefined ? {} : { entryId: status.entry }) };
+		if (status.status === "queued" || status.status === "placed") return { ...common, status: status.status };
 		if (!metadataOnly) {
 			const { usage: _storageUsage, ...outcome } = await readOutcome(this.harness, submission.id, context);
 			return outcome;
 		}
-		const settled = await submission.wait(context);
-		if (settled.type !== "input") throw new Error("The selected result is not an input");
-		const common = { submissionId: settled.id, conversationId: settled.conversationId, ...(settled.requestId === undefined ? {} : { requestId: settled.requestId }), ...(settled.entry === undefined ? {} : { entryId: settled.entry }) };
-		if (settled.status === "done") return { ...common, status: "done", answerEntryId: settled.answer };
-		const providerBlock = await this.harness.commit((tx) => readInputProviderBlock(tx, settled.id), context);
-		return { ...common, status: "unanswered", reason: modelFailureText(settled.reason, settled.detail, providerBlock), ...(providerBlock === undefined ? {} : { providerBlock }) };
+		if (status.status === "done") return { ...common, status: "done", answerEntryId: status.answer };
+		const providerBlock = await this.harness.commit((tx) => readInputProviderBlock(tx, status.id), context);
+		return { ...common, status: "unanswered", reason: modelFailureText(status.reason, status.detail, providerBlock), ...(providerBlock === undefined ? {} : { providerBlock }) };
 	}
 	private async selectedReceipt(reference: ResultReference, ownerId: string, context: Context, receiptCursor?: string, metadataOnly = false): Promise<unknown> {
 		const { submission, status } = await this.resultSubmission(reference, context);
 		await this.requireResultRecipient(status, ownerId, context);
 		const outcome = await this.resultOutcome(submission, metadataOnly, context);
+		if (outcome.status === "queued" || outcome.status === "placed") return { outcome };
 		await reconcileDeliveries(this.harness, context);
 		const selected = await snapshotReceipt(this.harness, status.id, context);
 		if (selected === undefined || selected.ownerId !== ownerId) return { outcome };
@@ -785,11 +770,11 @@ export class DurableHost {
 		return { outcome, delivery, receiptGroup };
 	}
 
+	/** Read the receipts and reports that the owner did not acknowledge yet; the read never waits for a new one. */
 	private async receiptsRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const ownerId = requestRequiredString(params, "ownerId");
 		if (params?.result !== undefined) return this.selectedReceipt(params.result as ResultReference, ownerId, context, requestString(params, "receiptCursor"), requestBoolean(params, "metadataOnly") ?? false);
-		const wait = requestBoolean(params, "wait") ?? false;
-		const deliveries = wait ? await waitForReceipts(this.harness, ownerId, context, this.lifecycle.signal) : await undeliveredForOwner(this.harness, ownerId, context);
+		const deliveries = await undeliveredForOwner(this.harness, ownerId, context);
 		const pending = await pendingDeliveries(this.harness, ownerId, context);
 		const usages = new Map<ConversationId, unknown>();
 		const receipts = [];
