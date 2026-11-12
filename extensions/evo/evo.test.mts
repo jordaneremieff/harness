@@ -487,12 +487,16 @@ test("the delivery workflow routes detailed mechanisms to reachable owners", () 
 		if (anchor) assert.ok(headingAnchors(target).has(anchor), `${path}#${anchor} resolves`);
 	}
 	assertContracts(deliveryWorkflow, [
-		["await owner", /\[result and await contract\]\(\.\.\/extensions\/agent\/README\.md#await-exact-peer-results\)/],
+		["declared work owner", /A native agent uses \[declared background work\]\(\.\.\/extensions\/agent\/README\.md#declared-background-work\)/],
+		["result owner", /\[result contract\]\(\.\.\/extensions\/agent\/README\.md#read-peer-results\)/],
+		["supervision owner", /\[supervision guidance\]\(\.\.\/skills\/delegate\/SKILL\.md#6-supervise-without-polling\)/],
+		["native work declaration", /calls `agent_work` with `action: "continue"`.*ends with a state note/],
+		["ordinary event delivery", /An ordinary session has no `agent_work` tool.*ends its turn with a short state note.*Results arrive as events at its next tool boundary or start its next turn; it never polls/],
 		["recovery owner", /\[Agent recovery and delivery\]\(\.\.\/extensions\/agent\/README\.md#recovery-and-delivery\)/],
 		["host refresh owner", /\[storage host retirement\]\(pi-durable-harness\.md#storage-host-retirement\)/],
-		["current owner contract", /Apply the contract you read, not a remembered default/],
+		["current owner contract", /Read the Agent \[result contract\].*for immediate result reads, answer continuations and receipt-reference pages/],
 	]);
-	assert.doesNotMatch(deliveryWorkflow, /releaseOnProviderRetry|minAttempt/);
+	assert.doesNotMatch(deliveryWorkflow, /agent_await|await-exact-peer-results|releaseOnProviderRetry|minAttempt/);
 });
 
 test("the session-history reference separates source authority, expertise, and current tasks", () => {
