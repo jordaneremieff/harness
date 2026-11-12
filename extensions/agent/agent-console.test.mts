@@ -60,7 +60,7 @@ it("the message field takes every letter and slash text literally for the select
 	assert.equal(f.ui.focus.region, "composer");
 	f.ui.render(80);
 	f.ui.handleInput("/help n a ? !literal");
-	clickText(f, "Steer at next step ⇄");
+	clickText(f, "Correction at next step ⇄");
 	assert.equal(agentState(f.state, "storage:1").mode, "followUp");
 	assert.equal(f.ui.focus.region, "composer", "choosing the delivery effect keeps the message field");
 	f.ui.handleInput("\r");
@@ -80,7 +80,7 @@ it("refused admission retains the draft and disposition", async () => {
 	await turn();
 	f.ui.handleInput("\r");
 	f.ui.handleInput("retained");
-	clickText(f, "Steer at next step ⇄");
+	clickText(f, "Correction at next step ⇄");
 	f.ui.handleInput("\r");
 	await turn();
 	const state = agentState(f.state, "storage:1");
@@ -125,7 +125,7 @@ for (const state of ["working", "idle", "failed"] as const) {
 				for (const fact of ["Example model", "[high]", "16%", "160/1.0k", "~$0.42"]) assert.equal(right.split(fact).length - 1, 1, right);
 				const caption = pane.find((line) => line.includes("╭─")) ?? "";
 				assert.match(caption, /╭─ To Recipient /);
-				assert.match(caption, state === "working" ? /Steer at next step ⇄/ : /^(?!.*(Steer|Follow-up)).*$/u, "only a working agent's message field names a delivery choice");
+				assert.match(caption, state === "working" ? /Correction at next step ⇄/ : /^(?!.*(Correction|New work)).*$/u, "only a working agent's message field names a delivery choice");
 				assert.doesNotMatch(caption, /Working|Idle|Failed|model|high|%|\$|hit|ctx| in| out/);
 				const status = "Example model [high] │ ██░░░░░░░░ 16% │ 160/1.0k │ ~$0.42 │ ● 21% hit";
 				assert.equal(right.split("21% hit").length - 1, width - paneX > visibleWidth(status) ? 1 : 0);
@@ -139,13 +139,13 @@ it("the delivery effect and a long draft stay on the message field without other
 		await turn(); await turn();
 		const state = agentState(f.state, "one");
 		f.ui.handleInput("\r");
-		clickText(f, "Steer at next step ⇄");
+		clickText(f, "Correction at next step ⇄");
 		updateDraft(state, Array.from({ length: 30 }, (_, index) => `draft ${index}`).join("\n"));
 		const caption = () => visible(f.ui.render(f.tui.terminal.columns)).slice(1).find((line) => line.includes("╭─")) ?? "";
-		assert.match(caption(), /Follow-up after answer/); assert.match(caption(), /↑ \d+ lines/);
+		assert.match(caption(), /New work at next step/); assert.match(caption(), /↑ \d+ lines/);
 		assert.doesNotMatch(caption(), /model|high|ctx|%|\$| in| out/);
 		f.resize(60, 30);
-		assert.match(caption(), /Follow-up after answer/);
+		assert.match(caption(), /New work at next step/);
 		assert.equal(state.mode, "followUp"); assert.equal(state.draft.split("\n").length, 30);
 	} finally { f.ui.dispose(); }
 });

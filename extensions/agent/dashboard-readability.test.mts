@@ -101,7 +101,7 @@ it("live usage sits under the target header and receipts stay on the message fie
 		assert.match(pane[model] ?? "", /16%.*160\/1\.0k.*~\$0\.42.*21% hit/);
 		assert.match(pane[model + 1] ?? "", /\/work/);
 		const caption = lines.find((line) => line.includes("╭─ To one"));
-		assert.match(caption ?? "", /Steer at next step/);
+		assert.match(caption ?? "", /Correction at next step/);
 		assert.doesNotMatch(caption ?? "", /%|\$|model|high|ctx/);
 		assert.ok(lines.some((line) => line.includes("╰─ Message admitted")), "the receipt is on the message field's bottom border");
 	} finally { f.ui.dispose(); }

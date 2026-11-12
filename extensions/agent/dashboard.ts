@@ -138,13 +138,14 @@ const HELP = [
 	"l hides or shows the list. Drag the list divider or the message field's grip to resize; double-click a handle to reset it.",
 	"",
 	"Selected agent",
-	"s stops current work, f switches the next message between steer and follow-up, w releases an await, r reconnects a stopped host.",
+	"s stops current work, f switches the next message between a correction (steer) and new work (follow-up), w releases an await, r reconnects a stopped host.",
 	"c configures name, model and reasoning; k shows the live tasks. x lists fork, rewind, compact, reset, schedules, commands, profile and details.",
 	"Forms open beside the conversation and bind to the agent they opened for; selecting another agent closes them without sending anything.",
 	"",
 	"Messages",
 	"Enter sends. The newline keys (Shift+Enter or Ctrl+J by default) add a line. In the message field every letter, slash and bang is text.",
-	"A working agent gets the message at its next step (steer) unless f, or a click on the effect above the message field, switches to follow-up.",
+	"A working agent reads the message at its next step, when its current tool calls end: as a correction of its current work (steer),",
+	"or as new work for the same run (follow-up) after f or a click on the effect above the message field.",
 	"Ctrl+X makes the message field taller, and again shorter.",
 	"",
 	"Reading",
@@ -1325,7 +1326,7 @@ export class AgentDashboard implements Component, Focusable {
 		if (working) actions.push({ id: "abort", label: "Stop", key: "s", short: "stop", primary: true, tone: "danger", description: "Stop current work; history stays", run: () => this.openAction("abort") });
 		if (working) {
 			const steer = this.console?.state.mode !== "followUp";
-			actions.push({ id: "mode", label: steer ? "Send as follow-up" : "Send as steer", key: "f", short: steer ? "follow-up" : "steer", primary: true, description: steer ? "The next message waits for the current answer" : "The next message applies at the next step", run: () => this.toggleMode() });
+			actions.push({ id: "mode", label: steer ? "Send as follow-up" : "Send as steer", key: "f", short: steer ? "follow-up" : "steer", primary: true, description: steer ? "The next message is new work for this run, read at the next step" : "The next message corrects the current work, read at the next step", run: () => this.toggleMode() });
 		}
 		if (row.awaiting !== undefined) actions.push({ id: "await-release", label: "Release await", key: "w", short: "release await", primary: true, description: "Return partial results; producers continue", run: () => this.openAction("await-release") });
 		// Reconnect shows in the footer for an agent that needs attention, and stays in More while its observation is lost.
@@ -2278,9 +2279,9 @@ export class AgentDashboard implements Component, Focusable {
 		composer.focused = this.focused && this.region === "composer";
 		this.sizeComposer(console, maxRows);
 		const working = console.row.state === "working";
-		// The delivery effect shows only while it is a choice; an idle agent just receives the message.
-		// It is a fact with a click; `f` in the footer switches it by key.
-		const mode = working ? (console.state.mode === "steer" ? "Steer at next step ⇄" : "Follow-up after answer ⇄") : "";
+		// The class of the message shows only while it is a choice; an idle agent just receives the message.
+		// Both classes place at the agent's next tool boundary. It is a fact with a click; `f` in the footer switches it by key.
+		const mode = working ? (console.state.mode === "steer" ? "Correction at next step ⇄" : "New work at next step ⇄") : "";
 		const receipt = console.state.pending ? "Sending…" : (console.state.receipt ?? "");
 		const caption = `To ${plainLine(agentDisplayName(console.row))}`;
 		const lines = composer.render(width, caption, mode, receipt);

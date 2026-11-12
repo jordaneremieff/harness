@@ -66,7 +66,7 @@ export class AgentConsole {
 	}
 	messageMode(): string {
 		return this.row.state === "working"
-			? this.state.mode === "steer" ? "Steer at next step" : "Follow-up after answer"
+			? this.state.mode === "steer" ? "Correction at next step" : "New work at next step"
 			: "Send";
 	}
 	statusLines(width: number, info?: AgentModelInfo, branch?: string, delegated?: DelegatedFigures): string[] {

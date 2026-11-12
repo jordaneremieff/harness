@@ -233,7 +233,7 @@ for (const [width, height] of [
 				clock.advance(50);
 			await turn();
 				const screen = shown(f);
-				assert.match(screen, busy ? /╭─ To one ─+ Steer at next step ⇄/u : /╭─ To one ─+┄*╮/u);
+				assert.match(screen, busy ? /╭─ To one ─+ Correction at next step ⇄/u : /╭─ To one ─+┄*╮/u);
 				const header = targetHeader(f).join("\n");
 				assert.match(header, busy ? /● Working/u : /Idle/u);
 				assert.doesNotMatch(header, /Stop/u, "the header holds no commands");
@@ -834,7 +834,7 @@ it("a busy live frame updates the header, the list and the message field togethe
 		frame = conversationFrame();
 		changed();
 		const screen = shown(f);
-		assert.match(screen, /Steer at next step ⇄/u);
+		assert.match(screen, /Correction at next step ⇄/u);
 		assert.match(targetHeader(f).join("\n"), /● Working/u);
 		assert.match(shown(f), /model │/u);
 		assert.doesNotMatch(screen, /Done|0 working/u);

@@ -670,7 +670,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				...(name === "steer"
 					? { confirm: "This admits a new direction for the selected agent. Admission does not prove action." }
 					: {}),
-				help: `${sessionHelp} After the session, write your message. ${name === "steer" ? "A busy agent receives the correction at its next step." : "A busy agent receives the message after its current answer."}`,
+				help: `${sessionHelp} After the session, write your message. ${name === "steer" ? "A busy agent reads the correction at its next tool boundary and applies it to its current work." : "A busy agent reads the message at its next tool boundary, as new work for the same run."}`,
 				args: [
 					{ name: "session", complete: "session" },
 					{ name: "message", rest: true },

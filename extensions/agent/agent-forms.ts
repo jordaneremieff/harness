@@ -253,7 +253,7 @@ function scheduleView(host: AgentFormHost, view: ViewHost): OperatorView {
 			{ kind: "area", id: "message", label: "Message", value: draft.message, rows: 4 },
 			{ kind: "text", id: "time", label: "Deadline", value: draft.time, placeholder: "HH:MM local or +30m" },
 			{ kind: "info", id: "at", label: "Delivers", value: (values) => deliveryText(values.time ?? "", Date.now()) },
-			{ kind: "choice", id: "mode", label: "If busy", value: draft.mode, choices: [{ value: "followUp", label: "Follow-up after the answer" }, { value: "steer", label: "Steer at the next step" }] },
+			{ kind: "choice", id: "mode", label: "If busy", value: draft.mode, choices: [{ value: "followUp", label: "New work, read at the next step" }, { value: "steer", label: "Correction, read at the next step" }] },
 		],
 		action: { label: "Schedule" },
 		host: view,

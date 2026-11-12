@@ -152,7 +152,7 @@ it("raw composer grip drag increases rows, preserves its caption and resets on d
 		assert.match(dragged.join("\n"), /Message field 9 rows/);
 		assert.ok(dragged.some((line) => line.includes("━━━")));
 		assert.ok(dragged.some((line) => line.includes("model │")));
-		assert.ok(dragged.some((line) => line.includes("Steer at next step")), "the delivery effect stays on the resized field");
+		assert.ok(dragged.some((line) => line.includes("Correction at next step")), "the delivery effect stays on the resized field");
 		const resetY = render().findIndex((line) => line.includes("┄┄┄"));
 		send(0, 161, resetY); send(0, 161, resetY, true); render(); send(0, 161, resetY); send(0, 161, resetY, true); render();
 		assert.equal(f.state.layout.composerRows, undefined);
