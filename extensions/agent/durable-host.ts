@@ -20,6 +20,12 @@ import { taskInputSender } from "./task-senders.ts";
 import { cancelRequest, readRunScope, stopRun, type ForeignStop } from "./run-control.ts";
 import { ProviderModels } from "./provider-models.ts";
 import { ProviderRetryNotices, ProviderRetryNoticeSchema } from "./provider-notices.ts";
+import { validateContinuityDelivered } from "./continuity-facts.ts";
+import { ContinuityMirror } from "./continuity-mirror.ts";
+import { recordContinuityDelivered } from "./continuity-native.ts";
+import { continuityRequestHooks } from "./continuity-request.ts";
+import { TaskHookReports } from "./task-hook-reports.ts";
+import { ChildCapacityReports, childContinuityFact, continuityLines, type PlanningBudgetLookup } from "./capacity-reports.ts";
 import type { ProviderRetryNotice } from "./provider-block.ts";
 import { readInputProviderBlock, initializeProviderControl, reconcileProviderControls } from "./provider-block.ts";
 import { canonicalIdentity } from "./native-identity.ts";
@@ -42,7 +48,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { ModelEvidenceCollector } from "./model-evidence.ts";
 import { isInputKind } from "./input-entry.ts";
-import { Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type Submission, type SubmissionRecord, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
+import { Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type GenerationHooks, type HarnessInspection, type HarnessOptions, type ModelRef, type Submission, type SubmissionRecord, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { acknowledgeDeliveries, acknowledgeReports, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
 import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseInspectParams, readConversationList, readConversationSnapshotPage, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
@@ -93,6 +99,8 @@ export interface DurableHostOptions {
 	readonly resume?: boolean;
 	/** Resolved generation retry ceiling (`maxRetries + 1`) for dashboard auto-retry health. */
 	readonly retryMaxAttempts?: number;
+	/** Planning budget in context tokens for one exact model, when the operator configured one. A preference, never a limit. */
+	readonly planningBudget?: PlanningBudgetLookup;
 	readonly onReport?: HarnessOptions["onReport"];
 	readonly requestRelease?: () => Promise<{ readonly retiring: boolean; readonly blockers: readonly string[] }>;
 }
@@ -222,6 +230,11 @@ export class DurableHost {
 	private readonly models: Models;
 	private providerModels?: ProviderModels;
 	private providerNotices?: ProviderRetryNotices;
+	private hookReports?: TaskHookReports;
+	private capacityReports?: ChildCapacityReports;
+	private continuity?: ContinuityMirror;
+	private readonly continuityMismatches = new Map<ConversationId, number>();
+	private continuityDiagnostic: ((error: unknown) => void) | undefined;
 	private readonly storage: Storage;
 	private readonly storagePath: string;
 	private readonly lifecycle = new AbortController();
@@ -331,6 +344,14 @@ export class DurableHost {
 		const storage = await openNodeSqliteStorage(options.storagePath);
 		const now = options.now ?? Date.now;
 		const report = (error: unknown): void => options.onReport?.({ kind: "extension_error", extension: "agent", error });
+		let opened: DurableHost | undefined;
+		// The sink's own failure goes to the caller's callback without a task, so retention never feeds itself.
+		const hookReports = new TaskHookReports((error) => {
+			const stopped = new Error("Task hook report retention stopped after a rejected write; reopen the host to resume it.", { cause: error });
+			opened?.reportDeliveryError(stopped);
+			report(stopped);
+		}, now);
+		let continuity: ContinuityMirror | undefined;
 		let harness: Harness;
 		const providerModels = new ProviderModels(options.models, () => harness, options.storageId, now);
 		try {
@@ -346,11 +367,15 @@ export class DurableHost {
 						await initializeProfile(tx, record.id, options.storageId);
 						await initializeProviderControl(tx, record.id);
 					},
-					...(options.onReport === undefined ? {} : { onReport: options.onReport }),
+					onReport: (value) => {
+						hookReports.record(value);
+						options.onReport?.(value);
+					},
 				},
 				context,
 			);
 		} catch (error) {
+			await hookReports.close();
 			try {
 				await storage.close(BACKGROUND_CONTEXT);
 			} catch {
@@ -369,14 +394,26 @@ export class DurableHost {
 					await initializeProfile(tx, conversationId, options.storageId, options.profileSeed);
 				},
 			});
+			// Request hooks read this mirror from memory only, so it must hold every retained fact and head before any act that enables scheduling.
+			continuity = new ContinuityMirror(harness, options.storageId);
+			await continuity.initialize(context);
 			await reconcileProfiles(harness, options.storageId, context, report);
 			await reconcileProviderControls(harness, context);
 			providerModels.bind();
 			const host = new DurableHost(harness, storage, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, options.settings, now);
 			host.requestRelease = options.requestRelease;
 			host.providerModels = providerModels;
+			host.continuity = continuity;
+			host.continuityDiagnostic = report;
+			opened = host;
+			host.hookReports = hookReports;
+			hookReports.bind(harness);
 			host.providerNotices = new ProviderRetryNotices(harness, options.storageId, options.settings, (error) => { host.deliveryError = `Provider retry notice failed: ${error instanceof Error ? error.message : String(error)}`; report(error); }, now);
 			await host.providerNotices.initialize();
+			host.capacityReports = new ChildCapacityReports(harness, options.storageId, () => options.models, options.planningBudget ?? (() => undefined), (error) => {
+				host.reportDeliveryError(new Error(`Child capacity report failed: ${error instanceof Error ? error.message : String(error)}`));
+				report(error);
+			}, now);
 			host.recoveryError = (error) => {
 				host.deliveryError = `Queued-input recovery failed: ${error instanceof Error ? error.message : String(error)}`;
 				report(error);
@@ -386,6 +423,9 @@ export class DurableHost {
 			await host.refreshIdle(context);
 			return host;
 		} catch (error) {
+			await opened?.capacityReports?.close().catch(() => undefined);
+			continuity?.close();
+			await hookReports.close();
 			try {
 				await harness.close(BACKGROUND_CONTEXT);
 			} catch {
@@ -397,6 +437,24 @@ export class DurableHost {
 
 	private foreignStop?: ForeignStop;
 	setForeignStop(stop: ForeignStop): void { this.foreignStop = stop; }
+
+	/** Observed context facts of one producing conversation, as lines for its result delivery. A failed read yields one line and never rejects. */
+	async childContinuityLines(conversationId: ConversationId, unusable: boolean): Promise<string[]> {
+		return continuityLines(await childContinuityFact(this.harness, conversationId, () => this.models, BACKGROUND_CONTEXT), unusable);
+	}
+
+	/**
+	 * Generation hooks that insert the frozen continuity note of the current context head. The
+	 * composition root installs them; they read the mirror that `open` loaded before scheduling.
+	 * A head whose stored message differs from the request gets no note and one diagnostic.
+	 */
+	continuityHooks(): Partial<GenerationHooks> {
+		return continuityRequestHooks(() => this.continuity, (found) => {
+			if (this.continuityMismatches.get(found.conversationId) === found.headId) return;
+			this.continuityMismatches.set(found.conversationId, found.headId);
+			this.continuityDiagnostic?.(new Error(`Continuity note omitted for ${this.identity(found.conversationId)}: context head entry ${found.headId} does not match the request (${found.mismatch}).`));
+		});
+	}
 
 	/** Resume only after the caller installs contributions and model-facing sections. */
 	async resume(context: Context = BACKGROUND_CONTEXT): Promise<void> {
@@ -603,6 +661,13 @@ export class DurableHost {
 		if (providerRetry !== undefined && (!matchesSchema(ProviderRetryNoticeSchema, providerRetry) || providerRetry.fact.execution === undefined)) throw new TypeError("Invalid provider retry notice evidence");
 		const message = messageFrom(params?.message);
 		const requestId = requestRequiredString(params, "requestId");
+		const delivered = params?.deliveredResults;
+		if (delivered !== undefined) validateContinuityDelivered(delivered);
+		// A replayed body admission is deduplicated, and a body that an active wait already returned is
+		// suppressed; in both cases the result reached this conversation, so its delivered facts complete.
+		const complete = async (): Promise<void> => {
+			if (delivered !== undefined) await this.harness.commit((tx) => recordContinuityDelivered(tx, conversation.id, delivered), context);
+		};
 		const submitted = await submitConversation(
 			conversation,
 			{
@@ -620,7 +685,11 @@ export class DurableHost {
 			},
 			context,
 			this.now,
-		);
+		).catch(async (error) => {
+			if (error instanceof AwaitInputSuppressed) await complete();
+			throw error;
+		});
+		await complete();
 		return { ...submitted, identity: this.identity(conversation.id) };
 	}
 
@@ -1073,6 +1142,9 @@ export class DurableHost {
 		this.lifecycle.abort(new DurableHostClosedError());
 		await this.recovery?.close();
 		await this.providerNotices?.close();
+		await this.capacityReports?.close();
+		await this.hookReports?.close();
+		this.continuity?.close();
 		this.providerModels?.close();
 		await this.harness.close(BACKGROUND_CONTEXT);
 	}

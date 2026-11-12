@@ -26,7 +26,7 @@ import { createHash } from "node:crypto";
 import { COMMUNICATION_BODY_BYTES, COMMUNICATION_VALUE_BYTES, communicationSerializedBytes, parseCommunication, parseCommunicationPassive, type Communication } from "./communication.ts";
 import type { InputProvenance } from "./awaited-results.ts";
 import { canonicalIdentity } from "./native-identity.ts";
-import type { ReceiptAssociation, ReceiptReferencePage } from "./result-schema.ts";
+import type { ReceiptAssociation, ReceiptReferencePage, ResultReference } from "./result-schema.ts";
 import { modelFailureText, providerBlockText } from "./provider-block-facts.ts";
 import { opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -379,13 +379,20 @@ function receiptContinuationText(metadata: HostMetadata, receipt: DeliveryReceip
 function receiptFailureText(receipt: DeliveryReceipt, displayReason = receipt.reason): string {
 	return `No answer: ${displayReason ?? "the submission settled unanswered"}${receipt.providerBlock === undefined ? "" : `\n${providerBlockText(receipt.providerBlock)}`}`;
 }
-function receiptFollowText(metadata: HostMetadata, row: ReceiptRow): string {
+/** Every result tuple that this delivered group settles for its recipient, independent of the bounded display references. */
+function deliveredResults(metadata: HostMetadata, row: ReceiptRow): ResultReference[] {
+	return row.receipts.map((receipt) => ({ sessionId: canonicalIdentity(metadata.storageId, receipt.conversationId), submissionId: receipt.submissionId, requestId: receipt.requestId }));
+}
+function receiptUnusable(receipt: DeliveryReceipt): boolean {
+	return receipt.status !== "done" || (receipt.answer ?? "").trim() === "";
+}
+function receiptFollowText(metadata: HostMetadata, row: ReceiptRow, continuity: readonly string[]): string {
 	const receipt = row.receipt;
 	const result =
 		receipt.status === "done"
 			? (receipt.answer ?? "No assistant text.")
 			: receiptFailureText(receipt, row.displayReason);
-	return `Agent result from ${metadata.storageId}:${receipt.conversationId} (${submissionLabel(row)}). Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, receipt)}${receiptGroupContinuationText(row, metadata.storageId)}`;
+	return `Agent result from ${metadata.storageId}:${receipt.conversationId} (${submissionLabel(row)}). Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, receipt)}${receiptGroupContinuationText(row, metadata.storageId)}${continuity.length === 0 ? "" : `\n\n${continuity.join("\n")}`}`;
 }
 
 function reportOptionalDetails(report: DeliveryReport) {
@@ -729,7 +736,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (row.kind === "receipt") {
 			const requestId = receiptRequestId(metadata, row.receipt);
 			const communicationParams = deliveryCommunicationParams(row, host);
-			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row), requestId, provenance: { classification: "automatic" }, ...communicationParams, whenBusy: "followUp" });
+			const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
+			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row, continuity), requestId, provenance: { classification: "automatic" }, ...communicationParams, deliveredResults: deliveredResults(metadata, row), whenBusy: "followUp" });
 			return;
 		}
 		if (!await reportCurrent(row)) return;
@@ -840,7 +848,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 				answer: body.text,
 				...receiptContinuationDetails(metadata, receipt),
 				...receiptGroupContinuation(row, metadata.storageId),
-				...(fallback ? {} : { receiptAssociation: receiptAssociation(metadata, row) }),
+				// An informational copy never settles the recipient's requests, so it carries no delivered tuples.
+				...(fallback ? {} : { receiptAssociation: receiptAssociation(metadata, row), deliveredResults: deliveredResults(metadata, row) }),
 				reason: row.displayReason ?? receipt.reason,
 				...(receipt.providerBlock === undefined ? {} : { providerBlock: receipt.providerBlock }),
 				acknowledged: row.receipts.every((member) => member.acknowledged),
@@ -1047,13 +1056,15 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (row.kind === "receipt") {
 			const requestId = receiptRequestId(metadata, row.receipt);
 			const communicationParams = deliveryCommunicationParams(row, host);
+			const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
 			await connection.request(
 				"submit",
 				{
 					sessionId: owner,
 					provenance: { classification: "automatic" },
 					...communicationParams,
-					message: receiptFollowText(metadata, row),
+					message: receiptFollowText(metadata, row, continuity),
+					deliveredResults: deliveredResults(metadata, row),
 					requestId,
 					whenBusy: "followUp",
 				},

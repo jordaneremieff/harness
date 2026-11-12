@@ -473,6 +473,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			agent: hostAgent(),
 			meta: { name: metadata.name, owner: metadata.ownerId }, profileSeed: catalog.read(metadata.storageId).view?.profileSeed, commands: services.commands, contributionHost: services.contributionHost,
 			resume: false, onReport: (report) => { process.stderr.write(`Durable task: ${report.kind}: ${String(report.error)}\n`); },
+			planningBudget: (provider, modelId) => readAgentPreferences(metadata.agentDir).document?.preferences?.contextBudgetTokens?.[`${provider}/${modelId}`],
 			requestRelease: () => requestRelease(),
 		});
 		try {
@@ -486,6 +487,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			});
 			const requestRoutes = new RequestRouteState();
 			services.registry.install({ name: "agent.request-context", sections: [requestContextSection(opened.harness)], hooks: [hook(GenerationTask, requestContextHooks(opened.harness, requestRoutes))] });
+			services.registry.install({ name: "agent.continuity", hooks: [hook(GenerationTask, opened.continuityHooks())] });
 			unsubscribeClose?.();
 			unsubscribeClose = opened.harness.subscribeClose(() => {
 				activityGeneration++;

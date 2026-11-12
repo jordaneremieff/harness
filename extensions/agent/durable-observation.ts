@@ -34,6 +34,7 @@ import type { AwaitFact } from "./await-facts.ts";
 import type { CommunicationView } from "./communication.ts";
 import { captureCommunicationReader, type CapturedCommunicationReader } from "./communication-observation.ts";
 import { TASK_SENDER_ENTRY_KIND } from "./task-senders.ts";
+import { TASK_HOOK_REPORT_KIND } from "./task-hook-reports.ts";
 
 /** Byte/unit bounds used by every projection in this module. */
 export const ENTRY_PREVIEW_UNITS = 1200;
@@ -1069,7 +1070,7 @@ async function dashboardSummary(
 		harness.conversation(record.id, context),
 	]);
 	const agent = conversation ? await conversation.agent(context) : undefined;
-	const entries = conversation ? (await activeEntries(conversation, context)).filter((entry) => entry.kind !== "agent.communication" && entry.kind !== TASK_SENDER_ENTRY_KIND) : [];
+	const entries = conversation ? (await activeEntries(conversation, context)).filter((entry) => entry.kind !== "agent.communication" && entry.kind !== TASK_SENDER_ENTRY_KIND && entry.kind !== TASK_HOOK_REPORT_KIND) : [];
 	const receipt = currentReceipt(delivery, record.id, entries);
 	const state = dashboardState(live?.run !== undefined, entries, receipt, live?.runFailure);
 	const cost = usageCost(usage);
