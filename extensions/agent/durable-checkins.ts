@@ -137,6 +137,15 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 			const conversation = await runtime.conversation(input.conversationId as ConversationId, context);
 			if (conversation === undefined) throw new Error("check-in conversation is absent");
 			const message = typeof input.message === "string" ? input.message : input.message.map((part) => part.type === "image" ? { type: "image" as const, data: part.data, mimeType: part.mimeType } : { type: "text" as const, text: part.text });
+			// A busy-reject input that was never admitted stays refused; the check-in never admits it later.
+			if (input.whenBusy === "reject") {
+				let refused = false;
+				await runtime.commit(async (tx) => {
+					refused = await tx.submissionByRequest(input.conversationId as ConversationId, input.requestId) === undefined;
+					return refused ? { status: "terminal", outcome: { status: "completed", result: null } } : undefined;
+				}, context);
+				if (refused) return;
+			}
 			const submission = await conversation.submit({ type: "input", content: message, requestId: input.requestId, whenBusy: placementMode(input.whenBusy), entry: inputEntry(input.origin, input.requester, { class: sentInputClass(input.origin, input.whenBusy), ...(input.requester === undefined ? {} : { sender: input.requester }), requestId: input.requestId }) }, context);
 			const status = await submission.status(context);
 			const deadlines = (await runtime.ownedTasks(context)).filter((child) => child.kind === CheckInDeadlineTask.definition.name);

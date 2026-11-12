@@ -24,7 +24,7 @@ import { configureProviderRecovery, captureProviderRecovery, linkProviderRecover
 import { modelFailureText, type ProviderBlockFact } from "./provider-block-facts.ts";
 import { AwaitDoc, acknowledgeProviderRetry, forgetFailedAdmission, recordInputProvenance } from "./awaited-results.ts";
 import { prepareAdmittedCapture } from "./communication-retention.ts";
-import { placementOf, recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
+import { placementOf, prepareQueuedInputs, recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
 import { createCheckIn } from "./durable-checkins.ts";
 import { cleanupRequestContexts, recordRequestContext, RequestContextDoc, type RequestContext } from "./request-context.ts";
 import { requestHasOpenWork } from "./open-work.ts";
@@ -353,8 +353,13 @@ export async function recordAdmissionMeta(tx: Tx, conversationId: ConversationId
  * request ID returns the retained state instead of writing a second intent.
  * The timer task uses this through its own task commit, so a fired input and
  * its answer keep the same origin rule as any other admission.
+ *
+ * With `admit`, the native admission (`Conversation.submit(tx, draft)`) runs in
+ * the same commit after every table read and before the check-in task, and the
+ * intent is stored linked to its submission. A refusal from `admit` throws, so
+ * the commit stores neither the intent, its request route nor its check-in.
  */
-export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission, admittedAt = Date.now(), admissionKind: "new" | "retained" = "new"): Promise<DeliveryIntentState> {
+export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission, admittedAt = Date.now(), admissionKind: "new" | "retained" = "new", admit?: () => Promise<SubmissionId>): Promise<DeliveryIntentState> {
 	const prior = await retainedIntent(tx, conversationId, admission.requestId);
 	if (prior !== undefined && (prior.ownerId !== admission.ownerId || prior.origin !== admission.origin)) throw new Error("The request ID already identifies another delivery recipient or origin");
 	if (admission.requestContext !== undefined) {
@@ -362,10 +367,8 @@ export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationI
 			throw new Error("The request context does not match its delivery admission");
 		await recordRequestContext(tx, conversationId, admission.requestContext, admissionKind);
 	}
-	if (prior !== undefined) {
-		if (prior.submissionId !== null) return { kind: "linked", submissionId: prior.submissionId };
-		return { kind: "unlinked" };
-	}
+	const submissionId = admit === undefined ? null : await admit();
+	if (prior !== undefined) return retainedIntentState(tx, prior, submissionId);
 	await recordAdmissionMeta(tx, conversationId, admission.message);
 	const message = admission.message;
 	await createDeliveryCheckIn(tx, conversationId, admission, admittedAt);
@@ -376,10 +379,18 @@ export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationI
 		message: storedMessage(message),
 		whenBusy: admission.whenBusy ?? null,
 		operationId: admission.operationId ?? null,
-		submissionId: null,
+		submissionId,
 		origin: admission.origin,
 	}, true);
 	return { kind: "new" };
+}
+
+async function retainedIntentState(tx: Tx, prior: DeliveryIntent, submissionId: SubmissionId | null): Promise<DeliveryIntentState> {
+	if (prior.submissionId !== null && submissionId !== null && prior.submissionId !== submissionId) throw new Error("The retained delivery intent identifies another native submission");
+	if (prior.submissionId !== null) return { kind: "linked", submissionId: prior.submissionId };
+	if (submissionId === null) return { kind: "unlinked" };
+	await storeDeliveryRow(tx, "intent", { ...prior, submissionId });
+	return { kind: "linked", submissionId };
 }
 
 async function createDeliveryCheckIn(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission, admittedAt: number): Promise<void> {
@@ -452,14 +463,14 @@ export function placementMode(mode: "steer" | "followUp" | "reject" | null | und
 	return mode === "reject" ? "reject" : "steer";
 }
 /** Link the admitted submission to its provenance and retain its communication record in one commit. */
-async function recordAdmittedInput(conversation: Conversation, submission: import("@earendil-works/pi-durable").Submission, provenance: import("./awaited-results.ts").InputProvenance, context: Context, communication: DurableSubmitParams["communication"], now: () => number, deduped: boolean): Promise<void> {
+async function recordAdmittedInput(conversation: Conversation, submissionId: SubmissionId, provenance: import("./awaited-results.ts").InputProvenance, context: Context, communication: DurableSubmitParams["communication"], now: () => number, deduped: boolean): Promise<void> {
 	await conversation.commit(async (tx) => {
-		const capture = communication === undefined ? undefined : await prepareAdmittedCapture(tx, communication.storageId, conversation.id, provenance.requestId, submission.id, communication.value, now, deduped, communication.taskSender);
+		const capture = communication === undefined ? undefined : await prepareAdmittedCapture(tx, communication.storageId, conversation.id, provenance.requestId, submissionId, communication.value, now, deduped, communication.taskSender);
 		await recordInputProvenance(tx, provenance);
 		if (capture !== undefined) await capture();
 		else {
 			const row = (await tx.doc(AwaitDoc)).provenance.find((item) => item.conversationId === conversation.id && item.requestId === provenance.requestId);
-			if (row !== undefined) row.submissionId = submission.id;
+			if (row !== undefined) row.submissionId = submissionId;
 		}
 	}, context);
 }
@@ -531,10 +542,10 @@ async function originalAdmission(tx: Tx, conversationId: ConversationId, params:
 	return { submissionId: input.id, conversationId, deduped: true, recipient: intent.ownerId, placement: placementOf(input) };
 }
 
-async function ownedAdmissionIntent(tx: Tx, conversationId: ConversationId, params: DurableSubmitParams, ownerId: string, now: () => number): Promise<DeliveryIntentState> {
+async function ownedAdmissionIntent(tx: Tx, conversationId: ConversationId, params: DurableSubmitParams, ownerId: string, now: () => number, admit: () => Promise<SubmissionId>): Promise<DeliveryIntentState> {
 	const { message, requestId, whenBusy, operationId, origin } = params;
 	if (origin === undefined) throw new Error("This request carries no admission origin, so the calling Pi runs older agent code. Restart that Pi window, then retry.");
-	return recordDeliveryIntent(tx, conversationId, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), origin, ...(params.checkInMinutes === undefined ? {} : { checkInMinutes: params.checkInMinutes }), ...(params.senderIdentity === undefined ? {} : { senderIdentity: params.senderIdentity }), ...(params.requestContext === undefined ? {} : { requestContext: params.requestContext }) }, now());
+	return recordDeliveryIntent(tx, conversationId, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), origin, ...(params.checkInMinutes === undefined ? {} : { checkInMinutes: params.checkInMinutes }), ...(params.senderIdentity === undefined ? {} : { senderIdentity: params.senderIdentity }), ...(params.requestContext === undefined ? {} : { requestContext: params.requestContext }) }, now(), "new", admit);
 }
 
 async function providerNoticeReplay(conversation: Conversation, params: DurableSubmitParams, context: Context): Promise<DurableSubmitResult | undefined> {
@@ -550,7 +561,11 @@ async function providerNoticeReplay(conversation: Conversation, params: DurableS
 async function admitConversation(conversation: Conversation, params: DurableSubmitParams, context: Context, now: () => number): Promise<DurableSubmitResult> {
 	const { message, requestId, ownerId, whenBusy, origin } = params;
 	if (ownerId !== undefined) {
-		const original = await conversation.commit((tx) => originalAdmission(tx, conversation.id, params, ownerId), context);
+		const original = await conversation.commit(async (tx) => {
+			const found = await originalAdmission(tx, conversation.id, params, ownerId);
+			if (found?.placement === "unplaced") await (await prepareQueuedInputs(tx, conversation.id, params.senderIdentity))([{ submissionId: found.submissionId, requestId, admittedAt: now() }]);
+			return found;
+		}, context);
 		if (original !== undefined) return original;
 	}
 	const providerNotice = await providerNoticeReplay(conversation, params, context);
@@ -558,36 +573,31 @@ async function admitConversation(conversation: Conversation, params: DurableSubm
 	await conversation.commit((tx) => refreshManagedInstructions(tx, conversation.id), context);
 	const provenance = admissionProvenance(conversation.id, params);
 	await conversation.commit((tx) => recordInputProvenance(tx, provenance), context);
-	let deduped = (await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined;
-	if (ownerId !== undefined) {
-		const state = await conversation.commit((tx) => ownedAdmissionIntent(tx, conversation.id, params, ownerId, now), context);
-		if (state.kind === "linked") deduped = true;
-	} else {
-		await conversation.commit(async (tx) => {
-			if (params.requestContext !== undefined) await recordRequestContext(tx, conversation.id, params.requestContext);
-			await recordAdmissionMeta(tx, conversation.id, message);
-		}, context);
-	}
 	const recoveryOf = await conversation.commit((tx) => captureProviderRecovery(tx, conversation.id, requestId), context);
 	const label = admissionLabel(params);
-	const submission = await conversation.submit(
-		{
-			type: "input",
-			content: message,
-			requestId,
-			whenBusy: placementMode(whenBusy),
-			entry: inputEntry(origin, inputAuthor(params), label),
-		},
-		context,
-	);
-	await recordAdmittedInput(conversation, submission, provenance, context, params.communication, now, deduped);
-	await conversation.commit((tx) => linkProviderRecovery(tx, submission.id, recoveryOf), context);
-	if (ownerId !== undefined) {
-		const relinked = await conversation.commit((tx) => linkDeliveryIntent(tx, conversation.id, requestId, submission.id), context);
-		if (relinked) deduped = true;
-	}
-	const placement = await conversation.commit((tx) => recordUnplacedInput(tx, conversation.id, { submissionId: submission.id, class: label.class, sender: label.sender ?? "", admittedAt: now(), ...(params.senderIdentity === undefined ? {} : { recipient: params.senderIdentity }) }), context);
-	return { submissionId: submission.id, conversationId: conversation.id, deduped, ...(ownerId === undefined ? {} : { recipient: ownerId }), placement };
+	const draft = { type: "input" as const, content: message, requestId, whenBusy: placementMode(whenBusy), entry: inputEntry(origin, inputAuthor(params), label) };
+	let deduped = false;
+	// One commit admits the input with its delivery intent, request route, check-in and unplaced row; a refusal stores none of them.
+	const submissionId = await conversation.commit(async (tx) => {
+		const existing = await tx.submissionByRequest(conversation.id, requestId);
+		deduped = existing !== undefined;
+		const retain = await prepareQueuedInputs(tx, conversation.id, params.senderIdentity);
+		let admitted: SubmissionId | undefined;
+		const admit = async () => (admitted = await conversation.submit(tx, draft));
+		if (ownerId !== undefined) await ownedAdmissionIntent(tx, conversation.id, params, ownerId, now, admit);
+		else {
+			if (params.requestContext !== undefined) await recordRequestContext(tx, conversation.id, params.requestContext);
+			await admit();
+			await recordAdmissionMeta(tx, conversation.id, message);
+		}
+		if (admitted === undefined) throw new Error("The input admission did not run");
+		await linkProviderRecovery(tx, admitted, recoveryOf);
+		await retain([{ submissionId: admitted, requestId, admittedAt: now(), label }]);
+		return admitted;
+	}, context);
+	await recordAdmittedInput(conversation, submissionId, provenance, context, params.communication, now, deduped);
+	const placement = await conversation.commit(async (tx) => placementOf(await tx.submission(submissionId), conversation.id), context);
+	return { submissionId, conversationId: conversation.id, deduped, ...(ownerId === undefined ? {} : { recipient: ownerId }), placement };
 }
 
 function assistantTextOf(messages: readonly Message[] | undefined): string {
@@ -1274,6 +1284,15 @@ export async function receiptsByOperation(harness: Harness, operationId: string,
 	return operationReceipts(harness, operationId, context);
 }
 
+/** A busy-reject admission holds only for the moment it was refused or admitted; a later replay would change its meaning. */
+async function endUnreplayableIntent(harness: Harness, intent: DeliveryIntent, absent: boolean, context: Context): Promise<void> {
+	const reason = absent ? "replay target conversation does not exist" : "a busy-reject admission without a native submission is never replayed";
+	await harness.commit(async (tx) => {
+		const current = await retainedIntent(tx, intent.conversationId, intent.requestId);
+		if (current && current.submissionId === null) await storeDeliveryRow(tx, "intent", { ...current, delivery: { state: "terminal", reason } });
+	}, context);
+}
+
 /** Reacquire unlinked admissions through Durable's request dedupe before any replay. */
 export async function reconcileDeliveries(harness: Harness, context: Context, now: () => number = Date.now): Promise<void> {
 	const state = await deliveryState(harness, context, false, false);
@@ -1284,11 +1303,8 @@ export async function reconcileDeliveries(harness: Harness, context: Context, no
 		const inputClass = sentInputClass(intent.origin, intent.whenBusy);
 		if (submissionId === undefined) {
 			const conversation = await harness.conversation(intent.conversationId, context);
-			if (!conversation) {
-				await harness.commit(async (tx) => {
-					const current = await retainedIntent(tx, intent.conversationId, intent.requestId);
-					if (current) await storeDeliveryRow(tx, "intent", { ...current, delivery: { state: "terminal", reason: "replay target conversation does not exist" } });
-				}, context);
+			if (!conversation || intent.whenBusy === "reject") {
+				await endUnreplayableIntent(harness, intent, conversation === undefined, context);
 				continue;
 			}
 			const admitted = await conversation.submit({ type: "input", content: deliveredMessage(intent.message), entry: inputEntry(intent.origin, request?.requester, { class: inputClass, ...(request === undefined ? {} : { sender: request.requester }), requestId: intent.requestId }), requestId: intent.requestId, whenBusy: placementMode(intent.whenBusy) }, context);

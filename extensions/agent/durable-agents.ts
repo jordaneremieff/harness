@@ -28,9 +28,9 @@ import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutio
 import { forgetFailedAdmission, recordInputProvenance } from "./awaited-results.ts";
 import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
-import { recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
+import { placementOf, prepareQueuedInputs, type Placement } from "./unplaced-inputs.ts";
 import { AGENT_WORK_DESCRIPTION, AgentWorkOutputSchema, AgentWorkParams, closeOpenWork, executeAgentWork, type OpenWorkView } from "./open-work.ts";
-import { AgentMetaDoc, placementMode, publishConversationIntent, recordAdmissionMeta, recordDeliveryIntent, linkDeliveryIntent, seededCompactionInstructions } from "./durable-controls.ts";
+import { AgentMetaDoc, placementMode, publishConversationIntent, recordAdmissionMeta, recordDeliveryIntent, seededCompactionInstructions } from "./durable-controls.ts";
 import { recordAdmitted, recordRefused, recordRequested, recordScheduled, recordTimerCancelled, type OutgoingRequest } from "./continuity-admission.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema, profileText } from "./profile-schema.ts";
 import { cleanupRequestContexts } from "./request-context.ts";
@@ -873,17 +873,27 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			deduped = await tx.submissionByRequest(input.conversationId, request.requestId) !== undefined;
 			taskSender = taskInputSender(request.requester, (await tx.doc(AgentMetaDoc, api.conversationId)).name);
 			recoveryOf = await captureProviderRecovery(tx, input.conversationId, request.requestId);
-			const admission = await tx.doc(LocalAdmission, reporterTaskId);
 			await fact(() => recordRequested(tx, api.conversationId, outgoing));
-			await recordDeliveryIntent(tx, input.conversationId, { requestId: request.requestId, ownerId: request.replyTo, message: input.message, whenBusy: input.whenBusy, origin: request.origin, senderIdentity: request.requester, requestContext: request, checkInMinutes: 0 }, now, "retained");
 			await recordInputProvenance(tx, { conversationId: input.conversationId, requestId: request.requestId, classification: "explicit", sender: request.requester });
+			return undefined;
+		}, context);
+		const inputClass = sentInputClass("model", input.whenBusy);
+		const draft = { type: "input" as const, content: input.message, whenBusy: placementMode(input.whenBusy), requestId: request.requestId, entry: inputEntry("model", request.requester, { class: inputClass, sender: request.requester, requestId: request.requestId }) };
+		// One commit admits the input with its delivery intent, request route, check-in and unplaced row; a refusal stores none of them.
+		await api.commit(async (tx) => {
+			const retain = await prepareQueuedInputs(tx, input.conversationId, identity(input.conversationId));
+			const admission = await tx.doc(LocalAdmission, reporterTaskId);
+			let admitted: Durable.SubmissionId | undefined;
+			await recordDeliveryIntent(tx, input.conversationId, { requestId: request.requestId, ownerId: request.replyTo, message: input.message, whenBusy: input.whenBusy, origin: request.origin, senderIdentity: request.requester, requestContext: request, checkInMinutes: 0 }, now, "retained", async () => (admitted = await conversation.submit(tx, draft)));
+			if (admitted === undefined) throw new Error("The input admission did not run");
+			await linkProviderRecovery(tx, admitted, recoveryOf);
+			await retain([{ submissionId: admitted, requestId: request.requestId, admittedAt: now, label: { class: inputClass, sender: request.requester } }]);
 			if (admission.armed) return undefined;
 			await recordAdmissionMeta(tx, input.conversationId, input.message);
 			await createCheckIn(tx, { conversationId: input.conversationId, requestId: request.requestId, ownerId: request.replyTo, senderIdentity: identity(input.conversationId), message: input.message, whenBusy: input.whenBusy, origin: "model", admittedAt: now, requester: request.requester }, api.registry.task(CheckInTask.definition.name) === undefined ? 0 : input.checkInMinutes ?? 0);
 			admission.armed = true;
 			return undefined;
-		}, context);
-		const submission = await conversation.submit({ type: "input", content: input.message, whenBusy: placementMode(input.whenBusy), requestId: request.requestId, entry: inputEntry("model", request.requester, { class: sentInputClass("model", input.whenBusy), sender: request.requester, requestId: request.requestId }) }, context).catch(async (error) => {
+		}, context).catch(async (error: unknown) => {
 			await api.commit(async (tx) => {
 				await forgetFailedAdmission(tx, input.conversationId, request.requestId);
 				// No submission under the request ID proves that nothing was admitted.
@@ -892,22 +902,18 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			}, BACKGROUND_CONTEXT);
 			throw error;
 		});
+		// The request ID is known now, so this returns the admitted submission without another write.
+		const submission = await conversation.submit(draft, context);
 		await api.commit(async (tx) => {
-			if (await linkDeliveryIntent(tx, input.conversationId, request.requestId, submission.id)) throw new Error("The retained delivery intent identifies another native submission");
 			const capture = await prepareAdmittedCapture(tx, host.storageId, input.conversationId, request.requestId, submission.id, undefined, () => now, deduped, taskSender);
 			await recordInputProvenance(tx, { conversationId: input.conversationId, requestId: request.requestId, classification: "explicit", sender: request.requester });
 			await capture();
 			await fact(() => recordAdmitted(tx, api.conversationId, outgoing, { sessionId: outgoing.sessionId, requestId: outgoing.requestId, submissionId: submission.id }));
 			return undefined;
 		}, context);
-		await api.commit(async (tx) => { await linkProviderRecovery(tx, submission.id, recoveryOf); return undefined; }, context);
 		const status = await submission.status(context);
 		if (status.id !== submission.id || status.requestId !== request.requestId || status.conversationId !== input.conversationId) throw new Error("Native admission identifiers disagree");
-		let placement: Placement = status.status === "queued" ? "unplaced" : "placed";
-		await api.commit(async (tx) => {
-			placement = await recordUnplacedInput(tx, input.conversationId, { submissionId: submission.id, class: sentInputClass("model", input.whenBusy), sender: request.requester, admittedAt: now, recipient: identity(input.conversationId) });
-			return undefined;
-		}, context);
+		const placement: Placement = placementOf(status, input.conversationId);
 		return { submission, result: admittedResult(identity(input.conversationId), { submissionId: submission.id, conversationId: status.conversationId, requestId: status.requestId }, request.requestId), placement };
 	};
 

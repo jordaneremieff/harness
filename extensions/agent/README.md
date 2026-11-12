@@ -1844,8 +1844,12 @@ delivery watcher supplies the answer copy.
 Admissions and report receipts distinguish `placed`, `unplaced` and `withdrawn`.
 Status and cards show `unplaced`, the count still in the native inbox, and
 `oldest`, the age in milliseconds of the oldest such input. The oldest age
-is absent when none is unplaced. These are committed placement facts, not
-proof that the model read or acted on an input. Retained report delivery also
+is absent when none is unplaced. The commit that admits an input also stores
+its unplaced row and starts the conversation's watch when the native inbox
+holds the input; a placed input gets no row. An exact-request replay of a
+queued admission restores a missing row and watch without a second input. The
+row keeps the class, sender and recipient of the original admission. These are
+committed placement facts, not proof that the model read or acted on an input. Retained report delivery also
 states `pending`, `parked`, `terminal` or `admitted`; only an admitted
 row is eligible for placement in the recipient. A receipt never proves task
 acceptance.
@@ -1870,7 +1874,8 @@ is not a progress heartbeat.
 Sources: `durable-controls.ts` (`placementMode`, `admitConversation`),
 `durable-services.ts` (fixed `steeringMode`, task registration),
 `durable-runtime.ts` (`openHost`), `unplaced-inputs.ts`
-(`recordUnplacedInput`, `UnplacedWatchTask`, `currentStep`, `noticeDue`),
+(`prepareQueuedInputs`, `recordUnplacedInput`, `UnplacedWatchTask`,
+`currentStep`, `noticeDue`),
 and `durable-observation.ts` (`readConversationStatus`).
 
 Normal delivered receipts retain a short answer excerpt and include a
@@ -3326,8 +3331,14 @@ Chord assigns a separate wire ID per transport attempt. Equal durable IDs do not
 coalesce local calls or promise exactly-once execution for all methods.
 
 An admitted input has a stable Durable request ID. Reconnecting or retrying the
-same admission reuses that identity. A pending delivery intent precedes input
-admission, so a crash between those operations does not lose the reply route.
+same admission reuses that identity. One native commit admits the input through
+Pi's transactional `Conversation.submit(tx, draft)` together with its delivery
+intent (already linked to the submission), request route, admission metadata,
+check-in and unplaced-input row. A refusal, such as `ConversationBusy` for
+`whenBusy: "reject"`, throws inside that commit, so it stores none of them and
+nothing remains that reconciliation, a check-in or a reopened host admits later.
+An interruption leaves either the whole admission or nothing; a retry of the
+same request ID returns the existing submission or admits it once.
 The runtime validates each fresh control's delivery recipient before admission.
 The recipient must be an exact storage or conversation identity, not a shortened
 ID or display name. Rewind validates `ownerId` unless `selfOwned` is true;
@@ -3415,7 +3426,7 @@ before returning its reference. The existing background Reporter reuses that
 same request ID and a task-owned admission marker, so both paths create
 one check-in and one input even under concurrent admission or safe replay.
 The Reporter records the exact requester, reply recipient and request ID in the
-delivery intent before the native admission, then waits for settlement. It
+delivery intent in the commit of the native admission, then waits for settlement. It
 posts no answer input of its own; the delivery watcher delivers the answer to
 the recorded recipient. A replay of a request ID with another recipient or
 origin is refused, as is a replay with another request route.
@@ -3516,8 +3527,13 @@ One classification controls delivery, status and retirement:
   whose native submission is absent. The delivery document retains the reason
   beside the row. The watcher never retries a terminal row.
 
-An unlinked intent remains pending for admission replay. A replay with an absent
-conversation becomes terminal; transient replay failures leave it pending.
+An unlinked intent remains pending for admission replay. Current admissions
+leave no unlinked intent; scheduled inputs and intents retained by earlier
+releases can. A replay with an absent conversation becomes terminal; transient
+replay failures leave it pending. An unlinked `whenBusy: "reject"` intent with
+no native submission becomes terminal without a replay, because a refusal or
+admission of that mode holds only at its original moment. A check-in task of
+such an intent ends without an admission.
 Elapsed time never changes eligibility. Status `deliveryError` names the state
 and reason without changing the response shape. Only active rows and pending
 intents keep delivery active. A live or unknown owner endpoint refuses fallback.

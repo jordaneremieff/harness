@@ -1,10 +1,11 @@
 /** Admitted inputs that the recipient conversation holds in its inbox, not yet in its transcript. */
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import { defineDoc, defineTask, LiveDoc, type ConversationId, type Harness, type SubmissionId, type SubmissionRecord, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import { defineDoc, defineTask, InboxDoc, LiveDoc, type ConversationId, type InboxItem, type Harness, type SubmissionId, type SubmissionRecord, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { onStoredCommit } from "./commit-observation.ts";
 import { retainedReport, storeDeliveryRow } from "./delivery-store.ts";
 import { openWorkItems } from "./open-work.ts";
 import { RequestContextDoc } from "./request-context.ts";
+import { inputLabel, type InputLabel } from "./input-entry.ts";
 
 export type InputClass = "operator" | "steer" | "followUp" | "report" | "result" | "check-in" | "timer" | "thread-notice";
 
@@ -89,6 +90,49 @@ export async function recordUnplacedInput(tx: Tx, conversationId: ConversationId
 	if (watch === undefined || watch.state.status === "terminal")
 		state.watch = await tx.createTask(UnplacedWatchTask, { conversationId }, { ownership: { kind: "conversation" }, conversationId, background: true });
 	return "unplaced";
+}
+
+/** Row fields of one queued input that its admission supplies; a repair without them reads its native entry. */
+export interface QueuedInputRow {
+	readonly submissionId: number;
+	readonly requestId: string;
+	readonly admittedAt: number;
+	readonly label?: Pick<InputLabel, "class" | "sender">;
+}
+
+/** True when the inbox holds the row's input; a missing row is added once. */
+function retainQueuedRow(inputs: UnplacedInput[], inbox: readonly InboxItem[], row: QueuedInputRow): boolean {
+	const item = inbox.find((candidate) => candidate.id === row.submissionId);
+	if (item === undefined || item.mode === "write") return false;
+	if (inputs.some((input) => input.submissionId === row.submissionId)) return true;
+	const label = row.label ?? inputLabel(item.entry ?? { kind: "pi.user" }, row.requestId);
+	inputs.push({ requestId: row.requestId, submissionId: row.submissionId, class: label?.class ?? "followUp", sender: label?.sender ?? "", admittedAt: row.admittedAt, noticed: false });
+	return true;
+}
+
+/**
+ * Retain queued inputs in the commit that admits them, or in a repair commit. The table reads (prune and watch)
+ * run now, before a `Conversation.submit(tx, draft)` admission; the returned write reads only documents, so it runs
+ * after that admission in the same commit. An input that the native inbox does not hold is placed or withdrawn and
+ * gets no row. A row keeps the label of its admission, else the class and sender of its native entry.
+ */
+export async function prepareQueuedInputs(tx: Tx, conversationId: ConversationId, recipient?: string): Promise<(rows: readonly QueuedInputRow[]) => Promise<boolean>> {
+	const inputs = await pruneUnplacedInputs(tx, conversationId);
+	const state = await tx.doc(UnplacedInputsDoc, conversationId);
+	const watch = state.watch === undefined ? undefined : await tx.task(state.watch as TaskId);
+	let watched = watch !== undefined && watch.state.status !== "terminal";
+	return async (rows) => {
+		const inbox = (await tx.doc(InboxDoc, conversationId)).items;
+		let queuedAny = false;
+		for (const row of rows) queuedAny = retainQueuedRow(inputs, inbox, row) || queuedAny;
+		if (!queuedAny) return false;
+		if (recipient !== undefined) state.recipient = recipient;
+		if (!watched) {
+			state.watch = await tx.createTask(UnplacedWatchTask, { conversationId }, { ownership: { kind: "conversation" }, conversationId, background: true });
+			watched = true;
+		}
+		return true;
+	};
 }
 
 function summary(inputs: readonly UnplacedInput[]): UnplacedSummary {

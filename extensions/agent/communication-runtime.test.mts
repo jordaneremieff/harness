@@ -29,6 +29,14 @@ import { theme } from "./dashboard-test-fixture.mts";
 import { stripVTControlCharacters } from "node:util";
 
 const ROOT = 1 as ConversationId;
+
+/** Pi admits `submit(tx, draft)` only for its own transaction object, so an observing proxy passes the original on. */
+function observeTx(t: TestContext, conversation: Durable.Conversation): (observed: Tx, original: Tx) => Tx {
+	const originals = new WeakMap<object, Tx>();
+	const submit = conversation.submit.bind(conversation) as (...args: unknown[]) => Promise<unknown>;
+	t.mock.method(conversation, "submit", (...args: unknown[]) => submit(...(typeof args[0] === "object" && args[0] !== null && originals.has(args[0]) ? [originals.get(args[0]), ...args.slice(1)] : args)));
+	return (observed, original) => { originals.set(observed, original); return observed; };
+}
 const sender = "7f7f7f7f-1111-4222-8333-444444444444";
 const communication: Communication = { format: "agent.communication/1", kind: "report", sender: { identity: sender, name: "Peer" }, body: { text: "Source body", complete: false, redacted: false }, recordedAt: 0, metadata: { sourceId: "report:source", requestId: "source" } };
 
@@ -412,9 +420,10 @@ function observePrune(t: TestContext, host: DurableHost, inputs: TerminalInput[]
 		if (conversation !== undefined && !wrapped.has(conversation)) {
 			wrapped.add(conversation);
 			const commit = conversation.commit.bind(conversation);
+			const proxy = observeTx(t, conversation);
 			t.mock.method(conversation, "commit", async (apply: (tx: Tx) => Promise<unknown>, context: typeof BACKGROUND_CONTEXT) => commit(async (tx) => {
 				const state = await tx.doc(AwaitDoc);
-				const observed = new Proxy(tx, { get(target, key) {
+				const observed = proxy(new Proxy(tx, { get(target, key) {
 					if (key === "appendEntry") return async (...args: unknown[]) => {
 						const draft = args[1] as { kind?: string; data?: { target?: { requestId?: string } } };
 						const data = draft.data;
@@ -427,7 +436,7 @@ function observePrune(t: TestContext, host: DurableHost, inputs: TerminalInput[]
 					};
 					const value = Reflect.get(target, key);
 					return typeof value === "function" ? value.bind(target) : value;
-				} });
+				} }), tx);
 				return apply(observed);
 			}, context));
 		}
@@ -545,9 +554,10 @@ it("preserves a queued plain decision through eviction after a stale negative de
 			if (conversation !== undefined && !wrapped.has(conversation)) {
 				wrapped.add(conversation);
 				const commit = conversation.commit.bind(conversation);
+				const proxy = observeTx(t, conversation);
 				t.mock.method(conversation, "commit", async (apply: (tx: Tx) => Promise<unknown>, context: typeof BACKGROUND_CONTEXT) => {
 					let negative = false;
-					const value = await commit((tx) => apply(new Proxy(tx, { get(target, key) {
+					const value = await commit((tx) => apply(proxy(new Proxy(tx, { get(target, key) {
 						if (key === "submissionByRequest") return async (...args: Parameters<Tx["submissionByRequest"]>) => {
 							const submission = await target.submissionByRequest(...args);
 							if (args[1] === "stale-plain" && submission === undefined && !held) negative = true;
@@ -555,7 +565,7 @@ it("preserves a queued plain decision through eviction after a stale negative de
 						};
 						const method = Reflect.get(target, key);
 						return typeof method === "function" ? method.bind(target) : method;
-					} })), context);
+					} }), tx)), context);
 					if (negative && !held) { held = true; lookup.resolve(); await resume.promise; }
 					return value;
 				});
@@ -614,10 +624,22 @@ for (const status of ["done", "placed"] as const) it(`reconstructs ${status} cap
 			t.mock.method(host.harness, "conversation", async (...args: Parameters<typeof original>) => {
 				const conversation = await original(...args);
 				if (conversation !== undefined) {
-					const submit = conversation.submit.bind(conversation);
-					t.mock.method(conversation, "submit", async (...args: [Durable.SubmissionDraft, typeof BACKGROUND_CONTEXT]) => {
-						const submission = await submit(...args);
-						if (args[0].requestId === "capture-race") {
+					// The race runs after the commit that admits the input and before its capture commit.
+					const submit = conversation.submit.bind(conversation) as (...args: unknown[]) => Promise<unknown>;
+					const commit = conversation.commit.bind(conversation) as (...args: unknown[]) => Promise<unknown>;
+					let admittedId: SubmissionId | undefined, raced = false;
+					t.mock.method(conversation, "submit", async (...args: unknown[]) => {
+						const value = await submit(...args);
+						const draft = (args[0] as { type?: unknown }).type === undefined ? args[1] as Durable.SubmissionDraft : args[0] as Durable.SubmissionDraft;
+						if (draft.requestId === "capture-race" && typeof value === "number") admittedId = value as SubmissionId;
+						return value;
+					});
+					t.mock.method(conversation, "commit", async (...args: unknown[]) => {
+						const value = await commit(...args);
+						if (admittedId !== undefined && !raced) {
+							raced = true;
+							const submission = await host.harness.submission(admittedId, BACKGROUND_CONTEXT);
+							assert.ok(submission !== undefined);
 							if (status === "placed") await control.held;
 							else await readOutcome(host.harness, submission.id, BACKGROUND_CONTEXT);
 							assert.equal((await submission.status(BACKGROUND_CONTEXT)).status, status);
@@ -630,7 +652,7 @@ for (const status of ["done", "placed"] as const) it(`reconstructs ${status} cap
 								assert.equal(state.provenance.length, AWAIT_PROVENANCE_LIMIT);
 							}, BACKGROUND_CONTEXT);
 						}
-						return submission;
+						return value;
 					});
 				}
 				return conversation;
