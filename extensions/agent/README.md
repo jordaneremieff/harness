@@ -2877,7 +2877,10 @@ a token request after close.
 - Local protocol validation rejects only the malformed request and leaves its
   healthy connection usable. A failed runtime-contract attachment disposes its
   client. Application or protocol errors from a live writer do not authorize a
-  replacement process.
+  replacement process. If the replacement transport closes before recovery
+  finishes, the connection closes locally with an unavailable error, settles
+  all pending calls, and notifies its close listeners once. This does not add
+  a replay attempt or grant permission to replace another writer.
 
 `durable-runner.ts` starts the process, `installation-binding.ts` binds its Pi
 package imports, `durable-runtime.ts` assembles its

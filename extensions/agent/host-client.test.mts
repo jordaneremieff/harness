@@ -6,8 +6,8 @@ import { dirname, join } from "node:path";
 import { after, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord/json";
-import { connectTransport, createTransportServer } from "../../transport/index.ts";
-import { HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
+import { connectTransport, createTransportServer, type TransportClient } from "../../transport/index.ts";
+import { HOST_SOCKET_PATH_LIMIT_BYTES, HostError, hostPaths } from "./host-protocol.ts";
 import { acquireHost, connectHost, HostBusyEndpointUnavailableError, HostReadinessUnavailableError, observeOwnedHostExit, snapshotHost, waitForHostRelease, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState, eventLog, waitForFixtureState, waitForConnectionClose } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
@@ -827,6 +827,46 @@ for (const mode of ["invalid", "wrong-path", "connect-failure", "deadline", "can
 	t.after(() => surviving.close());
 	assert.deepEqual(await surviving.request("timer-list"), { starts: 1, alive: true });
 	await surviving.request("close").catch(() => undefined);
+});
+
+it("settles every pending call when the replacement link closes during old-link disposal", { timeout: 10000 }, async t => {
+	const metadata = fixtureMetadata(fixtureRoot(t));
+	const requests = eventLog<string>();
+	let releaseRequests = () => {}, releaseDisposal = () => {}, enteredDisposal = () => {};
+	const heldRequests = new Promise<void>(resolve => { releaseRequests = resolve; });
+	const heldDisposal = new Promise<void>(resolve => { releaseDisposal = resolve; });
+	const disposalEntered = new Promise<void>(resolve => { enteredDisposal = resolve; });
+	const host = await runHost(() => ({
+		request: async method => { requests.push(method); await heldRequests; return {}; },
+		close: async () => {}, isIdle: () => false,
+	}), { metadata, idleMs: 0, announceReady() {} });
+	const connection = await connectHost(metadata);
+	// Hold only cleanup of the original transport, not connection recovery itself.
+	const transport = () => (connection as unknown as { client: TransportClient }).client;
+	const first = transport(), disposeFirst = first.dispose.bind(first);
+	first.dispose = async () => { enteredDisposal(); await heldDisposal; await disposeFirst(); };
+	let closed = 0;
+	connection.onClose(() => { closed++; });
+	const unavailable = (error: unknown): boolean => error instanceof HostError && error.code === "unavailable";
+	try {
+		const safe = assert.rejects(connection.request("status", {}, { signal: AbortSignal.timeout(2000) }), unavailable);
+		const unsafe = assert.rejects(connection.request("configure", {}, { signal: AbortSignal.timeout(2000) }));
+		await requests.waitFor(values => values.includes("status") && values.includes("configure"));
+		const disconnected = disposeFirst();
+		await disposalEntered;
+		const replacement = transport();
+		assert.notEqual(replacement, first, "recovery installs the replacement before old-link disposal finishes");
+		await replacement.dispose();
+		releaseDisposal();
+		await Promise.all([safe, unsafe, disconnected]);
+		assert.equal(connection.closed, true);
+		assert.equal(closed, 1, "the manager receives final connection loss once");
+		assert.equal(requests.filter(method => method === "configure").length, 1, "the unsafe mutation is never replayed");
+	} finally {
+		releaseDisposal(); releaseRequests();
+		await connection.close();
+		await host.close();
+	}
 });
 
 it("close during held recovery never installs a late link or stops its independent host", { timeout: 15000 }, async (t) => {

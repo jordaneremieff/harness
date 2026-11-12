@@ -942,6 +942,9 @@ class HostConnectionImpl implements HostConnection {
 		if (this.closedValue || this.recovery) return;
 		this.recovery = this.recover(cause).finally(() => {
 			this.recovery = undefined;
+			// A replacement may close while recovery awaits old-link disposal or
+			// resends calls. Its loss must settle calls despite the recovery guard.
+			if (!this.closedValue && !this.client.connected) this.shutdownLocal(new HostError("The replacement host link closed during recovery", "unavailable"));
 		});
 	}
 
