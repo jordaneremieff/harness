@@ -1317,8 +1317,16 @@ class DurablePolicyRuntime {
 		current: readonly ProgramRule[],
 		mode: PolicyMode,
 		result: PolicyResult,
+		outcome: CallOutcome,
 		now: number,
-	): { correction: boolean; effective: PolicyResult; semantic: ProgramEvaluation[]; guides: ProgramEvaluation[]; guidance?: string } {
+	): {
+		correction: boolean;
+		effective: PolicyResult;
+		outcome: CallOutcome;
+		semantic: ProgramEvaluation[];
+		guides: ProgramEvaluation[];
+		guidance?: string;
+	} {
 		const semantic = evaluatePrograms(current, "result", this.contextFor(call, observation, now, result)).filter(
 			(evaluation) => evaluation.action.kind !== "guide",
 		);
@@ -1330,7 +1338,17 @@ class DurablePolicyRuntime {
 		const guides = evaluatePrograms(current, "result", this.contextFor(call, observation, now, effective)).filter(
 			(evaluation) => evaluation.action.kind === "guide",
 		);
-		return { correction, effective, semantic, guides, guidance: this.selectGuidance(observation, guides, mode, now, call.turn) };
+		// The model receives the corrected result, so completion and telemetry observe it too. A host outcome
+		// (aborted, interrupted, unexecuted) keeps its execution uncertainty; only an executed success becomes an error.
+		if (correction) call.effects.policy = { ...call.effects.policy, resultCorrected: true };
+		return {
+			correction,
+			effective,
+			outcome: correction && outcome === "success" ? "execution-error" : outcome,
+			semantic,
+			guides,
+			guidance: this.selectGuidance(observation, guides, mode, now, call.turn),
+		};
 	}
 
 	/** Completion-phase evaluations, observation completion, and retained guidance. */
@@ -1405,17 +1423,13 @@ class DurablePolicyRuntime {
 			const current = call.generation === state.generation ? this.currentRulesOf(call, observation) : [];
 			state.stale += call.rules.length - current.length;
 			if (incompleteObservation) state.incomplete += 1;
-			const effects = this.resultEffects(call, observation, current, mode, result, now);
+			const effects = this.resultEffects(call, observation, current, mode, result, outcome, now);
 			if (effects.guidance) call.effects.annotationBytes = Buffer.byteLength(effects.guidance, "utf8");
-			// The model receives the corrected result, so completion and telemetry observe it too. A host outcome
-			// (aborted, interrupted, unexecuted) keeps its execution uncertainty; only an executed success becomes an error.
-			const effectiveOutcome: CallOutcome = effects.correction && outcome === "success" ? "execution-error" : outcome;
-			if (effects.correction) call.effects.policy = { ...call.effects.policy, resultCorrected: true };
 			const completion = this.completionEffects(
 				call,
 				observation,
 				current,
-				this.contextFor(call, observation, now, effects.effective, effectiveOutcome),
+				this.contextFor(call, observation, now, effects.effective, effects.outcome),
 				mode,
 				now,
 				state,
@@ -1424,7 +1438,7 @@ class DurablePolicyRuntime {
 			const record = this.telemetryRecord(
 				call,
 				effects.effective,
-				effectiveOutcome,
+				effects.outcome,
 				mode,
 				effects.semantic,
 				effects.guides,
