@@ -1719,6 +1719,36 @@ conversation, then send a continuation and await its new exact result. Preserve
 an explicit model requirement. The extension never selects another provider or
 model automatically.
 
+### Provider content refusals
+
+A native submission that ends on a provider error settles as `unanswered` with
+`model_error` and keeps the original provider detail. That settlement does not
+change. The same-storage stop notice (`[agent <name> stopped without an answer:
+<reason>]`) and the `agent_inspect` result view present the retained detail in
+their reason:
+
+- `model_error: <provider text>` for wording the host does not classify;
+- `content_refusal: <provider text> <recovery>` for a recognised content
+  refusal.
+
+The host removes recognised credentials before it shortens the text. The
+complete reason fits 1,024 UTF-8 bytes, including the recovery sentence and the
+omission markers ` [credential redacted]` and ` [truncated]`, which precede the
+recovery. A reason other than `model_error`, a missing or non-text detail, and
+a submission with a retained quota block keep their original reason; quota
+blocks keep their separate evidence, described below.
+
+The classifier recognises one wording, from OpenAI Codex: `This content was
+flagged for possible cybersecurity risk`. Other refusal wording stays
+`model_error` with its provider text. The recovery sentence is:
+
+> The provider refused this content. Repeating the same task on this provider fails. Choose another explicit provider/model under your existing authority, or change the form of the task. No automatic substitution or host retry.
+
+A content refusal creates no retained provider block, changes no retry or
+overflow classification, and selects no model. Source:
+`provider-block-facts.ts` (`modelFailureText`, `isProviderContentRefusal`),
+`durable-agents.ts` (`Reporter`), and `durable-observation.ts`.
+
 ### Exhausted provider limits
 
 The host distinguishes explicit quota, usage, balance, and billing exhaustion
