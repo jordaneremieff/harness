@@ -96,10 +96,15 @@ it("keeps complete target, operation, thread and revision identities at wide wid
 	for (const [name, card] of Object.entries(cards)) {
 		if (name === "agent_list") continue;
 		const args = { results: [{ sessionId: `${identity}:12345678901234567890`, submissionId: 1 }], sessionId: `${identity}:12345678901234567890`, action: "read", message: "Task", name: "command" };
-		const callArgs = name === "agent_intent" ? { action: "clear" } : args;
+		const callArgs = name === "agent_intent" ? { action: "clear" }
+			: name === "agent_work" ? { action: "continue", request: "request-1", results: args.results, note: "Read the result" } : args;
 		const state = name === "agent_intent" ? { observation: { identity: args.sessionId } } : undefined;
 		const rendered = screen(card.renderCall(callArgs, theme, context({ state })), 600);
-		assert.ok(rendered.includes(args.sessionId), name);
+		if (name === "agent_work") {
+			assert.match(rendered, /agent_work · continue/u);
+			assert.match(rendered, /request request-1 · 1 result reference/u);
+			assert.equal(rendered.includes(args.sessionId), false, "a local work declaration does not target its dependency");
+		} else assert.ok(rendered.includes(args.sessionId), name);
 		assert.doesNotMatch(rendered.split("\n")[0] ?? "", /…/u, name);
 		const narrow = card.renderCall(callArgs, theme, context({ state })).render(24);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 24), name);
