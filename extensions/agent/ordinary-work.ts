@@ -20,7 +20,7 @@ const WIDGET_NOTE_LINES = 3;
 
 export type OrdinaryWorkNote = { readonly note: string; readonly at: number };
 
-export const ORDINARY_WORK_DESCRIPTION = "Keep one state note for this session, or clear it. continue stores the note as the current state of the session, shows it in a widget above the input, and ends the turn: no model request follows when it is the only call of its tool batch, so write no chat text with it. Use it when an agent event needs no decision or act of the operator, no blocker report and no result. A repeated continue replaces the note. complete clears the note and the widget and does not end the turn. The note has no reply route and no dependency.";
+export const ORDINARY_WORK_DESCRIPTION = "Keep one state note for this session, or clear it. continue stores the note as the current state of the session, shows it in a widget above the input, and ends the turn: no model request follows when it is the only call of its tool batch, so write no chat text with it. Use it when an agent event needs no decision or act of the operator, no blocker report and no result. Call complete when the state that the note describes has ended, for example in the turn that gives the operator the result, the blocker or the question: complete clears the note and the widget and does not end the turn, so the chat message follows it. When the state changed but still needs nothing from the operator, a new continue replaces the note. The note has no reply route and no dependency.";
 
 const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
 const noteText = str({ minLength: 1, maxLength: ORDINARY_NOTE_CHARS });
