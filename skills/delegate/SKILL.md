@@ -241,7 +241,8 @@ Omit facts that have nothing useful to state. The opening line and the order
 are fixed; other headings, layout and length are not.
 
 Keep the complete result of extended work in one current document. Replace
-that document whenever its content changes, and name its path in chat.
+that document whenever its content changes. Name its path in a message that
+this rule permits; a change of the document alone is not a reason for one.
 When the operator asks for the state, answer with the whole current state.
 
 Batch contributor reports at the source. Each directing agent closes its part
