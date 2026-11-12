@@ -207,6 +207,38 @@ real wait, a blocker that needs their decision, or a finding that changes the
 work. Ask only for authority or a decision that existing authority cannot
 supply.
 
+### Operator status reports
+
+The operator does not follow agent activity. When you direct agents, describe
+each internal name in every message to the operator, or use its description
+instead. Give the comparison point of every statement of no change, such as
+"unchanged", "still", "no change" or "stays". An internal name is a name this
+work created or that only its participants use: an agent, a branch, a work
+package, a check. Public release numbers and commit identifiers need no
+description.
+
+A status report tells the operator where the work stands: a notice of a wait,
+an answer to a question about progress, and the final answer. Make it
+self-contained. State these facts in this order, so the reader finds each one
+in the same place in every report:
+
+1. What changed in the requested outcome since a comparison point that you
+   name: your previous status report, or the start of the work. Give the time
+   of that point and its revision where one exists.
+2. Where finished work is and whether the system the operator uses includes
+   it. Explain any gap.
+3. What is in progress or waits, including ready work that has not started,
+   and what each item waits for, if anything.
+4. What happens next and what triggers it.
+5. What the operator must do or decide.
+
+When an item has nothing to state, say so; when a fact is unknown, say that.
+One clause can serve an item. These requirements fix content and order, not
+headings, layout or length. A notice about one blocker or one finding states
+that matter and what it needs from the operator; it is not a status report.
+Neither are the dispatch notice of section 4, isolated questions, messages
+between agents, or raw output the operator requested.
+
 **Complete when:** every affected agent works from the latest operator
 direction.
 
@@ -277,7 +309,8 @@ Before the final answer:
 2. Update or clear your intent claim.
 3. Post a conclusion to each thread you integrate; close it when the work ends.
 4. Restore any temporary configuration you changed.
-5. Report the result first, then evidence, limits, and substitutions made.
+5. Report the result first as an operator status report (section 5), then
+   evidence, limits, and substitutions made.
 
 **Complete when:** no owned agent is unresolved, any intent claim is current,
 and the operator has the result.

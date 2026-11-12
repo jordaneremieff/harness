@@ -13,7 +13,7 @@ description: >
   Reclassifying an addition does not supply authority. Do not use for invoking
   or installing an unchanged resource, ordinary application code, unrelated
   uses of "tool", "skill", or "extension", or Pi core development.
-compatibility: Pi-specific workflow. The bundled skill validator uses dependency-free TypeScript and requires Node.js 22.19 or newer for direct execution; verify Pi-sensitive behavior against the active Pi installation. Uses the sibling repository instructions at `../../AGENTS.md` for the owning repository's binding rules and `../../extensions/` for extension telemetry source contracts.
+compatibility: Pi-specific workflow. The bundled skill validator uses dependency-free TypeScript and requires Node.js 22.19 or newer for direct execution; verify Pi-sensitive behavior against the active Pi installation. Uses the sibling repository instructions at `../../AGENTS.md` for the owning repository's binding rules and `../../extensions/` for extension telemetry source contracts. References `skills/delegate/SKILL.md` for operator status reports.
 ---
 
 # Harness
