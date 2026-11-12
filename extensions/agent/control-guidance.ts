@@ -10,7 +10,6 @@
 /** Control names in prompt order. */
 export const AGENT_CONTROL_TOOL_NAMES = [
 	"agent_spawn",
-	"agent_await",
 	"agent_send",
 	"agent_steer",
 	"agent_abort",
@@ -43,7 +42,6 @@ export type AgentControlExposure = "direct" | "deferred" | "model-only";
 export const AGENT_CONTROL_EXPOSURE: Readonly<Record<AgentControlToolName, AgentControlExposure>> = {
 	agent_abort: "direct",
 	agent_attach: "deferred",
-	agent_await: "model-only",
 	agent_collaborate: "direct",
 	agent_command: "deferred",
 	agent_compact: "model-only",
@@ -76,9 +74,6 @@ export const MODEL_SELECTION_GUIDANCE = "For an explicit model override, use an 
 /** A follow-up places at a tool boundary of a running recipient, not at the run end. */
 export const FOLLOW_UP_DELIVERY_BOUNDARY = "A followUp to a running agent is placed at the recipient's next tool boundary, the end of its current round of tool calls, not at the end of its run. It does not interrupt a running tool. It joins the current work, so both inputs may share one answer.";
 
-/** Await release retains the original request and its exact unresolved results. */
-export const AWAIT_INPUT_DELIVERY_BOUNDARY = "Admitted explicit input, including followUp queued before or during agent_await and report mode from an ordinary primary, releases the wait with partial results and unresolved references. The input joins the current work and may share its answer. Retained report-provenance input releases the wait only for a named awaited producer. Unrelated report-provenance input, automatic traffic, and raw native Reporter result copies do not release the wait. Explicit release also returns control on the original request.";
-
 /** A report places at a tool boundary of a running recipient and starts no task. */
 export const REPORT_DELIVERY_BOUNDARY = "A report to a running agent is placed at the recipient's next tool boundary, not at the end of its run. It does not interrupt a running tool, and it starts no answer-bearing task. A report is an event for the recipient: it reads the report and continues. Use steer when the recipient must change its current work.";
 
@@ -99,7 +94,6 @@ const RESET_HANDOFF_GUIDANCE = "A handoff states the current purpose; consequent
 
 /** Per-tool snippets and guidelines for the current controls. */
 export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, AgentToolGuidance>> = {
-	agent_await: { snippet: "Await exact admitted peer results on the original request", guidelines: ["Use agent_await when this request's answer depends on admitted results from other agents. Waiting is a capability, not a staffing rule; you remain free to do substantive work yourself and delegate only the parts that benefit. Ordinary primaries have no native await; they stay responsive and receive each result through normal delivery.", `Use a short codemode script to spawn or send work, return the exact admitted result references, then call agent_await directly with them. A script cannot call agent_await, so waiting keeps no codemode worker. The native wait keeps this request open without provider calls merely to wait. ${AWAIT_INPUT_DELIVERY_BOUNDARY} Apply the input and await unresolved references again on this same request. A terminal answer settles it once; never answer only to wait.`, "Creation records, reports, timers, names, and latest answers are not result references. Preserve known request IDs. Waiting retains a live tool invocation, native records, observers, and the host process. Storage usage is not per-request usage."] },
 	agent_spawn: {
 		snippet: "Spawn a background full agent session",
 		guidelines: [

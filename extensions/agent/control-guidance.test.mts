@@ -114,20 +114,8 @@ it("distinguishes normal follow-up timing from admitted await interaction", () =
 	assert.match(send, /Model-origin reports to ordinary primaries use steer/u);
 	assert.match(send, /steer does not interrupt a running tool/u);
 	assert.doesNotMatch(send, /this report waits for its current run to end/u);
-	const awaiting = AGENT_CONTROL_GUIDANCE.agent_await.guidelines?.join("\n") ?? "";
-	assert.match(awaiting, /followUp queued before or during agent_await/u);
-	assert.match(awaiting, /input joins the current work and may share its answer/u);
-	assert.match(awaiting, /Retained report-provenance input releases the wait only for a named awaited producer/u);
-	assert.match(awaiting, /Unrelated report-provenance input, automatic traffic, and raw native Reporter result copies do not release the wait/u);
-	assert.match(awaiting, /Explicit release also returns control on the original request/u);
 });
 
-it("teaches spawning from a script and awaiting directly", () => {
-	const awaiting = AGENT_CONTROL_GUIDANCE.agent_await.guidelines?.join("\n") ?? "";
-	assert.match(awaiting, /short codemode script to spawn or send work/u);
-	assert.match(awaiting, /call agent_await directly/u);
-	assert.match(awaiting, /A script cannot call agent_await/u);
-});
 
 it("describes retained delivery and opt-in unfinished-task check-ins", () => {
 	const all = JSON.stringify(AGENT_CONTROL_GUIDANCE);

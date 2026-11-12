@@ -29,10 +29,6 @@ it("keeps native await off ordinary primaries and treats waiting as a capability
 	} as unknown as ExtensionAPI);
 	assert.equal(tools.has("agent_await"), false);
 	assert.ok(tools.has("agent_spawn"));
-	const awaiting = AGENT_CONTROL_GUIDANCE.agent_await.guidelines?.join("\n") ?? "";
-	assert.match(awaiting, /Waiting is a capability, not a staffing rule/u);
-	assert.match(awaiting, /free to do substantive work yourself/u);
-	assert.match(awaiting, /Ordinary primaries have no native await; they stay responsive and receive each result through normal delivery/u);
 });
 
 it("declares quiet gate windows and attributes member conditions without permission", () => {
