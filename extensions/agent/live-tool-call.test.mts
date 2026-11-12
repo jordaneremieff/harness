@@ -59,7 +59,7 @@ it("observes a provider's live tool call through native status, frames, and comp
 			return completed(answerMessage("Finished"));
 		}
 		const task = input.messages.findLast((message) => message.role === "user");
-		if (task?.content === "Observe the storage") return completed(toolCallMessage("agent_status", {}));
+		if (task?.content === "Observe the storage") return completed(toolCallMessage("agent_status", { sessionId: fixtureStorageId, detail: true }));
 		assert.equal(task?.content, "Stream a tool call");
 		const events = createAssistantMessageEventStream();
 		events.push({ type: "start", partial });
@@ -94,10 +94,11 @@ it("observes a provider's live tool call through native status, frames, and comp
 	await published.promise;
 	const observer = await host.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: testModel.provider, modelId: testModel.id } } }, context);
 	await (await observer.submit({ type: "input", content: "Observe the storage", requestId: "observe" }, context)).wait(context);
-	assert.ok(observed, "the model issued native agent_status({}) through the real contribution and host dispatch");
+	assert.ok(observed, "the model issued native selected detail through the real contribution and host dispatch");
 	assert.equal(observed.isError, false, JSON.stringify(observed.content));
-	const status = structuredObservation(StatusOutputSchema, observed.details) as { conversations: { conversationId: number; live: Durable.LiveState }[] };
-	const workerStatus = status.conversations.find((row) => row.conversationId === worker.id);
+	const status = structuredObservation(StatusOutputSchema, observed.details) as { conversation: { conversationId: number; live: Durable.LiveState } };
+	const workerStatus = status.conversation;
+	assert.equal(workerStatus.conversationId, worker.id);
 	assert.ok(workerStatus?.live.generation?.message);
 	assert.deepEqual(workerStatus.live.generation.message.content[1], streamedCall);
 	structuredObservation(StatusOutputSchema, await dispatch("status", { sessionId: fixtureStorageId }));

@@ -103,7 +103,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 		return nested;
 	};
 	for (const [name, view] of [["agent_status", "status"], ["agent_inspect", "activity"], ["agent_inspect", "history"]] as const) {
-		const result = await invoke(name, { sessionId: ordinaryId, ...(name === "agent_inspect" ? { view } : {}) });
+		const result = await invoke(name, { sessionId: ordinaryId, ...(name === "agent_status" ? { detail: true } : { view }) });
 		assert.equal(result.isError, false, JSON.stringify(result));
 		const schema = (tools.find((tool) => tool.name === name) as { structuredOutputSchema?: Schema } | undefined)?.structuredOutputSchema;
 		assert.ok(schema);

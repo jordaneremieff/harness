@@ -158,8 +158,11 @@ it("advertises registered Agent continuity tools on the public native service-lo
 		const registered = services.registry.snapshot().tools().map(({ tool }) => tool.name);
 		for (const declaration of declarations) assert.ok(registered.includes(declaration.name), declaration.name);
 		assert.equal(declarations[0].accepts, undefined);
-		assert.equal(declarations[3].accepts?.({ sessionId: "existing", message: "done", mode: "report" }), true);
-		assert.equal(declarations[3].accepts?.({ sessionId: "existing", message: "done", mode: "report", passive: true }), false);
+		const recipient = "00000000-0000-4000-8000-000000000099";
+		assert.equal(declarations[3].accepts?.({ sessionId: recipient, message: "done", mode: "report" }), true);
+		assert.equal(declarations[3].accepts?.({ sessionId: recipient, message: "done", mode: "report", passive: true }), true);
+		assert.equal(declarations[3].accepts?.({ sessionId: "existing", message: "done", mode: "report" }), false);
+		assert.equal(declarations[3].accepts?.({ sessionId: recipient, message: "done", mode: "report", passive: "true" }), false);
 		const conversation = await installed.harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
 		const result = await (await conversation.submit({ type: "input", content: "Check native registration" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
 		assert.equal(result.status, "done");

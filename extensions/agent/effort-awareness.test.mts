@@ -19,6 +19,7 @@ import type { EffortReadResources } from "./effort-presence.ts";
 import { EffortAwarenessSchema } from "./effort-schema.ts";
 import type { PrimaryIntentClaim } from "./effort-presence.ts";
 import { PRIMARY_ENDPOINT_VERSION, primaryEndpointPath } from "./primary-channel.ts";
+import { StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
 
 function fixture(t: { after(fn: () => void): void }) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "effort-awareness-")));
@@ -315,7 +316,7 @@ it("refreshes native root and child sections at model requests while stable stat
 	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("No other live effort is shown."));
 });
 
-it("adds awareness only to native untargeted status and preserves host fields and selected status", async (t) => {
+it("omits awareness from compact native status and preserves selected detail", async (t) => {
 	const ambientMarker = ambientPreferences(t);
 	const { root: sessionsRoot } = fixture(t);
 	const peer = randomUUID();
@@ -323,6 +324,9 @@ it("adds awareness only to native untargeted status and preserves host fields an
 	const requests: Message[][] = [];
 	const calls: Readonly<Record<string, unknown>>[] = [];
 	const hostStatus = { conversations: [], live: false, storageId: randomUUID(), coverage: { complete: true, returned: 0, scanned: 0, next: null } };
+	const selectedStatus = { live: false, storageId: peer,
+		conversation: { conversationId: 1, identity: peer, busy: false, lastText: null, live: null, inbox: null,
+			agent: { thinkingLevel: "off", extensions: [], tools: [] }, tasks: [], submissions: [] } };
 	const faux = fauxProvider();
 	const models = createModels();
 	models.setProvider(faux.provider);
@@ -330,11 +334,11 @@ it("adds awareness only to native untargeted status and preserves host fields an
 		requests.push([...request.messages]);
 		const last = request.messages.findLast((message) => message.role !== "system");
 		if (last?.role !== "user") return fauxAssistantMessage("DONE");
-		const args: Durable.JsonObject = last.content === "selected" ? { sessionId: peer } : last.content === "fleet" ? { view: "fleet" } : {};
+		const args: Durable.JsonObject = last.content === "selected" ? { sessionId: peer } : last.content === "detail" ? { sessionId: peer, detail: true } : last.content === "fleet" ? { view: "fleet" } : {};
 		return fauxAssistantMessage([fauxToolCall("agent_status", args)], { stopReason: "toolUse" });
 	}));
 	const registry = Durable.createRegistry();
-	registry.install(createAgentContribution({ configureSettings: () => {}, source: "/extensions/agent/index.ts", dispatch: async (method, params) => { assert.equal(method, "status"); calls.push(params); return hostStatus; } }).create({ onClose() {}, durable: Durable, storageId: randomUUID(), catalogRoot: join(sessionsRoot, "durable"), cwd: sessionsRoot, agentDir: sessionsRoot, services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } } }));
+	registry.install(createAgentContribution({ configureSettings: () => {}, source: "/extensions/agent/index.ts", dispatch: async (method, params) => { assert.equal(method, "status"); calls.push(params); return params.sessionId === peer ? selectedStatus : hostStatus; } }).create({ onClose() {}, durable: Durable, storageId: randomUUID(), catalogRoot: join(sessionsRoot, "durable"), cwd: sessionsRoot, agentDir: sessionsRoot, services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } } }));
 	const context = BACKGROUND_CONTEXT;
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
 	t.after(async () => { await harness.close(context); });
@@ -348,20 +352,32 @@ it("adds awareness only to native untargeted status and preserves host fields an
 	assert.equal(overview?.role, "toolResult");
 	const text = overview?.role === "toolResult" ? overview.content.flatMap((part) => part.type === "text" && part.text.startsWith("{") ? [part.text] : []).at(0) : "";
 	assert.ok(text, JSON.stringify(overview));
-	const structured = JSON.parse(text ?? "") as typeof hostStatus & { awareness: Awaited<ReturnType<typeof readEffortAwareness>> };
+	const structured = JSON.parse(text ?? "") as typeof hostStatus & { format: string; omitted: string[] };
+	structuredObservation(StatusToolOutputSchema, structured);
 	assert.deepEqual({ conversations: structured.conversations, live: structured.live, storageId: structured.storageId, coverage: structured.coverage }, hostStatus);
-	assert.equal(structured.awareness.presence.efforts[0]?.id, peer);
+	assert.equal(structured.format, "compact");
+	assert.equal("awareness" in structured, false);
+	assert.equal("createdAgents" in structured, false);
+	assert.deepEqual(structured.omitted, ["host inventory", "effort awareness", "created-agent detail"]);
 	await say("selected");
 	const selected = requests.at(-1)?.findLast((message) => message.role === "toolResult");
 	const selectedText = selected?.role === "toolResult" ? selected.content.flatMap((part) => part.type === "text" && part.text.startsWith("{") ? [part.text] : []).at(0) : "";
-	assert.deepEqual(JSON.parse(selectedText ?? ""), hostStatus);
+	const selectedResult = JSON.parse(selectedText ?? "");
+	structuredObservation(StatusToolOutputSchema, selectedResult);
+	assert.equal(selectedResult.format, "compact");
+	assert.equal(selectedResult.conversation.identity, peer);
+	assert.equal("awareness" in selectedResult, false);
+	await say("detail");
+	const detail = requests.at(-1)?.findLast((message) => message.role === "toolResult");
+	const detailText = detail?.role === "toolResult" ? detail.content.flatMap((part) => part.type === "text" && part.text.startsWith("{") ? [part.text] : []).at(0) : "";
+	assert.deepEqual(JSON.parse(detailText ?? ""), selectedStatus);
 	await say("fleet");
 	const fleet = requests.at(-1)?.findLast((message) => message.role === "toolResult");
 	const fleetText = fleet?.role === "toolResult" ? fleet.content.flatMap((part) => part.type === "text" && part.text.startsWith("{") ? [part.text] : []).at(0) : "";
 	const fleetResult = JSON.parse(fleetText ?? "");
 	assert.equal(fleetResult.view, "fleet");
 	assert.equal("awareness" in fleetResult, false);
-	assert.deepEqual(calls, [{}, { sessionId: peer }]);
+	assert.deepEqual(calls, [{}, { sessionId: peer }, { sessionId: peer }]);
 });
 
 it("resolves the reader location through the supplied resolver and only when the caller has no repository", async (t) => {

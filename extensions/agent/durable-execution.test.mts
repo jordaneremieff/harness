@@ -15,8 +15,8 @@ import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox, type CodemodeRunOptions, type CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
 import { StdioTransport } from "@earendil-works/pi-mcp";
 import { CodemodeWorkerQueue, QueuedCodemodeSandbox } from "./codemode-admission.ts";
-import type { CreatedAgents } from "./agent-lineage.ts";
-import type { readEffortAwareness } from "./effort-awareness.ts";
+import { readCreatedAgents } from "./agent-lineage.ts";
+import { agentChildrenDoc } from "./children.ts";
 import { StatusOutputSchema, StatusToolOutputSchema } from "./observation-schema.ts";
 import { convertMcpResult, createDurableExecution, loadMcpConfig, type DurableExecutionHost } from "./durable-execution.ts";
 import { createAgentContribution, type AgentContributionHost } from "./durable-agents.ts";
@@ -288,7 +288,7 @@ it("returns admitted spawn and send references as native codemode objects", { ti
 	assert.notEqual(output.spawned.result?.submissionId, output.sent.result?.submissionId);
 });
 
-it("preserves native lineage and effort awareness together through codemode", { timeout: 30000 }, async (t) => {
+it("preserves compact native status and retained creation facts through codemode", { timeout: 30000 }, async (t) => {
 	const { createAgentContribution } = await import("./durable-agents.ts");
 	const { PRIMARY_ENDPOINT_VERSION, primaryEndpointPath } = await import("./primary-channel.ts");
 	const peer = randomUUID();
@@ -296,11 +296,15 @@ it("preserves native lineage and effort awareness together through codemode", { 
 	const captured: ToolExecutionResult[] = [];
 	const calls: Readonly<Record<string, unknown>>[] = [];
 	const hostStatus = { conversations: [], live: false, storageId: "fixture-execution", coverage: { complete: true, returned: 0, scanned: 0, next: null } };
+	const selectedStatus = { live: false, storageId: peer,
+		conversation: { conversationId: 1, identity: peer, busy: false, lastText: null, live: null, inbox: null,
+			agent: { thinkingLevel: "off", extensions: [], tools: [] }, tasks: [], submissions: [] } };
 	const f = await executionFixture(t, {
 		code: `const before = await tools.agent_status({});
 			for (let i = 0; i < 21; i++) await tools.agent_spawn({ name: ${JSON.stringify(label)} + i, model: ${JSON.stringify(`${fixtureProvider}/${fixtureModelId}`)} });
 			return { before, combined: await tools.agent_status({}),
 				selected: await tools.agent_status({ sessionId: ${JSON.stringify(peer)} }),
+				detail: await tools.agent_status({ sessionId: ${JSON.stringify(peer)}, detail: true }),
 				fleet: await tools.agent_status({ view: "fleet" }) };`,
 		builtinExtensions: (host) => {
 			const sessionsRoot = join(host.agentDir, "sessions");
@@ -315,7 +319,7 @@ it("preserves native lineage and effort awareness together through codemode", { 
 			}));
 			return [createAgentContribution({ configureSettings: () => {},
 				source: fileURLToPath(new URL("./index.ts", import.meta.url)),
-				dispatch: async (method, params) => { assert.equal(method, "status"); calls.push(params); return hostStatus; },
+				dispatch: async (method, params) => { assert.equal(method, "status"); calls.push(params); return params.sessionId === peer ? selectedStatus : hostStatus; },
 			}).create({ ...host, catalogRoot }), host.durable.defineExtension({
 				name: "fixture.status-capture",
 				hooks: [host.durable.hook(host.durable.ToolTask, { afterTool(call, result) {
@@ -325,36 +329,38 @@ it("preserves native lineage and effort awareness together through codemode", { 
 			})];
 		},
 	});
-	const result = await f.submit("Read native lineage and current effort together");
-	type Overview = typeof hostStatus & { createdAgents?: CreatedAgents; awareness?: Awaited<ReturnType<typeof readEffortAwareness>> };
-	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { before: Overview; combined: Overview; selected: Overview; fleet: Record<string, unknown> };
-	assert.equal(captured.length, 4);
-	for (const [index, value] of [output.before, output.combined, output.selected, output.fleet].entries()) {
+	const result = await f.submit("Read compact status and selected detail");
+	type Overview = typeof hostStatus & { format: string; omitted: string[]; createdAgents?: unknown; awareness?: unknown };
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { before: Overview; combined: Overview; selected: { format: string; conversation: { identity: string } }; detail: typeof selectedStatus; fleet: Record<string, unknown> };
+	assert.equal(captured.length, 5);
+	for (const [index, value] of [output.before, output.combined, output.selected, output.detail, output.fleet].entries()) {
 		assert.equal(matchesSchema(StatusToolOutputSchema, value), true, JSON.stringify(schemaErrors(StatusToolOutputSchema, value, 10)));
 		assert.deepEqual(captured[index]?.structuredOutput, value, "codemode retains the native structured result");
 		assert.notEqual(captured[index]?.isError, true);
 	}
-	assert.equal(output.before.createdAgents, undefined);
-	assert.equal(output.before.awareness?.presence.efforts[0]?.id, peer);
+	for (const overview of [output.before, output.combined]) {
+		assert.equal(overview.format, "compact");
+		assert.equal(overview.createdAgents, undefined);
+		assert.equal(overview.awareness, undefined);
+		assert.deepEqual(overview.omitted, ["host inventory", "effort awareness", "created-agent detail"]);
+	}
 	const combined = output.combined;
 	assert.deepEqual({ conversations: combined.conversations, live: combined.live, storageId: combined.storageId, coverage: combined.coverage }, hostStatus);
-	assert.equal(combined.awareness?.presence.efforts[0]?.id, peer);
-	assert.ok(combined.createdAgents !== undefined);
-	assert.equal(combined.createdAgents.agents.length, 20);
-	assert.equal(combined.createdAgents?.omitted, 1);
-	assert.equal(combined.createdAgents.agents[0]?.name, `${label.slice(0, 160)}…`);
-	assert.ok(combined.createdAgents.agents.every((child) => child.kind === "conversation" && child.identity.startsWith(`${hostStatus.storageId}:`)));
-	const combinedText = messageText(captured[1]);
-	assert.deepEqual(JSON.parse(combinedText.split("\n\nCreated agents")[0] ?? ""), { ...hostStatus, awareness: combined.awareness });
-	assert.ok(combinedText.includes("Created agents (newest first; retained creation labels):"));
-	assert.ok(combinedText.includes(JSON.stringify(combined.createdAgents.agents[0]?.name)));
-	assert.ok(combinedText.endsWith("1 more omitted."));
+	assert.deepEqual(JSON.parse(messageText(captured[1])), combined);
 	assert.equal(matchesSchema(StatusOutputSchema, combined), false, "the host wire schema is not widened");
-	assert.deepEqual(output.selected, hostStatus);
+	const created = await readCreatedAgents(f.harness, agentChildrenDoc(await import("@earendil-works/pi-durable")), { storageId: hostStatus.storageId, conversationId: f.conversation.id }, BACKGROUND_CONTEXT);
+	assert.ok(created);
+	assert.equal(created.agents.length, 20);
+	assert.equal(created.omitted, 1);
+	assert.equal(created.agents[0]?.name, `${label.slice(0, 160)}…`);
+	assert.ok(created.agents.every((child) => child.kind === "conversation" && child.identity.startsWith(`${hostStatus.storageId}:`)));
+	assert.equal(output.selected.format, "compact");
+	assert.equal(output.selected.conversation.identity, peer);
+	assert.deepEqual(output.detail, selectedStatus);
 	assert.equal(output.fleet.view, "fleet");
 	assert.equal("awareness" in output.fleet, false);
 	assert.equal("lineage" in output.fleet, false);
-	assert.deepEqual(calls, [{}, {}, { sessionId: peer }]);
+	assert.deepEqual(calls, [{}, {}, { sessionId: peer }, { sessionId: peer }]);
 });
 
 it("preserves live models and environment getters in the MCP catalog adapter", { timeout: 30000 }, async (t) => {

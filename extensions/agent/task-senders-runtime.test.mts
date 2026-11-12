@@ -66,12 +66,12 @@ it("keeps foreign names absent and refuses sender backfill for an existing plain
 	const known = await task(host, foreign, "foreign-task");
 	const plain = await host.request("submit", { requestId: "plain-task", message: "Plain task", provenance: { classification: "explicit", sender: foreign } }) as { submissionId: number };
 	const outcome = await readOutcome(host.harness, plain.submissionId as Durable.SubmissionId, context);
-	await task(host, foreign, "plain-task");
+	await assert.rejects(task(host, foreign, "plain-task"), /existing request has no retained answer route/u);
 	const conversation = await host.harness.conversation(ROOT, context);
 	assert.ok(conversation);
 	const uncaptured = await conversation.submit({ type: "input", requestId: "uncaptured-task", content: "Admission without owner capture" }, context);
 	const uncapturedOutcome = await readOutcome(host.harness, uncaptured.id, context);
-	await task(host, foreign, "uncaptured-task");
+	await assert.rejects(task(host, foreign, "uncaptured-task"), /existing request has no retained answer route/u);
 	const page = await readConversationSnapshotPage(host.harness, ROOT, {}, context, storageId);
 	assert.deepEqual(page.taskSenders?.[String(known.entryId)], { identity: foreign });
 	assert.equal(page.taskSenders?.[String(outcome.entryId)], undefined);
