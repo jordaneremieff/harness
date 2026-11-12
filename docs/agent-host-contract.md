@@ -27,6 +27,8 @@ Ordinary primaries are not Durable targets. Their separate presence/message chan
 
 ## Native communication provenance
 
+A `submit` request that delivers a result accepts optional `deliveredResults`: every `{sessionId,submissionId,requestId}` reference that the delivered body settles, not the bounded sample of the communication value. The host validates the list before it admits the body and refuses an invalid list without an admission. After admission it marks each matching outgoing request of the target conversation as delivered, also when the body is a deduplicated replay or was returned to a native wait. Source: `extensions/agent/durable-host.ts`, `durable-delivery.ts`, `continuity-native.ts`.
+
 The existing `submit` and `passive-submit` request objects accept optional `communication: Communication`. This application value never changes native input parameters, model content, admission order, cancellation, reply routing or settlement. Inputs without an envelope keep the original path. Metadata rejection does not reject or resubmit an otherwise valid input.
 
 `Communication` is a closed object with `format: "agent.communication/1"`, `sender`, `body`, `recordedAt`, `kind` and `metadata`. Sender identity is the canonical external conversation identity; optional name and kind are checked supplied facts, not labels or inferred roles. Body has `text`, `complete` and `redacted`. Redaction or omission requires `complete:false`. These local same-user assertions establish neither cryptographic authentication nor instruction authority.
@@ -469,7 +471,7 @@ For every member in the following set, request and response are both `<member>/1
 
 ```text
 close attach acknowledge abort release reset
- timer-list timer-cancel observe-close models
+ timer-list observe-close models
  collaboration-list await-release
 ```
 
@@ -495,7 +497,7 @@ Overrides and remaining members:
 | Member | Request | Response | Durable |
 |---|---|---|---|
 | recovery-state | recovery-state/1.0.0 | recovery-state/1.1.0 | absent |
-| submit | submit/1.4.0 | submit/1.2.0 | absent |
+| submit | submit/1.5.0 | submit/1.2.0 | absent |
 | report | report/2.0.0 | report/1.1.0 | absent |
 | passive-submit | passive-submit/2.0.0 | passive-submit/1.0.0 | absent |
 | spawn | spawn/2.0.0 | spawn/2.0.0 | absent |
@@ -514,6 +516,7 @@ Overrides and remaining members:
 | configure | configure/1.3.0 | configure/1.3.0 | absent |
 | command | command/1.2.0 | command/1.1.0 | D |
 | timer-schedule | timer-schedule/1.1.0 | timer-schedule/2.0.0 | absent |
+| timer-cancel | timer-cancel/1.0.0 | timer-cancel/1.1.0 | absent |
 | dashboard | dashboard/1.0.0 | H-dashboard | absent |
 | snapshot | snapshot/1.0.0 | snapshot/2.0.0 | D |
 | observe-open | observe-open/1.0.0 | observe-open/2.0.0 | D |
@@ -1076,6 +1079,10 @@ Params: `{sessionId,message,deliverAt,mode?,origin?,ownerId,scheduleId?,requestI
 The session-scoped `agent.timer-schedule` document family stores only the schedule key's native task ID and payload fingerprint. The key and new native timer commit together. The fingerprint binds target, message, absolute deadline, mode, origin, owner, request ID, normalised check-in interval and request context, excluding creation time. Conflicting payload reuse refuses. Native task input and outcome remain authoritative. Listing pruning does not remove the keyed identity.
 
 A missing index entry triggers a storage-wide timer-kind task scan, including terminal tasks and other conversations. A unique retained match is adopted for that key only. Ambiguous or incomplete bounded lookup refuses admission. The scan bounds are `TIMER_LOOKUP_PAGE_SIZE` and `TIMER_LOOKUP_PAGE_LIMIT` in `durable-timers.ts`; there is no bulk backfill. Timer execution still uses native `sleepUntil`. Cancellation reads the native task even after listing pruning; an already admitted input reports `fired`, never prevented admission.
+
+### timer-cancel
+
+Params: `{sessionId?,timerId}`. The result is `{timerId,outcome,status,identity}`. `status` is `cancelled`, `fired`, `faulted` or `orphaned`. `identity` is the canonical external identity of the conversation that the host resolved from `sessionId`, in the same form as the `timer-schedule` result. Timer IDs are local to one storage, so a caller that tracks a scheduled input closes it only for that identity and only on `cancelled`. Source: `extensions/agent/durable-host.ts`, `durable-timers.ts`, `continuity-admission.ts`.
 
 ### place
 
