@@ -129,7 +129,7 @@ it("states a failed open-work read in the note of that head and does not repeat 
 	await harness.commit((tx) => tx.appendEntry(conversation.id, { kind: "pi.reset", head: "self" }), context);
 	await mirror.prepare(conversation.id, context);
 	const unread = mirror.current(conversation.id);
-	assert.match(unread?.text ?? "", /Declared open work of this session: not read for this context head\. Read it with agent_status\.$/u);
+	assert.match(unread?.text ?? "", /Declared open work of this session: not read for this context head\. Read it with agent_status\(\{"sessionId":"owner"\}\)\.$/u);
 	assert.equal((await harness.snapshot(ContinuityDoc, conversation.id, context))?.work, undefined, "a refused read retains nothing");
 	await harness.commit(async (tx) => { (await tx.doc(OpenWorkDoc, conversation.id)).items[0].replyTo = "owner"; }, context);
 	await mirror.prepare(conversation.id, context);

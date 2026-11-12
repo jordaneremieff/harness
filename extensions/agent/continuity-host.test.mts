@@ -407,6 +407,9 @@ it("states the declared open work of a context head in its note, unchanged by la
 		JSON.stringify({ requestId: "input-1", replyTo: owner, dependsOn: [{ sessionId: "99999999-9999-4999-8999-999999999999", submissionId: 9, requestId: "peer-task" }] }),
 	].join("\n"));
 	assert.doesNotMatch(noteOf(before), /waiting for the peer/u, "the item's own note stays in status");
+	assert.ok(noteOf(before).endsWith(`with agent_status(${JSON.stringify({ sessionId: storageId })}).`), "the note names the status call of this exact session");
+	const selected = await first.request("status", { sessionId: storageId }) as { conversation: { openWork?: { requestId: string; note: string }[] } };
+	assert.deepEqual(selected.conversation.openWork?.map((item) => [item.requestId, item.note]), [["input-1", "waiting for the peer"]], "that call returns the item with its note");
 	assert.ok(recorded.provider.at(-1)?.includes("Declared open work of this session at the first request"), "the provider request carries the open work");
 
 	// The item closes and another opens: the note of this head keeps the items of its first request.

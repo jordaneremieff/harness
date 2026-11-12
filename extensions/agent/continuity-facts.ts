@@ -117,20 +117,22 @@ export function continuityText(ownerId: string, headId: string | number, facts: 
 }
 /**
  * Declared open work as one context head first saw it. The rows carry identifiers only: an item's
- * note and the state of its dependencies change after the read, and status holds them.
+ * note and the state of its dependencies change after the read, and the status of the selected
+ * session holds them, so the text names that exact call.
  */
-export function continuityWorkText(items: readonly ContinuityOpenWork[] | undefined): string {
-	if (items === undefined) return "Declared open work of this session: not read for this context head. Read it with agent_status.";
+export function continuityWorkText(ownerId: string, items: readonly ContinuityOpenWork[] | undefined): string {
+	const status = `agent_status(${JSON.stringify({ sessionId: ownerId })})`;
+	if (items === undefined) return `Declared open work of this session: not read for this context head. Read it with ${status}.`;
 	const rows = items.map((item) => JSON.stringify({
 		requestId: item.requestId, replyTo: item.replyTo,
 		dependsOn: item.results.map((result) => ({ sessionId: result.sessionId, submissionId: result.submissionId, ...(result.requestId === undefined ? {} : { requestId: result.requestId }) })),
 	}));
 	const list = listed("Declared open work of this session at the first request after this context head; each item owes one final report to its replyTo", rows);
-	return rows.length === 0 ? list : `${list}\nOnly agent_work complete closes an item. Read current items, notes and dependency states with agent_status.`;
+	return rows.length === 0 ? list : `${list}\nOnly agent_work complete closes an item. Read current items, notes and dependency states with ${status}.`;
 }
 /** `work` counts only when it was read for this head; open work of another head never enters the note. */
 export function nativeContinuityText(ownerId: string, headId: number, events: readonly ContinuityEvent[], work?: ContinuityWork): string {
-	return `${continuityText(ownerId, headId, events.filter((event) => event.afterHead < headId))}\n${continuityWorkText(work?.headId === headId ? work.items : undefined)}`;
+	return `${continuityText(ownerId, headId, events.filter((event) => event.afterHead < headId))}\n${continuityWorkText(ownerId, work?.headId === headId ? work.items : undefined)}`;
 }
 
 /** Pi supplies the current compaction entry ID through buildContextEntries()[0]. */
