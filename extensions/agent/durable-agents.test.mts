@@ -552,6 +552,39 @@ it("declares every control tool with an explicit replay classification", () => {
 	assert.equal(contribution.source, "/abs/extensions/agent/index.ts");
 });
 
+it("labels a spawn prompt and a send without a mode as new work, and only a steer as a correction", async (t) => {
+	const route = createRoute();
+	const { registry, extension } = buildRegistry();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(async () => { await harness.close(context); });
+	const child = await spawnChild(harness, root, route, "labelled", "SPAWNED");
+	const sessionId = `${storageId}:${child.conversationId}`;
+	const call = async (tool: string, args: Durable.JsonObject): Promise<void> => {
+		route.script.push({ tool, args });
+		await say(root, `RUN ${tool}`);
+		await settle(harness, root.id);
+	};
+	await call("agent_send", { sessionId, message: "CONTRACT: reply DEFAULT" });
+	await call("agent_send", { sessionId, message: "CONTRACT: reply FOLLOW", mode: "followUp" });
+	await call("agent_send", { sessionId, message: "CONTRACT: reply CORRECT", mode: "steer" });
+	await call("agent_steer", { sessionId, message: "CONTRACT: reply STEERED" });
+	const classes: Record<string, unknown> = {};
+	for (const entry of await entriesOf(harness, child.conversationId)) {
+		if (entry.kind === "agent.input") classes[messageText(entry.model?.[0])] = (entry.data as { class?: unknown }).class;
+	}
+	assert.deepEqual(classes, {
+		"CONTRACT: reply SPAWNED": "followUp",
+		"CONTRACT: reply DEFAULT": "followUp",
+		"CONTRACT: reply FOLLOW": "followUp",
+		"CONTRACT: reply CORRECT": "steer",
+		"CONTRACT: reply STEERED": "steer",
+	});
+	const send = extension.tools?.find((tool) => tool.name === "agent_send");
+	assert.ok(send);
+	const mode = (send.parameters as { properties: Record<string, { description?: string }> }).properties.mode;
+	assert.match(mode.description ?? "", /Default followUp: new work/u, "the schema states the default class");
+});
+
 it("saves an explicit handle-less creation role and documents it in both schemas", async (t) => {
 	const ordinary: { name: string; parameters: { properties: Record<string, { description?: string }> } }[] = [];
 	await registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: typeof ordinary[number]) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
@@ -1838,7 +1871,7 @@ it("namespaces foreign admissions by source storage even when task IDs coincide"
 	assert.equal(receiver.size, 2);
 });
 
-for (const mode of [undefined, "steer", "followUp"]) it(`honors immediate send disposition ${mode ?? "default steering"}`, async (t) => {
+for (const mode of [undefined, "steer", "followUp"]) it(`honors immediate send disposition ${mode ?? "default followUp"}`, async (t) => {
 	const route = createRoute();
 	const calls: DispatchCalls = [];
 	const { registry } = buildRegistry(async (method, params) => { calls.push({ method, params }); return { submissionId: 1, deduped: false }; });
@@ -1847,7 +1880,7 @@ for (const mode of [undefined, "steer", "followUp"]) it(`honors immediate send d
 	route.script.push({ tool: "agent_send", args: { sessionId: "remote-storage", message: "A time-sensitive correction", checkInMinutes: 0, ...(mode === undefined ? {} : { mode }) } });
 	await say(root, "SEND");
 	assert.equal(calls[0].method, "submit");
-	assert.equal(calls[0].params.whenBusy, mode ?? "steer");
+	assert.equal(calls[0].params.whenBusy, mode ?? "followUp", "a send without a mode is new work");
 	assert.match(String(calls[0].params.requestId), /^agent-deliver:test-storage:\d+$/u);
 });
 

@@ -366,7 +366,7 @@ const SendParams = obj(
 			}),
 		),
 		mode: opt(
-			StringEnum(["followUp", "steer", "report"]),
+			StringEnum(["followUp", "steer", "report"], { description: "Class of the message, not a placement time. Default followUp: new work. steer corrects the recipient's current work. report is an event for the recipient." }),
 		),
 		passive: opt(bool({ description: "Report mode only. Enter context at the next normal boundary without attention." })),
 		checkInMinutes: CheckInParams,
@@ -1002,7 +1002,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (args.prompt !== undefined) {
 			const reporter = await tx.createTask(
 				Reporter,
-				reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes, "model", host.agentDir)),
+				reporterInput(child.name, child.conversationId, args.prompt, "followUp", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes, "model", host.agentDir)),
 				{ ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true },
 			);
 			registry.reporters[String(api.taskId)] = reporter;
@@ -1125,7 +1125,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const outcome = await localSpawn(api, context, args, cwd);
 		if (outcome.kind === "error") return errorResult(outcome.message);
 		const child = outcome.child;
-		const admission = args.prompt === undefined ? undefined : await admitLocal(api, context, await admissionOwner(api, context), reporterInput(child.name, child.conversationId, args.prompt, "steer", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes, "model", host.agentDir)), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
+		const admission = args.prompt === undefined ? undefined : await admitLocal(api, context, await admissionOwner(api, context), reporterInput(child.name, child.conversationId, args.prompt, "followUp", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes, "model", host.agentDir)), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
 		return textResult(
 			(outcome.deduped
 				? `Reused the agent created by this call: ${child.name} (${identity(child.conversationId)}).`
@@ -1311,7 +1311,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				if (args.deliverAt !== undefined || args.replyTo !== undefined || args.checkInMinutes !== undefined) return errorResult("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
 				return dispatchControl("report", { sessionId: args.sessionId, senderIdentity: identity(api.conversationId), message: args.message, requestId: `report:${host.storageId}:${api.taskId}`, ...(args.passive === undefined ? {} : { passive: args.passive }) }, "Report delivery failed");
 			}
-			return args.deliverAt === undefined ? sendTarget(api, context, args.sessionId, args.message, args.mode ?? "steer", args.replyTo, checkInMinutes(args.checkInMinutes, "model", host.agentDir)) : scheduleSend(api, context, args);
+			return args.deliverAt === undefined ? sendTarget(api, context, args.sessionId, args.message, args.mode ?? "followUp", args.replyTo, checkInMinutes(args.checkInMinutes, "model", host.agentDir)) : scheduleSend(api, context, args);
 		},
 	});
 
@@ -1423,7 +1423,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		};
 		registry.children.push(child);
 		if (prompt !== undefined) {
-			const reporter = await tx.createTask(Reporter, reporterInput(child.name, forked.id, prompt, "steer"), {
+			const reporter = await tx.createTask(Reporter, reporterInput(child.name, forked.id, prompt, "followUp"), {
 				ownership: { kind: "conversation" },
 				conversationId: api.conversationId,
 				background: true,
