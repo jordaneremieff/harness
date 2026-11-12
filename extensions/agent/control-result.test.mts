@@ -48,6 +48,21 @@ it("states unavailable body without fabricating a page or changing exact evidenc
 	assert.equal(controlText(undefined), "Host control completed without a result.");
 });
 
+it("renders a final report page with the status of its input beside the close status of the work", () => {
+	const read = { tool: "agent_inspect", view: "result", sessionId: "producer:2", submissionId: 7, finalReport: true, offset: 4096 };
+	const page = { view: "result", sessionId: "producer:2", conversationId: 2, submissionId: 7, requestId: "input-7", status: "unanswered",
+		work: { state: "closed", finalReport: { requestId: "work-final:2:input-7", ownerId: "reader", status: "done", delivery: "active", read: { ...read, offset: 0 } } },
+		finalReport: { requestId: "work-final:2:input-7", ownerId: "reader", status: "done", text: "Final work result (done) for request input-7\n\nthe survey", length: 9000, offset: 0, nextOffset: 4096, truncated: true },
+		finalReportContinuation: read, usage: { models: {}, tools: {} } };
+	assert.equal(matchesSchema(ResultToolOutputSchema, page), true);
+	const text = readableControlText(page);
+	assert.ok(text.startsWith(`${page.finalReport.text}\n\nFinal report page: `));
+	const identity = JSON.parse(text.split("\n\n")[2].slice("Final report page: ".length)) as Record<string, unknown>;
+	assert.deepEqual([identity.inputStatus, identity.status, identity.requestId, identity.reportRequestId], ["unanswered", "done", "input-7", "work-final:2:input-7"]);
+	assert.doesNotMatch(text, /State note|No answer body/u);
+	assert.match(text, /\n\nFinal report continuation: agent_inspect\(\{"view":"result","sessionId":"producer:2","submissionId":7,"finalReport":true,"offset":4096\}\)$/u);
+});
+
 it("removes report body from retained sender receipts and preserves acknowledged replay", () => {
 	for (const acknowledged of [false, true]) {
 		const original = { sourceId: "report:r1", requestId: "r1", ownerId: "recipient", senderIdentity: "sender", replyTo: null, createdAt: 7, acknowledged, passive: true,

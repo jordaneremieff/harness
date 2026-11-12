@@ -1943,10 +1943,12 @@ item left the bounded work document, from the retained final report row.
   retained report text exactly. The retained report decides this page, not
   the settlement of the input: the report of closed work is readable while
   its input is still placed and after that input ended unanswered. `status`
-  stays the status of the input, and the page carries no answer. A page for
-  open work returns `reason` and no text; a request without closed declared
-  work refuses. `finalReport` refuses outside the result view and with
-  `receiptCursor`.
+  stays the status of the input, and the page carries no answer. The tool
+  text of the page shows the report text first, then one identity line that
+  names the status of the input as `inputStatus` and the close status of the
+  work as `status`. A page for open work returns `reason` and no text; a
+  request without closed declared work refuses. `finalReport` refuses outside
+  the result view and with `receiptCursor`.
 
 Execute each returned call unchanged. A complete result page, including its
 identity, body and receipt metadata, fits 65,536 serialised UTF-8 bytes; a

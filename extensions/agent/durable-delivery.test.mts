@@ -1307,6 +1307,7 @@ it("reads the final report of a run that completed its work and then ended witho
 	assert.ok(typeof stopped.reason === "string" && stopped.reason.length > 0);
 	assert.match(readableControlText(stopped), /Declared work: closed\.\n\nFinal report: .*\n\nRead the final report: agent_inspect\(/u);
 	assert.doesNotMatch(readableControlText(stopped), /State note/u);
+	assert.match(readableControlText(await inspect({ view: "result", submissionId: completed.submissionId, finalReport: true })), /\n\nFinal report page: \{[^\n]*"inputStatus":"unanswered"[^\n]*"status":"done"/u, "the tool text of the report page names the outcome of the input");
 	assert.equal(await readAll(read, "unanswered"), label + message, "the report is complete after its input ended unanswered");
 	const status = await source.request("status", { sessionId: storageId }) as { conversation: { openWork?: Array<{ requestId: string; state: string; close?: { status: string; read: unknown } }> } };
 	assert.deepEqual(status.conversation.openWork?.map((item) => [item.requestId, item.state, item.close?.status, item.close?.read]), [["task-a", "closed", "done", read]], "the abort leaves the closed item and its read call");

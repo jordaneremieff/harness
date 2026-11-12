@@ -45,9 +45,13 @@ function workLines(value: Record<string, unknown>): string[] {
 	];
 }
 
+/**
+ * The report text, then its identity. `inputStatus` is the status of the declaring input and `status` the close
+ * status of the work: a report is readable for an input that is still placed or that ended unanswered.
+ */
 function readableFinalReport(value: Record<string, unknown>, page: Record<string, unknown>): string {
 	const identity = {
-		sessionId: value.sessionId, conversationId: value.conversationId, submissionId: value.submissionId, requestId: value.requestId,
+		sessionId: value.sessionId, conversationId: value.conversationId, submissionId: value.submissionId, requestId: value.requestId, inputStatus: value.status,
 		reportRequestId: page.requestId, ownerId: page.ownerId, status: page.status, length: page.length, offset: page.offset, nextOffset: page.nextOffset, truncated: page.truncated,
 	};
 	return [String(page.text), `Final report page: ${JSON.stringify(identity)}`, ...resultContinuationLines(value)].join("\n\n");
