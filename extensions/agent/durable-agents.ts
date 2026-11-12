@@ -1809,7 +1809,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const placeTool = durable.defineTool({
 		name: "agent_place",
 		description:
-			"Resolve the durable owner of a directory through the session host's shared place registry. Create it on first use; reuse it when its retained context and ownership serve the task. A prompt starts work with automatic owner check-ins. checkInMinutes sets the interval; 0 disables.",
+			"Resolve the durable owner of a directory through the session host's shared place registry. Create it on first use; reuse it when its retained context and ownership serve the task. A prompt starts work. Results arrive without check-ins. Task check-ins run only when checkInMinutes or the configured agent.checkInMinutes sets a nonzero interval; the default is 0.",
 		parameters: presetParams(PlaceParams),
 		replay: "safe",
 		execute: async (args: PlaceInput, api, context) => {
