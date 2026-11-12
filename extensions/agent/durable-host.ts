@@ -54,7 +54,7 @@ import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseI
 import { LiveObservationService, type ObservationScope } from "./live-observation.ts";
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
 import { resetConversation } from "./durable-reset.ts";
-import { closeOpenWork } from "./open-work.ts";
+import { closeOpenWork, parseDependencyMarks, recordDependencyMarks } from "./open-work.ts";
 import { TIMER_TASK_NAME, cancelTimer, listTimers, scheduleTimer, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
 
@@ -657,10 +657,12 @@ export class DurableHost {
 		const requestId = requestRequiredString(params, "requestId");
 		const delivered = params?.deliveredResults;
 		if (delivered !== undefined) validateContinuityDelivered(delivered);
+		const marks = params?.dependencyMarks === undefined ? [] : parseDependencyMarks(params.dependencyMarks);
 		// A replayed body admission is deduplicated, and a body that an active wait already returned is
 		// suppressed; in both cases the result reached this conversation, so its delivered facts complete.
 		const complete = async (): Promise<void> => {
 			if (delivered !== undefined) await this.harness.commit((tx) => recordContinuityDelivered(tx, conversation.id, delivered), context);
+			if (marks.length > 0) await this.harness.commit((tx) => recordDependencyMarks(tx, conversation.id, marks), context);
 		};
 		const submitted = await submitConversation(
 			conversation,

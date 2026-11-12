@@ -33,7 +33,7 @@ import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { threadExcerpt, threadRecoveryText } from "./thread-notice-projection.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { receiptWork, requestHasOpenWork } from "./open-work.ts";
+import { receiptDependencyMarks, receiptWork, reportDependencyMarks, requestHasOpenWork } from "./open-work.ts";
 import type { ConversationId, Harness, Tx } from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
 import {
@@ -735,6 +735,13 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	};
 
 	/** Automatic notices recheck exact source settlement after asynchronous route preparation. */
+	/** Dependency marks of an active report for the recipient's open work; a passive report carries none. */
+	const reportMarks = async (report: DeliveryReport): Promise<{ dependencyMarks?: Awaited<ReturnType<typeof reportDependencyMarks>> }> => {
+		if (report.passive) return {};
+		const dependencyMarks = await host.harness.commit((tx) => reportDependencyMarks(tx, metadata.storageId, report), BACKGROUND_CONTEXT);
+		return dependencyMarks.length === 0 ? {} : { dependencyMarks };
+	};
+
 	const reportCurrent = async (row: DeliveryRow): Promise<boolean> => {
 		if (row.kind !== "report" || (row.report.checkIn === undefined && row.report.providerRetry === undefined)) return true;
 		const report = row.report;
@@ -758,13 +765,14 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			const communicationParams = deliveryCommunicationParams(row, host);
 			const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
 			const work = await host.harness.commit((tx) => receiptWork(tx, row.receipt.conversationId, row.receipt.requestId), BACKGROUND_CONTEXT);
-			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row, continuity, work), requestId, provenance: { classification: "automatic" }, ...communicationParams, deliveredResults: deliveredResults(metadata, row), whenBusy: "followUp" });
+			const dependencyMarks = await host.harness.commit((tx) => receiptDependencyMarks(tx, metadata.storageId, row.receipts), BACKGROUND_CONTEXT);
+			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row, continuity, work), requestId, provenance: { classification: "automatic" }, ...communicationParams, deliveredResults: deliveredResults(metadata, row), dependencyMarks, whenBusy: "followUp" });
 			return;
 		}
 		if (!await reportCurrent(row)) return;
 		const requestId = reportRequestId(metadata, row.report);
 		const communicationParams = deliveryCommunicationParams(row, host);
-		await host.request(row.report.passive ? "passive-submit" : "submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, ...communicationParams, provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" });
+		await host.request(row.report.passive ? "passive-submit" : "submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, ...communicationParams, ...(await reportMarks(row.report)), provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" });
 	};
 
 	const acknowledgeRow = async (row: DeliveryRow, owners: readonly string[]): Promise<void> => {
@@ -1081,6 +1089,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			const communicationParams = deliveryCommunicationParams(row, host);
 			const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
 			const work = await host.harness.commit((tx) => receiptWork(tx, row.receipt.conversationId, row.receipt.requestId), BACKGROUND_CONTEXT);
+			const dependencyMarks = await host.harness.commit((tx) => receiptDependencyMarks(tx, metadata.storageId, row.receipts), BACKGROUND_CONTEXT);
 			await connection.request(
 				"submit",
 				{
@@ -1089,6 +1098,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 					...communicationParams,
 					message: receiptFollowText(metadata, row, continuity, work),
 					deliveredResults: deliveredResults(metadata, row),
+					dependencyMarks,
 					requestId,
 					whenBusy: "followUp",
 				},
@@ -1100,7 +1110,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			const communicationParams = deliveryCommunicationParams(row, host);
 			await connection.request(
 				row.report.passive ? "passive-submit" : "submit",
-				{ sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, ...communicationParams, provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" },
+				{ sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, ...communicationParams, ...(await reportMarks(row.report)), provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" },
 				{ requestId, signal },
 			);
 		}

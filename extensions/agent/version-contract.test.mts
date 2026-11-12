@@ -71,10 +71,10 @@ it("refuses mismatched self-owned rewind and timer request contracts in both dir
 });
 
 it("refuses a peer without the delivered-result request or the resolved timer-cancel identity", () => {
-	assert.deepEqual(HOST_CONTRACT.operations.submit, { request: "submit/1.6.0", response: "submit/1.3.0" });
+	assert.deepEqual(HOST_CONTRACT.operations.submit, { request: "submit/1.7.0", response: "submit/1.3.0" });
 	assert.deepEqual(HOST_CONTRACT.operations["timer-cancel"], { request: "timer-cancel/1.0.0", response: "timer-cancel/1.1.0" });
 	const earlier = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, submit: { ...HOST_CONTRACT.operations.submit, request: "submit/1.4.0" }, "timer-cancel": { request: "timer-cancel/1.0.0", response: "timer-cancel/1.0.0" } } };
-	assert.match(contractRefusal("submit", earlier)?.message ?? "", /submit request contract submit\/1\.4\.0 differs from submit\/1\.6\.0/u);
+	assert.match(contractRefusal("submit", earlier)?.message ?? "", /submit request contract submit\/1\.4\.0 differs from submit\/1\.7\.0/u);
 	assert.match(contractRefusal("timer-cancel", earlier)?.message ?? "", /timer-cancel response contract timer-cancel\/1\.0\.0 differs from timer-cancel\/1\.1\.0/u);
 	for (const name of Object.keys(HOST_CONTRACT.operations)) if (name !== "submit" && name !== "timer-cancel") assert.equal(contractRefusal(name, earlier), undefined, name);
 });

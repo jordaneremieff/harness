@@ -317,6 +317,6 @@ it("advertises selection-aware manager controls without changing message admissi
 	assert.deepEqual(HOST_CONTRACT.operations.place, { request: "place/2.1.0", response: "place/2.2.0" });
 	assert.deepEqual(HOST_CONTRACT.operations.configure, { request: "configure/1.3.0", response: "configure/1.3.0" });
 	assert.deepEqual(HOST_CONTRACT.operations["task-submit"], { request: "task-submit/1.1.0", response: "task-submit/1.3.0" });
-	assert.deepEqual(HOST_CONTRACT.operations.submit, { request: "submit/1.6.0", response: "submit/1.3.0" });
+	assert.deepEqual(HOST_CONTRACT.operations.submit, { request: "submit/1.7.0", response: "submit/1.3.0" });
 	assert.deepEqual(HOST_CONTRACT.operations.receipts, { request: "receipts/3.0.0", response: "receipts/3.0.0", durable: HOST_CONTRACT.upstream.durable });
 });
