@@ -267,13 +267,19 @@ inspections as a wait. After you send work:
   starts its next run. A record without a dependency gets no later run by
   itself; it stays open in the status until the native agent calls
   `agent_work` `complete`, which alone closes an item.
-  In an ordinary session, handle an event that needs no operator message
-  under "Operator status reports", then call `agent_work` `continue` with
-  the current state in `note`.
+  In an ordinary session, when only delegated work remains, or after you
+  handled an event that needs no operator message under "Operator status
+  reports", call `agent_work` `continue` with the current state in `note`
+  (the open work and its exact result references).
   Make it the only call in the last tool batch and write no chat text.
   `continue` stores the note as the current session state, shows it in a
   widget above the input, and ends the turn without a further model call.
-  In this session, `agent_work` `complete` clears the note and widget.
+  Call `agent_work` `complete` when the state that the note describes has
+  ended, for example in the turn that gives the operator the result, the
+  blocker or the question. In this session, `complete` clears the note and
+  the widget and does not end the turn, so the chat message follows it.
+  When the state changed but still needs nothing from the operator, a new
+  `continue` replaces the note.
 - **Stay reachable.** An input reaches a running agent at its next tool
   boundary, the end of its current round of tool calls. With parallel calls
   nothing is placed between two tool completions of one round. The reach of
