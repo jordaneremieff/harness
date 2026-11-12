@@ -105,6 +105,8 @@ results. A calldiff invocation does not independently create a test obligation.
 
 Derive the requested outcome, acceptance, and granted permissions from the request and established sources. Separate operator directions and binding rules from agent interpretations, including inherited plans. Record only the fixed decisions, open choices, target, and release constraints that affect execution. Apply Intent authority in the universal `AGENTS.md` to handovers and delegated task contracts.
 
+Before designing a capability, search operator memory and read matching notes for standing operator decisions about that capability. Apply those decisions within their original scope under the current request and instructions.
+
 Use the Pillars consultation procedure for corrections: Corrected-Assumption Leakage governs a corrected factual premise; Frame Abandonment governs a rejected interpretation. Carry the resulting changes into affected work rather than asking the operator to specify the outcome again.
 
 **Complete when:** named sources support the outcome and permissions, interpretations remain revisable, and no open question asks the operator to repeat a settled decision.
