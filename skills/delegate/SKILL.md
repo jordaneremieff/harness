@@ -217,11 +217,11 @@ Give the reference of every relative statement, such as "unchanged", "still",
 
 A status report tells the operator where the whole work stands: an answer to a
 question about progress, a summary of progress that you send unasked, and the
-final answer. Open it with one line that gives the local date and time of the
-report. Lead with the decision the operator must make, when one exists;
-otherwise with the answer to the question asked; otherwise with the change in
-the outcome. Then state the remaining facts in this order, so the reader finds
-each one in the same place in every report:
+final answer. Open it with one heading line that gives the local date and time
+of the report. In the text after that line, lead with the decision the operator
+must make, when one exists; otherwise with the answer to the question asked;
+otherwise with the change in the outcome. Then state the remaining facts in
+this order, so the reader finds each one in the same place in every report:
 
 1. What changed in the requested outcome since a comparison point that you
    name: your previous status report, or the start of the work. Give the time
@@ -233,8 +233,8 @@ each one in the same place in every report:
 4. What happens next and what triggers it.
 5. What the operator must do or decide.
 
-A fact with nothing to state takes one clause. The order is fixed; headings,
-layout and length are not.
+A fact with nothing to state takes one clause. The opening line and the order
+are fixed; other headings, layout and length are not.
 
 A notice of one wait, blocker or finding is not a status report. Send one only
 for a real wait, a blocker that needs the operator's decision, or a finding
