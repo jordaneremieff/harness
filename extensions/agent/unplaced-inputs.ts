@@ -1,6 +1,7 @@
 /** Admitted inputs that the recipient conversation holds in its inbox, not yet in its transcript. */
-import type { Context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { defineDoc, defineTask, LiveDoc, type ConversationId, type Harness, type SubmissionId, type SubmissionRecord, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import { onStoredCommit } from "./commit-observation.ts";
 import { retainedReport, storeDeliveryRow } from "./delivery-store.ts";
 import { openWorkItems } from "./open-work.ts";
 import { RequestContextDoc } from "./request-context.ts";
@@ -255,3 +256,78 @@ export const UnplacedWatchTask = defineTask<{ conversationId: number }, { phase:
 	},
 	abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
+
+/**
+ * End the watch of a conversation when no queued row waits for its notice any more. Returns true when a
+ * watch was ended. The next queued admission starts a new watch.
+ */
+export async function endSettledWatch(harness: Harness, conversationId: ConversationId, context: Context): Promise<boolean> {
+	if ((await harness.snapshot(UnplacedInputsDoc, conversationId, context))?.watch === undefined) return false;
+	let watch: TaskId | undefined;
+	await harness.commit(async (tx) => {
+		const rows = await pruneUnplacedInputs(tx, conversationId);
+		const state = await tx.doc(UnplacedInputsDoc, conversationId);
+		if (state.watch === undefined || rows.some((row) => !row.noticed)) return;
+		watch = state.watch as TaskId;
+		delete state.watch;
+	}, context);
+	if (watch === undefined) return false;
+	await harness.abortTask(watch, context);
+	return true;
+}
+
+/**
+ * Keeps no watch asleep behind a placed input. The watch sleeps to its notice time, and a sleeping task is live
+ * work of its host; a stored change of a submission that is no longer queued (a boundary placed it, or a
+ * settlement withdrew it) is the event that ends the watch of its conversation when nothing waits there.
+ */
+export class UnplacedWatchEnd {
+	private readonly harness: Harness;
+	private readonly report: (error: unknown) => void;
+	private readonly pending = new Set<ConversationId>();
+	private readonly detach: () => void;
+	private running?: Promise<void>;
+	private closed = false;
+
+	constructor(harness: Harness, report: (error: unknown) => void) {
+		this.harness = harness; this.report = report;
+		this.detach = onStoredCommit(harness, (publication) => {
+			for (const change of publication.changes) if (change.type === "submission" && change.value.status !== "queued") this.pending.add(change.value.conversationId);
+			this.schedule();
+		});
+	}
+
+	private schedule(): void {
+		if (this.running !== undefined || this.closed || this.pending.size === 0) return;
+		this.running = this.drain().finally(() => {
+			this.running = undefined;
+			this.schedule();
+		});
+	}
+
+	private async drain(): Promise<void> {
+		for (;;) {
+			const next = this.pending.values().next();
+			if (next.done || this.closed) return;
+			this.pending.delete(next.value);
+			try { await endSettledWatch(this.harness, next.value, BACKGROUND_CONTEXT); }
+			catch (error) {
+				// A closing Harness refuses the commit; the watch then ends at its own notice time after reopen.
+				if (!this.closed) try { this.report(new Error("The unplaced-input watch of a conversation was not ended after its inputs left the inbox", { cause: error })); } catch { /* no further route */ }
+			}
+		}
+	}
+
+	/** Resolves when no check is in flight. */
+	async flush(): Promise<void> {
+		while (this.running !== undefined) await this.running;
+	}
+
+	/** Stops observation and waits for the check in flight. */
+	async close(): Promise<void> {
+		this.closed = true;
+		this.detach();
+		this.pending.clear();
+		await this.flush();
+	}
+}

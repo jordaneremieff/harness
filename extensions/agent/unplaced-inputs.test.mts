@@ -13,7 +13,7 @@ import { waitForDeliveryFixture } from "./delivery-store-fixture.mts";
 import { onStoredCommit } from "./commit-observation.ts";
 import { OpenWorkDoc } from "./open-work.ts";
 import { RequestContextDoc } from "./request-context.ts";
-import { UNPLACED_NOTICE_MS, UnplacedInputsDoc, UnplacedWatchTask, currentStep, placementOf, pruneUnplacedInputs, readUnplacedSummary, recordUnplacedInput, unplacedSummary, type InputClass, type UnplacedInput } from "./unplaced-inputs.ts";
+import { UNPLACED_NOTICE_MS, UnplacedInputsDoc, UnplacedWatchEnd, UnplacedWatchTask, currentStep, placementOf, pruneUnplacedInputs, readUnplacedSummary, recordUnplacedInput, unplacedSummary, type InputClass, type UnplacedInput } from "./unplaced-inputs.ts";
 
 const RECIPIENT = "store";
 const EPOCH = 1_800_000_000_000;
@@ -461,4 +461,40 @@ it("counts only inputs older than the notice period and sends an active notice w
 	const passive = await noticeFor(only, "poster-a");
 	assert.equal(passive.passive, true, "a notice that stands only for thread notices stays passive");
 	assert.match(passive.message, /did not place 2 admitted inputs from you for more than 5 minutes \(oldest admitted [^)]*, request thread-1\)\. Current step/u);
+});
+
+it("ends the sleeping watch when its last queued input is placed, and starts a new one at the next queued admission", async (t) => {
+	const f = await open(t);
+	const reported: unknown[] = [];
+	const end = new UnplacedWatchEnd(f.harness, (error) => reported.push(error));
+	t.after(() => end.close());
+	const place = (submissionId: number) => f.harness.commit(async (tx) => {
+		const entry = await tx.appendEntry(f.id, { kind: "agent.input", model: [{ role: "user", content: "placed", timestamp: f.clock.now }] });
+		tx.placeSubmission(submissionId as SubmissionId, entry.id);
+	}, BACKGROUND_CONTEXT);
+	const live = async (id: TaskId) => (await f.harness.getTask(id, BACKGROUND_CONTEXT))?.state.status;
+
+	const first = await admit(f, "first", "followUp", "sender-a");
+	const second = await admit(f, "second", "steer", "sender-b");
+	const watch = await watchTask(f);
+	await place(first);
+	await end.flush();
+	assert.equal(await live(watch), "sleeping", "a queued input still waits for its notice");
+	assert.equal((await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.watch, watch);
+
+	await place(second);
+	await end.flush();
+	await f.harness.waitForTask(watch, bounded());
+	assert.equal(await live(watch), "terminal", "the watch is not live after the placement of its last queued input");
+	const state = await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT);
+	assert.deepEqual([state?.inputs, state?.watch], [[], undefined]);
+	assert.equal((await f.harness.inspect(BACKGROUND_CONTEXT)).tasks.some((task) => task.record.kind === UnplacedWatchTask.definition.name), false, "no watch task is live work of the host");
+
+	await admit(f, "third", "followUp", "sender-a");
+	const next = await watchTask(f);
+	assert.notEqual(next, watch, "the next queued admission starts a new watch");
+	advance(f, f.clock.now + UNPLACED_NOTICE_MS);
+	const notice = await noticeFor(f, "sender-a");
+	assert.equal(notice.sourceId, `unplaced:${f.id}:third`);
+	assert.deepEqual(reported, []);
 });
