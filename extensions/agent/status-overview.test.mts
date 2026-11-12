@@ -3,12 +3,6 @@ import { it } from "node:test";
 import type { AgentPriorityPage, AgentPrioritySummary } from "./dashboard-types.ts";
 import { coverage as rosterCoverage } from "./dashboard-test-fixture.mts";
 
-const awaiting = {
-	runId: 1, heldInputs: [2], results: [{ result: { sessionId: "producer:3", submissionId: 4, requestId: "exact-request" }, status: "pending" }],
-	queuedInputCount: 1, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 0, results: 0 },
-	producers: [{ sessionId: "producer:3", observedAt: 1, source: "producer await-state", unavailable: "Source connection closed" }],
-	omittedProducers: 0, likelyCycle: [], coverage: "one hop; remote graph incomplete",
-};
 import {
 	AgentConversationSummarySchema,
 	AssistantMessageSchema,
@@ -120,7 +114,8 @@ it("retains every coordinator field on live rows with short Unicode-safe text ex
 	const row = summary(1, {
 		state: "working",
 		name: "worker",
-		...({ awaiting } as object),
+		unplaced: 1,
+		oldest: 300000,
 		firstMessage: text,
 		latestReply: text,
 		model: { provider: "test", modelId: "model", thinkingLevel: "high" },
@@ -602,7 +597,11 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 		],
 		timers: [{ id: 20, target: "storage:2", deadline: 21, mode: "followUp", status: "pending", overdue: false }],
 		forkSource: { conversationId: 1, at: 22 },
-		...({ awaiting } as object),
+		unplaced: 1,
+		oldest: 300000,
+		openWork: [{ requestId: "request-open", submissionId: 17, requester: "owner:1", replyTo: "owner:1", origin: "model", note: "Read the result", state: "open", declaredAt: 24, updatedAt: 25,
+			dependencies: [{ sessionId: "producer:3", submissionId: 4, requestId: "exact-request", state: "open", unavailable: "Source connection closed",
+				inspect: { tool: "agent_inspect", view: "result", sessionId: "producer:3", submissionId: 4 } }] }],
 		ownerTaskId: 23,
 		providerBlock: {
 			blockId: "block-1", conversationId: 2, providerSessionId: "provider-session-2", epoch: 0,

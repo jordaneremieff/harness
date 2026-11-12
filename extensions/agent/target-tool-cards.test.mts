@@ -166,13 +166,25 @@ describe("compact observation cards", () => {
 describe("human-readable agent targets", () => {
 	it("uses observed names, model and provider on every targeted call, with full IDs expanded", () => {
 		const cards = createAgentToolCards(() => [row]);
-		for (const [name, card] of Object.entries(cards).filter(([name]) => name !== "agent_list" && name !== "agent_place" && name !== "agent_intent")) {
+		for (const [name, card] of Object.entries(cards).filter(([name]) => name !== "agent_list" && name !== "agent_place" && name !== "agent_intent" && name !== "agent_work")) {
 			const args = { results: [{ sessionId: id, submissionId: 1 }], sessionId: id, name: "reload", message: "Task", action: "read" };
 			const collapsed = screen(card.renderCall(args, theme, context({ executionStarted: true })));
 			assert.match(collapsed, /Parser review\nprovider\/model · high/u, name);
 			assert.doesNotMatch(collapsed, new RegExp(id), name);
 			assert.ok(screen(card.renderCall(args, theme, context({ ...cardKeys, expanded: true }))).includes(id), name);
 		}
+	});
+
+	it("keeps declared work local and does not identify its dependency as the caller", () => {
+		const card = createAgentToolCards(() => [row]).agent_work;
+		const args = { action: "continue", request: "request-1", results: [{ sessionId: id, submissionId: 1 }], note: "Read the result" };
+		const collapsed = screen(card.renderCall(args, theme, context({ executionStarted: true })));
+		assert.match(collapsed, /agent_work · continue/u);
+		assert.match(collapsed, /request request-1 · 1 result reference/u);
+		assert.doesNotMatch(collapsed, /Parser review|provider\/model|high/u);
+		const expanded = screen(card.renderCall(args, theme, context({ ...cardKeys, expanded: true })));
+		assert.ok(expanded.includes(id));
+		assert.match(expanded, /Read the result/u);
 	});
 
 	it("resolves handle targets and handle reuse on spawn", () => {

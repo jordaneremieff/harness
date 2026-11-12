@@ -44,14 +44,19 @@ it("all native tool rows share two-tier known headers, native padding and one hi
 	const args = { results: [{ sessionId: identity, submissionId: 1 }], sessionId: identity, action: "read", name: "reload", message: "Task", summary: "Keep facts", view: "history" };
 	const cards = createAgentToolCards(() => [row]);
 	for (const name of Object.keys(cards)) {
-		const component = name === "agent_intent" ? nativeTool(name, { action: "publish", purpose: "Review the parser" }, { arbitrary: true, published: { id: identity, name: row.name, model, thinkingLevel: model.thinkingLevel, intentClaim: { purpose: "Review the parser" } } }) : nativeTool(name, args, { arbitrary: true, sessionId: identity });
+		const component = name === "agent_intent" ? nativeTool(name, { action: "publish", purpose: "Review the parser" }, { arbitrary: true, published: { id: identity, name: row.name, model, thinkingLevel: model.thinkingLevel, intentClaim: { purpose: "Review the parser" } } })
+			: name === "agent_work" ? nativeTool(name, { action: "continue", request: "request-1", results: args.results, note: "Read the result" }, { arbitrary: true, sessionId: identity })
+			: nativeTool(name, args, { arbitrary: true, sessionId: identity });
 		const lines = clean(component);
 		assert.equal(lines[0]?.trim(), "", name);
 		assert.equal(lines[1]?.trim(), "", name);
 		assert.equal(lines.at(-1)?.trim(), "", name);
 		const first = lines.findIndex((line) => line.trim());
 		assert.ok(lines[first]?.includes(name), name);
-		if (name !== "agent_list") {
+		if (name === "agent_work") {
+			assert.match(lines[first] ?? "", /agent_work · continue/u);
+			assert.doesNotMatch(lines.slice(first, first + 2).join("\n"), /Parser review|provider\/model|xhigh/u);
+		} else if (name !== "agent_list") {
 			assert.ok(lines[first]?.includes("Parser review"), name);
 			assert.doesNotMatch(lines[first] ?? "", /provider\/model|xhigh/u, name);
 			assert.match(lines[first + 1]?.trim() ?? "", /^provider\/model · xhigh(?: ·|$)/u, name);
