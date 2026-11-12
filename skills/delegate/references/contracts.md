@@ -45,8 +45,13 @@ directory). When a structural check helps, check the filled copy with
   must not touch, its owner, and the peers the contributor can contact directly
   about shared findings or a proposed change of ownership.
 - **Acceptance evidence:** the checks or outputs that establish the objective.
+  Give background test commands an outer time limit, and include the machine's
+  per-test timeout, whole-command time limit and Node memory-guard rules in
+  every task contract that permits tests.
 - **Output format and length:** sections and a length bound for the final
   answer. Large output goes to a file, cited by path.
+  A scheduled request for a state report names every required point and
+  permits no shortcut reply.
 - **End condition:** when to stop and how to report a blocker. Add: make other
   tool calls and thread posts first; the last message is the complete
   deliverable.
