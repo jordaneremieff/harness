@@ -39,7 +39,8 @@ import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type 
 import { AwaitInputSuppressed, richSubmitConversation } from "./durable-controls.ts";
 import { modelFailureText } from "./provider-block-facts.ts";
 import { parseReportIntervention } from "./report-intervention.ts";
-import { receiptSourceIdentity, receiptDeliveryRequestId, receiptReferencePage, migrateDeliveryStore, snapshotIntent, snapshotReceipt } from "./delivery-store.ts";
+import { receiptSourceIdentity, receiptDeliveryRequestId, receiptReferencePage, migrateDeliveryStore, retainedReportRequest, snapshotIntent, snapshotReceipt, storeDeliveryRow } from "./delivery-store.ts";
+import { abortScopeConversations } from "./abort-scope.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -922,9 +923,31 @@ export class DurableHost {
 	private async abortRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
 		const background = requestBoolean(params, "background") ?? false;
+		// The scope is read before the abort ends the tasks that define it.
+		const scope = await this.harness.commit((tx) => abortScopeConversations(tx, conversation.id, background), context);
 		await abortConversation(conversation, background, context);
-		await this.harness.commit((tx) => closeOpenWork(tx, this.storageId, conversation.id, "stopped", this.now()), context);
+		await this.closeStoppedWork(scope, context);
 		return { conversationId: conversation.id, identity: this.identity(conversation.id), background };
+	}
+
+	/**
+	 * Close the open work of each conversation that one abort stopped. A final report whose recipient the same abort
+	 * stopped becomes a terminal row: it stays readable and starts no run in the stopped recipient.
+	 */
+	private async closeStoppedWork(scope: readonly ConversationId[], context: Context): Promise<void> {
+		const stopped = new Set(scope);
+		const stoppedRecipient = (identity: string): boolean => {
+			try { return stopped.has(resolveSessionConversationId(this.storageId, identity, undefined)); }
+			catch { return false; }
+		};
+		for (const id of scope) await this.harness.commit(async (tx) => {
+			for (const item of await closeOpenWork(tx, this.storageId, id, "stopped", this.now())) {
+				const requestId = item.close?.reportRequestId;
+				if (requestId === undefined || !stoppedRecipient(item.replyTo)) continue;
+				const row = await retainedReportRequest(tx, item.replyTo, requestId);
+				if (row !== undefined && !row.acknowledged) await storeDeliveryRow(tx, "report", { ...row, delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" } });
+			}
+		}, context);
 	}
 
 	private async releaseRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
