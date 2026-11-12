@@ -192,6 +192,9 @@ export const ConversationStatusSchema = obj({
 	lastTextRole: opt(union(textRoles.map((role) => lit(role)))),
 	live: nullable(LiveStateSchema),
 	inbox: nullable(InboxStateSchema),
+	/** Admitted inputs that are still queued, and the age in milliseconds of the oldest one. */
+	unplaced: opt(count),
+	oldest: opt(count),
 	usage: opt(UsageStateSchema),
 	agent: obj({
 		model: opt(obj({ provider: string, modelId: string })),
@@ -439,6 +442,7 @@ export const CompactConversationSchema = obj({
 	availability: union([lit("live"), lit("retained"), lit("unknown")]),
 	name: opt(string), model: opt(obj({ provider: string, modelId: string })), thinkingLevel: opt(string),
 	runId: opt(id), queue: obj({ inbox: nullableCount, submissions: nullableCount }), timers: nullableCount,
+	unplaced: opt(count), oldest: opt(count),
 	awaiting: opt(CompactAwaitSchema),
 	providerBlock: opt(obj({ blockId: string, recovery: string })),
 	runFailure: opt(obj({ reason: str({ maxLength: 128 }), detail: opt(str({ maxLength: 512 })), reasonTruncated: opt(lit(true)), detailTruncated: opt(lit(true)) })),
@@ -449,6 +453,8 @@ export const ReportReceiptAssociationSchema = obj({ producerRunId: id, producerR
 export const RetainedReportReceiptSchema = obj({
 	sourceId: string, requestId: string, ownerId: string, senderIdentity: string, createdAt: number, acknowledged: boolean,
 	replyTo: nullableText, passive: opt(boolean), intervention: opt(ReportReceiptAssociationSchema), boundary: string,
+	/** `pending` until the recipient admits the row; an unadmitted row is unplaced. */
+	delivery: opt(union([lit("pending"), lit("admitted")])), placement: opt(union([lit("placed"), lit("unplaced")])),
 });
 const compactEnvelope = {
 	format: lit("compact"), storageId: opt(string), live: opt(boolean), omitted: arr(string),

@@ -498,7 +498,7 @@ Overrides and remaining members:
 |---|---|---|---|
 | recovery-state | recovery-state/1.0.0 | recovery-state/1.1.0 | absent |
 | submit | submit/1.5.0 | submit/1.2.0 | absent |
-| report | report/2.0.0 | report/1.1.0 | absent |
+| report | report/2.0.0 | report/1.2.0 | absent |
 | passive-submit | passive-submit/2.0.0 | passive-submit/1.0.0 | absent |
 | spawn | spawn/2.0.0 | spawn/2.0.0 | absent |
 | place | place/2.1.0 | place/2.1.0 | absent |
@@ -534,7 +534,7 @@ Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema
 
 ```text
 H-inspect       fda259edeae325c7625547e95c55e22cf0bbe1b6b912b51bc3d8d209b396dc67
-H-status        a00753e0770f9cf315e673140269e8ac0ad515a335d8aca765fd2319b71a3f24
+H-status        f172778ae73ddc09018f68403c693c84a3d91c639a2774b68c9dedaf4e8f5b0b
 H-list          1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6
 H-dashboard     9708e679163a10e256a4854a0d6b5347f8533d28d35efb707647fda100032b04
 H-profile-read  396c6aa90325ba4f92e72f38538561c810d31eb6dde087341591b34af479400b

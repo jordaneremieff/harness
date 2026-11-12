@@ -802,7 +802,8 @@ export class DurableHost {
 			{ ownerId, senderIdentity, requestId, message, ...(replyTo === undefined ? {} : { replyTo }), ...(passive === undefined ? {} : { passive }), ...(params?.intervention === undefined ? {} : { intervention: parseReportIntervention(params.intervention), storageId: this.storageId }) },
 			context,
 		);
-		return { ...report };
+		// The recipient's host admits the row later; its placement there appears in the recipient's status.
+		return { ...report, delivery: report.acknowledged ? "admitted" : "pending", ...(report.acknowledged ? {} : { placement: "unplaced" }) };
 	}
 
 	private async acknowledgeRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
@@ -842,7 +843,7 @@ export class DurableHost {
 	private async statusRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const sessionId = requestString(params, "sessionId");
 		const conversationId = requestPositiveId(params?.conversationId, "conversationId");
-		const options: DurableStatusOptions = this.defaultCwd === undefined ? {} : { cwd: this.defaultCwd };
+		const options: DurableStatusOptions = { now: this.now(), ...(this.defaultCwd === undefined ? {} : { cwd: this.defaultCwd }) };
 		const reported = this.deliveryError === undefined ? {} : { deliveryError: this.deliveryError };
 		if (params?.view === "storage-page" && (sessionId !== undefined || conversationId !== undefined)) throw new Error("Storage status does not accept a conversation selector");
 		if (sessionId === undefined && conversationId === undefined) {

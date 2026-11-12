@@ -28,6 +28,7 @@ import { snapshotDeliveryState, deliveryState, latestReceipt, migrateDeliverySto
 import type { AnswerContinuation, ReceiptGroup } from "./observation-schema.ts";
 import { timerStatusRows } from "./durable-timers.ts";
 import { readAwaitFact } from "./await-observation.ts";
+import { readUnplacedSummary } from "./unplaced-inputs.ts";
 import { snapshotProviderBlock, snapshotInputProviderBlock, snapshotInputRecovery, readProviderBlock, readInputProviderBlock, readInputRecovery } from "./provider-block.ts";
 import { modelFailureText, PROVIDER_BLOCK_ERROR, type ProviderBlockFact } from "./provider-block-facts.ts";
 import type { AwaitFact } from "./await-facts.ts";
@@ -132,6 +133,9 @@ export interface ConversationStatus extends ConversationSummary {
 	readonly lastTextRole?: DurableTextRole;
 	readonly live: unknown;
 	readonly inbox: unknown;
+	/** Admitted inputs still queued in the inbox, and the age in milliseconds of the oldest one. */
+	readonly unplaced?: number;
+	readonly oldest?: number;
 	readonly usage?: UsageState;
 	readonly agent: {
 		readonly model?: { readonly provider: string; readonly modelId: string };
@@ -660,6 +664,8 @@ function trimSubmission(submission: SubmissionRecord): ConversationStatus["submi
 
 export interface DurableStatusOptions {
 	readonly cwd?: string;
+	/** Observation time for input ages; the wall clock when absent. */
+	readonly now?: number;
 }
 
 /** Provider parsing buffers are not part of the public AssistantMessage contract. */
@@ -737,6 +743,7 @@ export async function readConversationStatus(
 		harness.inspect(context),
 	]);
 	const liveTaskIds = new Set(inspection.tasks.map((task) => Number(task.record.id)));
+	const unplaced = await readUnplacedSummary(harness, conversationId, context);
 	const awaiting = frozenObservations.has(harness) ? await readAwaitFact({ harness, context }, storageId, conversationId) : await harness.commit((tx) => readAwaitFact(tx, storageId, conversationId), context);
 	const providerBlock = frozenObservations.has(harness) ? await snapshotProviderBlock(harness, conversationId, context) : await harness.commit((tx) => readProviderBlock(tx, conversationId), context);
 	return {
@@ -748,6 +755,8 @@ export async function readConversationStatus(
 		...(textRoleOf(newest.items[0]) === undefined ? {} : { lastTextRole: textRoleOf(newest.items[0]) }),
 		live: publicLiveState(live),
 		inbox: inbox ?? null,
+		unplaced: unplaced.unplaced,
+		...(unplaced.oldestAdmittedAt === undefined ? {} : { oldest: Math.max(0, Math.round((options.now ?? Date.now()) - unplaced.oldestAdmittedAt)) }),
 		...(usage === undefined ? {} : { usage: publicUsageState(usage) }),
 		agent: {
 			...(agent.model === undefined ? {} : { model: { provider: agent.model.provider, modelId: agent.model.modelId } }),
