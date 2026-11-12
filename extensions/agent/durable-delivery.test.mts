@@ -1263,9 +1263,9 @@ it("reads the final report of a run that completed its work and then ended witho
 	t.after(() => channel.close());
 	const started = eventLog<void>();
 	const storageId = "11111111-1111-4111-8111-111111111111";
-	// A report of three pages with a surrogate pair across the first page boundary.
+	// A report longer than one delivery, with a surrogate pair across the first page boundary.
 	const label = "Final work result (done) for request task-a\n\n";
-	const message = `${"r".repeat(4095 - label.length)}😀${"s".repeat(6000)}`;
+	const message = `${"r".repeat(4095 - label.length)}😀${"s".repeat(14_000)}`;
 	const source = await DurableHost.open({ storagePath: path, storageId, cwd: root,
 		models: await scriptedRuntime([
 			toolCall("declare-a", "agent_work", { action: "continue", request: "task-a", results: [], note: "the survey continues" }),
@@ -1280,7 +1280,6 @@ it("reads the final report of a run that completed its work and then ended witho
 	const inspect = (params: Record<string, unknown>) => source.request("inspect", params) as Promise<Page>;
 	const readAll = async (first: Record<string, unknown>, status: string): Promise<string> => {
 		let text = "";
-		let pages = 0;
 		let next: Record<string, unknown> | undefined = first;
 		while (next !== undefined) {
 			const { tool: _tool, ...params } = next;
@@ -1288,10 +1287,8 @@ it("reads the final report of a run that completed its work and then ended witho
 			assert.ok(matchesSchema(InspectOutputSchema, page), "the page matches the published response schema");
 			assert.deepEqual([page.status, page.answer, page.finalReport.length], [status, undefined, label.length + message.length], "the page keeps the status of the input and carries no answer");
 			text += page.finalReport.text;
-			pages += 1;
 			next = page.finalReportContinuation;
 		}
-		assert.equal(pages, 3);
 		return text;
 	};
 
@@ -1326,6 +1323,12 @@ it("reads the final report of a run that completed its work and then ended witho
 		const details = receipt?.details as { status?: string; work?: string; workLabel?: string } | undefined;
 		assert.deepEqual([details?.status, details?.work, details?.workLabel], ["unanswered", "closed", undefined]);
 		assert.equal(await readAll({ tool: "agent_inspect", ...JSON.parse(line[1]) as Record<string, unknown> }, "unanswered"), label + message, "the call of the delivered receipt reads the complete report");
+		const report = received.find((delivery) => kind(delivery) === "report")?.text ?? "";
+		assert.match(report, /sent a final work report\. Work completed with a final report \(done\) for request task-a \(report work-final:1:task-a\)\./u);
+		const rest = /Final report continues: agent_inspect\((\{.*\})\)/u.exec(report);
+		assert.ok(rest, "the delivered report is cut and names its continuation");
+		const head = report.slice(report.indexOf("\n\n") + 2, report.indexOf("\n\n[text truncated]"));
+		assert.equal(head + await readAll({ tool: "agent_inspect", ...JSON.parse(rest[1]) as Record<string, unknown> }, "unanswered"), label + message, "the continuation of the delivered report reads its rest");
 
 		// A declaration that its run never completes is void when that run ends unanswered.
 		const unfinished = await source.request("task-submit", { message: "second survey", requestId: "task-b", requester: owner, origin: "model" }) as { submissionId: SubmissionId };
