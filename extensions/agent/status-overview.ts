@@ -319,7 +319,7 @@ export function buildStatusOverview(
 }
 
 export const SELECTED_STATUS_BYTE_LIMIT = 8 * 1024;
-type CompactConversation = Static<typeof CompactConversationSchema> & { unplaced?: number; oldest?: number };
+type CompactConversation = Static<typeof CompactConversationSchema>;
 type CompactSelected = Static<typeof CompactSelectedStatusSchema>;
 type CompactStorage = Static<typeof CompactStorageStatusSchema>;
 export interface PresentationRefusal { format: "refused"; cause: "byte-limit" | "source"; reason: string; byteLimit: number }
