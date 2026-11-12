@@ -78,8 +78,12 @@ billing block. The host settles the submission as unanswered with
 Check `agent_status` `view: "fleet"` before a large dispatch to see recent
 failures. Its windows are partial lower bounds, not remaining quota.
 
-A `content_refusal` means the provider refused the request content; repeating the same task on that provider fails.
-Choose another explicit provider/model under your existing authority, or change the form of the task; the host never substitutes automatically.
+A reason that starts with `content_refusal:` means the provider refused the
+request content. The same task fails again on that provider. Choose another
+explicit provider/model under your existing authority, or change the form of
+the task; the host never substitutes a model by itself. A reason that starts
+with `model_error:` carries the provider's text: read it before you repeat
+the task.
 
 ## Context watch and reset
 
