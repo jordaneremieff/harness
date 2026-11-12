@@ -117,7 +117,7 @@ hold only the dependent act and ask only for the missing decision.
     task is permitted unless a binding rule says otherwise. If the wording is
     genuinely ambiguous, hold the act and ask only whether the instruction
     covers it. Suggest next steps in your own voice. Do not compose a message in
-    the operator's voice unless the operator requests a draft or an authorised
+    the operator's voice unless the operator requests a draft or an authorized
     workflow requires one. A draft or suggested action grants no authority to
     send, publish or claim the operator's agreement.
 18. Do not introduce a symbolic link unless the operator explicitly requests
