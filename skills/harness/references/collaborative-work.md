@@ -98,7 +98,7 @@ choice. Keep blocked actions separate from completed work. A useful candidate
 that remains unactivated is a candidate, not a change to the active harness.
 
 For operator status reports from a session that directs agents, follow the rule
-in `skills/delegate/SKILL.md`, section 5.
+in `skills/delegate/SKILL.md`, "Operator status reports".
 
 When the operator requests review of several outcomes, reconcile current source
 and final dispositions before delivery. Lead with what changed and what remains
