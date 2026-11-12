@@ -100,7 +100,7 @@ Sources: `extensions/agent/task-senders.ts`; `communication-retention.ts`;
 
 ## Ordinary peer communication mapping
 
-Ordinary Pi custom messages with `customType: "agent.peer"` expose a structured peer contribution through their supplied `details`. This section is the public mapping for consumers; it does not authorize imports of Agent-private types, prose parsing, new delivery operations, or history rewriting. The `primary-delivery/3.0.0` channel requires retained acceptance without changing this payload mapping. `sendMessage`, wake behavior, original content, and `display: false` exclusion retain their meanings. Saved `custom_message` entries and live `role: "custom"` messages use the same mapping before projection drops their details.
+Ordinary Pi custom messages with `customType: "agent.peer"` expose a structured peer contribution through their supplied `details`. This section is the public mapping for consumers; it does not authorize imports of Agent-private types, prose parsing, new delivery operations, or history rewriting. The `primary-delivery/4.0.0` channel requires retained acceptance without changing this payload mapping. `sendMessage`, wake behavior, original content, and `display: false` exclusion retain their meanings. Saved `custom_message` entries and live `role: "custom"` messages use the same mapping before projection drops their details.
 
 The normalized value has `format: "agent.communication/1"`, `sender`, `body`, `recordedAt`, and exactly one of the variants below. Unknown properties are not copied into this closed value. Ordinary source records retain their original detail fields separately.
 
@@ -399,8 +399,10 @@ Sources: `transport/{index,endpoint,unix-link}.ts`; Chord 1.5.2
 `dist/host/{host,facet,reference,attempt}.d.ts`, and
 `dist/link/{link,message,part}.d.ts`.
 
-The manager's retained-object identity is `manager/6.0.0`; ordinary primary
-channels use `primary-delivery/3.0.0`. The typed `deliver` payload accepts optional
+The manager's retained-object identity is `manager/7.0.0`; ordinary primary
+channels use `primary-delivery/4.0.0`. Native tool bindings use
+`native-controls/3.0.0;durable=<loaded Durable version>`.
+The typed `deliver` payload accepts optional
 `requireRetained:boolean`, defaulting to true. Source-ledger owner and fallback
 routes explicitly require retained acceptance: an exact `agent.peer` source
 identity and matching entry bytes in the primary's actual session JSONL file,
@@ -462,7 +464,7 @@ The current descriptor requires `codingAgent: "1.5.0"` and `durable: "1.5.1"`. I
 For every member in the following set, request and response are both `<member>/1.0.0`, with no `durable` field:
 
 ```text
-close attach report acknowledge abort release reset
+close attach acknowledge abort release reset
  timer-list timer-cancel observe-close models
  collaboration-list collaboration-read collaboration-mutate await-release
 ```
@@ -489,13 +491,14 @@ Overrides and remaining members:
 | Member | Request | Response | Durable |
 |---|---|---|---|
 | recovery-state | recovery-state/1.0.0 | recovery-state/1.1.0 | absent |
-| submit | submit/1.3.0 | submit/1.1.0 | absent |
-| passive-submit | passive-submit/1.1.0 | passive-submit/1.0.0 | absent |
+| submit | submit/1.4.0 | submit/1.2.0 | absent |
+| report | report/2.0.0 | report/1.1.0 | absent |
+| passive-submit | passive-submit/2.0.0 | passive-submit/1.0.0 | absent |
 | spawn | spawn/2.0.0 | spawn/2.0.0 | absent |
 | place | place/2.1.0 | place/2.1.0 | absent |
 | resolve-agent | resolve-agent/2.0.0 | resolve-agent/2.0.0 | absent |
-| receipts | receipts/1.1.0 | receipts/1.2.0 | D |
-| inspect | inspect/1.1.0 | H-inspect | D |
+| receipts | receipts/2.0.0 | receipts/2.0.0 | D |
+| inspect | inspect/1.2.0 | H-inspect | D |
 | status | status/1.1.0 | H-status | D |
 | list | list/1.0.0 | H-list | absent |
 | fork | fork/1.0.0 | fork/1.0.0 | D |
@@ -521,7 +524,7 @@ Overrides and remaining members:
 Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema, not a hash of a response instance. The current schema-derived identities are:
 
 ```text
-H-inspect       671fa063aab1424eba635272c95977761450c735d34efd2def12a7de7689ff70
+H-inspect       d280dcf690f5ca9cb17f31852ca7352eefe7fe363fcadd811ccd689434f62976
 H-status        a00753e0770f9cf315e673140269e8ac0ad515a335d8aca765fd2319b71a3f24
 H-list          1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6
 H-dashboard     9708e679163a10e256a4854a0d6b5347f8533d28d35efb707647fda100032b04
