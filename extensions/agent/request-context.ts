@@ -174,6 +174,39 @@ async function requestInputEntry(tx: Tx, conversationId: ConversationId, id: Sub
 	return entry && isInputKind(entry.kind) ? entry : undefined;
 }
 
+type InputEntryRecord = NonNullable<Awaited<ReturnType<typeof requestInputEntry>>>;
+
+function noteText(tag: string, value: Record<string, unknown>): string {
+	return `<agent-request-route host="${tag}">\n${JSON.stringify(value)}\n</agent-request-route>`;
+}
+
+/** An input without a retained route is an event: its note names the class and sender, and no reply recipient. */
+function eventNoteValue(entry: InputEntryRecord, requestId: string): Record<string, unknown> | undefined {
+	const event = entry.kind === "pi.user" ? undefined : inputLabel(entry, requestId);
+	return event === undefined ? undefined : { requestId, class: event.class, ...(event.sender === undefined ? {} : { sender: event.sender }) };
+}
+
+async function routedNoteValue(tx: Tx, conversationId: ConversationId, entry: InputEntryRecord, route: ActiveRequestContext): Promise<Record<string, unknown>> {
+	const { requestId, requester, replyTo, origin } = route;
+	const label = inputLabel(entry, requestId, requester);
+	// A native operator entry has no data; its retained delivery intent keeps the busy mode that selects its class.
+	const inputClass = entry.kind === "pi.user" ? sentInputClass("operator", (await retainedIntent(tx, conversationId, requestId))?.whenBusy) : label?.class;
+	const labelled = label === undefined || inputClass === undefined ? {} : { class: inputClass, sender: label.sender ?? requester };
+	return { requestId, requester, replyTo, origin, ...labelled };
+}
+
+/** The note of one input of the current run, or none when the input has neither a projectable route nor a label. */
+async function inputNote(tx: Tx, conversationId: ConversationId, tag: string, id: SubmissionId, route: ActiveRequestContext | undefined): Promise<RouteNote | undefined> {
+	if (route !== undefined && !projectable(route)) return undefined;
+	const known = route?.requestId ?? (await tx.submission(id))?.requestId;
+	if (known === undefined || known.length > 1024) return undefined;
+	const entry = await requestInputEntry(tx, conversationId, id, known);
+	const message = entry?.model?.findLast((item) => item.role === "user");
+	if (!entry || !message) return undefined;
+	const value = route === undefined ? eventNoteValue(entry, known) : await routedNoteValue(tx, conversationId, entry, route);
+	return value === undefined ? undefined : { digest: inputDigest(message), entryId: entry.id, text: noteText(tag, value) };
+}
+
 async function newRouteNotes(harness: Harness, api: HookApi, context: Context): Promise<RouteNote[]> {
 	const tag = await requestRouteTag(harness, api.conversationId, context);
 	return harness.commit(async (tx) => {
@@ -181,25 +214,8 @@ async function newRouteNotes(harness: Harness, api: HookApi, context: Context): 
 		const routes = new Map(active.map(({ route, submissionId }) => [submissionId, route]));
 		const notes: RouteNote[] = [];
 		for (const id of (await tx.doc(LiveDoc, api.conversationId)).run?.inputs ?? []) {
-			const route = routes.get(id);
-			if (route !== undefined && !projectable(route)) continue;
-			const known = route?.requestId ?? (await tx.submission(id))?.requestId;
-			if (known === undefined || known.length > 1024) continue;
-			const entry = await requestInputEntry(tx, api.conversationId, id, known);
-			const message = entry?.model?.findLast((item) => item.role === "user");
-			if (!entry || !message) continue;
-			if (route === undefined) {
-				// An input without a retained route is an event: its note names the class and sender, and no reply recipient.
-				const event = entry.kind === "pi.user" ? undefined : inputLabel(entry, known);
-				if (event !== undefined) notes.push({ digest: inputDigest(message), entryId: entry.id, text: `<agent-request-route host="${tag}">\n${JSON.stringify({ requestId: known, class: event.class, ...(event.sender === undefined ? {} : { sender: event.sender }) })}\n</agent-request-route>` });
-				continue;
-			}
-			const { requestId, requester, replyTo, origin } = route;
-			const label = inputLabel(entry, requestId, requester);
-			// A native operator entry has no data; its retained delivery intent keeps the busy mode that selects its class.
-			const inputClass = entry.kind === "pi.user" ? sentInputClass("operator", (await retainedIntent(tx, api.conversationId, requestId))?.whenBusy) : label?.class;
-			const labelled = label === undefined || inputClass === undefined ? {} : { class: inputClass, sender: label.sender ?? requester };
-			notes.push({ digest: inputDigest(message), entryId: entry.id, text: `<agent-request-route host="${tag}">\n${JSON.stringify({ requestId, requester, replyTo, origin, ...labelled })}\n</agent-request-route>` });
+			const note = await inputNote(tx, api.conversationId, tag, id, routes.get(id));
+			if (note !== undefined) notes.push(note);
 		}
 		return notes;
 	}, context);
