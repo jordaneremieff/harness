@@ -11,7 +11,7 @@ function fixture(manager?: SessionManager) {
 	const branch: unknown[] = [];
 	let sessionId = manager?.getSessionId() ?? recipient, sent = 0;
 	register({ events: { on: () => () => {}, emit() {} }, on(name: string, handler: Hook) { hooks.set(name, [...hooks.get(name) ?? [], handler]); }, getThinkingLevel: () => "off", registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, sendMessage() { sent++; } } as unknown as ExtensionAPI);
-	const ctx = { sessionManager: { getSessionId: () => sessionId, buildContextEntries: () => manager?.buildContextEntries() ?? branch } } as unknown as ExtensionContext;
+	const ctx = { sessionManager: { getSessionId: () => sessionId, buildContextEntries: () => manager?.buildContextEntries() ?? branch, getBranch: () => manager?.getBranch() ?? branch } } as unknown as ExtensionContext;
 	const hook = (name: string, event: unknown) => {
 		const handlers = hooks.get(name); assert.ok(handlers?.length);
 		if (name !== "context") return handlers.map((handler) => handler(event, ctx)).at(-1);
