@@ -48,7 +48,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Context } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { ModelEvidenceCollector } from "./model-evidence.ts";
-import { isInputKind } from "./input-entry.ts";
+import { isInputClass, isInputKind, type InputClass } from "./input-entry.ts";
 import { Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type GenerationHooks, type HarnessInspection, type HarnessOptions, type ModelRef, type Submission, type SubmissionRecord, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { acknowledgeDeliveries, acknowledgeReports, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
@@ -657,6 +657,7 @@ export class DurableHost {
 			communication: { storageId: this.storageId, value: undefined, ...(taskSender === undefined ? {} : { taskSender }) },
 			origin, ...optionalParam("replyTo", requestString(params, "replyTo")), ...optionalParam("whenBusy", this.busyMode(params)), ...optionalParam("operationId", requestString(params, "operationId")),
 			...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }), senderIdentity: this.identity(conversation.id),
+			...optionalParam("inputClass", this.inputClassParam(params)),
 		}, context);
 		return { ...submitted, identity: this.identity(conversation.id), result: admittedResult(this.identity(conversation.id), submitted, requestRequiredString(params, "requestId")) };
 	}
@@ -692,6 +693,8 @@ export class DurableHost {
 				...optionalParam("origin", this.originParam(params)),
 				...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }),
 				senderIdentity: this.identity(conversation.id),
+				...optionalParam("inputClass", this.inputClassParam(params)),
+				...optionalParam("inputSender", requestString(params, "inputSender")),
 			},
 			context,
 			this.now,
@@ -721,6 +724,13 @@ export class DurableHost {
 		}
 		const submission = await conversation.submit({ type: "write", requestId, entry: { kind: communication?.kind === "report" ? "agent.passive-report" : THREAD_NOTICE_ENTRY_KIND, model: [{ role: "user", content: message, timestamp: Date.now() }], ...(data === undefined ? {} : { data }) } }, context);
 		return { submissionId: submission.id, conversationId: conversation.id, passive: true };
+	}
+
+	/** The sender's declared class of an input; absent leaves the class to the admission. */
+	private inputClassParam(params: RequestParams | undefined): InputClass | undefined {
+		const value = requestString(params, "inputClass");
+		if (value !== undefined && !isInputClass(value)) throw new TypeError("inputClass must be a known input class");
+		return value;
 	}
 
 	private busyMode(params: RequestParams | undefined): "steer" | "followUp" | "reject" | undefined {

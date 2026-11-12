@@ -71,7 +71,7 @@ it("refuses mismatched self-owned rewind and timer request contracts in both dir
 });
 
 it("refuses a peer without the delivered-result request or the resolved timer-cancel identity", () => {
-	assert.deepEqual(HOST_CONTRACT.operations.submit, { request: "submit/1.5.0", response: "submit/1.2.0" });
+	assert.deepEqual(HOST_CONTRACT.operations.submit, { request: "submit/1.6.0", response: "submit/1.3.0" });
 	assert.deepEqual(HOST_CONTRACT.operations["timer-cancel"], { request: "timer-cancel/1.0.0", response: "timer-cancel/1.1.0" });
 	const earlier = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, submit: { ...HOST_CONTRACT.operations.submit, request: "submit/1.4.0" }, "timer-cancel": { request: "timer-cancel/1.0.0", response: "timer-cancel/1.0.0" } } };
 	assert.match(contractRefusal("submit", earlier)?.message ?? "", /submit request contract submit\/1\.4\.0 differs from submit\/1\.5\.0/u);
