@@ -72,7 +72,7 @@ An ordinary primary remains responsive and receives normal routed results.
 |---|---|
 | `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. |
 | `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries have no `agent_await` tool; they receive each answer through normal delivery. Waiting is a capability, not a staffing rule. |
-| `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn, and releases no wait. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
+| `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. A successful report returns its identity and state facts (retention, acknowledgement, admission or queue placement) without the message body; these facts do not show that the recipient read the report. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn, and releases no wait. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; an unavailable endpoint preserves the attachment error and proves no global host absence. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
@@ -86,7 +86,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_command` | Invoke a contributed command, reload host registrations while idle, or fork to a tree entry. |
 | `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths, none unless configured; optional `checkInMinutes` sets an interval. |
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. Reads start no host. |
-| `agent_status` | Read conversation and host state, including capability limits. Inside a Durable agent, a selected read returns compact state with an exact full-detail call; `detail: true` with one explicit `sessionId` returns the full selected status and cannot be combined with `view`, `storageId`, `cursor`, or `limit`. The full status of a selected session lists its pending timers, nearest deadline first. `view: "storage-page"` continues one exact storage's bounded status scan. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
+| `agent_status` | Read conversation and host state, including capability limits. A selected read returns compact state with an exact full-detail call; `detail: true` with one explicit `sessionId` returns the full selected status and cannot be combined with `view`, `storageId`, `cursor`, or `limit`. The full status of a selected session lists its pending timers, nearest deadline first. `view: "storage-page"` continues one exact storage's bounded status scan. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. The result view returns the answer in pages with separate continuations for answer text and for recipient references; see [result pages](#await-exact-peer-results). |
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 characters and `message` within 8,000 characters; write longer content to a file and post its path. Handler length errors include this remedy because Pi's pre-handler schema errors omit field descriptions. |
 
@@ -409,7 +409,8 @@ requested reasoning level is clamped by Pi to the model's supported levels.
 Configuration requires an idle conversation, starts no task, and changes no
 global defaults. A mutation result carries a compact status:
 identity, conversation, name, cwd, busy state, model, and the capability limits
-that matter. The full status stays available through `agent_status`. If the
+that matter. The full status stays available through `agent_status` with
+`detail: true`. If the
 post-mutation status read fails, the result carries `snapshotError` and the
 successful receipt stays.
 
@@ -1087,9 +1088,22 @@ false. `coverage.reasons` names recovery paths and boundaries. The overview
 returns `coverage.nextCursor: null` because `agent_status` accepts no cursor;
 it never exposes the dashboard's catalog cursor. Call `agent_list` without a
 cursor, then repeat its returned `nextCursor` to find other identities. Use
-targeted `agent_status` for
+targeted `agent_status` with `detail: true` for
 full conversation state. Native agents without a status target read their own
 storage's conversation state rather than the primary's fleet overview.
+
+A targeted `agent_status` without `detail: true` returns a compact status for
+ordinary and Durable callers. It keeps the exact identity, busy state,
+availability, queue and timer counts, the known name, model and thinking level,
+the current run, a short await fact, and a provider-block recovery call. It
+names what it leaves out and carries the exact call for the full status. A
+retained run failure (reason and detail) and a delivery error stay in the
+compact status, with recognised credentials removed, byte bounds and explicit
+truncation flags. The compact status fits 8,192 serialised bytes. Over that
+bound the name goes first, then the delivery error, then the run failure; a
+status that still exceeds the bound is refused with a pointer to
+`detail: true`. `detail: false` is the same as no `detail`. Source:
+`status-overview.ts` (`projectSelectedStatus`, `validateStatusDetail`).
 
 `agent_status {view: "fleet"}` is a separate local observation on both ordinary
 and native tools. It scans bounded catalog pages without opening hosts or
@@ -1736,9 +1750,10 @@ One reference page reads at most two retained page documents: the current page
 and, when it differs, the page that holds the captured end. It examines at most
 64 membership references of the current page and returns at most 16.
 
-Inside a Durable agent, `agent_inspect` accepts `receiptCursor`. The ordinary
-primary `agent_inspect` input does not accept it, so an ordinary primary cannot
-follow a receipt continuation from its own tool.
+The `agent_inspect` input of ordinary primaries and of Durable agents accepts
+`receiptCursor` and refuses it outside the result view. Both return the result
+view as readable text: the identity and page facts, the answer page, and each
+continuation as an exact call.
 
 Sources: `durable-observation.ts` (`readResult`, `RESULT_PAGE_UNITS`,
 `RESULT_PAGE_BYTES`), `delivery-store.ts` (`receiptReferencePage`),
@@ -2385,8 +2400,10 @@ presence observation; they do not tick during inactivity.
 
 ### Ordinary retained observation
 
-Target an ordinary primary with `agent_status`, or use `agent_inspect` with
-`view: "activity"` or `view: "history"`. Both ordinary and Durable callers use the
+Target an ordinary primary with `agent_status` and `detail: true`, or use
+`agent_inspect` with `view: "activity"` or `view: "history"`. Without
+`detail: true` the status is compact: presence facts and the exact full-detail
+call, without the retained ancestry. Both ordinary and Durable callers use the
 same bounded reader as Related efforts. The primary publishes the public Pi
 session-file path in its existing endpoint record. Reading needs no peer socket,
 host launch, message admission or control. Primary delivery stays independent.
@@ -2857,14 +2874,15 @@ with the remaining fields unchanged. The cursor continues the same unfiltered
 native scan; callers do not interpret its fields. A conversation-qualified
 identity, a string cursor, or mixed fleet/session selectors is invalid here.
 
-Inside a Durable agent, a storage page returns compact rows with the backend
-coverage and `next` unchanged. When the compact form of a page exceeds the
+A storage page returns compact rows with the backend coverage and `next`
+unchanged, for ordinary and Durable callers. When the compact form of a page exceeds the
 output byte limit, the tool reads again from the same cursor with half the
 limit, rounded up, until the page fits or the limit is one row. A smaller page
 returns fewer rows and its own backend `next`; no identity is cut and no
 continuation is invented. A refusal at one row, a refusal for an unavailable
 source identity or coverage, and a host error return unchanged. Source:
-`durable-agents.ts` (`readStoragePage`) and `status-overview.ts`
+`durable-agents.ts` (`readStoragePage`), `ordinary-entry.ts` with
+`storage-page-fit.ts` (`fitStorageStatusPage`), and `status-overview.ts`
 (`projectStorageStatus`).
 
 `agent_list` remains global discovery with its own string cursor. Its cursor is
