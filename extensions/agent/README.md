@@ -3489,6 +3489,10 @@ node extensions/agent/adopt-delivery-pages.ts [--apply] [--storage <id>] [--agen
 Run it from the harness release or checkout. It reads the catalogue that hosts
 use: `<dir>/agent-sessions` with `--agent-dir`, otherwise `PI_AGENT_SESSIONS_DIR`,
 otherwise `agent-sessions` under `PI_AGENT_DIR` or Pi's agent directory.
+Each catalogue record names its storage file and agent directory by absolute
+path, so a copied catalogue still names the original storages: to try the
+command on a copy, rewrite `storagePath` and `agentDir` in the copied records
+first.
 `--storage` selects one catalogued storage. For each storage it takes the
 host's native writer lease (creating the lease file as a host does), so it never
 reads or writes a storage beside a running host. It prints counts only, never
