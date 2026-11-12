@@ -517,7 +517,7 @@ Overrides and remaining members:
 | place | place/2.1.0 | place/2.3.0 | absent |
 | resolve-agent | resolve-agent/2.0.0 | resolve-agent/2.2.0 | absent |
 | receipts | receipts/3.0.0 | receipts/3.0.0 | D |
-| inspect | inspect/1.2.0 | H-inspect | D |
+| inspect | inspect/1.3.0 | H-inspect | D |
 | status | status/1.1.0 | H-status | D |
 | list | list/1.0.0 | H-list | absent |
 | fork | fork/1.0.0 | fork/1.0.0 | D |
@@ -545,8 +545,8 @@ Overrides and remaining members:
 Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema, not a hash of a response instance. The current schema-derived identities are:
 
 ```text
-H-inspect       fda259edeae325c7625547e95c55e22cf0bbe1b6b912b51bc3d8d209b396dc67
-H-status        355a93955ca9b0e10b321bf5b9d9887c3da9ee13972139d7841258ce89ee6880
+H-inspect       9286d17a5985f19a7cfc80aed13fa86955618775d28670852d16774b4e9327f2
+H-status        c7e0c61ec52e95af09374c8d94d31d06c2c53044dcd4eee5cdfb2141bf17f91c
 H-list          1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6
 H-dashboard     4c8bb08f1d45d17bbd2233fc90851992ec5440b58a6b99c3f77080d001f4866e
 H-profile-read  396c6aa90325ba4f92e72f38538561c810d31eb6dde087341591b34af479400b
@@ -574,7 +574,7 @@ absent.
 
 ## Native result inspection
 
-The existing `inspect` operation accepts `{sessionId?,view:"result",requestId?,submissionId?,entryId?,operationId?,offset?,receiptCursor?}`. The selected storage/conversation qualifies every lookup; a root session uses its storage UUID and a child uses `UUID:conversationId`. One of requestId, submissionId or operationId is required. A native requestId resolves exactly through public `Tx.submissionByRequest(conversationId,requestId)`, not a report ID, text search or another store.
+The existing `inspect` operation accepts `{sessionId?,view:"result",requestId?,submissionId?,entryId?,operationId?,offset?,receiptCursor?,finalReport?}`. The selected storage/conversation qualifies every lookup; a root session uses its storage UUID and a child uses `UUID:conversationId`. One of requestId, submissionId or operationId is required. A native requestId resolves exactly through public `Tx.submissionByRequest(conversationId,requestId)`, not a report ID, text search or another store.
 
 Multiple selectors must identify the same native submission. A supplied entryId must equal its native input/write entry, not its answer entry. Conflicting selectors fail. OperationId is a separate admission value resolved through retained receipts in the selected conversation; it is never a requestId alias. A missing operation receipt is unavailable rather than an unverified operation association.
 
@@ -595,6 +595,8 @@ normal delivery. Source: `extensions/agent/durable-host.ts` (`resultOutcome`,
 A `done` result returns its answer in pages. `offset` is a nonnegative count of UTF-16 code units, default 0; an offset beyond the retained answer is refused. A page holds at most 4,096 UTF-16 code units and does not split a surrogate pair. The page fields are `answer`, `offset`, `nextOffset:number|null`, `truncated`, and, when text remains, `answerContinuation:{tool:"agent_inspect",view:"result",sessionId,submissionId,requestId?,offset}`.
 
 A settled input with a retained receipt also returns `receiptGroup:{recipient,results,complete,next}`. `results` holds at most 16 `{sessionId,submissionId,requestId?}` references for the recipient of the selected receipt. `next` is null or `{tool:"agent_inspect",view:"result",sessionId,submissionId,requestId?,receiptCursor}`. A request with `receiptCursor` returns the result identity and the next reference page without the answer body. An unanswered input has one reference, `complete:true`, and accepts no cursor.
+
+When the request of the selected input declared work, the page carries `work:{state,answer:"state-note",label,finalReport?}`. `state` is `open` or `closed`. For closed work, `finalReport` is `{requestId,ownerId,status?,delivery,read}`: the report request ID, its reply recipient, the close status, the delivery state, and `read`, the call `{tool:"agent_inspect",view:"result",sessionId,submissionId,finalReport:true,offset}`. The facts come from the retained work item or, after that item left the bounded work document, from the retained final report row. With `finalReport:true` the page returns the final report instead of the answer: `finalReport:{text,length,offset,nextOffset,truncated}` in pages of 4,096 UTF-16 code units, and `finalReportContinuation` while text remains. The pages join to the retained report text exactly. Open work returns `reason` and no text; a request without declared work refuses. `finalReport` selects only the result view and refuses with `receiptCursor`.
 
 `receiptCursor` is an opaque string of 1 to 2,048 base64url characters that selects only the result view. It binds the storage, the recipient, the selected submission, the answer entry, the current page position, and the page and offset that ended the list at the first read. Rows appended later never enter that cursor. The host refuses a malformed cursor, a cursor for another selection or recipient, a changed or invalid terminal boundary, and a position outside the captured range. A cursor for an unsettled input, or for a result without a retained receipt, is refused. One reference page reads the current list page and, when it is a different page, the page that holds the captured end: at most two page documents and 128 stored references. It examines at most 64 membership references and returns at most 16. A page that holds no reference for the recipient still returns `next`.
 
@@ -647,7 +649,8 @@ work document. Marks match the exact conversation, submission and request;
 the dependency reads `open` with `unavailable` and an exact inspect call, not a
 claimed producer outcome. A result delivered elsewhere marks nothing here;
 older admissions carry no mark, and inspection creates none.
-A close names `status`, `message`, `at`, `reportRequestId` and, when readable, final-report `delivery` (`active`,
+A close names `status`, `message`, `at`, `reportRequestId`, `read` (the call that reads the complete final report
+in pages) and, when readable, final-report `delivery` (`active`,
 `parked`, `fallback`, `terminal`, `delivered`, `absent` or `retained`). A delivery state does
 not change the declared-work state.
 
@@ -807,7 +810,7 @@ contracts do not establish terminal rendering under every process or task.
 
 ### Inspect
 
-Params: `{sessionId, view?, limit?, cursor?, entryId?, fromId?, offset?, query?, source?, requestId?, submissionId?, operationId?, receiptCursor?}`. `requestId` and `receiptCursor` select only `view:"result"`. Supported views are `activity`, `history`, `branch`, `search`, `exact`, and `result`; the raw host default is `history` (`extensions/agent/durable-observation.ts:1858-1873`). Sources are `user`, `assistant`, `toolResult`, `summary`, and `custom`. `cursor` is an opaque JSON object: pass the returned cursor unchanged to the same query/target, never fabricate it from entry IDs. Source: `extensions/agent/durable-observation.ts:77-90,524-541`; `extensions/agent/durable-host.ts:612-618`; `extensions/agent/observation-schema.ts:47,306-427`.
+Params: `{sessionId, view?, limit?, cursor?, entryId?, fromId?, offset?, query?, source?, requestId?, submissionId?, operationId?, receiptCursor?, finalReport?}`. `requestId`, `receiptCursor` and `finalReport` select only `view:"result"`. Supported views are `activity`, `history`, `branch`, `search`, `exact`, and `result`; the raw host default is `history` (`extensions/agent/durable-observation.ts:1858-1873`). Sources are `user`, `assistant`, `toolResult`, `summary`, and `custom`. `cursor` is an opaque JSON object: pass the returned cursor unchanged to the same query/target, never fabricate it from entry IDs. Source: `extensions/agent/durable-observation.ts:77-90,524-541`; `extensions/agent/durable-host.ts:612-618`; `extensions/agent/observation-schema.ts:47,306-427`.
 
 Output is discriminated by `view`:
 
