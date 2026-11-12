@@ -27,7 +27,7 @@ Ordinary primaries are not Durable targets. Their separate presence/message chan
 
 ## Native communication provenance
 
-A `submit` request that delivers a result accepts optional `deliveredResults`: every `{sessionId,submissionId,requestId}` reference that the delivered body settles, not the bounded sample of the communication value. The host validates the list before it admits the body and refuses an invalid list without an admission. After admission it marks each matching outgoing request of the target conversation as delivered, also when the body is a deduplicated replay or was returned to a native wait. Source: `extensions/agent/durable-host.ts`, `durable-delivery.ts`, `continuity-native.ts`.
+A `submit` request that delivers a result accepts optional `deliveredResults`: every `{sessionId,submissionId,requestId}` reference that the delivered body settles, not the bounded sample of the communication value. The host validates the list before it admits the body and refuses an invalid list without an admission. After admission it marks each matching outgoing request of the target conversation as delivered, also when the body is a deduplicated replay. Source: `extensions/agent/durable-host.ts`, `durable-delivery.ts`, `continuity-native.ts`.
 
 The existing `submit` and `passive-submit` request objects accept optional `communication: Communication`. This application value never changes native input parameters, model content, admission order, cancellation, reply routing or settlement. Inputs without an envelope keep the original path. Metadata rejection does not reject or resubmit an otherwise valid input.
 
@@ -44,13 +44,13 @@ A reference contains `submissionId` and optional `requestId`, `entryId`, `answer
 
 The owner captures the first trusted envelope inside the existing post-native classification commit, before a successful host response. That commit reconstructs a classification row evicted during native admission, prepares native submission, input and index reads before classification can prune, then materializes an available link and stores the resulting intent in the existing retained input row. A late suppress classification still retains that already-admitted request before the unchanged native abort. An `aborted` result keeps the suppression response; `already_placed` or `settled` keeps the successful response and captured association. The owner records its capture time as `recordedAt`. Repeated request IDs preserve the first retained value. Conflicts do not replace an original verified association. A plain admission retains an explicit no-envelope decision in the same bounded row. Once its native entry exists, post-native capture or pre-eviction materialization transfers that decision to the persisted communication point-index family. Later capture consults that index, not just the earlier dedupe observation, so an evicted plain row never permits backfill. This marker stays unresolved publicly: it creates neither a companion nor an invalid view. A queued or canceled input without a native entry has no display link.
 
-The existing input provenance collection watermark remains 128, not an admission cap. Its prune predicate retains queued submissions, plus the original live-run condition for unadmitted classification rows. Pending rows keep their exact classifications and communication intents even when the native backlog exceeds the watermark; they do not block later explicit input or named-producer reports. Unrelated reports and automatic inputs retain their no-release behavior. Placed submissions have left the native inbox and no longer need await-release provenance, even while their run continues. Before eviction of placed or terminal rows, the owner prepares all native and index reads for their unlinked intents, then appends companions and updates their indexes in that same prune transaction. Only after those writes does it remove the rows. `CommunicationIndexDoc` is a persisted, session-scoped point-index family (`agent.communication-index`) keyed by storage, original conversation and native entry. It retains target and companion identifiers, invalid markers or no-envelope decisions. This lookup hint does not replace immutable native records as authority. Admission intent stays in the existing provenance rows; no second delivery queue, admission pin or metadata-specific admission capacity rule is introduced. Queued intent reconciliation uses the existing background and reopen paths. Invalid or unavailable metadata produces a bounded owner diagnostic or invalid index marker without changing native input acceptance.
+The existing input provenance collection watermark remains 128, not an admission cap. Its prune predicate retains queued submissions, plus the original live-run condition for unadmitted classification rows. Pending rows keep their exact classifications and communication intents even when the native backlog exceeds the watermark; they do not block later input admission. Placed submissions have left the native inbox even while their run continues. Before eviction of placed or terminal rows, the owner prepares all native and index reads for their unlinked intents, then appends companions and updates their indexes in that same prune transaction. Only after those writes does it remove the rows. `CommunicationIndexDoc` is a persisted, session-scoped point-index family (`agent.communication-index`) keyed by storage, original conversation and native entry. It retains target and companion identifiers, invalid markers or no-envelope decisions. This lookup hint does not replace immutable native records as authority. Admission intent stays in the existing provenance rows; no second delivery queue, admission pin or metadata-specific admission capacity rule is introduced. Queued intent reconciliation uses the existing background and reopen paths. Invalid or unavailable metadata produces a bounded owner diagnostic or invalid index marker without changing native input acceptance.
 
 Native admission and post-native classification remain separate commits. A crash after native admission but before owner capture leaves an unresolved association; this interface does not promise crash-atomic capture with native admission. The successful-response and pre-eviction guarantees apply to completed owner bookkeeping commits, not that intervening crash gap.
 
 Active input provenance uses a separate model-less `agent.communication` entry in the original input's conversation. Its data is `{format:"agent.communication-link/1",target:InputLink,value:Communication}`. `InputLink` contains `mode:"input"`, canonical `storageId`, numeric `conversationId`, decimal-string `entryId`, numeric `submissionId`, and `requestId`. The original input remains unchanged. The owner point index and companion append share a transaction; the index is only a lookup hint.
 
-Passive notices retain the original `agent.thread-notice` write and model array. A passive report is a native write of kind `agent.passive-report` on the same path; it is not an input, does not wake the recipient and releases no wait. A report with an exact producer association (`intervention`) cannot be passive. Valid data is `{format:"agent.communication-passive/1",requestId,value}` and requires a notice or a report with `metadata.passive:true`. Its public `PassiveLink` has `mode:"passive"`, the actual storage/conversation/entry IDs and request ID, but no input submission claim. Its own native ID is `recordEntryId`. Invalid metadata adds only bounded `{format:"agent.communication-invalid/1",reason:"invalid"}` data to that original write. The owner verifies the write's exact visibility before publishing the invalid marker.
+Passive notices retain the original `agent.thread-notice` write and model array. A passive report is a native write of kind `agent.passive-report` on the same path; it is not an input and does not wake the recipient. A report with an exact producer association (`intervention`) cannot be passive. Valid data is `{format:"agent.communication-passive/1",requestId,value}` and requires a notice or a report with `metadata.passive:true`. Its public `PassiveLink` has `mode:"passive"`, the actual storage/conversation/entry IDs and request ID, but no input submission claim. Its own native ID is `recordEntryId`. Invalid metadata adds only bounded `{format:"agent.communication-invalid/1",reason:"invalid"}` data to that original write. The owner verifies the write's exact visibility before publishing the invalid marker.
 
 Every committed snapshot/frame entry and compact history/activity row contains one closed view:
 
@@ -472,7 +472,7 @@ For every member in the following set, request and response are both `<member>/1
 ```text
 close attach acknowledge abort release reset
  timer-list observe-close models
- collaboration-list await-release
+ collaboration-list
 ```
 
 `changes` uses `changes/2.0.0` for request and response. Its initial and later frames are `{revision,writerId,view?}`. `writerId` comes from the server's immutable current hello identity. `view` is the runtime's latest successful bounded catalogue publication, retained after `updateView` succeeds and before notification. A revision without a view proves no publication. The client consumes the initial subscription value and later frames only for the current link and binding. Loss, rebind, local close and successful owner close clear that evidence; obsolete callbacks cannot restore it. A changes-operation mismatch refuses without a fallback and remains visible as unavailable publication evidence. Sources: `extensions/agent/{host-changes,host-client,host-process,durable-runtime,version-contract}.ts`.
@@ -497,13 +497,13 @@ Overrides and remaining members:
 | Member | Request | Response | Durable |
 |---|---|---|---|
 | recovery-state | recovery-state/1.0.0 | recovery-state/1.1.0 | absent |
-| submit | submit/1.5.0 | submit/1.2.0 | absent |
+| submit | submit/1.6.0 | submit/1.3.0 | absent |
 | report | report/2.0.0 | report/1.2.0 | absent |
 | passive-submit | passive-submit/2.0.0 | passive-submit/1.0.0 | absent |
-| spawn | spawn/2.0.0 | spawn/2.0.0 | absent |
-| place | place/2.1.0 | place/2.1.0 | absent |
-| resolve-agent | resolve-agent/2.0.0 | resolve-agent/2.0.0 | absent |
-| receipts | receipts/2.0.0 | receipts/2.0.0 | D |
+| spawn | spawn/2.0.0 | spawn/2.1.0 | absent |
+| place | place/2.1.0 | place/2.2.0 | absent |
+| resolve-agent | resolve-agent/2.0.0 | resolve-agent/2.1.0 | absent |
+| receipts | receipts/3.0.0 | receipts/3.0.0 | D |
 | inspect | inspect/1.2.0 | H-inspect | D |
 | status | status/1.1.0 | H-status | D |
 | list | list/1.0.0 | H-list | absent |
@@ -525,8 +525,7 @@ Overrides and remaining members:
 | profile-read | profile-read/1.0.0 | H-profile-read | absent |
 | profile-update | profile-update/1.0.0 | H-profile-update | absent |
 | profile-list | profile-list/1.0.0 | H-profile-list | absent |
-| task-submit | task-submit/1.0.0 | task-submit/1.2.0 | absent |
-| await-state | await-state/1.1.0 | await-state/1.1.0 | absent |
+| task-submit | task-submit/1.1.0 | task-submit/1.3.0 | absent |
 | collaboration-read | collaboration-read/1.1.0 | collaboration-read/2.0.0 | absent |
 | collaboration-mutate | collaboration-mutate/2.0.0 | collaboration-mutate/1.0.0 | absent |
 
@@ -536,7 +535,7 @@ Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema
 H-inspect       fda259edeae325c7625547e95c55e22cf0bbe1b6b912b51bc3d8d209b396dc67
 H-status        f172778ae73ddc09018f68403c693c84a3d91c639a2774b68c9dedaf4e8f5b0b
 H-list          1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6
-H-dashboard     9708e679163a10e256a4854a0d6b5347f8533d28d35efb707647fda100032b04
+H-dashboard     b17aa145d9ddf70804f1ae1c522d8a90b396b0bca91d3e7a498418cd66e3b3e2
 H-profile-read  396c6aa90325ba4f92e72f38538561c810d31eb6dde087341591b34af479400b
 H-profile-update 8eb14a948f9d42366d9d4eb211d498563693d48806495032fe28f22ca66d942f
 H-profile-list  99b00a455cf50a2a24de4a0f9e328a12e775caa9c5031becbef462e06e65a7cf
@@ -568,6 +567,18 @@ Multiple selectors must identify the same native submission. A supplied entryId 
 
 A missing native submission returns `{view:"result",sessionId,conversationId,status:"unavailable",reason,usage}` with the supplied requestId/submissionId/operationId selectors when present. It invents no submission ID or native entry. A found result retains the native status, submissionId, producer requestId, entry/answer IDs and answer/reason fields. An `unanswered` reason of `restart_limit` or `interrupted` is terminal: host crashes ended the run, and the host does not resubmit it. RequestId selects only the result view. Native terminal tool text uses the same validated output. No new operation, store or private-store parser participates.
 
+The `receipts` operation also reads committed state at once. With
+`{ownerId,result,receiptCursor?,metadataOnly?}`, `result` is an exact admitted
+reference addressed to that owner. A queued or placed input returns
+`{outcome:{submissionId,conversationId,requestId?,entryId?,status}}` without an
+answer. A settled input returns its retained outcome and, when a matching
+receipt exists, `delivery` and `receiptGroup`. `metadataOnly:true` omits the
+answer body; it does not wait for a different state. Without `result`,
+`{ownerId}` returns `{receipts,reports,pending}` for the current unacknowledged
+rows. There is no held-read mode. Neither form acknowledges or withdraws a
+normal delivery. Source: `extensions/agent/durable-host.ts` (`resultOutcome`,
+`selectedReceipt`, `receiptsRequest`).
+
 A `done` result returns its answer in pages. `offset` is a nonnegative count of UTF-16 code units, default 0; an offset beyond the retained answer is refused. A page holds at most 4,096 UTF-16 code units and does not split a surrogate pair. The page fields are `answer`, `offset`, `nextOffset:number|null`, `truncated`, and, when text remains, `answerContinuation:{tool:"agent_inspect",view:"result",sessionId,submissionId,requestId?,offset}`.
 
 A settled input with a retained receipt also returns `receiptGroup:{recipient,results,complete,next}`. `results` holds at most 16 `{sessionId,submissionId,requestId?}` references for the recipient of the selected receipt. `next` is null or `{tool:"agent_inspect",view:"result",sessionId,submissionId,requestId?,receiptCursor}`. A request with `receiptCursor` returns the result identity and the next reference page without the answer body. An unanswered input has one reference, `complete:true`, and accepts no cursor.
@@ -575,6 +586,56 @@ A settled input with a retained receipt also returns `receiptGroup:{recipient,re
 `receiptCursor` is an opaque string of 1 to 2,048 base64url characters that selects only the result view. It binds the storage, the recipient, the selected submission, the answer entry, the current page position, and the page and offset that ended the list at the first read. Rows appended later never enter that cursor. The host refuses a malformed cursor, a cursor for another selection or recipient, a changed or invalid terminal boundary, and a position outside the captured range. A cursor for an unsettled input, or for a result without a retained receipt, is refused. One reference page reads the current list page and, when it is a different page, the page that holds the captured end: at most two page documents and 128 stored references. It examines at most 64 membership references and returns at most 16. A page that holds no reference for the recipient still returns `next`.
 
 The answer and reference continuations are separate calls; neither advances the other. The complete serialised result, including identity, body and receipt metadata, fits 65,536 UTF-8 bytes; a larger result is refused. Result inspection acknowledges no delivery. `view:"exact"` remains the raw redacted entry read. Source: `extensions/agent/durable-observation.ts` (`readResult`, `RESULT_PAGE_UNITS`, `RESULT_PAGE_BYTES`); `extensions/agent/delivery-store.ts` (`receiptReferencePage`); `extensions/agent/observation-schema.ts` (`AnswerContinuationSchema`, `ReceiptGroupSchema`).
+
+## Declared work and final reports
+
+The native `agent_work` tool is local to its calling conversation, not a
+separate host wire operation. Both actions return after one commit; neither
+waits for a dependency. `continue` takes `{action:"continue",request?,results,note}`.
+`complete` takes `{action:"complete",request,status:"done"|"failed",message}`.
+The request ID selects the work item, not an arbitrary recipient. An omitted
+request for `continue` resolves only the single routed current input or,
+when the run has no such input, the single open item.
+
+`agent.open-work` is a conversation-scoped, version 1 document. Each item keeps
+`requestId`, `submissionId`, `requester`, `replyTo`, `origin`, `results`, `note`,
+`declaredAt`, `updatedAt`, and an optional `close`. A new declaration requires
+the placed request's retained route. Repeated declarations replace dependencies
+and note, not that route. An empty `results` array keeps work open without a
+producer dependency and creates no automatic wake. A fork starts without items.
+
+The native input still settles through Pi. Its state-note answer is not the
+final work result. A dependency arrival or input settlement never closes an
+item. A declaring input that ends `unanswered` invalidates its open item; the
+original unanswered receipt remains the outcome. `complete` closes the item
+and retains its final report for `replyTo` atomically. Its report ID derives
+from the conversation and original request. Repeated completion returns that
+retained close without another report; closed items do not reopen. Report
+delivery stays at least once and independent of task acceptance.
+
+Full native conversation status exposes `openWork`; compact status leaves the
+list out. An item view has `state:"open"|"closed"`, its route, note, timestamps,
+dependencies and optional close. Dependency state is `open`, `state-note` or
+`arrived`. A dependency in another storage currently reads `open` with
+`unavailable` and an exact inspect call, not a claimed producer outcome.
+A close names `status`, `message`, `at`, `reportRequestId` and, when readable, final-report `delivery` (`active`,
+`parked`, `fallback`, `terminal`, `delivered` or `absent`). A delivery state does
+not change the declared-work state.
+
+Delivered state-note receipts retain the normal result identity. Their native
+follow-up text labels the answer as a state note; ordinary-primary details add
+`work:"open"|"closed"` and `workLabel`. Check-ins configured for that request
+continue while declared work stays open. Host abort and reset close open items
+with a fixed `stopped` or `reset` final report, without producer cancellation
+as part of item closure.
+
+Source: `extensions/agent/open-work.ts` (`OpenWorkDoc`, `AgentWorkParams`,
+`declareOpenWork`, `completeOpenWork`, `finalReportRequestId`, `withoutVoidItems`),
+`extensions/agent/durable-agents.ts` (`workTool`),
+`extensions/agent/durable-observation.ts` (`readConversationStatus`),
+`extensions/agent/durable-delivery.ts` (`receiptFollowText`),
+`extensions/agent/durable-checkins.ts` (`CheckInTask`), and
+`extensions/agent/durable-host.ts` (`abortRequest`, `resetRequest`).
 
 ## Roster publications and dashboard
 
@@ -588,7 +649,7 @@ A summary has required fields:
 {id, storageId, cwd, modifiedAt:number, owner, state, cost:number, partial:boolean}
 ```
 
-Optional fields are `creatingOwnerId`, `name`, `firstMessage`, `model:{provider,modelId,thinkingLevel}`, `ownerLabel`, `latestReply`, `error`, `toolCalls`, `currentTool:{name,argument}`, `durationMs`, `health`, and `awaiting`. Manager-enriched rows can also include `profile`; it is not part of the base native row contract. `owner` is `here | unavailable | unknown`. `state` is `starting | working | idle | done | failed | stopped | interrupted | new | unavailable`. `health` carries optional `lastError`, `compactionFailure:{trigger,at?,errorMessage?}`, and `autoRetry:{attempt,maxAttempts,delayMs,errorMessage}`. `awaiting` is optional retained wait information; a consumer that does not display it leaves it opaque. Source: `extensions/agent/dashboard-types.ts:13-104`; `extensions/agent/version-contract.ts:54`; `extensions/agent/manager.ts:677-700`.
+Optional fields are `creatingOwnerId`, `name`, `firstMessage`, `model:{provider,modelId,thinkingLevel}`, `ownerLabel`, `latestReply`, `error`, `toolCalls`, `currentTool:{name,argument}`, `durationMs`, `health`, `unplaced`, and `oldest`. Manager-enriched rows can also include `profile`; it is not part of the base native row contract. `owner` is `here | unavailable | unknown`. `state` is `starting | working | idle | done | failed | stopped | interrupted | new | unavailable`. `health` carries optional `lastError`, `compactionFailure:{trigger,at?,errorMessage?}`, and `autoRetry:{attempt,maxAttempts,delayMs,errorMessage}`. `unplaced` counts admitted inputs still queued; `oldest` is the age of the oldest in milliseconds and is absent when none is unplaced. Source: `extensions/agent/dashboard-types.ts:13-104`; `extensions/agent/version-contract.ts:54`; `extensions/agent/manager.ts:677-700`.
 
 Dashboard summary `durationMs` remains the wall-clock span of the latest user turn, ending at the live clock while busy or the final retained message when settled. It is not recorded tool execution time. Activity `runningTools.elapsedMs` remains elapsed time from the tool-call entry, qualified by `elapsedFrom:"tool-call-entry"`. Native task timestamps do not replace either quantity. These are the separate `turnDuration` and `activityMetadata` projections in
 `extensions/agent/durable-observation.ts`; native task execution duration does
@@ -943,7 +1004,7 @@ A conversation frame is:
 
 `entries` are committed visible entries from the native conversation watch: a window over the conversation's fork-aware history in entry ID order, with head markers such as compaction summaries where they were written. The window holds at most the frame entry bound plus its own margin; when it does not start the transcript, `coverage.complete` is `false` and `nextBefore` continues older through `snapshot` with `before`. A frame never describes its window as complete history. `live` is in-progress assistant/tool output from that watch. The host shows streamed partials and running tool output as soon as Durable adopts them; Durable stores them later (deferred progress), so a crash can lose up to about a second of streamed content. Live IDs include `live:generation` and `live:tool:<callId>`. They must not become committed history. The frame is coalesced current state, not an append-only event stream. Revision ordering applies within the current observation lifetime; a new connection/token starts a new baseline. Source: `extensions/agent/live-frames.ts:15-30,74-140`; `extensions/agent/host-client.ts:697-741`.
 
-`ConversationStatus` includes `{conversationId,identity,busy,lastText,live,inbox,agent,tasks,submissions}` and optional `name`, `owner`, `firstMessage`, `forkSource`, `ownerTaskId`, `awaiting`, `cwd`, `lastTextRole`, `usage`, `timers`, `providerBlock`. `agent` carries `{model?:{provider,modelId},thinkingLevel,extensions:string[],tools:string[],cwd?,instructions?}`. Tasks carry `{id,kind,status,background,owner?,abortRequested}`; submissions carry `{id,type:"input"|"write"|"continue",status,requestId?,entryId?,answerEntryId?,reason?}`; a `continue` submission has no entry. Native `live`, `inbox`, usage, and task statuses belong to the exact declared
+`ConversationStatus` includes `{conversationId,identity,busy,lastText,live,inbox,agent,tasks,submissions}` and optional `name`, `owner`, `firstMessage`, `forkSource`, `ownerTaskId`, `unplaced`, `oldest`, `openWork`, `cwd`, `lastTextRole`, `usage`, `timers`, `providerBlock`. `agent` carries `{model?:{provider,modelId},thinkingLevel,extensions:string[],tools:string[],cwd?,instructions?}`. Tasks carry `{id,kind,status,background,owner?,abortRequested}`; submissions carry `{id,type:"input"|"write"|"continue",status,requestId?,entryId?,answerEntryId?,reason?}`; a `continue` submission has no entry. Native `live`, `inbox`, usage, and task statuses belong to the exact declared
 Durable representation. Tool calls in status and live frames preserve optional
 string `argumentsError`; terminal call cards show the diagnostic on one line.
 Usage preserves optional boolean `cost.totalFromProvider` in model totals, tool
@@ -992,29 +1053,26 @@ Text input params:
 
 The broader native input also accepts content-part arrays; a text-only consumer need not implement them. Origin and requester are required. `replyTo` defaults to requester, so a consumer seeking a self-owned result must explicitly set `replyTo` to the target conversation. The server supplies senderIdentity from that conversation; do not impersonate a native sender to create work. Source: `extensions/agent/durable-host.ts:420-430`; `extensions/agent/durable-controls.ts:221-238`.
 
-The result is `{submissionId:number,conversationId:number,deduped:boolean,identity:string,result:{sessionId:string,submissionId:number,requestId?:string}}`. The request above produces a result reference with its requestId. It confirms admitted/already-admitted work, not execution, placement mode, final answer, or operator acceptance. Steer waits for a native boundary; it does not interrupt a running tool. Explicit `followUp` normally waits for the current run to end. Source: `extensions/agent/durable-host.ts:420-430`; `extensions/agent/durable-controls.ts:235-245,401-447`; `extensions/agent/result-reference.ts:53-61`.
+The result is `{submissionId:number,conversationId:number,deduped:boolean,placement:"placed"|"unplaced",identity:string,result:{sessionId:string,submissionId:number,requestId?:string}}`. The request above produces a result reference with its requestId. `placement` is the committed state at admission: `unplaced` while the input waits in the recipient's inbox for the end of its current tool round, `placed` otherwise; a deduplicated replay states the current placement of the original input. The result confirms admitted/already-admitted work, not execution, final answer, or operator acceptance. Steer waits for a native boundary; it does not interrupt a running tool. Explicit `followUp` is placed at the same boundary and does not wait for the current run to end. Source: `extensions/agent/durable-host.ts:420-430`; `extensions/agent/durable-controls.ts:235-245,401-447`; `extensions/agent/result-reference.ts:53-61`.
 
-During active `agent_await`, admitted explicit input, including `followUp`,
-releases the wait and joins the current work at its post-tools boundary. It does
-not guarantee a separate next answer. Native explicit report delivery carries
-report provenance: an awaited producer's report releases the wait, while an
-unrelated report on that route keeps normal follow-up placement. The ordinary
-`AgentManager` report control instead submits without report provenance; the
-recipient classifies it as explicit input, so it releases an active await even
-when its sender is not an awaited producer. A same-storage background
-`Reporter` answer notification uses raw native `followUp` without release
-provenance and does not itself release the wait. Automatic input classification,
-check-in suppression, and scheduled-message placement do not change. See
-[await admission and continuity](../extensions/agent/README.md#await-exact-peer-results).
+The host submits each active native input with the `steer` busy mode, whatever
+`whenBusy` value the request carries, except `reject`, which keeps its meaning.
+A queued input is therefore placed at the boundary after the recipient's
+current tool round and never waits for the end of the run. The host fixes
+`steeringMode` to `all`, so that boundary places every queued active input.
+A tool round reaches this boundary after every call in the round ends, not
+after one parallel call ends. A running tool, provider retry or compaction
+has no input-placement boundary inside it. Passive reports and thread notices
+remain writes and start no run. Answer copies keep normal retained receipt
+delivery; an immediate result read neither acknowledges nor withdraws them.
+See [input placement](../extensions/agent/README.md#input-placement-and-unplaced-notices).
 
-The original request remains open after release, with unresolved producer
-references retained and their work still active. The recipient applies the
-input, then awaits unresolved references again on that same request. Distinct
-admitted inputs retain distinct request IDs. Recorded requester/reply routes
+Distinct admitted inputs retain distinct request IDs. Recorded requester/reply routes
 remain per request, even when several inputs share one final answer. A generation
 hook resolves each native run input through its submission and entry. It inserts
 one frozen `agent-request-route` user note immediately after that input's last
-user message. The note holds requestId, requester, replyTo and origin. Static
+user message. The note holds requestId, requester, replyTo and origin, and the
+input's `class` and `sender` when the retained entry carries a label. Static
 system guidance explains automatic final-answer delivery and explicit report
 routing; the system section contains no per-request route list.
 
@@ -1063,11 +1121,10 @@ explicit report. Interim reports use `agent_send` with mode `report` and that
 input's replyTo. Creating-owner provenance never selects the recipient.
 Durability preserves admitted work and its routes; it does not prescribe answer
 timing or separate answers. Sources:
-`extensions/agent/durable-controls.ts` (`awaitInputMode`, `admitConversation`),
-`awaited-results.ts` (`classifyAwaitInput`, `reconcileInputRelease`),
+`extensions/agent/durable-controls.ts` (`placementMode`, `admitConversation`),
 `request-context.ts` (`recordRequestContext`, `requestContextHooks`, `requestContextSection`),
 `request-route-state.ts` (`RequestRouteState`),
-`manager.ts` (`controlClient`), `durable-delivery.ts` (`reportProvenance`), and
+`manager.ts` (`controlClient`), `durable-delivery.ts` (`startDurableDelivery`), and
 `durable-agents.ts` (`Reporter`).
 
 The ordinary manager's `control("submit")` maps to `task-submit`; raw host `submit` is a different base operation. Match the documented wire member, not a manager method name. The standalone terminal uses operator origin and self-owned replyTo. Source: `extensions/agent/manager.ts:469-514`; `extensions/agent/terminal-client.ts:123-131`.
@@ -1205,10 +1262,9 @@ submit report acknowledge inspect status list receipts dashboard snapshot
 observe-open observe-frame observe-close timer-list models
 ```
 
-Unknown methods, abort, configure, fork, rewind, compact, spawn, place, reset, close, and timer mutations are not made retry-safe merely by having a request ID. A consumer may use a narrower retry policy. Observation reconnection creates fresh tokens and a new baseline. The shared transport supports caller-local cancellation of a Chord wait. The
-Agent adapter forwards its call signal to the native runtime only for
-`receipts` with `wait:true`; other cancellation or disconnect must not cancel
-admitted work. The separate ordinary-primary `trustPrompt` also supports caller
+Unknown methods, abort, configure, fork, rewind, compact, spawn, place, reset, close, and timer mutations are not made retry-safe merely by having a request ID. A consumer may use a narrower retry policy. Observation reconnection creates fresh tokens and a new baseline. The shared transport supports caller-local cancellation of a Chord wait.
+Receipt reads do not wait for another input or result; cancellation or
+disconnect must not cancel admitted work. The separate ordinary-primary `trustPrompt` also supports caller
 cancellation. Observation cleanup releases handles and tokens, not native work. Source: `extensions/agent/host-protocol.ts:196-235`; `extensions/agent/host-client.ts:546-553,697-740`.
 
 Admission and answer delivery are separate. Native result inspection or retained delivery receipts establish result state. Acknowledgment marks receipt delivery, not operator acceptance of the answer. Self-owned result delivery acknowledges in place without another model input. Ordinary RPC prompt IDs have no equivalent native retry guarantee. Source: `extensions/agent/durable-controls.ts:905-936,995-1043,1103-1140`; `extensions/agent/README.md:1453-1460,1535-1547`.
@@ -1233,13 +1289,13 @@ These examples contain fabricated identities and data. They are valid-shape exam
 ### Fixture: operator-input
 
 ```json
-{"method":"task-submit","params":{"sessionId":"00000000-0000-4000-8000-000000000001","message":"Describe the current state.","origin":"operator","requester":"consumer:example","replyTo":"00000000-0000-4000-8000-000000000001","requestId":"input-example","whenBusy":"steer"},"requestId":"input-example","contract":{"request":"task-submit/1.0.0","response":"task-submit/1.2.0"}}
+{"method":"task-submit","params":{"sessionId":"00000000-0000-4000-8000-000000000001","message":"Describe the current state.","origin":"operator","requester":"consumer:example","replyTo":"00000000-0000-4000-8000-000000000001","requestId":"input-example","whenBusy":"steer"},"requestId":"input-example","contract":{"request":"task-submit/1.1.0","response":"task-submit/1.3.0"}}
 ```
 
 ### Fixture: admitted-input
 
 ```json
-{"submissionId":7,"conversationId":1,"deduped":false,"identity":"00000000-0000-4000-8000-000000000001","result":{"sessionId":"00000000-0000-4000-8000-000000000001","submissionId":7,"requestId":"input-example"}}
+{"submissionId":7,"conversationId":1,"deduped":false,"placement":"placed","identity":"00000000-0000-4000-8000-000000000001","result":{"sessionId":"00000000-0000-4000-8000-000000000001","submissionId":7,"requestId":"input-example"}}
 ```
 
 ### Fixture: unavailable-result

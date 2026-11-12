@@ -23,7 +23,7 @@ Choose the surface that serves your task:
 | Start work or change its direction | [Controls](#controls); use the returned canonical identity or a retained `@handle`, not a display name. |
 | Read and message an agent | [Agent work view](#agent-work-view), then [live conversation and history](#live-conversation-and-history). |
 | Use an existing agent as the main terminal conversation | [Standalone terminal attachment](#standalone-terminal-attachment). |
-| Delegate and receive an answer | [Agent collaboration and placement](#agent-collaboration-and-placement); native callers also [await exact peer results](#await-exact-peer-results). |
+| Delegate and receive an answer | [Agent collaboration and placement](#agent-collaboration-and-placement); [result reads](#read-peer-results) preserve the exact admitted reference. |
 | Reuse an expert or develop a shared outcome | [Standing agents and expertise](#standing-agents-and-expertise) and [peer threads](#peer-threads). |
 | Coordinate with another effort | [Efforts, presence, and intent](#efforts-presence-and-intent); intent is a claim, not authority or a lock. |
 | Understand lifetime, delivery, or recovery | [Runtime and identity](#runtime-and-identity) and [recovery and delivery](#recovery-and-delivery). |
@@ -40,6 +40,12 @@ Explicit operator admissions use `pi.user`. Model-origin admissions use the
 application kind `agent.input` with `data.author.role: "agent"` and the known
 caller in `data.author.identity`. Unowned admissions without origin also use
 `agent.input`, with `data.author.role: "unknown"`. An absent identity stays absent.
+An `agent.input` entry also carries `data.class`, `data.requestId` and, when
+known, `data.sender`. The class is one of `operator`, `steer`, `followUp`,
+`report`, `result`, `check-in`, `timer` and `thread-notice`. It tells the
+recipient how to treat the input and never selects the time of its placement.
+An explicit operator admission keeps the `pi.user` kind without data and reads
+as class `operator`. The route note of an input names the same class and sender.
 Every input still contributes the same user-role model content. Local and foreign
 requests, scheduled inputs, check-in recovery and delivery recovery preserve this
 classification. Automated reports use application inputs, not operator inputs.
@@ -62,6 +68,20 @@ is retained and must agree with the submission. Local, foreign, handle, and
 ordinary-primary dispatch expose the same reference in text and structured
 Codemode output. Dispatch stays in the background; admission is not settlement.
 
+A native admission also states its committed `placement`. `placed` means that
+the input is in the recipient's transcript. `unplaced` means that the input
+waits in the inbox of a busy recipient until its current tool round ends.
+Inside a Durable agent, the send and spawn results carry `placement` in their
+details and as one text line. The recipient's host keeps each unplaced input in
+the conversation document `agent.unplaced-inputs`, with its request, class,
+sender and admission time, and drops the row when the input leaves the inbox.
+A report through the host returns its current `delivery`: `pending`, `parked`,
+`terminal` or `admitted`. A row that is not admitted states
+`placement: "unplaced"`; its placement in the recipient appears in the
+recipient's status. Source: `unplaced-inputs.ts` (`recordUnplacedInput`),
+`durable-controls.ts` (`admitConversation`), and `durable-agents.ts`
+(`admitLocal`).
+
 Creation-only spawn, reports, scheduled inputs, thread posts, and messages
 to ordinary primary sessions do not produce native result references. A Durable
 sender receives a source receipt after the ordinary message is retained for
@@ -71,8 +91,8 @@ An ordinary primary remains responsive and receives normal routed results.
 | Tool | Effect |
 |---|---|
 | `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. |
-| `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries have no `agent_await` tool; they receive each answer through normal delivery. Waiting is a capability, not a staffing rule. |
-| `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. A successful report returns its identity and state facts (retention, acknowledgement, admission or queue placement) without the message body; these facts do not show that the recipient read the report. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn, and releases no wait. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
+| `agent_work` | Inside a native agent, declare background work with `continue`, or close it with `complete` and one final report to its retained reply recipient. Both actions return at once. Results and native settlement do not complete declared work; see [declared background work](#declared-background-work). |
+| `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. A busy Durable recipient receives each active input at its next tool boundary, for `steer` and for `followUp`; no input waits for the end of the run. These inputs do not promise separate answers. See [input placement](#input-placement-and-unplaced-notices). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. A successful report returns its identity and state facts (retention, acknowledgement, admission or queue placement) without the message body; these facts do not show that the recipient read the report. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; an unavailable endpoint preserves the attachment error and proves no global host absence. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
@@ -87,7 +107,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths, none unless configured; optional `checkInMinutes` sets an interval. |
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. Reads start no host. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected read returns compact state with an exact full-detail call; `detail: true` with one explicit `sessionId` returns the full selected status and cannot be combined with `view`, `storageId`, `cursor`, or `limit`. The full status of a selected session lists its pending timers, nearest deadline first. `view: "storage-page"` continues one exact storage's bounded status scan. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
-| `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. The result view returns the answer in pages with separate continuations for answer text and for recipient references; see [result pages](#await-exact-peer-results). |
+| `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. The result view returns the answer in pages with separate continuations for answer text and for recipient references; see [result pages](#result-pages). |
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 characters and `message` within 8,000 characters; write longer content to a file and post its path. Handler length errors include this remedy because Pi's pre-handler schema errors omit field descriptions. |
 
 ### Default exposure and discovery
@@ -98,9 +118,9 @@ exposure fields carry it.
 
 - Direct controls are declared and callable: `agent_spawn`, `agent_send`,
   `agent_steer`, `agent_abort`, `agent_status`, `agent_intent` and
-  `agent_collaborate`.
+  `agent_collaborate`. Native agents also declare `agent_work` as a direct control.
 - Model-only controls are declared while active and never callable from a
-  script: `agent_await` and `agent_compact`.
+  script: `agent_compact`.
 - Deferred controls stay registered and callable from other tools, and are not
   declared until tool discovery loads them: `agent_inspect`, `agent_list`,
   `agent_attach`, `agent_place`, `agent_fork`, `agent_rewind`, `agent_reset`,
@@ -377,11 +397,10 @@ channel delivery receipt does not establish action or task acceptance. Model-vis
 results remain unchanged. Status totals mark partial costs with a trailing `+`, such as
 `$0.25+`: at least that amount is known; some data was not fully readable.
 
-`/agent` exposes `new`, `list`, `status`, `send`, `steer`, `await-release`, `abort`, `attach`,
+`/agent` exposes `new`, `list`, `status`, `send`, `steer`, `abort`, `attach`,
 `fork`, `compact`, `inspect`, `rewind`, `configure`, `profile`, `command`, `place`, `places`,
 `unbind`, `reset`, `schedule`, `timers`, and `timer-cancel`. `help` shows action
-syntax. `await-release` names the selected native run; it returns partial awaited
-results without canceling producers and cannot release a later request. Tab completes actions, canonical identities, and retained `@handle`
+syntax. Tab completes actions, canonical identities, and retained `@handle`
 addresses without executing them. Completion searches retained role hints too.
 Without an action, `/agent` opens the work view. A TUI command that names a
 target without its other arguments, such as `/agent configure @handle`, opens
@@ -417,7 +436,8 @@ successful receipt stays.
 The `/agent` control actions return short human text and, when an action creates
 or selects an agent, that agent's identity. Observation actions (`list`,
 `status`, `inspect`, `profile`, `places`) keep their retained evidence. `/agent send`
-admits a follow-up when the target is busy; `/agent steer` admits steering. The
+admits a follow-up when the target is busy; `/agent steer` admits steering. A
+busy Durable target receives both at its next tool boundary. The
 model-facing `agent_send` tool keeps its documented steering disposition. The
 status card labels its newest text by role and state: `Latest reply` or
 `Latest input` when idle, and `Replying` or `Working on input` while active.
@@ -556,7 +576,7 @@ earlier history. Pointer geometry belongs to the last drawn layout; a click
 reported for another size does nothing.
 
 Selected cost, usage and model facts follow the observation already open for
-the target. Each live frame refreshes the name, state, awaiting fact, model and
+the target. Each live frame refreshes the name, state, unplaced-input facts, model and
 reasoning level without rescanning the store. Model name, reasoning support and
 context window come from the host's `models` read once per selection; a model
 the host did not list shows its identifier without a context bar. When the
@@ -633,9 +653,8 @@ The view has a heading row, the list, and the selected agent's pane:
   instead of shortening. The next row is muted, aligned under the label: an
   agent with an error shows the first sentence of its reason (warning colour
   for a failed run, error colour for a current host or storage fault); a
-  working agent shows its current tool, then its model; an agent that awaits
-  others shows its pending results and queued inputs, in the warning colour for
-  a likely mutual wait; any other agent shows its model with its reasoning
+  working agent shows its current tool, then its model; unplaced inputs show
+  their count and the age of the oldest input; any other agent shows its model with its reasoning
   level and the cost. A blank row follows an agent
   whose label fits on row 1. The first count line counts loaded agents above
   and below the window (`↓ N more`, `↑ N more`, or `↑ A · ↓ B more`), then
@@ -675,11 +694,13 @@ work; with none, it shows All, so the view never opens on an empty list. After
 the operator chooses Related or All, the list keeps that choice. A native
 terminal without an attached conversation starts with All. Find applies to the
 selected view. An idle agent's message field names no delivery choice; a
-working agent's field shows Steer at next step or Follow-up after answer.
+working agent's field shows Correction at next step or New work at next step.
+Both name the class of the message; the host places both at the working
+agent's next tool boundary.
 
 Related uses exact identities from existing evidence: the current conversation,
 successful task admissions retained by the ordinary session, its published
-awaited-result targets, and creation descendants in loaded rows. A storage's
+creation descendants in loaded rows. A storage's
 creating owner qualifies only its root conversation. Nonroot creation owners and
 fork parents come from bounded existing status summaries. Independent conversations
 in the same storage stay excluded. Explicit root `:1` and the bare root share one
@@ -728,7 +749,7 @@ primary process. Different primary sessions have independent UI state.
 
 Enter sends; Ctrl+J adds a new line. The message field's caption names the
 recipient (`To Parser review`). An idle agent gets **Send**; a working agent
-gets **Steer at next step** unless you choose **Follow-up after answer**: click
+gets **Correction at next step** unless you choose **New work at next step**: click
 the effect on the field's top border. In the list, `f` switches the effect too.
 After
 a send, the next message starts as steer again. In the message field, letters,
@@ -745,8 +766,7 @@ borders.
 
 The footer's controls act on the agent shown in the header:
 
-- **Stop** (`s`, while the agent works), **Release await** (`w`, while it
-  awaits other agents), **Reconnect** (`r`, when it needs attention),
+- **Stop** (`s`, while the agent works), **Reconnect** (`r`, when it needs attention),
   **Configure** (`c`, disabled with its reason while the agent works) and
   **Tasks** (`k`) show directly when they fit.
 - **x more** (`ctrl+n` while a text field has focus) lists the rest with their
@@ -797,7 +817,7 @@ nothing and states no failure.
   interactive terminal it returns the full profile as text.
 - **Details** reads the host status for the captured target and keeps all
   returned text.
-- **Stop**, **Stop and release host**, **Reconnect** and **Release await**
+- **Stop**, **Stop and release host** and **Reconnect**
   state the effect and run on their labelled action.
 - **Tasks** shows the storage's live task graph. Open conversation selects the
   task's conversation, choosing among several when needed; Refresh retries an
@@ -1094,8 +1114,10 @@ storage's conversation state rather than the primary's fleet overview.
 
 A targeted `agent_status` without `detail: true` returns a compact status for
 ordinary and Durable callers. It keeps the exact identity, busy state,
-availability, queue and timer counts, the known name, model and thinking level,
-the current run, a short await fact, and a provider-block recovery call. It
+availability, queue and timer counts, the count of admitted inputs that are
+not yet placed (`unplaced`) with the age of the oldest in milliseconds
+(`oldest`, absent when none is unplaced), the known name, model and thinking level,
+the current run, and a provider-block recovery call. It
 names what it leaves out and carries the exact call for the full status. A
 retained run failure (reason and detail) and a delivery error stay in the
 compact status, with recognised credentials removed, byte bounds and explicit
@@ -1226,10 +1248,8 @@ plain view stays unresolved without a companion or invalid marker.
 The retained input collection watermark stays 128; it is not an admission cap.
 Queued native inputs and live-run classifications whose native input is not yet
 admitted retain their exact provenance and communication intent. This pending
-backlog does not prevent explicit input or awaited-producer report admission.
-Unrelated reports and automatic inputs still do not release an await. Placed inputs leave the
-native inbox and no longer need await-release provenance, even while their run
-continues. Pruning prepares all native reads before companion writes and
+backlog does not prevent later input admission. Placed inputs leave the
+native inbox even while their run continues. Pruning prepares all native reads before companion writes and
 materializes unlinked metadata or no-envelope decisions before row eviction in
 the same transaction. Queued intent reconciliation uses the existing background
 and reopen paths, not another queue. Native admission remains a separate commit;
@@ -1576,136 +1596,159 @@ Partial cancellation and unavailable ownership remain explicit. See the
 [public control contract](../../docs/agent-host-contract.md#run-scope-and-run-stop)
 for selectors, native ownership, cancellation races, and coverage limits.
 
-An answer settles a request; it does not represent a pause for later work.
-Use report mode for interim progress. Put the substantive result or exact
-blocker in the terminal answer, not a waiting note or a closing message that
-points to an earlier answer. Settlement alone does not establish task
-acceptance. Native `agent_await` holds the original request open for exact peer
-results. Creation records do not define dependencies or authorize cancellation.
+Without declared background work, an answer settles the request; it does not
+represent a pause for later work. Use report mode for interim progress. Put the
+substantive result or exact blocker in that terminal answer, not a waiting note
+or a closing message that points to an earlier answer. With declared work,
+`agent_work complete` sends the final result as a separate report. Native
+settlement and task acceptance remain separate. Creation records do not define
+dependencies or authorize cancellation.
 
-### Await exact peer results
+### Read peer results
 
-Use a short codemode script to spawn or send work and return the exact admitted
-`result` references. Then call
-`agent_await({ results: [resultA, resultB] })` directly in a native Durable
-conversation. The tool is model-only: a script cannot nest a wait, so waiting
-holds no codemode worker. In `codemode.mode: "only"` the direct declarations
-the model keeps are `codemode`, `tool_search`, `agent_await` and `agent_compact`.
-The request remains placed while its generation waits on the live tool. The
-same request resumes with retained outcomes and eventually receives one final
-answer. The wait retains a host process, tool invocation, native documents, and
-bounded observers; it makes no provider calls merely to wait. Storage usage is
-not the awaited request's cost.
+Keep each exact admitted `result: {sessionId, submissionId, requestId?}`
+reference from a spawn or send. Read it with `agent_inspect`, `view: "result"`,
+and its exact submission or request selector. The read returns the currently
+committed state at once: `queued`, `placed`, `done`, `unanswered`, or
+`unavailable`. It does not hold a tool call open for later results. Creation
+records, names, reports, timers and thread posts are not result references.
+Ordinary primaries and native agents receive answers through normal delivery.
 
-The tool accepts at most 16 unique admitted references. Returned answers are
-capped at 16,000 UTF-16 code units; use the returned source entry and
-`agent_inspect` exact continuation for retained text beyond that excerpt.
-Same-storage outcomes use native submission settlement. Foreign results use native settlement
-only when their normal reply route names this recipient. A result addressed to
-another recipient returns `unavailable`; observation does not steal its receipt.
-Creation-only calls, reports, scheduled inputs, names, and thread posts are not
-result references. Ordinary primary sessions keep background delivery and never
-block on this tool.
+A result read neither acknowledges nor withdraws its normal delivery. The
+recipient therefore still receives that delivery after an earlier inspection.
+A retained receipt and a successful read establish result state, not acceptance
+of the work. Do useful independent work while a peer works; do not poll result
+reads or keep a tool call open just to await a peer.
 
-An exact producer's first native provider retry releases the await by default.
-To deliberately wait for a later attempt, set a threshold:
+### Declared background work
+
+Inside a native agent, `agent_work` records work that outlives the current run.
+The item belongs to one routed request and retains that request's requester,
+reply recipient, input submission and exact dependency references in the
+conversation document `agent.open-work`. It does not keep a generation or tool
+call open. A fork starts without these items.
+
+After delegation, finish the useful independent work first. When only the
+background work remains, declare it and end the run with a short state note:
 
 ```ts
-agent_await({
+agent_work({
+  action: "continue",
+  request: "request-id-from-the-route-note",
   results: [resultA, resultB],
-  releaseOnProviderRetry: { minAttempt: 2 },
+  note: "Combine the two results and report the conclusion.",
 });
 ```
 
-Omission and an empty `releaseOnProviderRetry` object both use attempt 1.
-A matching current retry releases parallel waits in that tool round, retaining
-partial results and unresolved references. `producerRetries` carries the exact
-references and observed retry facts. Producers continue their work. A retained
-acknowledgment prevents repeated awaits for the same held request from releasing
-again on unchanged retry evidence. A new retry attempt remains visible.
-Inspect the facts, then use authorized abort/configure/send controls to recover,
-or await the unresolved references again. Generic retry visibility does not
-assert quota exhaustion and does not parse provider reset text.
+`continue` requires `results` and `note`. Omit `request` only when the run has
+one routed input, or no routed inputs and one open item. With several requests,
+name the one this work serves. A repeated declaration replaces its dependencies
+and note without changing its original route. A new item requires a placed
+input with a retained route. Self-dependencies and duplicate references refuse.
 
-Explicit `followUp` normally waits for the current run to end. During active
-`agent_await`, admitted explicit input, including a queued `followUp`, releases
-the wait and reaches the original post-tools boundary. It joins the current
-work rather than guaranteeing a separate next answer. Failed admission does not
-release the wait.
+The state note starts with words that say it is not the result. Pi still
+settles that native input as `done`; the declared item stays open. Incoming
+results and reports use normal delivery and start another run when the
+recipient is idle. A native `done` receipt therefore does not close the work.
 
-The release, suppression and withdrawal rules in this section define the native
-wait inside a Durable conversation. Report placement depends on the admission
-route:
+For a routed task that remains blocked or deferred without a producer,
+use `results: []` with its request and note. This retains open work without
+dependencies; it withdraws nothing. No dependency event wakes that item.
+It does not complete merely because the current run ends. If the declaring
+input ends `unanswered` instead of a state note, the host omits the open item;
+the original unanswered receipt supplies that outcome.
 
-- Native Durable `agent_send` with `mode:"report"` uses retained report delivery
-  with report provenance. An awaited producer's explicit report releases the
-  wait; an unrelated report on this route keeps normal follow-up placement.
-- The ordinary `AgentManager` report control submits a follow-up without report
-  provenance. The recipient classifies it as explicit input, so it releases an
-  active await regardless of whether its sender is an awaited producer.
-- A passive report (`passive: true`) is a native write, not an input. It does
-  not release the wait and starts no turn.
-- The delivery watcher sends each answer copy as an automatic `followUp`,
-  without release provenance, including the copy for a recipient in the
-  producer's own storage. That copy does not itself release the native await.
-  The covered-delivery withdrawal rules below still apply. The same-storage
-  background `Reporter` task admits the input and waits for its settlement; it
-  posts no input of its own.
+Finish the work with its original request ID and the complete final report:
 
-Sources: `durable-runtime.ts` (`dispatch`), `durable-delivery.ts`
-(`reportProvenance`, `startDurableDelivery`), `manager.ts` (`controlClient`),
-`durable-controls.ts` (`admissionProvenance`, `awaitInputMode`),
-`durable-host.ts` (`passive-submit`), and `durable-agents.ts` (`Reporter`).
+```ts
+agent_work({
+  action: "complete",
+  request: "request-id-from-the-route-note",
+  status: "done", // or "failed"
+  message: "The complete result or exact blocker for the reply recipient.",
+});
+```
 
-Apply the admitted input and await unresolved references again on the same
-original request. The release keeps unresolved producers running and preserves
-the open request. Admitted inputs retain distinct request IDs. Recorded
-requester/reply routes remain per request, even when several inputs settle with
-the same final answer. Durability preserves admitted work and its routes
-across restart; it does not prescribe answer timing or separate answers.
+`complete` closes the item and retains one final report for its original reply
+recipient in the same commit. A repeated completion returns the retained close
+and creates no second report. Normal report delivery remains at least once;
+this is not an exactly-once context-delivery claim. An arrived dependency and a
+settled input never invoke completion. Closed items do not reopen. The work
+record does not cancel its producers.
 
-For a Queue control that sends explicit `followUp`, the button label is
-**Queue**. Its title and accessible description are:
+Read `agent_status({sessionId, detail: true})` for `openWork`. Each item names
+its original route, note, state and dependencies. A dependency is `open` while
+its input is unsettled, `state-note` when its input settled but its own work
+remains open, or `arrived` when its settled input has no open work. A dependency
+in another storage currently reads `open` with `unavailable` and an exact
+result-inspection call; that state is not proof that it is pending or complete.
+A closed item carries its final-report identity and, when available, delivery state.
+Compact status omits this full list.
 
-> Queue this message for a later step. During a wait for agent results, the message joins the current work.
+Delivered receipts for a declared item label its native answer as a state note,
+not a final result. Ordinary-primary details also carry `work` (`open` or
+`closed`) and `workLabel`. Enabled check-ins continue after the native input
+settles while declared work stays open; their note and dependency facts do not
+complete it. A host abort or context reset closes open items with `stopped` or
+`reset` and retains the fixed final report for each original reply recipient.
+Closure itself stops no producer.
 
-A failed or aborted producer returns a typed non-success outcome and releases
-parallel waits from that tool round without canceling other producers. A real
-conversation abort stops the original request. Late named results remain
-retained without starting another model run; a new explicit request still reads
-them.
+Sources: `open-work.ts` (`AgentWorkParams`, `declareOpenWork`,
+`continueWork`, `completeOpenWork`, `finalReport`, `OpenWorkDoc`,
+`openWorkStatus`, `receiptWork`, `closeOpenWork`), `durable-agents.ts`
+(`workTool`, `exposedControl`), `durable-observation.ts`
+(`readConversationStatus`), `durable-delivery.ts` (`receiptFollowText`), and
+`durable-checkins.ts` (`CheckInTask`).
 
-Named-result check-ins are suppressed at the waiting recipient. Other check-ins
-and scheduled messages remain queued follow-ups, even if their original mode
-was steer. Requester check-ins about the waiting agent remain active. Passive
-writes, including reset, wait for their normal native boundary; they do not
-release the wait. Each return includes `queuedInputCount` from a committed inbox
-snapshot, excluding writes and suppressed check-ins. More inputs may arrive
-later. Follow-ups that do not release an await retain normal final-boundary
-placement. The explicit-input release rule does not change the automatic-input
-handling above.
+### Input placement and unplaced notices
 
-When several returned references share one producer answer, the first outcome
-carries the answer body. Each later outcome carries `sameAnswerAs` with that
-first reference and omits `answer`, `truncated`, `excerpt`, and `continuation`.
-The retained outcome rows do not change.
+The host submits each active native input with the `steer` busy mode; `reject`
+keeps its meaning. The native host fixes `steeringMode` to `all`, so the
+boundary after the recipient's current tool round places every queued active
+input. A tool round ends after all its tool calls end, not after one of its
+parallel calls ends. `followUp` selects new work rather than a correction;
+it does not delay placement until the end of the run. The same rule covers
+operator and model admissions, reports, answer copies, check-ins, timers,
+active thread notices and delivery replay. A running tool call, a provider
+retry and a compaction supply no placement boundary inside their work.
 
-When `agent_await` returns, it withdraws only still-queued delivery inputs wholly
-covered by its returned results. A delivery qualifies only when all of these
-conditions are true:
+An active input joins the current work at that boundary. Distinct request IDs
+and requester/reply routes remain distinct even when several inputs share one
+final answer. An automatic result stays an automatic result, and a report
+stays a report; the class describes the input, not its placement time.
+A passive report or thread notice is a write, not an active input. It starts
+no turn and enters context at its normal write boundary. The same-storage
+background `Reporter` admits delegated work and follows its settlement; the
+delivery watcher supplies the answer copy.
 
-- its recipient is the awaiting conversation;
-- its receipt group for that recipient is complete;
-- each reference in the group is a returned outcome, and a request ID in the
-  group equals the returned request ID.
+Admissions and report receipts distinguish `placed` from `unplaced`.
+Status and cards show `unplaced`, the count still in the native inbox, and
+`oldest`, the age in milliseconds of the oldest such input. The oldest age
+is absent when none is unplaced. These are committed placement facts, not
+proof that the model read or acted on an input. Retained report delivery also
+states `pending`, `parked`, `terminal` or `admitted`; only an admitted
+row is eligible for placement in the recipient. A receipt never proves task
+acceptance.
 
-The producer host supplies the association (`sourceId`, `requestId`,
-`producerStorageId`, `recipient`, optional `answerEntryId`, `results`,
-`complete`) from its retained receipt, for local and foreign producers alike.
-Another recipient's copy of the same answer is a separate delivery and stays
-untouched. An incomplete group, a grouped input that also carries other results,
-and a copy that left the queue stay as they are. Original request replay does
-not release its own wait.
+After an explicit input stays unplaced for five minutes, the host retains one
+notice for that sender and stuck recipient, not one notice per queued input.
+The host also notifies the reply recipients of the recipient's current routed
+requests, without a duplicate for a sender already notified. Automatic results,
+check-ins and timers produce no notice to their producer. Active thread-notice
+senders receive a passive notice. Inputs stay queued; the notice withdraws or
+cancels nothing. Once the queued rows leave, a later stuck input is a new case.
+
+The notice names the current step: running tools, a blocking compaction, a
+provider retry, or a model step. A reported start is `TaskRecord.startedAt`,
+the first start of that task, including later waits and recovery, not the
+start of the current model attempt. Missing time means unknown. The notice
+is not a progress heartbeat.
+
+Sources: `durable-controls.ts` (`placementMode`, `admitConversation`),
+`durable-services.ts` (fixed `steeringMode`, task registration),
+`durable-runtime.ts` (`openHost`), `unplaced-inputs.ts`
+(`recordUnplacedInput`, `UnplacedWatchTask`, `currentStep`, `noticeDue`),
+and `durable-observation.ts` (`readConversationStatus`).
 
 Normal delivered receipts retain a short answer excerpt and include a
 `Full answer` exact-entry continuation. Ordinary primary delivery details also
@@ -1756,67 +1799,20 @@ view as readable text: the identity and page facts, the answer page, and each
 continuation as an exact call.
 
 Sources: `durable-observation.ts` (`readResult`, `RESULT_PAGE_UNITS`,
-`RESULT_PAGE_BYTES`), `delivery-store.ts` (`receiptReferencePage`),
-`durable-host.ts` (`selectedReceipt`), `await-execution.ts`
-(`withdrawCoveredDeliveries`), and `awaited-results.ts`
-(`projectAwaitOutcomes`).
+`RESULT_PAGE_BYTES`), `delivery-store.ts` (`receiptReferencePage`), and
+`durable-host.ts` (`selectedReceipt`).
 
-Normal delivery stays independent. A late or already-placed copy remains possible
-and costs an additional model turn. There is no recipient consumption ledger or
-exactly-once contextual-delivery guarantee. Capped answers include an exact
-`agent_inspect` continuation. Follow its entry and each returned `nextOffset`
-until the continuation is complete.
-
-Local cycle admission uses one consistent native transaction, including named
-request lookup and bare-reference live/inbox membership. It refuses self-waits
-and cycles inside this storage. Foreign edges end that traversal; it does not
-refuse or solve cross-storage cycles. Safe replay reacquires observers from
-retained declarations and durable outcomes without redispatching work.
-
-Status, the dashboard, and existing check-ins project semantic `awaiting`
-separately from native task state. Facts name held requests, exact result
-references and outcomes, committed queued-input counts, and one-hop producer
-waits. A pending result has separate execution facts when its producer's current
-native run includes that exact input and `LiveDoc.generation.retry` is present.
-These facts name the producer, submission and known request ID, observed model,
-attempt, known configured attempt ceiling, next native retry timestamp, and a
-bounded credential-redacted, control-escaped provider error with an explicit
-truncation flag. Queued inputs and other runs do not inherit the retry. Submission
-status stays pending. Provider reset text remains a provider claim; it is never
-parsed into a scheduling guarantee or quota diagnosis. Producer facts state their
-source and observation time. Parallel awaits merge retry facts by exact result
-reference. A newer observation clears only the references it covers. References
-from different producer runs do not merge. Merged observation times do not make
-older references appear fresh. Each independent subscription's observation loss
-applies only to its covered references. Retry and producer wait facts from
-successful subscriptions remain visible; partial loss names the unavailable
-references in bounded text. Unavailable observations remain unknown. Known reverse
-edges to held requests show a likely mutual wait, not a complete remote graph. Vector and byte bounds preserve retry facts before generic details and
-report omitted requests, results, and producers. Overlapping subscriptions compare
-shared reference states, not their different reference arrays. Repeated matching
-observations do not write new durable facts. Existing commit notifications refresh
-and clear retry facts on retry exit, run settlement, abort, or observation loss; no extra
-timer or recursive watch exists. Retry details precede generic wait lines in the
-bounded check-in body. A dependency check-in requires its watched submission to belong to the current run's held inputs. A
-queued watched input does not inherit another input's dependency retry. Status
-and the dashboard use the same dependency lines. This does not change check-in
-cadence, native suspension, named-result suppression, result routing, or control
-authority.
-
-Use existing controls to recover when authorized: inspect the provider claim,
-abort active work before configuration if necessary, configure the idle
-conversation, then send a continuation and await its new exact result. Preserve
-an explicit model requirement. The extension never selects another provider or
-model automatically.
+Normal delivery stays independent. It keeps its recipient-scoped identity and
+retained receipt. A late or already-placed copy remains possible and costs an
+additional model turn. There is no exactly-once contextual-delivery guarantee.
 
 ### Provider content refusals
 
 A native submission that ends on a provider error settles as `unanswered` with
 `model_error` and keeps the original provider detail. That settlement does not
-change, and the retained receipt keeps its own reason and detail. Three
-surfaces present the retained detail in their reason: the result notice
-(`No answer: <reason>`, also in ordinary primary details as `reason`), the
-`agent_await` outcome, and the `agent_inspect` result view. Each reads the exact
+change, and the retained receipt keeps its own reason and detail. The result
+notice (`No answer: <reason>`, also in ordinary primary details as `reason`)
+and the `agent_inspect` result view present the retained detail. Each reads the exact
 selected native submission:
 
 - `model_error: <provider text>` for wording the host does not classify;
@@ -1884,8 +1880,7 @@ without sending start or per-attempt reports. Failure retains one ordinary end
 summary per exact model-origin reply recipient; successful recovery uses the
 normal result instead. Abort and interruption send no failure summary. Ordinary
 primaries receive no automatic report between the first retry and the failure
-summary or normal successful result. Native await observations remain immediate
-and retain their selected retry threshold. End summaries do not replace terminal
+summary or normal successful result. End summaries do not replace terminal
 results.
 
 The conversation-scoped burst retains its run identity, attempt evidence and
@@ -1903,15 +1898,9 @@ Durable commits a native retry. Provider transport settings remain unchanged.
 Retries hidden inside an SDK, gateway, or provider adapter before that boundary
 are not a universal whole-request deadline supplied by this extension.
 
-The selected pane appends current dependency facts to its scrollable display,
-not to retained history. PgUp/PgDn reveals long dependency lists. Native frames
-update and remove these facts without retaining a stale roster field.
-The dashboard shows Awaiting rather than Responding and offers Release await
-for that selected run. A stale run selection does nothing. Release returns
-partial results on the original request without a new input or producer cancel.
-Real abort remains separate. Native agent tool cards use the shared display-only
-renderers; transcript rendering never grants execution. Adapted status and list
-rows expose `forkSource`; exact upstream records retain their native fields.
+Native agent tool cards use the shared display-only renderers; transcript
+rendering never grants execution. Adapted status and list rows expose
+`forkSource`; exact upstream records retain their native fields.
 
 ## Standing agents and expertise
 
@@ -2072,8 +2061,19 @@ unique in the request each stay as their own message. A range frozen from an
 incomplete read states partial coverage. After a host restart, the host reads a
 history above the read bound again from its newest entries only. A range can
 then return once with other coverage text, and older notices can return as
-their own messages. Ordinary primaries receive each passive notice as its own
-message.
+their own messages.
+
+An ordinary session groups its passive notices in the same way at each provider
+request: the verified passive notices of one thread for this session, between
+two assistant messages, form one frozen range with the exact thread read call.
+Later notices form another range. Active notices and notices that do not match
+stay as they are, and the retained messages do not change. A range stays while
+its notices are in the context, so a compaction that removes them removes it.
+The session groups at most 128 passive notices and 256 KiB of one context,
+oldest first; later notices stay single messages. Source: `ordinary-entry.ts`
+(`ordinaryThreadSources`, the `context` handler) and
+`thread-notice-projection.ts` (`associateThreadNotices`,
+`projectThreadNotices`).
 
 Thread notice text above the delivery bound ends at a word boundary with
 ` [cut]` and names the exact thread read once. When the event sequence is
@@ -2968,8 +2968,8 @@ child and carries no answer text.
 
 - The report goes to each reply recipient of a model-origin request in that
   run. A run that only operator-origin requests started sends none.
-- The report is an active report with an exact producer association. It
-  releases only a native wait that names one of the inputs it lists.
+- The report is an active report with an exact producer association. It enters
+  the recipient's context at the next tool-round boundary.
 - One run has one report for each recipient, across tool rounds and a host
   reopen. The first input of a run identifies the run.
 - Usage first seen in the final answer of a run sends no report; the context
@@ -3533,22 +3533,18 @@ requester. Without the option, both operations retain caller-owned results.
 The rewind response identity is `rewind/1.0.0`. The timer response identity is
 `timer-schedule/2.0.0`: it distinguishes a new `scheduled` timer from a `retained`
 task and exposes native `status` and optional terminal `outcome`. Place uses
-`place/2.1.0` for empty-prompt resolution and exact prompted admission.
+`place/2.1.0` requests for empty-prompt resolution and exact prompted admission;
+its `place/2.2.0` response includes the placement of a prompted input.
 These operations refuse mismatched process contracts; restart the caller and host
 to use them together. The manager passes the option through its existing control
 interface, so its retained identity does not change.
 
-`await-state/1.1.0` accepts exact producer result references and returns optional
-retry execution facts beside the producer's own wait. Status and dashboard
-schemas include those bounded facts, so their schema hashes identify the current
-shape. Older loaded callers refuse those changed operations before decoding.
-Their strict catalog readers also mark cached rows with retry fields unavailable
-and show restart instructions. Live-frame readers accept the
-additive nested facts; an older renderer does not show their retry details.
-Unchanged operations and existing controls remain available. Restart the caller
-and let an idle host retire before retrying affected reads. The retained manager,
-native control binding, and source-release identities do not change for these
-observation fields.
+`receipts/3.0.0` reads the currently committed receipts or the exact selected
+input without waiting for settlement. A queued or placed input returns its
+status without an answer. Result inspection is also immediate. Neither read
+withdraws normal delivery or acknowledges it. The host does not advertise a
+held-await operation. Status and dashboard schema identities cover their
+unplaced-input facts separately from native task state.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
@@ -3559,19 +3555,19 @@ preset-first creation resolution and machine
 preference snapshots, alongside exact fleet model/provider selection, caller usage for fleet observations, effective
 thinking from catalog validation, ordinary retained observation, first-input
 origin, independent command admission, exact result references, and
-parked-delivery recovery. Spawn, resolve-agent, and place requests and responses
-use 2.0.0 for creation without parent inheritance and receipts with preset names
-and selection origins. Configure requests and responses use 1.3.0 for explicit
+parked-delivery recovery. Spawn and resolve-agent requests use 2.0.0 for creation without parent
+inheritance. Their responses use 2.1.0 and include prompted-input placement
+beside preset names and selection origins. Configure requests and responses use 1.3.0 for explicit
 provider-block recovery alongside machine preference snapshots and selection
-receipts; target retention remains unchanged. Task-submit responses use 1.2.0
-for recovery links. Submit requests use 1.5.0 for the delivered result
-references of a result follow-up, and submit responses use 1.2.0; the response
-names the retained recipient. Timer-cancel responses use 1.1.0 for the resolved
+receipts; target retention remains unchanged. Task-submit requests use 1.1.0,
+and submit requests use 1.6.0, for explicit input labels alongside retained
+routes and delivered-result references. Both responses use 1.3.0 for committed
+placement beside recovery links and the retained recipient. Timer-cancel responses use 1.1.0 for the resolved
 conversation identity; the request identity remains at 1.0.0. Report requests
-use 2.0.0 and report
-responses use 1.1.0 for passive reports and exact producer associations.
-Passive-submit requests use 2.0.0. Receipts requests and responses use 2.0.0
-for recipient-scoped reference pages. Inspect requests use 1.2.0 for
+use 2.0.0 for passive reports and exact producer associations, and report
+responses use 1.2.0 for the `delivery` and `placement` facts.
+Passive-submit requests use 2.0.0. Receipts requests and responses use 3.0.0
+for immediate state reads and recipient-scoped reference pages. Inspect requests use 1.2.0 for
 `receiptCursor`; the inspect response identity is its schema hash.
 `docs/agent-host-contract.md` lists every operation identity.
 `native-controls/3.0.0` binds the native tool inputs and dispatch behavior to
@@ -3723,8 +3719,8 @@ failed with `model_error`, the host submits a passive
 status write through Pi Durable's public conversation API. The write places
 queued inputs at a final boundary and starts their next run. It tells the model
 the previous error and identifies the notice as host status, not an operator
-instruction. The failed original input remains unanswered. Native queue modes
-still select one or all follow-ups.
+instruction. The failed original input remains unanswered. The fixed steering
+mode `all` places every queued input at that boundary.
 
 Each ended generation supplies a deterministic recovery request ID. Native
 request deduplication prevents duplicate recovery writes after replay. A host

@@ -197,13 +197,12 @@ starts or releases to every related primary. Each direct model-origin notice
 can start a primary turn. Intent and contributor statements are declarations,
 not locks.
 
-Ordinary primaries have no native await. Each delegated answer reaches the
-primary through normal delivery while it stays responsive; separate tasks
-produce separate deliveries, which the primary integrates as they arrive. A
-native Durable agent can wait on exact `agent_await` references and return one
-composed answer. When one composed result serves the work, that agent remains
-free to perform the main work itself and use assistance selectively. Neither
-capability prescribes staffing. Do not build a primary-side result buffer.
+Ordinary primaries and native agents receive delegated answers through normal
+delivery while they stay responsive. Exact result and receipt reads return the
+currently committed facts; they do not hold a tool call open for a peer. The
+invoking session integrates the delivered results and remains free to perform
+the main work itself with selective assistance. Do not build a primary-side
+result buffer.
 
 Each session controls only its own workers, checkouts, and branches. Never
 control another session's resources or land its unmerged commits.
@@ -295,17 +294,31 @@ in that session while its task is open.
 Keep the exact result reference that each answer-bearing dispatch returns. The
 reference identifies admitted work, not its completion or acceptance. Creation
 receipts, names, reports, timer IDs, thread posts, and ordinary-primary messages
-do not identify native results. A final answer settles the original request
-once. Never answer with a waiting note and depend on a later manual report to
-complete that commitment.
+do not identify native results. Without declared work, a final answer settles
+the original request once; put the substantive result or exact blocker there.
 
-Before a native agent waits on peer results, read the Agent
-[result and await contract](../extensions/agent/README.md#await-exact-peer-results).
-Read it again when a wait returns early, a producer retries, or result delivery
-changes the next act. It owns the current provider-retry release default,
-partial outcomes, input release, covered-delivery withdrawal, answer
-continuations, and cycle limits. Apply the contract you read, not a remembered
-default.
+A native agent uses [declared background work](../extensions/agent/README.md#declared-background-work)
+when its routed task remains incomplete after the current run. After useful
+independent work, it calls `agent_work` with `action: "continue"`, the request,
+exact dependencies and a note, then ends with a state note that explicitly says
+it is not the result. Pi settles that input normally; the separate work item
+stays open. A blocked or deferred task with no producer uses `results: []`.
+That item has no dependency event to wake it and remains open.
+
+Normal result delivery starts later runs. The agent completes the declared
+item with `agent_work`, `action: "complete"`, its original request, `status`
+(`done` or `failed`) and the full final report in `message`. This closes the
+item and retains one final report for the original reply recipient. Results,
+state notes, input settlement and check-ins do not complete the item. Repeated
+completion returns the retained close; it does not create another final report.
+Use this retained declaration, not an informal promise of a later manual report.
+
+Read the Agent [result contract](../extensions/agent/README.md#read-peer-results)
+for immediate result reads, answer continuations and receipt-reference pages.
+Result inspection neither withdraws nor acknowledges normal delivery. Active
+inputs enter the native recipient's context after its current tool round; all
+calls in the round must end first. A report, a result and a new request retain
+their own meaning and routes when they join the same run.
 
 Prompt admission, idle state, provider completion, and task acceptance are
 different facts. After an execution unit settles, inspect its real changes and
@@ -379,8 +392,9 @@ self-targets; do not retry a refused self-control through another name.
 Compaction through another session's controller uses native summarization at
 the next native boundary; active work and queued input continue.
 
-Before coordinator exit, resolve every live worker: await useful work, redirect
-changed work, or stop superseded work with its public control. A saved handover
+Before coordinator exit, resolve every live worker: integrate useful results,
+retain a declared continuation for unfinished work, redirect changed work, or
+stop superseded work with its public control. A saved handover
 does not transfer process ownership. Use durable execution only when its public
 contract covers the needed lifetime and the operator's authority permits it.
 

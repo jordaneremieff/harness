@@ -800,13 +800,44 @@ Persistent background work has its own anchor and reporter. Background ownership
 does not imply a separate OS process; this host adds storage processes explicitly.
 Replay-safe creation and reporting reuse native request IDs.
 
-The Agent slice returns exact admitted result references and holds native
-`agent_await` requests without provider calls merely to wait. An ordinary primary
-has no native await; it remains responsive and receives results through normal
-delivery. Result settlement is not acceptance.
-The [Agent README](../extensions/agent/README.md#controls) owns exact result,
-placement, release, and delivery semantics. Native task graph cycle checks cover
-waits and held owners; they do not prove complete cross-host graph coverage.
+The Agent slice returns exact admitted result references. Immediate result reads
+return committed state; ordinary primaries and native agents receive answers
+through normal delivery. Result settlement is not acceptance. The
+[Agent README](../extensions/agent/README.md#read-peer-results) owns exact result,
+placement and delivery semantics.
+
+### Generation park/resume gap
+
+Checked on 2026-11-12 against the installed Durable 1.5.2 public exports and
+source. `Harness.wake()` reports whether the Session needs a process and its
+next scheduled wake time. `Harness.resume()` enables task scheduling; it is
+not a continuation of a selected generation or request. `Conversation.submit()`
+admits input, a passive write or a new continuation run. Its `continue` draft
+starts a run only while idle and is not a saved model-call continuation.
+`GenerationHooks.onYield` either accepts a final answer or continues with a
+user message; `afterTools` runs after every tool in the round is terminal.
+None of these public contracts parks one generation, releases its tool call,
+and later resumes the same outstanding request on a dependency result.
+
+The native post-tools placement boundary follows the whole tool round. With
+`steeringMode: "all"`, it places all queued steer inputs, not merely the input
+after the first parallel tool finishes. A running tool call, a provider retry
+and a compaction do not supply an input-placement boundary inside their work.
+The harness uses public input placement and normal settlement; it does not
+patch Pi or reconstruct a suspended generation through private state.
+
+`TaskRecord.startedAt` is wall-clock time of the first transition to `running`.
+It survives waits and recovery, so it is not the start of the current model
+attempt. Missing time is unknown, not zero or a guessed start. The unplaced-input
+notice uses this first-start fact when it describes the current step.
+
+Sources: `pi-durable/dist/index.d.ts` (public exports),
+`pi-durable/dist/harness/types.d.ts` (`Harness`, `Wake`, `Conversation`,
+`SubmissionDraft`, `GenerationHooks`), `pi-durable/dist/types.d.ts`
+(`TaskRecord`), `pi-durable/dist/harness/generation.js` (`finishToolRound`),
+`pi-durable/dist/harness/inbox.js` (`applyBoundary`), and
+`extensions/agent/unplaced-inputs.ts` (`currentStep`). This is a targeted source
+check, not a release-intake declaration or runtime trial.
 
 ### Durability limits
 
