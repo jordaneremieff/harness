@@ -63,6 +63,7 @@ for (const route of ["connected", "cold"] as const) it(`ordinary and native stat
 	let nativeOwner: HostProcess | undefined;
 	let source: DurableHost | undefined;
 	let caller: Durable.Harness | undefined;
+	const expectedIdentities = new Set<string>();
 	t.after(async () => {
 		await caller?.close(context);
 		await manager.close();
@@ -78,8 +79,12 @@ for (const route of ["connected", "cold"] as const) it(`ordinary and native stat
 	nativeOwner = await runHost(async () => {
 		const opened = await DurableHost.open({ ...hostOptions(record.storagePath, await fixtureRuntime("answer"), fixtureRegistry(), root), storageId: record.storageId });
 		source = opened;
-		await opened.harness.root(context);
-		for (let index = 0; index < 50; index++) await opened.harness.createConversation({ ownership: { kind: "ownerless" } }, context);
+		const rootConversation = await opened.harness.root(context);
+		expectedIdentities.add(opened.identity(rootConversation.id));
+		for (let index = 0; index < 50; index++) {
+			const conversation = await opened.harness.createConversation({ ownership: { kind: "ownerless" } }, context);
+			expectedIdentities.add(opened.identity(conversation.id));
+		}
 		return { request: async (method, params, _requestId, signal) => {
 			const result = await opened.request(method, params as Parameters<DurableHost["request"]>[1], signal ?? context);
 			return method === "status" ? { ...(result as Record<string, unknown>), inventory: { contributions: [], ordinaryOnly: [] }, pid: process.pid, storageId: record.storageId } : result;
@@ -124,21 +129,32 @@ for (const route of ["connected", "cold"] as const) it(`ordinary and native stat
 	models.setProvider(faux.provider);
 	const pending: Durable.JsonObject[] = [];
 	let nativeMixedError = false;
-	faux.setResponses(Array.from({ length: 8 }, () => (request) => {
-		nativeMixedError ||= request.messages.some(message => message.role === "toolResult" && message.isError);
+	let nativeScans = 0;
+	faux.setResponses(Array.from({ length: 2 * 51 + 4 }, () => () => {
 		const input = pending.shift();
 		return input === undefined ? fauxAssistantMessage("done") : fauxAssistantMessage([fauxToolCall("agent_status", input)], { stopReason: "toolUse" });
 	}));
 	const nativePages: Page[] = [];
 	const contribution = createAgentContribution({ source: new URL("./index.ts", import.meta.url).pathname, configureSettings() {}, dispatch: async (method, params) => {
 		assert.equal(method, "status");
-		const result = page(await manager.status(storageStatusPageInput(params)));
-		nativePages.push(result);
-		return result;
+		nativeScans++;
+		return manager.status(storageStatusPageInput(params));
 	} });
 	const extension = contribution.create({ durable: Durable, storageId: "11111111-2222-3333-4444-555555555555", cwd: root, agentDir: root, services: { modelRuntime: models }, onClose() {} });
 	const registry = Durable.createRegistry();
-	registry.install(extension);
+	registry.install({ ...extension, tools: extension.tools?.map((tool) => tool.name !== "agent_status" ? tool : { ...tool, execute: async (args, api, ctx) => {
+		const result = await tool.execute(args, api, ctx);
+		if (result.isError) nativeMixedError = true;
+		else {
+			const output = result as { structuredOutput: unknown; output: Array<{ type: string; text?: string }> };
+			const text = output.output.flatMap(part => part.type === "text" ? [part.text ?? ""] : []).join("");
+			assert.ok(Buffer.byteLength(text, "utf8") <= 16_384);
+			assert.ok(Buffer.byteLength(JSON.stringify(output.structuredOutput), "utf8") <= 16_384);
+			assert.deepEqual(JSON.parse(text), output.structuredOutput);
+			nativePages.push(page(output.structuredOutput));
+		}
+		return result;
+	} }) });
 	const nativeTool = extension.tools?.find((tool) => tool.name === "agent_status");
 	assert.ok(nativeTool);
 	assert.equal(matchesSchema(nativeTool.parameters, nextInput), true);
@@ -155,19 +171,28 @@ for (const route of ["connected", "cold"] as const) it(`ordinary and native stat
 	const conversation = await caller.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: deferred } } });
 	pending.push({ view: "storage-page", storageId: record.storageId });
 	await (await conversation.submit({ type: "input", content: "Read storage status." }, context)).wait(context);
+	assert.equal(nativeMixedError, false);
 	assert.equal(nativePages.length, 1);
 	assert.ok(nativePages[0].coverage.next);
-	const { tool: nativeNext, ...nativeInput } = nativePages[0].coverage.next;
-	assert.equal(nativeNext, "agent_status");
-	pending.push(JSON.parse(JSON.stringify(nativeInput)) as Durable.JsonObject);
-	await (await conversation.submit({ type: "input", content: "Read the next storage status page." }, context)).wait(context);
-	assert.equal(nativePages.length, 2);
-	assert.equal(nativePages[1].coverage.complete, true);
-	assert.equal(new Set(nativePages.flatMap((result) => result.conversations.map((item) => item.identity))).size, 51);
+	for (let index = 1; index < 51 && nativePages.at(-1)?.coverage.next; index++) {
+		const next = nativePages.at(-1)?.coverage.next; assert.ok(next);
+		const { tool: nativeNext, ...nativeInput } = next;
+		assert.equal(nativeNext, "agent_status");
+		pending.push(JSON.parse(JSON.stringify(nativeInput)) as Durable.JsonObject);
+		await (await conversation.submit({ type: "input", content: "Read the next storage status page." }, context)).wait(context);
+	}
+	assert.equal(nativePages.at(-1)?.coverage.complete, true);
+	assert.equal(nativePages.at(-1)?.coverage.next, null);
+	const nativeIdentities = nativePages.flatMap((result) => result.conversations.map((item) => item.identity));
+	assert.equal(nativeIdentities.length, 51);
+	assert.deepEqual(new Set(nativeIdentities), expectedIdentities);
+	const returnedNativePages = nativePages.length;
+	const scansBeforeMixed = nativeScans;
 	pending.push({ view: "storage-page", storageId: record.storageId, sessionId: record.storageId });
 	await (await conversation.submit({ type: "input", content: "Reject mixed status selectors." }, context)).wait(context);
 	assert.equal(nativeMixedError, true);
-	assert.equal(nativePages.length, 2, "mixed selectors never reach native dispatch");
+	assert.equal(nativePages.length, returnedNativePages, "mixed selectors produce no successful status page");
+	assert.equal(nativeScans, scansBeforeMixed, "mixed selectors never reach native dispatch");
 	assert.equal(HOST_CONTRACT.operations.status.request, "status/1.1.0");
 });
 

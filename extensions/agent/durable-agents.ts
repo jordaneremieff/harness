@@ -27,7 +27,7 @@ import { captureProviderRecovery, linkProviderRecovery } from "./provider-block.
 import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
 import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { executeAwait } from "./await-execution.ts";
-import { readCreatedAgents, renderCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
+import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
 import { AgentMetaDoc, publishConversationIntent, recordAdmissionMeta, recordDeliveryIntent, linkDeliveryIntent } from "./durable-controls.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema, profileText } from "./profile-schema.ts";
@@ -1558,32 +1558,31 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			}),
 	});
 
-	const ownAwareness = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
-		if (effortResources === undefined) throw new Error("Native effort awareness requires the host's selected catalogue root");
-		const agent = await api.agent(context);
-		const meta = await api.snapshot(AgentMetaDoc, api.conversationId, context);
-		return readEffortAwareness(effortResources, nativeIntentSelf(identity(api.conversationId), agent.cwd ?? host.cwd, meta === undefined ? null : meta.intent), "reported");
+	const publicStatus = (value: unknown): Durable.ToolExecutionResult<ControlDetails> => {
+		const structured = structuredObservation(StatusToolOutputSchema, value) as Record<string, JsonValue>;
+		return { ...nativeStructuredObservation(StatusToolOutputSchema, structured, controlText(structured)), details: structured };
+	};
+
+	const readStoragePage = async (args: StatusInput): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
+		let input = storageStatusPageInput(args);
+		let result = await hostObservation("status", { ...input }, "Storage status failed", StatusToolOutputSchema);
+		if (result.isError) return result;
+		let projected = projectStorageStatus(result.details);
+		while (projected.format === "refused" && projected.cause === "byte-limit" && input.limit > 1) {
+			input = { ...input, limit: Math.ceil(input.limit / 2) };
+			result = await hostObservation("status", { ...input }, "Storage status failed", StatusToolOutputSchema);
+			if (result.isError) return result;
+			projected = projectStorageStatus(result.details);
+		}
+		return publicStatus(projected);
 	};
 
 	const readStatus = async (args: StatusInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context, selection: FleetSelection) => {
-		if (args.view === "storage-page") return hostObservation("status", { ...storageStatusPageInput(args) }, "Storage status failed", StatusToolOutputSchema);
 		if (args.view === "fleet") {
 			const created = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
 			return fleetObservation(host.catalogRoot, args.sessionId, identity(api.conversationId), created, selection);
 		}
-		const result = await hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusToolOutputSchema);
-		if (args.sessionId !== undefined || result.isError) return result;
-		const createdAgents = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
-		if (createdAgents === undefined && host.catalogRoot === undefined) return result;
-		const observed: Record<string, unknown> = { ...result.details };
-		if (host.catalogRoot !== undefined) observed.awareness = await ownAwareness(api, context);
-		const text = [controlText(observed)];
-		if (createdAgents !== undefined) {
-			observed.createdAgents = createdAgents;
-			text.push(renderCreatedAgents(createdAgents));
-		}
-		const structured = structuredObservation(StatusToolOutputSchema, observed) as Record<string, JsonValue>;
-		return { ...result, ...nativeStructuredObservation(StatusToolOutputSchema, structured, text.join("\n\n")), details: structured };
+		return hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusToolOutputSchema);
 	};
 
 	const statusTool = {
@@ -1602,11 +1601,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					else selection = validateFleetSelection(args);
 				}
 				catch (error) { return errorResult(error instanceof Error ? error.message : String(error)); }
+				if (args.view === "storage-page") return readStoragePage(args);
 				const result = await readStatus(args, api, context, selection);
 				if (result.isError || args.detail === true || args.view === "fleet") return result;
 				const projected = args.sessionId === undefined ? projectStorageStatus(result.details) : projectSelectedStatus(result.details);
-				const structured = structuredObservation(StatusToolOutputSchema, projected) as Record<string, JsonValue>;
-				return { ...nativeStructuredObservation(StatusToolOutputSchema, structured, controlText(structured)), details: structured };
+				return publicStatus(projected);
 			},
 		}),
 		structuredOutputSchema: StatusToolOutputSchema,
