@@ -40,13 +40,13 @@ import { THINKING_LEVELS } from "./configuration.ts";
 import { ProfileDoc, readProfile } from "./profile.ts";
 import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, requestContextHooks, requestContextSection, type ActiveRequestContext } from "./request-context.ts";
 import { handleStorageId } from "./identity.ts";
-import { AgentMetaDoc, readOutcome, submitConversation, settleDeliveries, type DeliveryReceipt } from "./durable-controls.ts";
+import { AgentMetaDoc, readOutcome, richSubmitConversation, submitConversation, settleDeliveries, type DeliveryReceipt } from "./durable-controls.ts";
 import { AwaitDoc } from "./awaited-results.ts";
 
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry } from "./durable-host-fixture.mts";
 import { ContinuityDoc } from "./continuity-native.ts";
-import { NATIVE_COMPACTION_SEED } from "./control-guidance.ts";
+import { NATIVE_COMPACTION_SEED, REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
 import { modelFailureText } from "./provider-block-facts.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -104,6 +104,7 @@ const CONTROL_TOOLS = [
 	"agent_spawn",
 	"agent_status",
 	"agent_steer",
+	"agent_work",
 ];
 
 const REPLAY_CLASSIFICATION: Record<string, string> = {
@@ -120,6 +121,7 @@ const REPLAY_CLASSIFICATION: Record<string, string> = {
 	agent_status: "safe",
 	agent_list: "safe",
 	agent_reset: "safe",
+	agent_work: "safe",
 	agent_abort: "unsafe",
 	agent_attach: "unsafe",
 	agent_command: "unsafe",
@@ -1359,6 +1361,10 @@ it("drives one model-issued call per control tool", async (t) => {
 	await run("agent_command", { sessionId: storageId, name: "echo", args: "hi" });
 	await run("agent_reset", { sessionId: childSessionId, handoff: "fresh context" });
 	await run("agent_abort", { sessionId: childSessionId, timerId: 3 });
+	// Declared work needs the retained route of a placed input of the run.
+	route.script.push({ tool: "agent_work", args: { action: "continue", results: [], note: "The child still works" } });
+	const routed = await richSubmitConversation(root, { message: "RUN agent_work", requestId: "work-request", requester: "work-requester", origin: "model" }, context);
+	await (await harness.submission(routed.submissionId, context))?.wait(context);
 
 	const outcomes = await toolOutcomes(harness, root.id);
 	for (const tool of CONTROL_TOOLS) {
@@ -1520,7 +1526,8 @@ it("spawns a native child through the existing temporary-directory alias", async
 	assert.equal(reference.sessionId, `${storageId}:${child.conversationId}`);
 	const admitted = await harness.commit((tx) => tx.submissionByRequest(child.conversationId as Durable.ConversationId, reference.requestId), context);
 	assert.equal(admitted?.id, reference.submissionId);
-	assert.ok(outcome.text.startsWith(`Spawned linked as conversation ${reference.sessionId} in your storage. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}\nExecution selection: `));
+	assert.ok(outcome.text.startsWith(`Spawned linked as conversation ${reference.sessionId} in your storage. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}\nPlacement: placed.\nExecution selection: `));
+	assert.equal((outcome.details as { placement?: string }).placement, "placed", "an idle child places its prompt at admission");
 });
 
 it("includes the busy-run boundary in native report receipts", async (t) => {
@@ -1537,15 +1544,13 @@ it("includes the busy-run boundary in native report receipts", async (t) => {
 	assert.equal(calls[0]?.method, "report");
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_send");
 	assert.ok(outcome && !outcome.isError);
-	assert.match(outcome.text, /report to a busy Durable agent normally waits for the current run to end/u);
-	assert.match(outcome.text, /A report sent from an ordinary primary uses explicit admission/u);
-	assert.match(outcome.text, /even from an unrelated sender/u);
-	assert.match(outcome.text, /A report sent from a native Durable agent uses retained report provenance/u);
-	assert.match(outcome.text, /only a named awaited producer's report releases the wait/u);
-	assert.match(outcome.text, /unrelated native reports stay queued/u);
-	assert.match(outcome.text, /Automatic native Reporter result copies remain raw follow-ups/u);
-	assert.match(outcome.text, /Use steer.*next tool boundary/u);
-	assert.match(outcome.text, /reports to ordinary primaries use steer/u);
+	assert.ok(outcome.text.endsWith(`\n${REPORT_DELIVERY_BOUNDARY}`), "the receipt ends with the report delivery boundary");
+	assert.match(outcome.text, /placed at the recipient's next tool boundary, not at the end of its run/u);
+	assert.match(outcome.text, /does not interrupt a running tool/u);
+	assert.match(outcome.text, /Use steer when the recipient must change its current work/u);
+	assert.doesNotMatch(outcome.text, /waits for the current run to end|releases the wait/u);
+	const details = outcome.details as { placement?: string; delivery?: string };
+	assert.deepEqual({ placement: details.placement, delivery: details.delivery }, { placement: "unplaced", delivery: "pending" }, "a report row that its recipient has not admitted is unplaced");
 });
 
 for (const adjusted of [false, true]) it(`spawns a child in a new storage and preserves its thinking adjustment (${adjusted})`, async (t) => {
