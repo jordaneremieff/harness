@@ -699,8 +699,8 @@ Both name the class of the message; the host places both at the working
 agent's next tool boundary.
 
 Related uses exact identities from existing evidence: the current conversation,
-successful task admissions retained by the ordinary session, its published
-creation descendants in loaded rows. A storage's
+successful task admissions retained by the ordinary session, and creation
+descendants in loaded rows. A storage's
 creating owner qualifies only its root conversation. Nonroot creation owners and
 fork parents come from bounded existing status summaries. Independent conversations
 in the same storage stay excluded. Explicit root `:1` and the bare root share one
