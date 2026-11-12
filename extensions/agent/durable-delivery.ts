@@ -33,7 +33,7 @@ import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { threadExcerpt, threadRecoveryText } from "./thread-notice-projection.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { receiptDependencyMarks, receiptWork, reportDependencyMarks, requestHasOpenWork } from "./open-work.ts";
+import { finalReportToItself, receiptDependencyMarks, receiptWork, reportDependencyMarks, requestHasOpenWork } from "./open-work.ts";
 import type { ConversationId, Harness, Tx } from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
 import {
@@ -1121,6 +1121,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (ownerStorageId(owner) === metadata.storageId) {
 			// The producing conversation already retains its outcome; another input would restart it.
 			if (row.kind === "receipt" && resolveSessionConversationId(metadata.storageId, owner, undefined) === row.receipt.conversationId) return true;
+			// A final work report to its declaring conversation stays readable in its row; an input would start a run of that conversation.
+			if (row.kind === "report" && finalReportToItself(metadata.storageId, row.report)) return true;
 			await deliverSameStorage(row, owner);
 			return true;
 		}
