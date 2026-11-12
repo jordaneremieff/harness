@@ -261,7 +261,8 @@ for (const archive of [false, true]) {
 		const before = retainedFingerprint(storagePath);
 		const observation = await observationFor(storagePath);
 		try {
-			for (const method of ["status", "list", "snapshot", "dashboard", "inspect"]) await observation.request(method, { ownerId: "reader", view: "history" });
+			await observation.request("status");
+			for (const method of ["list", "snapshot", "dashboard", "inspect"]) await observation.request(method, { ownerId: "reader", view: "history" });
 			const result = await observation.request("receipts", { ownerId: "reader" }) as { receipts: unknown[]; reports: unknown[]; pending: number };
 			assert.equal(result.reports.length, archive ? 1 : 0);
 			assert.deepEqual(result.receipts, []);
