@@ -2935,11 +2935,11 @@ carries one note from the Agent extension directly after the head message.
 After a reset without a handoff, the note follows the host's first system
 message. The first line names the context head entry and states that the note
 is not operator input and grants no authority. The note has no time. The host
-fixes its text when the head is placed, and each later request of that head
-carries the same text, also after a host restart.
+fixes its sent-request section when the head is placed; later requests keep
+that section unchanged, also after a host restart.
 
-The note lists only requests that this conversation sent and whose answer
-routes to this conversation:
+The sent-request section lists requests that this conversation sent and whose
+answer routes to this conversation:
 
 - admitted requests with no delivered result here, with session, submission
   and request ID;
@@ -2947,8 +2947,8 @@ routes to this conversation:
 - scheduled inputs, with their timer.
 
 Each list has at most 32 rows and states how many more it does not list. One
-line counts the requests whose answer routes to another identity. The note does
-not cover messages to an ordinary primary or requests that another session
+line counts the requests whose answer routes to another identity. This section
+does not cover messages to an ordinary primary or requests that another session
 routed here, and it does not state that a target is alive. No status view lists
 a session's outgoing requests; this note is the record.
 
@@ -2976,9 +2976,33 @@ malformed retained facts does not open and sends no provider request. If the
 stored head message does not match the request, the host adds no note and
 reports one diagnostic for that head.
 
-Source: `continuity-facts.ts` (`continuityText`), `continuity-mirror.ts`,
+The native note ends with this session's declared open work. Each row names
+the request that owes a final report, its reply recipient and its exact
+result dependencies. This list has at most 32 rows and states how many more
+it omits. It carries neither the item's note nor current dependency states;
+it names this session's exact `agent_status` call with `detail:true` for those.
+An open item whose declaring input ended unanswered is omitted, as in status.
+The ordinary continuity note has no declared-work section.
+
+The host reads and retains that work in one commit at the first request after
+each context head, not when the head is placed. This timing includes the host's
+closure of declared work at a reset; a request after a completed host reset
+lists none. Later requests of the head use the same retained rows, also after
+a host restart. Later declarations and completions affect the note at the
+next head.
+A pre-existing head without a retained work snapshot gets one at its first
+request after the host loads; no new compaction or reset is required.
+
+If the read fails, the note states that open work was not read and names the
+same detailed status call. That process does not retry the read for that head.
+The first request waits for this one commit; later requests read memory only.
+An arrived result closes no item. Explicit completion or host abort/reset
+closes it with a final report.
+
+Source: `continuity-facts.ts` (`continuityText`, `continuityWorkText`,
+`nativeContinuityText`), `continuity-mirror.ts` (`ContinuityMirror.prepare`),
 `continuity-request.ts` (`continuityRequestHooks`), `continuity-admission.ts`,
-and `continuity-native.ts`.
+and `continuity-native.ts` (`freezeContinuityWork`).
 
 ### Compaction and reset guidance
 
