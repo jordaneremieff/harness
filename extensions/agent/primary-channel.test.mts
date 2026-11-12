@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
@@ -190,27 +190,19 @@ it("cancels a trust prompt through the caller signal", async (t) => {
 });
 
 it("publishes exactly one of two simultaneous same-id registrations", async (t) => {
-	const root = join(testRoot(t), "long-primary-root-".repeat(8));
-	// A short private temp root isolates fallback sockets from other test processes.
-	const socketRoot = mkdtempSync("/tmp/pc-");
-	const previousTmpdir = process.env.TMPDIR;
+	const root = mkdtempSync(join(realpathSync("/tmp"), "pc-"));
 	const channels: Fixture["channel"][] = [];
-	process.env.TMPDIR = socketRoot;
 	t.after(async () => {
 		try {
 			await Promise.all(channels.map((channel) => channel.close()));
 		} finally {
-			if (previousTmpdir === undefined) delete process.env.TMPDIR;
-			else process.env.TMPDIR = previousTmpdir;
-			rmSync(socketRoot, { recursive: true, force: true });
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 	const id = uuidV7();
 	const options = channelOptions(root, id);
 	const endpointDirectory = join(root, ".primaries");
-	const socketDirectory = dirname(unixSocketPath(randomUUID(), endpointDirectory));
-	const socketDirs = [endpointDirectory, socketDirectory];
-	const before = new Map(socketDirs.map((directory) => [directory, new Set(existsSync(directory) ? readdirSync(directory).filter((name) => name.endsWith(".sock")) : [])]));
+	assert.ok(Buffer.byteLength(join(endpointDirectory, `${randomUUID()}.sock`)) <= 100, "the leak assertion observes only the private fixture directory");
 	const results = await Promise.allSettled([createPrimaryChannel(options), createPrimaryChannel(options)]);
 	const fulfilled = results.filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof createPrimaryChannel>>> => result.status === "fulfilled");
 	const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
@@ -220,17 +212,35 @@ it("publishes exactly one of two simultaneous same-id registrations", async (t) 
 	assert.ok(rejected[0]?.reason instanceof PrimaryChannelConflictError);
 	assert.ok(fulfilled[0]);
 	const winner = fulfilled[0].value;
-	assert.equal(dirname(winner.socketPath), socketDirectory, "the shared transport selects the private socket directory");
-	assert.notEqual(dirname(winner.socketPath), endpointDirectory, "the long endpoint root uses a short private socket directory");
+	assert.equal(dirname(winner.socketPath), endpointDirectory, "the winner binds inside the private fixture directory");
 	assert.ok(Buffer.byteLength(winner.socketPath, "utf8") <= 100, "the address fits the Unix socket limit");
 	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { socketPath: string; pid: number };
 	assert.equal(record.socketPath, winner.socketPath, "the published record points at the winner");
 	assert.equal(record.pid, process.pid);
 	assert.deepEqual(readdirSync(join(root, ".primaries")).filter((name) => name.endsWith(".json")), [`${id}.json`], "the loser published no endpoint");
-	const winnerDirectory = dirname(winner.socketPath);
 	const winnerSocket = winner.socketPath.split("/").at(-1);
-	const added = readdirSync(winnerDirectory).filter((name) => name.endsWith(".sock") && !before.get(winnerDirectory)?.has(name));
-	assert.deepEqual(added, [winnerSocket], "only the winner's socket remains after the race");
+	const sockets = readdirSync(endpointDirectory).filter((name) => name.endsWith(".sock"));
+	assert.deepEqual(sockets, [winnerSocket], "only the winner's socket remains after the race");
+});
+
+it("keeps a long primary root address bounded and records its selected socket", async (t) => {
+	const root = join(testRoot(t), "long-primary-root-".repeat(8));
+	const id = uuidV7();
+	const endpointDirectory = join(root, ".primaries");
+	const socketDirectory = dirname(unixSocketPath(randomUUID(), endpointDirectory));
+	const channel = await createPrimaryChannel(channelOptions(root, id));
+	t.after(() => channel.close());
+	try {
+		assert.equal(dirname(channel.socketPath), socketDirectory);
+		assert.notEqual(dirname(channel.socketPath), endpointDirectory, "the long endpoint root selects a short fallback address");
+		assert.ok(Buffer.byteLength(channel.socketPath, "utf8") <= 100, "the address fits the Unix socket limit");
+		const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { socketPath: string; pid: number };
+		assert.equal(record.socketPath, channel.socketPath);
+		assert.equal(record.pid, process.pid);
+	} finally {
+		await channel.close();
+	}
+	assert.equal(existsSync(channel.socketPath), false, "close removes only this channel's socket");
 });
 
 it("refuses a duplicate registration while the owner is live", async (t) => {
