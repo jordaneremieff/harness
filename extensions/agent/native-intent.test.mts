@@ -45,8 +45,10 @@ function lastToolResult(directory: string): unknown {
 	return JSON.parse(text);
 }
 async function awareness(client: HostConnection, directory: string, requestId: string): Promise<EffortAwareness> {
-	await run(client, client.storageId, "DISCOVER", requestId);
-	const value = lastToolResult(directory) as { awareness: EffortAwareness };
+	await run(client, client.storageId, { action: "clear" }, requestId);
+	const value = lastToolResult(directory) as { published: { intentClaim?: unknown }; awareness: EffortAwareness };
+	assert.ok(value.published);
+	assert.equal(value.published.intentClaim, undefined);
 	assert.ok(value.awareness);
 	return value.awareness;
 }
@@ -90,6 +92,7 @@ test("native intent has catalogue peer discovery without a liveness claim, exact
 	assert.equal(a.catalog.read(a.record.storageId).view?.intentClaims?.rows[child.identity]?.claim?.purpose, "Child gate plan");
 	const beforeDiscovery = await aClient.request("inspect", { sessionId: a.record.storageId, view: "history", limit: 50 }) as { entries: unknown[] };
 	assert.ok(Array.isArray(beforeDiscovery.entries));
+	assert.equal(b.catalog.read(b.record.storageId).view?.intentClaims?.rows[b.record.storageId]?.claim, undefined);
 	let view = await awareness(bClient, bControl, "peer-discovery");
 	assert.deepEqual(view.presence.efforts.find(row => row.id === a.record.storageId)?.intentClaim, saved.claim, JSON.stringify(view));
 	assert.equal(view.presence.efforts.find(row => row.id === a.record.storageId)?.liveness, "unknown");
