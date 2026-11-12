@@ -82,6 +82,12 @@ operator decision distinct from your interpretation.
   Active excerpts mark a cut with `[cut]`. Active and passive notices both name
   an exact thread read for the full event.
 
+At the next normal context boundary, an ordinary session groups verified passive
+facts for the same thread and recipient, between assistant messages, into a frozen
+range marker. Later facts form another marker; they do not enlarge a frozen range.
+Active or unmatched notices remain intact. The original retained messages remain
+unchanged. This context grouping applies to ordinary sessions, not native sessions.
+
 A read does not acknowledge addressed attention or indicate agreement. A create
 event omits its duplicate frame text in read output and marks that omission;
 the top-level frame and the retained original event stay intact.

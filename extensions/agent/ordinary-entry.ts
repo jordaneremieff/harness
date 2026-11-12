@@ -8,6 +8,7 @@ import {
 	getAgentDir,
 	getPackageDir,
 	type AgentToolResult,
+	type ContextEvent,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
@@ -44,6 +45,7 @@ import { dashboardPreferences } from "./dashboard-preferences.ts";
 import { readableControlText, projectReportReceipt } from "./control-result.ts";
 import { projectSelectedStatus, validateStatusDetail } from "./status-overview.ts";
 import { fitStorageStatusPage } from "./storage-page-fit.ts";
+import { associateThreadNotices, projectThreadNotices, type ThreadNoticeSource, type ThreadRangeSnapshot } from "./thread-notice-projection.ts";
 import type { AgentContributionHost } from "./durable-agents.ts";
 import {
 	createResetTimerActions,
@@ -261,6 +263,25 @@ function admitExecutionInput(pi: ExtensionAPI, ctx: ExtensionContext, name: stri
 	return { admitted, admissionCaller };
 }
 
+function ordinaryThreadSources(ctx: ExtensionContext): { sources: ThreadNoticeSource<ContextEvent["messages"][number]>[]; complete: boolean } {
+	const branch = ctx.sessionManager.getBranch();
+	const selected = branch.slice(-128);
+	let complete = branch.length <= 128, epoch = complete ? "initial" : undefined, bytes = 0;
+	const sources: ThreadNoticeSource<ContextEvent["messages"][number]>[] = [];
+	for (const entry of selected) {
+		bytes += Buffer.byteLength(JSON.stringify(entry));
+		if (bytes > 256 * 1024) { complete = false; break; }
+		if (entry.type === "message" && entry.message.role === "assistant") epoch = `entry:${entry.id}`;
+		if (entry.type !== "custom_message" || entry.customType !== "agent.peer" || epoch === undefined) continue;
+		const details = entry.details as { sourceId?: unknown; deliveryRecipient?: unknown; communicationPassive?: unknown } | undefined;
+		if (typeof details?.sourceId !== "string" || details.deliveryRecipient !== ctx.sessionManager.getSessionId() || details.communicationPassive === undefined) continue;
+		sources.push({ sourceId: `${entry.id}:${details.sourceId}`, recipient: details.deliveryRecipient, epoch, passive: details.communicationPassive,
+			message: { role: "custom", customType: entry.customType, content: entry.content, display: entry.display, details: entry.details, timestamp: new Date(entry.timestamp).getTime() },
+		});
+	}
+	return { sources, complete };
+}
+
 export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypoint = defaultOriginalEntrypoint): void {
 	const settingsAgentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
 	const disposeFactorySettings = publishSettings(pi.events, { agentDir: settingsAgentDir });
@@ -290,6 +311,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	publishToolDisplay(pi.events, Object.entries(cards).map(([name, presentation]) => ({ name, ...presentation })));
 	const primaries = new Map<string, AbortController>();
 	const primaryRetentions = new Map<string, PrimaryRetention>();
+	let threadNoticeLifecycle = 0;
+	let threadNoticeSnapshots: ThreadRangeSnapshot[] = [];
+	const resetThreadNotices = () => { threadNoticeLifecycle++; threadNoticeSnapshots = []; };
 	const getManager = (): AgentManager => {
 		const agentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
 		const configured = resolve(process.env.PI_AGENT_SESSIONS_DIR ?? join(agentDir, "agent-sessions"));
@@ -927,6 +951,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	pi.registerCommand("restart", createRestartCommand({ hosts: agentRestartHosts, managedChild: () => false }));
 	pi.registerMessageRenderer("agent.peer", renderAgentPeerMessage);
 	pi.on("session_start", async (_event, ctx) => {
+		resetThreadNotices();
 		selfCompaction.clear();
 		refreshPreferences(ctx);
 		const sessionId = ctx.sessionManager.getSessionId();
@@ -979,6 +1004,16 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	pi.on("session_info_changed", (event, ctx) => {
 		getManager().updatePrimary(ctx.sessionManager.getSessionId(), { name: event.name });
 	});
+	pi.on("context", (event, ctx) => {
+		const source = ordinaryThreadSources(ctx);
+		const associations = associateThreadNotices(event.messages, source.sources, source.complete);
+		const projection = projectThreadNotices({ scope: `${ctx.sessionManager.getSessionId()}:${threadNoticeLifecycle}`, messages: event.messages, associations, snapshots: threadNoticeSnapshots,
+			marker: (original, text) => original.role === "custom" ? { ...original, content: text } : original,
+		});
+		threadNoticeSnapshots = projection.snapshots;
+		return { messages: projection.messages };
+	});
+	pi.on("session_tree", resetThreadNotices);
 	pi.on("before_agent_start", async (event, ctx) => {
 		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
 		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd), "prompt");
@@ -1004,6 +1039,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	pi.on("agent_settled", (_event, ctx) => { primaryRetentions.get(ctx.sessionManager.getSessionId())?.settled(); });
 	pi.on("session_shutdown", async (_event, ctx) => {
+		resetThreadNotices();
 		disposeFactorySettings();
 		selfCompaction.clear();
 		const id = ctx.sessionManager.getSessionId();
