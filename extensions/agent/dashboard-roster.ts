@@ -242,6 +242,14 @@ export function unplacedText(row: Pick<AgentConversationSummary, "unplaced" | "o
 	const age = minutes < 1 ? `${seconds}s` : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 	return `unplaced: ${row.unplaced}, oldest: ${age}`;
 }
+/** Declared work stays visible after its input settles and before its final report. */
+export function openWorkText(row: Pick<AgentConversationSummary, "openWorkCount" | "openWorkOldest">): string {
+	if (!row.openWorkCount) return "";
+	if (row.openWorkOldest === undefined) return `work open: ${row.openWorkCount}`;
+	const seconds = Math.floor(row.openWorkOldest / 1000), minutes = Math.floor(seconds / 60);
+	const age = minutes < 1 ? `${seconds}s` : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+	return `work open: ${row.openWorkCount}, oldest: ${age}`;
+}
 function rosterModel(row: AgentConversationSummary): string {
 	if (!row.model) return "";
 	return `${oneLine(row.model.modelId)} ${oneLine(row.model.thinkingLevel)}`;
@@ -254,11 +262,12 @@ function rosterModel(row: AgentConversationSummary): string {
 export function rosterDetail(row: AgentConversationSummary): { text: string; color: ThemeColor } {
 	const reason = attentionReason(row);
 	// The list keeps the reason's first sentence; the selected agent's header shows all of it.
-	if (reason) return { text: reason.split(/(?<=[.!?])\s/u)[0] ?? reason, color: currentFault(row) ? "error" : "warning" };
+	const openWork = openWorkText(row);
+	if (reason) return { text: [openWork, reason.split(/(?<=[.!?])\s/u)[0] ?? reason].filter(Boolean).join(" · "), color: currentFault(row) ? "error" : "warning" };
 	const facts = [rosterModel(row), costOf(row)].filter(Boolean).join(" · ");
 	const unplaced = unplacedText(row);
-	if (row.state === "working") return { text: [activityOf(row), unplaced, facts].filter(Boolean).join(" · "), color: "muted" };
-	return { text: [unplaced, facts].filter(Boolean).join(" · "), color: "muted" };
+	if (row.state === "working") return { text: [openWork, activityOf(row), unplaced, facts].filter(Boolean).join(" · "), color: "muted" };
+	return { text: [openWork, unplaced, facts].filter(Boolean).join(" · "), color: "muted" };
 }
 function rosterRow(
 	row: AgentConversationSummary,

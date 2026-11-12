@@ -42,7 +42,7 @@ import type { AgentObservationSource } from "./agent-observation.ts";
 import { AgentConsole } from "./agent-console.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
 import { clamp, MAX_ROSTER_COLUMNS, MIN_COMPOSER_ROWS, MIN_ROSTER_COLUMNS, dashboardGeometry, dashboardRule, fitLine } from "./dashboard-layout.ts";
-import { attentionReason, currentFault, dashboardRecords, recoveryHint, rosterLines, sessionAppearance, titleOf, needsAttention } from "./dashboard-roster.ts";
+import { attentionReason, currentFault, dashboardRecords, recoveryHint, rosterLines, sessionAppearance, titleOf, needsAttention, openWorkText } from "./dashboard-roster.ts";
 import type { AgentCardLookup } from "./tool-cards.ts";
 import { agentState, dashboardSessionState, updateDraft, notifyAgentState, type DashboardState, type DashboardLayout } from "./dashboard-state.ts";
 import { agentDisplayName } from "./action-outcome.ts";
@@ -174,14 +174,14 @@ const CONVERSATION_ROWS = 4;
 
 /** Roster fields that change when an agent's host starts, works, finishes, or stops. */
 function rosterMark(row: AgentConversationSummary): string {
-	return `${row.id}|${row.modifiedAt}|${row.state}|${row.cost}|${row.owner}|${row.unplaced ?? ""}|${row.oldest === undefined ? "" : Math.floor(row.oldest / 60000)}`;
+	return `${row.id}|${row.modifiedAt}|${row.state}|${row.cost}|${row.owner}|${row.unplaced ?? ""}|${row.oldest === undefined ? "" : Math.floor(row.oldest / 60000)}|${row.openWorkCount ?? ""}|${row.openWorkOldest === undefined ? "" : Math.floor(row.openWorkOldest / 60000)}`;
 }
 
-/** The unplaced-input facts of an observed status: the count and the age of the oldest input; absent when the source states none. */
-function unplacedFacts(status: object): Pick<AgentConversationSummary, "unplaced" | "oldest"> {
-	const { unplaced, oldest } = status as { unplaced?: unknown; oldest?: unknown };
+/** Counts and oldest ages of unplaced inputs and open work; absent when the source supplies none. */
+function observedWorkFacts(status: object): Pick<AgentConversationSummary, "unplaced" | "oldest" | "openWorkCount" | "openWorkOldest"> {
+	const { unplaced, oldest, openWorkCount, openWorkOldest } = status as { unplaced?: unknown; oldest?: unknown; openWorkCount?: unknown; openWorkOldest?: unknown };
 	const count = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
-	return { unplaced: count(unplaced), oldest: count(oldest) };
+	return { unplaced: count(unplaced), oldest: count(oldest), openWorkCount: count(openWorkCount), openWorkOldest: count(openWorkOldest) };
 }
 
 const projectOf = (row: AgentConversationSummary) => row.cwd.split("/").filter(Boolean).at(-1) ?? row.cwd;
@@ -741,7 +741,7 @@ export class AgentDashboard implements Component, Focusable {
 		return {
 			...row,
 			owner: "here",
-			...unplacedFacts(frame.status),
+			...observedWorkFacts(frame.status),
 			name: frame.status.name ?? row.name,
 			firstMessage: frame.status.firstMessage ?? row.firstMessage,
 			state: frame.status.busy
@@ -2157,7 +2157,8 @@ export class AgentDashboard implements Component, Focusable {
 			stateLine = fitLine(`${theme.fg(appearance.color, ` ${appearance.glyph} ${appearance.label}`)}${status}`, width);
 		}
 		this.headerCache = { row, name, project, identityWidth, room, status, left, stateLine };
-		return [left, stateLine];
+		const work = openWorkText(row);
+		return work ? [left, stateLine, fitLine(theme.fg("muted", ` ${work}`), width)] : [left, stateLine];
 	}
 
 	/**

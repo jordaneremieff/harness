@@ -108,6 +108,10 @@ export interface AgentConversationSummary {
 	unplaced?: number;
 	/** Age in milliseconds of the oldest unplaced input at the observation. */
 	oldest?: number;
+	/** Declared work that still owes a final report, independent of the input's execution state. */
+	openWorkCount?: number;
+	/** Age in milliseconds of the oldest open work item at the observation. */
+	openWorkOldest?: number;
 }
 
 /**

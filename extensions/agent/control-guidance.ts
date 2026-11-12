@@ -93,8 +93,8 @@ const ORDINARY_SEND_GUIDANCE = "Send informational reports and blocking question
  * delivers results itself, so the seed does not ask for them.
  */
 export const CONTINUITY_SEED = "Preserve the current purpose; consequential operator corrections and what they changed; qualified evidence; unresolved questions. Results of requests routed to this session keep arriving here.";
-/** The native host lists the conversation's own outgoing requests after each context head, so a native summary need not repeat them. */
-export const NATIVE_COMPACTION_SEED = `${CONTINUITY_SEED} After the summary, the Agent continuity note lists the requests that this session sent and that have no delivered result here.`;
+/** The native host retains outgoing requests; the summary preserves the work that still owes a final report. */
+export const NATIVE_COMPACTION_SEED = `${CONTINUITY_SEED} Preserve each owed final report with its request, reply recipient, dependencies, and next action. After the summary, the Agent continuity note lists the requests that this session sent and that have no delivered result here.`;
 const RESET_HANDOFF_GUIDANCE = "A handoff states the current purpose; consequential operator corrections and what they changed; qualified evidence; unresolved questions; and the newest handover or checkpoint identifier.";
 
 /** Per-tool snippets and guidelines for the current controls. */

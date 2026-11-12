@@ -15,6 +15,7 @@ import { sessionFigures } from "./footer.ts";
 import type { AgentConversationPage } from "./dashboard-types.ts";
 import { createAgentObservationSource } from "./agent-observation.ts";
 import type { ActionResult } from "./agent-forms.ts";
+import { NATIVE_COMPACTION_SEED } from "./control-guidance.ts";
 
 type Fixture = ReturnType<typeof fixture>;
 
@@ -66,15 +67,32 @@ async function settle(condition: () => boolean): Promise<void> {
 	assert.ok(condition(), "the condition never held");
 }
 
-/** The visible screen plus the open More menu, so a control the short row hides is still found. */
-function actionText(f: Fixture): string {
-	const screen = shown(f);
-	if (!/x more/u.test(screen)) return screen;
-	press(f, "x");
-	const menu = shown(f);
-	press(f, "\x1b");
-	return `${screen}\n${menu}`;
-}
+it("keeps owed final reports visible in the roster, conversation view and compaction seed after an input settles", async () => {
+	const observed = source([row("one", { state: "idle", openWorkCount: 2, openWorkOldest: 300000 })]);
+	let notify = () => {};
+	observed.subscribe = (listener) => { notify = listener; return () => {}; };
+	const base = conversationFrame();
+	const status = { ...base.status, busy: false, openWorkCount: 2, openWorkOldest: 300000 };
+	let frame: ConversationFrame = { ...base, status };
+	observed.frame = () => frame;
+	observed.availability = () => ({ state: "live", at: frame.observedAt });
+	const clock = manualClock();
+	const f = fixture(200, 36, observed, undefined, undefined, undefined, undefined, clock);
+	try {
+		await turn();
+		const text = shown(f);
+		assert.equal(text.match(/work open: 2, oldest: 5m/gu)?.length, 2, "both the roster and selected conversation show the count and age");
+		assert.match(paneLines(f).lines.join("\n"), /Idle[\s\S]*work open: 2, oldest: 5m/u);
+		assert.match(NATIVE_COMPACTION_SEED, /Preserve each owed final report with its request, reply recipient, dependencies, and next action/u);
+		const closed = { ...status, openWorkCount: 0, openWorkOldest: 0 };
+		frame = { ...frame, revision: 2, status: closed };
+		notify(); clock.advance(50); await turn();
+		assert.doesNotMatch(shown(f), /work open:/u);
+		frame = { ...frame, revision: 3, status: { ...base.status, busy: false } };
+		notify(); clock.advance(50); await turn();
+		assert.doesNotMatch(shown(f), /work open:/u, "an absent source field does not invent open work");
+	} finally { f.ui.dispose(); }
+});
 
 /** The target header's state line: a divider or the row start, the state glyph, then the state label. */
 const STATE_LINE = /(^|│) [◌●○✓!■↯·?] (Starting|Working|Idle|Done|Failed|Stopped|Interrupted|New|Unavailable)\b/u;
