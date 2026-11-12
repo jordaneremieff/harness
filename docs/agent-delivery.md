@@ -316,8 +316,12 @@ completion returns the close while that close remains retained; it does not
 create another final report. The work document keeps the newest 16 closed items.
 Use this retained declaration, not an informal promise of a later manual report.
 
-An ordinary session has no `agent_work` tool. When only delegated work
-remains, it ends its turn with a short state note. Results arrive as events
+An ordinary session keeps its state in its own `agent_work`. When only
+delegated work remains, or after an event that needs nothing from the
+operator, it calls `agent_work` with `action: "continue"` and its current
+state in `note` as the only call of its last tool batch and writes no chat
+text: the note shows in a widget above the input and the turn ends there.
+Results arrive as events
 at its next tool boundary or start its next turn; it never polls. Follow the
 [supervision guidance](../skills/delegate/SKILL.md#6-supervise-without-polling)
 for the native and ordinary control paths.
