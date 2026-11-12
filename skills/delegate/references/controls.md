@@ -76,7 +76,7 @@ answers win over this table. For messages to the operator, follow
 | Moment | Control | Decision | Pitfall | Anchor |
 |---|---|---|---|---|
 | An agent settles unanswered with `model_error` | `agent_inspect` `view: "result"` | Read the provider error text, abort if still active, configure an explicit model on the idle agent, send a continuation, keep its new reference | The host never substitutes a model; a retry notice does not prove exhaustion | `#exhausted-provider-limits` |
-| Choose a substitute | the preferences' substitution order | Substitute deliberately and retain the choice and reason | Name or thinking changes do not clear a provider block | `#exhausted-provider-limits` |
+| Choose a substitute | the preferences' substitution order | Substitute deliberately and retain the choice and reason; follow the [wall procedure](supervision.md#quota-walls) for operator messages | Name or thinking changes do not clear a provider block | `#exhausted-provider-limits` |
 
 ## Discovery and close-out
 

@@ -102,8 +102,10 @@ These facts shape the choice:
   landing, activation, and push; that owner need not be a separate session.
 - **Model choice:** choose each agent by preset from the operator's preferences.
   Name an exact model only when a direction requires it. At a quota wall,
-  substitute in the configured order and retain the choice and reason. Read
-  `references/controls.md` for spawn, handle, and placement rules.
+  substitute in the configured order and retain the choice and reason.
+  Follow the [wall procedure](references/supervision.md#quota-walls) for
+  operator messages; read `references/controls.md` for spawn, handle, and
+  placement rules.
 
 **Complete when:** each part of the work has an owner, concurrent edits do not
 overlap, and composition and shared acts have one accountable owner.
@@ -240,8 +242,7 @@ are fixed; other headings, layout and length are not.
 
 Keep the complete result of extended work in one current document. Replace
 that document whenever its content changes, and name its path in chat.
-A request for the state names every required point and permits no shortcut
-reply; answer it with the whole current state.
+When the operator asks for the state, answer with the whole current state.
 
 Batch contributor reports at the source. Each directing agent closes its part
 in its state file. One agent combines those reports and sends one message for
@@ -367,7 +368,8 @@ Before the final answer:
 2. Update or clear your intent claim.
 3. Post a conclusion to each thread you integrate; close it when the work ends.
 4. Restore any temporary configuration you changed.
-5. Give the final answer under "Operator status reports".
+5. Give the final answer under "Operator status reports", with its evidence,
+   its limits, and each substitution made.
 
 **Complete when:** no owned agent is unresolved, any intent claim is current,
 and the operator has the result.
