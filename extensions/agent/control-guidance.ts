@@ -73,14 +73,17 @@ export interface AgentToolGuidance {
 const EXECUTION_PRESET_GUIDANCE = "Delegate with preset. Omit model and preset to use the machine defaultPreset on creation. Name model only when a direction or the task requires an override; receipts record explicit overrides. Explicit fields win over preset fields. Creation never inherits parent execution settings; absent thinking defaults to off. Configure retains the target's own values and never uses defaultPreset. Exclusions are advisory unless the operator sets enforceRoster true for creation. Preset role applies only to handle creation.";
 export const MODEL_SELECTION_GUIDANCE = "For an explicit model override, use an exact provider/model identity. Apply current task directions and the operator's route, budget, and role preferences before choosing the override. Verify its exact model and supported thinking level. The resolver owns preset and default identity selection. Configured access is not operator use; past use is not preference.";
 
-/** Follow-up admission remains responsive to an active native await. */
-export const FOLLOW_UP_DELIVERY_BOUNDARY = "On a Durable agent, followUp normally waits for the current run to end. An admitted explicit followUp releases an active agent_await, including input already queued when the wait starts. It joins the current work, so both inputs may share one answer.";
+/** A follow-up places at a tool boundary of a running recipient, not at the run end. */
+export const FOLLOW_UP_DELIVERY_BOUNDARY = "A followUp to a running agent is placed at the recipient's next tool boundary, the end of its current round of tool calls, not at the end of its run. It does not interrupt a running tool. It joins the current work, so both inputs may share one answer.";
 
 /** Await release retains the original request and its exact unresolved results. */
 export const AWAIT_INPUT_DELIVERY_BOUNDARY = "Admitted explicit input, including followUp queued before or during agent_await and report mode from an ordinary primary, releases the wait with partial results and unresolved references. The input joins the current work and may share its answer. Retained report-provenance input releases the wait only for a named awaited producer. Unrelated report-provenance input, automatic traffic, and raw native Reporter result copies do not release the wait. Explicit release also returns control on the original request.";
 
-/** Report timing follows the explicit, retained-provenance, or raw native admission path. */
-export const REPORT_DELIVERY_BOUNDARY = "A report to a busy Durable agent normally waits for the current run to end. A report sent from an ordinary primary uses explicit admission and releases active agent_await after admission, even from an unrelated sender. A report sent from a native Durable agent uses retained report provenance: only a named awaited producer's report releases the wait; unrelated native reports stay queued. Automatic native Reporter result copies remain raw follow-ups, not await-release inputs. Model-origin reports to ordinary primaries use steer. Use steer to change a busy agent's work at its next tool boundary; steer does not interrupt a running tool.";
+/** A report places at a tool boundary of a running recipient and starts no task. */
+export const REPORT_DELIVERY_BOUNDARY = "A report to a running agent is placed at the recipient's next tool boundary, not at the end of its run. It does not interrupt a running tool, and it starts no answer-bearing task. A report is an event for the recipient: it reads the report and continues. Use steer when the recipient must change its current work.";
+
+/** Each placed input carries its class; the class tells the recipient what to do with it. */
+export const INPUT_CLASS_GUIDANCE = "Read each placed input by its class. A steer corrects the current work: apply it now. A followUp and operator input are new work: finish the current step, then do them in this run. A report, result, check-in, and thread notice are events: read them and continue. Name in the answer each request that it covers.";
 
 /**
  * What only the model can carry across a compaction or reset. The host keeps request routes and
@@ -112,6 +115,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 			"Send informational reports and blocking questions with agent_send mode: report to the current request's reply recipient. The creating owner is provenance, not every task's requester. Specify a recipient explicitly; several requests can share a run. Reports start no answer-bearing task or check-in. Do not replace the terminal result with an interim report. A terminal answer settles the current request: include the substantive result or exact blocker, not a waiting note, closing pleasantry, or promise of a later answer. Use followUp for unrelated new work on a reused expert.",
 			FOLLOW_UP_DELIVERY_BOUNDARY,
 			REPORT_DELIVERY_BOUNDARY,
+			INPUT_CLASS_GUIDANCE,
 			"Owner check-ins run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. Check-ins wake a model owner, not an operator owner; delivered reports and check-ins do not start another check-in task. Assess the unfinished task rather than treat the notice as an answer.",
 			"With deliverAt, the input is scheduled at that absolute time instead of being admitted now; the storage host must run at the deadline.",
 		],
