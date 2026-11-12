@@ -85,6 +85,9 @@ export const REPORT_DELIVERY_BOUNDARY = "A report to a running agent is placed a
 /** Each placed input carries its class; the class tells the recipient what to do with it. */
 export const INPUT_CLASS_GUIDANCE = "Read each placed input by its class. A steer corrects the current work: apply it now. A followUp and operator input are new work: finish the current step, then do them in this run. A report, result, check-in, and thread notice are events: read them and continue. Name in the answer each request that it covers.";
 
+/** Open delegated work is declared, the run ends with a state note, and each arriving result starts the next run. */
+export const OPEN_WORK_GUIDANCE = "After you send work, do the useful work that remains for you. When none remains, declare the open work with agent_work continue (the request and its exact result references), then end the run with a short state note. Each result, report, or message starts your next run. Never hold a run open for agent output: no sleep, no repeated status or inspection call, no long foreground command. An input reaches you at your next tool boundary, the end of your current round of tool calls, so run a command that can take more than about two minutes as a background job; its completion arrives as an event. Creation records, reports, timers, names, and latest answers are not result references. Preserve known request IDs.";
+
 /**
  * What only the model can carry across a compaction or reset. The host keeps request routes and
  * delivers results itself, so the seed does not ask for them.
@@ -107,15 +110,17 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 			'Write each agent task as a contract: objective, output format, source guidance, and boundaries. Include purpose, acceptance, and an end condition. Apply the universal AGENTS.md "Intent authority" section to assignments, corrections, and relayed decisions; preserve operator restrictions and distinguish them from agent choices.',
 			"Results arrive without supervision turns. Set checkInMinutes only when a task needs a watchdog; the configured agent.checkInMinutes default is 0, so no automatic owner check-ins run otherwise. A check-in is not a finished result. Assess progress, let work continue, steer a wrap-up, or abort a hung tool. Steering waits for the tool boundary.",
 			"Agent work runs in the background. Each task's answer reports to its request's reply recipient automatically. Settlement is execution evidence, not task acceptance. Integrate the delegated results required by this request before claiming completion; a spawn or send receipt is not that result. Resolve live work for this request: continue useful work, redirect changed work, or abort superseded work. Do not stop unrelated, standing, or background agents merely to finish this request.",
+			OPEN_WORK_GUIDANCE,
 		],
 	},
 	agent_send: {
 		snippet: "Send a task to an agent session",
 		guidelines: [
-			"Send informational reports and blocking questions with agent_send mode: report to the current request's reply recipient. The creating owner is provenance, not every task's requester. Specify a recipient explicitly; several requests can share a run. Reports start no answer-bearing task or check-in. Do not replace the terminal result with an interim report. A terminal answer settles the current request: include the substantive result or exact blocker, not a waiting note, closing pleasantry, or promise of a later answer. Use followUp for unrelated new work on a reused expert.",
+			"Send informational reports and blocking questions with agent_send mode: report to the current request's reply recipient. The creating owner is provenance, not every task's requester. Specify a recipient explicitly; several requests can share a run. Reports start no answer-bearing task or check-in. A terminal answer settles the current request: give the substantive result or exact blocker. While declared work is open, end the run with a state note whose first words say that it is not the result; only agent_work complete sends the final report, to the original reply recipient. Use followUp for unrelated new work on a reused expert.",
 			FOLLOW_UP_DELIVERY_BOUNDARY,
 			REPORT_DELIVERY_BOUNDARY,
 			INPUT_CLASS_GUIDANCE,
+			OPEN_WORK_GUIDANCE,
 			"Owner check-ins run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. Check-ins wake a model owner, not an operator owner; delivered reports and check-ins do not start another check-in task. Assess the unfinished task rather than treat the notice as an answer.",
 			"With deliverAt, the input is scheduled at that absolute time instead of being admitted now; the storage host must run at the deadline.",
 		],
