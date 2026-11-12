@@ -609,8 +609,11 @@ final work result. A dependency arrival or input settlement never closes an
 item. A declaring input that ends `unanswered` invalidates its open item; the
 original unanswered receipt remains the outcome. `complete` closes the item
 and retains its final report for `replyTo` atomically. Its report ID derives
-from the conversation and original request. Repeated completion returns that
-retained close without another report; closed items do not reopen. Report
+from the conversation and original request. While its close remains retained,
+repeated completion returns it without another report; closed items do not
+reopen. The work document keeps all open items and the newest 16 closed items.
+Eviction removes the old work item, not its separately retained report. A
+completion after eviction has no declared item to complete. Report
 delivery stays at least once and independent of task acceptance.
 
 Full native conversation status exposes `openWork`; compact status leaves the

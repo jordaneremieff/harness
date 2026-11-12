@@ -1670,11 +1670,16 @@ agent_work({
 ```
 
 `complete` closes the item and retains one final report for its original reply
-recipient in the same commit. A repeated completion returns the retained close
-and creates no second report. Normal report delivery remains at least once;
+recipient in the same commit. While the close remains retained, a repeated
+completion returns it and creates no second report. Normal report delivery remains at least once;
 this is not an exactly-once context-delivery claim. An arrived dependency and a
 settled input never invoke completion. Closed items do not reopen. The work
 record does not cancel its producers.
+
+The work document retains every open item and the newest 16 closed items.
+After an older close leaves that document, another completion returns no
+retained close; it does not create a new item. This bound does not itself
+remove the separately retained final report.
 
 Read `agent_status({sessionId, detail: true})` for `openWork`. Each item names
 its original route, note, state and dependencies. A dependency is `open` while

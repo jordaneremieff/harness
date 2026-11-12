@@ -310,7 +310,8 @@ item with `agent_work`, `action: "complete"`, its original request, `status`
 (`done` or `failed`) and the full final report in `message`. This closes the
 item and retains one final report for the original reply recipient. Results,
 state notes, input settlement and check-ins do not complete the item. Repeated
-completion returns the retained close; it does not create another final report.
+completion returns the close while that close remains retained; it does not
+create another final report. The work document keeps the newest 16 closed items.
 Use this retained declaration, not an informal promise of a later manual report.
 
 Read the Agent [result contract](../extensions/agent/README.md#read-peer-results)
