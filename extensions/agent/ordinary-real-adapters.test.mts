@@ -68,7 +68,11 @@ async function liveShapes(t: TestContext): Promise<void> {
 	t.after(() => abort.abort());
 	await manager.registerPrimary(ordinary, { signal: abort.signal, cwd: f.cwd, name: "Peer primary", thinkingLevel: "off", send() {} });
 	assert.equal(((await tools.execute("agent_status", { sessionId: ordinary })).details as { conversation: { identity: string } }).conversation.identity, ordinary);
-	assert.deepEqual((await tools.execute("agent_status", { sessionId: ordinary, detail: true })).details, await manager.status(ordinary));
+	// Each read of an ordinary primary is its own observation, so only the observation time can differ between the two.
+	const viaTool = (await tools.execute("agent_status", { sessionId: ordinary, detail: true })).details as { observedAt: string };
+	const direct = await manager.status(ordinary) as { observedAt: string };
+	assert.ok(Date.parse(viaTool.observedAt) <= Date.parse(direct.observedAt));
+	assert.deepEqual({ ...viaTool, observedAt: direct.observedAt }, direct);
 	await tools.close(); tools = undefined;
 }
 async function interruptedShapes(t: TestContext): Promise<void> {
