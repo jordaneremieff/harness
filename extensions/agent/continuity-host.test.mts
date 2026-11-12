@@ -20,6 +20,7 @@ import { HOST_CONTRACT } from "./version-contract.ts";
 import { answerMessage, completed, fixtureModelId, fixtureProvider, fixtureRegistry, hostOptions, toolCallMessage } from "./durable-host-fixture.mts";
 import { PLANNING_BUDGET_NOTICE_KIND } from "./capacity-reports.ts";
 import { resetConversation } from "./durable-reset.ts";
+import { OpenWorkDoc, type OpenWorkItem } from "./open-work.ts";
 import { TimerTask } from "./durable-timers.ts";
 import { parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
 import { TASK_HOOK_REPORT_KIND } from "./task-hook-reports.ts";
@@ -377,4 +378,57 @@ it("names the same resolved identity in a timer's schedule receipt and its cance
 		assert.equal(cancelled.status, "cancelled");
 		assert.equal(cancelled.identity, scheduled.identity);
 	}
+});
+
+it("states the declared open work of a context head in its note, unchanged by later work changes and a host restart", { timeout: 30000 }, async (t) => {
+	const storagePath = join(fixtureRoot(t), "open-work.sqlite");
+	const storageId = "77777777-7777-4777-8777-777777777777";
+	const owner = "88888888-8888-4888-8888-888888888888";
+	const recorded = await recorder();
+	const first = await openHost(t, storagePath, recorded, { storageId });
+	const declare = (host: DurableHost, requestId: string, submissionId: number, results: OpenWorkItem["results"]): Promise<void> => host.harness.commit(async (tx) => {
+		(await tx.doc(OpenWorkDoc, ROOT_CONVERSATION_ID)).items.push({ requestId, submissionId, requester: owner, replyTo: owner, origin: "model", results, note: "waiting for the peer", declaredAt: 1, updatedAt: 1 });
+	}, context);
+	const work = /Declared open work of this session[^\n]*(?:\n\{[^\n]*\})*/u;
+	const noteOf = (messages: readonly Message[]): string => text(messages[noteIndexes(messages)[0] ?? -1]);
+
+	const one = await first.submit({ message: "first input", requestId: "input-1" });
+	assert.equal((await first.wait(one.submissionId)).status, "done");
+	assert.deepEqual(noteIndexes(recorded.chain[0]), [], "a conversation without a context head carries no note and reads no open work");
+	await declare(first, "input-1", one.submissionId, [{ sessionId: "99999999-9999-4999-8999-999999999999", submissionId: 9, requestId: "peer-task" }]);
+	assert.equal((await resetConversation(first.root(), { requestId: "reset-1", handoff: "Handoff with open work." }, context)).status, "placed");
+
+	await ask(first, "second input", "input-2");
+	const before = recorded.chain.at(-1) ?? [];
+	const s = leadingSystems(before);
+	assert.deepEqual(noteIndexes(before), [s + 1], "the note keeps its place directly after the head message");
+	assert.equal(work.exec(noteOf(before))?.[0], [
+		"Declared open work of this session at the first request after this context head; each item owes one final report to its replyTo: ",
+		JSON.stringify({ requestId: "input-1", replyTo: owner, dependsOn: [{ sessionId: "99999999-9999-4999-8999-999999999999", submissionId: 9, requestId: "peer-task" }] }),
+	].join("\n"));
+	assert.doesNotMatch(noteOf(before), /waiting for the peer/u, "the item's own note stays in status");
+	assert.ok(recorded.provider.at(-1)?.includes("Declared open work of this session at the first request"), "the provider request carries the open work");
+
+	// The item closes and another opens: the note of this head keeps the items of its first request.
+	const two = await first.harness.commit((tx) => tx.submissionByRequest(ROOT_CONVERSATION_ID, "input-2"), context);
+	assert.ok(two);
+	await first.harness.commit(async (tx) => { (await tx.doc(OpenWorkDoc, ROOT_CONVERSATION_ID)).items[0].close = { status: "done", at: 2, message: "finished", reportRequestId: "final:1" }; }, context);
+	await declare(first, "input-2", two.id, []);
+	await ask(first, "third input", "input-3");
+	const same = recorded.chain.at(-1) ?? [];
+	assert.deepEqual(same.slice(0, before.length), before);
+	await first.close();
+
+	const second = await openHost(t, storagePath, recorded, { storageId });
+	await ask(second, "input after restart", "input-4");
+	const restarted = recorded.chain.at(-1) ?? [];
+	assert.deepEqual(restarted.slice(0, same.length), same, "the restarted host sends the same note bytes for this head");
+
+	// The host's reset closes declared work with a final report after it places the head; the first request of the new head reads none.
+	const reset = await second.request("reset", { handoff: "Handoff after the host closed the work." }) as { status: string };
+	assert.equal(reset.status, "placed");
+	await ask(second, "input on the new head", "input-5");
+	const renewed = recorded.chain.at(-1) ?? [];
+	assert.ok(noteHead(renewed[noteIndexes(renewed)[0]]) > noteHead(before[s + 1]));
+	assert.equal(work.exec(noteOf(renewed))?.[0], "Declared open work of this session at the first request after this context head; each item owes one final report to its replyTo: none");
 });

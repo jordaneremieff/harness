@@ -14,22 +14,40 @@ export type ContinuityFact = {
 	readonly timerId?: number;
 };
 export type ContinuityEvent = ContinuityFact & { readonly afterHead: number };
-export type ContinuityState = { events: ContinuityEvent[] };
+/** One declared open item: the request that owes a final report, its reply recipient, and the exact results it waits for. */
+export type ContinuityOpenWork = { requestId: string; replyTo: string; results: ResultReference[] };
+/** Declared open work of a conversation, read once at the first request of one context head. */
+export type ContinuityWork = { headId: number; items: ContinuityOpenWork[] };
+export type ContinuityState = { events: ContinuityEvent[]; work?: ContinuityWork };
 
 function validIdentity(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\s@\u0000-\u001f\u007f]/u.test(value);
 }
 function positiveInteger(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) > 0; }
+function validRequest(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && value.length <= 1024 && !/[\u0000-\u001f\u007f]/u.test(value);
+}
 
 export function validateContinuityFact(value: unknown): asserts value is ContinuityFact {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Invalid continuity fact");
 	const fact = value as ContinuityFact;
 	if (!["requested", "admitted", "refused", "delivered"].includes(fact.phase) || !validIdentity(fact.sessionId) || !validIdentity(fact.replyTo)
-		|| typeof fact.requestId !== "string" || fact.requestId.length === 0 || fact.requestId.length > 1024 || /[\u0000-\u001f\u007f]/u.test(fact.requestId))
+		|| !validRequest(fact.requestId))
 		throw new TypeError("Invalid continuity route or phase");
 	if (fact.submissionId !== undefined && !positiveInteger(fact.submissionId)) throw new TypeError("Invalid continuity submission");
 	if ((fact.phase === "admitted" || fact.phase === "delivered") && fact.submissionId === undefined) throw new TypeError("Continuity admission requires a submission");
 	if (fact.timerId !== undefined && !positiveInteger(fact.timerId)) throw new TypeError("Invalid continuity timer");
+}
+export function validateContinuityWork(value: unknown): asserts value is ContinuityWork {
+	const work = value as ContinuityWork | null;
+	if (work === null || typeof work !== "object" || !positiveInteger(work.headId) || !Array.isArray(work.items)) throw new TypeError("Invalid continuity open work");
+	for (const item of work.items) {
+		if (item === null || typeof item !== "object" || !validRequest(item.requestId) || !validIdentity(item.replyTo) || !Array.isArray(item.results)) throw new TypeError("Invalid continuity open-work item");
+		for (const result of item.results) {
+			if (result === null || typeof result !== "object" || !validIdentity(result.sessionId) || !positiveInteger(result.submissionId) || (result.requestId !== undefined && !validRequest(result.requestId)))
+				throw new TypeError("Invalid continuity open-work dependency");
+		}
+	}
 }
 export function validateContinuityState(value: unknown): asserts value is ContinuityState {
 	if (value === null || typeof value !== "object" || !Array.isArray((value as ContinuityState).events)) throw new TypeError("Invalid continuity state");
@@ -37,6 +55,7 @@ export function validateContinuityState(value: unknown): asserts value is Contin
 		validateContinuityFact(event);
 		if (!Number.isSafeInteger(event.afterHead) || event.afterHead < 0) throw new TypeError("Invalid continuity head position");
 	}
+	if ((value as ContinuityState).work !== undefined) validateContinuityWork((value as ContinuityState).work);
 }
 
 const key = (fact: ContinuityFact): string => JSON.stringify([fact.sessionId, fact.requestId]);
@@ -96,8 +115,22 @@ export function continuityText(ownerId: string, headId: string | number, facts: 
 		"Creation records are provenance, not ownership.",
 	].join("\n");
 }
-export function nativeContinuityText(ownerId: string, headId: number, events: readonly ContinuityEvent[]): string {
-	return continuityText(ownerId, headId, events.filter((event) => event.afterHead < headId));
+/**
+ * Declared open work as one context head first saw it. The rows carry identifiers only: an item's
+ * note and the state of its dependencies change after the read, and status holds them.
+ */
+export function continuityWorkText(items: readonly ContinuityOpenWork[] | undefined): string {
+	if (items === undefined) return "Declared open work of this session: not read for this context head. Read it with agent_status.";
+	const rows = items.map((item) => JSON.stringify({
+		requestId: item.requestId, replyTo: item.replyTo,
+		dependsOn: item.results.map((result) => ({ sessionId: result.sessionId, submissionId: result.submissionId, ...(result.requestId === undefined ? {} : { requestId: result.requestId }) })),
+	}));
+	const list = listed("Declared open work of this session at the first request after this context head; each item owes one final report to its replyTo", rows);
+	return rows.length === 0 ? list : `${list}\nOnly agent_work complete closes an item. Read current items, notes and dependency states with agent_status.`;
+}
+/** `work` counts only when it was read for this head; open work of another head never enters the note. */
+export function nativeContinuityText(ownerId: string, headId: number, events: readonly ContinuityEvent[], work?: ContinuityWork): string {
+	return `${continuityText(ownerId, headId, events.filter((event) => event.afterHead < headId))}\n${continuityWorkText(work?.headId === headId ? work.items : undefined)}`;
 }
 
 /** Pi supplies the current compaction entry ID through buildContextEntries()[0]. */

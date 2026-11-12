@@ -1,6 +1,7 @@
 import { defineDoc, type ConversationId, type Tx } from "@earendil-works/pi-durable";
 import type { ResultReference } from "./result-schema.ts";
-import { CONTINUITY_ENTRY, foldContinuity, pruneContinuity, validateContinuityDelivered, validateContinuityFact, validateContinuityState, type ContinuityFact, type ContinuityState } from "./continuity-facts.ts";
+import { CONTINUITY_ENTRY, foldContinuity, pruneContinuity, validateContinuityDelivered, validateContinuityFact, validateContinuityState, validateContinuityWork, type ContinuityFact, type ContinuityState, type ContinuityWork } from "./continuity-facts.ts";
+import { openWorkItems } from "./open-work.ts";
 
 export const ContinuityDoc = defineDoc<ContinuityState>({
 	kind: CONTINUITY_ENTRY, version: 1, scope: "conversation", history: "latest", fork: "initial",
@@ -34,4 +35,25 @@ export async function recordContinuityDelivered(tx: Tx, conversationId: Conversa
 		if (fact === undefined) continue;
 		await recordContinuityFact(tx, conversationId, { phase: "delivered", sessionId: reference.sessionId, requestId: reference.requestId, replyTo: fact.replyTo, submissionId: reference.submissionId });
 	}
+}
+
+/**
+ * Read the conversation's declared open work once for its current context head and retain what was
+ * read, so every later request of that head, also after a host restart, states the same items. A
+ * retained read of the head is returned unchanged. Undefined when `headId` is no longer the newest
+ * head. The open-work read comes before the document write of this commit.
+ */
+export async function freezeContinuityWork(tx: Tx, conversationId: ConversationId, headId: number): Promise<ContinuityWork | undefined> {
+	if ((await tx.latestHeadMarker(conversationId))?.id !== headId) return undefined;
+	const state = await tx.doc(ContinuityDoc, conversationId);
+	validateContinuityState(state);
+	if (state.work?.headId === headId) return JSON.parse(JSON.stringify(state.work)) as ContinuityWork;
+	const items = (await openWorkItems(tx, conversationId)).map((item) => ({
+		requestId: item.requestId, replyTo: item.replyTo,
+		results: item.results.map((result) => ({ sessionId: result.sessionId, submissionId: result.submissionId, ...(result.requestId === undefined ? {} : { requestId: result.requestId }) })),
+	}));
+	const work: ContinuityWork = { headId, items };
+	validateContinuityWork(work);
+	state.work = work;
+	return JSON.parse(JSON.stringify(work)) as ContinuityWork;
 }
