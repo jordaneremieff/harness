@@ -372,7 +372,7 @@ const SendParams = obj(
 		mode: opt(
 			StringEnum(["followUp", "steer", "report"]),
 		),
-		passive: opt(bool({ description: "Report mode only. Enter context at the next normal boundary without attention or wait release." })),
+		passive: opt(bool({ description: "Report mode only. Enter context at the next normal boundary without attention." })),
 		checkInMinutes: CheckInParams,
 	},
 	{},
@@ -1306,7 +1306,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const sendTool = durable.defineTool({
 		name: "agent_send",
 		description:
-			`Send a message to an agent conversation. A busy conversation receives steer at its next tool boundary. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Reports request attention by default. For progress that asks for no action, set mode:'report',passive:true. Passive reports enter context at the next result or normal boundary. They do not wake the recipient or release its wait. Keep questions, blockers, corrections and capacity interventions active. Send explicit instructions as followUp or steer, not passive reports. Task answers report back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool. checkInMinutes 0 disables.`,
+			`Send a message to an agent conversation. A busy conversation receives it at its next tool boundary, the end of its current tool round; mode is the class of the message, not a placement time. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Reports request attention by default. For progress that asks for no action, set mode:'report',passive:true. Passive reports enter context at the next result or normal boundary. They do not wake the recipient. Keep questions, blockers, corrections and capacity interventions active. Send explicit instructions as followUp or steer, not passive reports. Task answers report back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool. checkInMinutes 0 disables.`,
 		parameters: SendParams,
 		replay: "safe",
 		execute: async (args: SendInput, api, context) => {
