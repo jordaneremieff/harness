@@ -1,6 +1,6 @@
 /** Durable owner check-ins for unanswered tool admissions. */
 import { checkInMinutes } from "./check-in-options.ts";
-import { inputEntry } from "./input-entry.ts";
+import { inputEntry, sentInputClass } from "./input-entry.ts";
 import { defineTask, LiveDoc, UsageDoc, type ConversationId, type Tx, type UsageState, type ToolSlot, type LiveState, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import { placementMode, type DeliveryOrigin, type DeliveryMessage } from "./durable-controls.ts";
 import { checkInFallback, currentCheckInReport, retainedReport, storeDeliveryRow } from "./delivery-store.ts";
@@ -138,7 +138,7 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 			const conversation = await runtime.conversation(input.conversationId as ConversationId, context);
 			if (conversation === undefined) throw new Error("check-in conversation is absent");
 			const message = typeof input.message === "string" ? input.message : input.message.map((part) => part.type === "image" ? { type: "image" as const, data: part.data, mimeType: part.mimeType } : { type: "text" as const, text: part.text });
-			const submission = await conversation.submit({ type: "input", content: message, requestId: input.requestId, whenBusy: placementMode(input.whenBusy), entry: inputEntry(input.origin, input.requester) }, context);
+			const submission = await conversation.submit({ type: "input", content: message, requestId: input.requestId, whenBusy: placementMode(input.whenBusy), entry: inputEntry(input.origin, input.requester, { class: sentInputClass(input.origin, input.whenBusy), ...(input.requester === undefined ? {} : { sender: input.requester }), requestId: input.requestId }) }, context);
 			const status = await submission.status(context);
 			const deadlines = (await runtime.ownedTasks(context)).filter((child) => child.kind === CheckInDeadlineTask.definition.name);
 			if (status.status === "done" || status.status === "unanswered") {

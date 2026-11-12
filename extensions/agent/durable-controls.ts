@@ -19,7 +19,7 @@ import { parseReportIntervention, type ReportIntervention } from "./report-inter
 import { NATIVE_COMPACTION_SEED } from "./control-guidance.ts";
 import { validateReportIntervention } from "./native-report-intervention.ts";
 import { DeliveryRowDoc, automaticDeliveryPage, deliveryState, migrateDeliveryStore, operationReceipts, readDeliveryDraft, receiptKey, reportKey, retainedIntent, retainedReceipt, retainedReport, retainedReportRequest, storeDeliveryRow, writeDeliveryDraft } from "./delivery-store.ts";
-import { inputEntry } from "./input-entry.ts";
+import { inputEntry, isInputClass, sentInputClass, type InputClass, type InputLabel } from "./input-entry.ts";
 import { configureProviderRecovery, captureProviderRecovery, linkProviderRecovery, readInputRecovery, readInputProviderBlock, readProviderBlock, type ProviderRetryNotice } from "./provider-block.ts";
 import { modelFailureText, type ProviderBlockFact } from "./provider-block-facts.ts";
 import { AwaitDoc, acknowledgeProviderRetry, classifyAwaitInput, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
@@ -273,6 +273,10 @@ export interface DurableSubmitParams {
 	readonly origin?: DeliveryOrigin;
 	readonly checkInMinutes?: number;
 	readonly senderIdentity?: string;
+	/** Class of the input when the caller knows it; absent: derived from the envelope, the provenance and the busy mode. */
+	readonly inputClass?: InputClass;
+	/** Identity of the sender when no request route, task sender or provenance names it. */
+	readonly inputSender?: string;
 	/** Host-authored metadata; base submit callers need not supply it. */
 	readonly requestContext?: RequestContext;
 	readonly providerRetry?: ProviderRetryNotice;
@@ -292,6 +296,7 @@ export interface RichSubmitParams {
 	readonly checkInMinutes?: number;
 	/** Worker identity used by check-ins, not the requester. */
 	readonly senderIdentity?: string;
+	readonly inputClass?: InputClass;
 }
 
 /** Enriched admission is independent of the unchanged base submit operation. */
@@ -489,6 +494,19 @@ function inputAuthor(params: DurableSubmitParams): string | undefined {
 	return params.requestContext?.requester ?? params.communication?.taskSender?.identity ?? params.provenance?.sender;
 }
 
+const ENVELOPE_CLASSES: Readonly<Record<string, InputClass>> = { notice: "thread-notice", report: "report", result: "result", "check-in": "check-in" };
+
+/** Class, sender and request identity of one admission, for its entry data and route note. */
+function admissionLabel(params: DurableSubmitParams): InputLabel {
+	const envelope = params.communication?.value as { kind?: unknown; sender?: { identity?: unknown } } | null | undefined;
+	const provenance = params.provenance;
+	const enveloped = typeof envelope?.kind === "string" ? ENVELOPE_CLASSES[envelope.kind] : undefined;
+	const automatic = provenance?.classification !== "automatic" ? undefined : provenance.automaticKind === "checkIn" ? "check-in" : provenance.automaticKind === "timer" ? "timer" : "result";
+	const inputClass = (isInputClass(params.inputClass) ? params.inputClass : undefined) ?? enveloped ?? automatic ?? (provenance?.classification === "report" ? "report" : sentInputClass(params.origin, params.whenBusy));
+	const sender = params.inputSender ?? inputAuthor(params) ?? (typeof envelope?.sender?.identity === "string" ? envelope.sender.identity : undefined);
+	return { class: inputClass, ...(sender === undefined ? {} : { sender }), requestId: params.requestId };
+}
+
 function validateReplayRequest(request: RequestContext | undefined, requestId: string, intent: DeliveryIntent, route: RequestContext | undefined): void {
 	if (request === undefined) return;
 	if (request.requestId !== requestId || request.replyTo !== intent.ownerId || request.origin !== intent.origin || (route !== undefined && route.requester !== request.requester))
@@ -550,7 +568,7 @@ async function admitConversation(conversation: Conversation, params: DurableSubm
 			content: message,
 			requestId,
 			whenBusy: placementMode(whenBusy),
-			entry: inputEntry(origin, inputAuthor(params)),
+			entry: inputEntry(origin, inputAuthor(params), admissionLabel(params)),
 		},
 		context,
 	);
@@ -1266,7 +1284,7 @@ export async function reconcileDeliveries(harness: Harness, context: Context): P
 				continue;
 			}
 			const request = (await harness.snapshot(RequestContextDoc, intent.conversationId, context))?.requests.find((item) => item.requestId === intent.requestId);
-			const admitted = await conversation.submit({ type: "input", content: deliveredMessage(intent.message), entry: inputEntry(intent.origin, request?.requester), requestId: intent.requestId, whenBusy: placementMode(intent.whenBusy) }, context);
+			const admitted = await conversation.submit({ type: "input", content: deliveredMessage(intent.message), entry: inputEntry(intent.origin, request?.requester, { class: sentInputClass(intent.origin, intent.whenBusy), ...(request === undefined ? {} : { sender: request.requester }), requestId: intent.requestId }), requestId: intent.requestId, whenBusy: placementMode(intent.whenBusy) }, context);
 			submissionId = admitted.id;
 		}
 		const resolved = submissionId;

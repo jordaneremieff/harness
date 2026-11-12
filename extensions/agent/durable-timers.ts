@@ -196,7 +196,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				return undefined;
 			}, context);
 			const submission = await conversation.submit(
-				{ type: "input", content: task.input.message, requestId: task.input.requestId, whenBusy: placementMode(mode), entry: inputEntry(task.input.origin, task.input.requestContext?.requester) },
+				{ type: "input", content: task.input.message, requestId: task.input.requestId, whenBusy: placementMode(mode), entry: inputEntry(task.input.origin, task.input.requestContext?.requester, { class: "timer", sender: task.input.requestContext?.requester ?? task.input.ownerId, requestId: task.input.requestId }) },
 				context,
 			);
 			await runtime.commit(async (tx) => { await reconcileInputRelease(tx, conversationId, task.input.requestId); return undefined; }, context);
@@ -252,7 +252,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					return undefined;
 				}, context);
 				const submission = await conversation.submit(
-					{ type: "input", content: input.message, requestId: input.requestId, whenBusy: placementMode(mode), entry: inputEntry(input.origin, input.requestContext?.requester) },
+					{ type: "input", content: input.message, requestId: input.requestId, whenBusy: placementMode(mode), entry: inputEntry(input.origin, input.requestContext?.requester, { class: "timer", sender: input.requestContext?.requester ?? input.ownerId, requestId: input.requestId }) },
 					context,
 				);
 				await runtime.commit(async (tx) => { await reconcileInputRelease(tx, conversationId, input.requestId); return undefined; }, context);

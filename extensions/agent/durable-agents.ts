@@ -54,7 +54,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
-import { inputEntry } from "./input-entry.ts";
+import { inputEntry, sentInputClass } from "./input-entry.ts";
 import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
@@ -869,7 +869,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			admission.armed = true;
 			return undefined;
 		}, context);
-		const submission = await conversation.submit({ type: "input", content: input.message, whenBusy: placementMode(input.whenBusy), requestId: request.requestId, entry: inputEntry("model", request.requester) }, context).catch(async (error) => {
+		const submission = await conversation.submit({ type: "input", content: input.message, whenBusy: placementMode(input.whenBusy), requestId: request.requestId, entry: inputEntry("model", request.requester, { class: sentInputClass("model", input.whenBusy), sender: request.requester, requestId: request.requestId }) }, context).catch(async (error) => {
 			await api.commit(async (tx) => {
 				await forgetFailedAdmission(tx, input.conversationId, request.requestId);
 				// No submission under the request ID proves that nothing was admitted.
