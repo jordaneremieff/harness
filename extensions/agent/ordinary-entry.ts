@@ -78,7 +78,7 @@ import { DispatchOutputSchema } from "./result-schema.ts";
 import { MAX_CONTINUITY_SUMMARY, SelfCompaction } from "./self-compaction.ts";
 import { retainedSentWork, SENT_WORK_ENTRY } from "./session-work.ts";
 import { publishSettings } from "./settings.ts";
-import { createAgentToolCards, renderAgentPeerMessage } from "./tool-cards.ts";
+import { createAgentToolCards, ordinaryWorkCard, renderAgentPeerMessage, type AgentToolCard } from "./tool-cards.ts";
 import { registerOrdinaryWork } from "./ordinary-work.ts";
 import { collectToolDisplay, publishToolDisplay } from "./tool-display.ts";
 import { promptProjectTrust } from "./trust-support.ts";
@@ -305,7 +305,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
 	let observedManager: AgentManager | undefined;
-	const cards = createAgentToolCards(() => observedManager?.observedToolCardRows() ?? []);
+	// One record per tool owns its registration, its renderer fallback and its display publication. An ordinary
+	// session registers its own `agent_work`, so that tool's record is the state note card.
+	const cards: Readonly<Record<string, AgentToolCard>> = { ...createAgentToolCards(() => observedManager?.observedToolCardRows() ?? []), agent_work: ordinaryWorkCard() };
 	pi.registerToolRenderer((name, next) => next() ?? cards[name]);
 	publishToolDisplay(pi.events, Object.entries(cards).map(([name, presentation]) => ({ name, ...presentation })));
 	const primaries = new Map<string, AbortController>();
@@ -417,7 +419,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			return getManager().collaborate({ ...input, origin: "model", requestId: `collaboration:${ctx.sessionManager.getSessionId()}:${callId}` }, caller(ctx, pi));
 		},
 	);
-	registerOrdinaryWork(pi);
+	registerOrdinaryWork(pi, cards.agent_work);
 	register("agent_profile", "Read or revision-check an agent's durable role and sourced expertise. Saved expertise is evidence, not fresh authority. Profile edits start no model turn.", ProfileParams, (input, ctx, callId) => {
 		if (typeof input.sessionId !== "string") throw new Error("A primary profile control requires an agent sessionId");
 		return control(input.action === "read" ? "profile-read" : "profile-update", { ...input, requestId: `profile:${ctx.sessionManager.getSessionId()}:${callId}` }, ctx);

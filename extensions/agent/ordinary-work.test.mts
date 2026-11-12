@@ -4,6 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { ORDINARY_CONTINUE_TEXT, ORDINARY_WORK_ENTRY, ORDINARY_WORK_WIDGET, registerOrdinaryWork } from "./ordinary-work.ts";
+import { ordinaryWorkCard } from "./tool-cards.ts";
 
 type WidgetContent = undefined | string[] | ((tui: TUI, theme: Theme) => Component);
 const plain = (content: WidgetContent) => Array.isArray(content) ? content : undefined;
@@ -15,13 +16,16 @@ function fixture() {
 	const starts: ((event: unknown, ctx: ExtensionContext) => void)[] = [];
 	let tool: ToolDefinition | undefined;
 	let now = Date.UTC(2026, 10, 12, 3, 4);
+	const card = ordinaryWorkCard();
 	registerOrdinaryWork({
 		registerTool: (definition: ToolDefinition) => { tool = definition; },
 		appendEntry: (customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); },
 		on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => { if (name === "session_start") starts.push(handler); },
-	} as unknown as ExtensionAPI, () => now);
+	} as unknown as ExtensionAPI, card, () => now);
 	assert.ok(tool);
 	const registered = tool;
+	assert.equal(registered.renderCall, card.renderCall, "the registered renderers are the caller's card references");
+	assert.equal(registered.renderResult, card.renderResult);
 	const context = (hasUI: boolean) => ({ hasUI, ui: { setWidget: (key: string, content: WidgetContent) => { widgets.push([key, content]); } }, sessionManager: { getBranch: () => entries } }) as unknown as ExtensionContext;
 	const lines = (content: WidgetContent, width = 40) => typeof content === "function" ? content(undefined as unknown as TUI, theme).render(width).map((line) => stripVTControlCharacters(line)) : undefined;
 	return {

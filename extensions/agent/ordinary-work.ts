@@ -10,7 +10,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { bool, int, lit, obj, opt, str, union, type Schema, type Static } from "@earendil-works/pi-schema";
 import { truncateToWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { matchesSchema } from "./schema-check.ts";
-import { displayText, ordinaryWorkCard } from "./tool-cards.ts";
+import { displayText, type AgentToolCard } from "./tool-cards.ts";
 
 /** Session entry that keeps the note across a reload; `note: null` records that it was cleared. */
 export const ORDINARY_WORK_ENTRY = "agent.state-note";
@@ -86,10 +86,12 @@ function retainedNote(ctx: Pick<ExtensionContext, "sessionManager">): OrdinaryWo
 	return typeof data?.note === "string" && typeof data.at === "number" ? { note: data.note, at: data.at } : undefined;
 }
 
-/** Register the ordinary `agent_work` and restore its note and widget when a session starts. */
-export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool" | "appendEntry" | "on">, now: () => number = Date.now): void {
+/**
+ * Register the ordinary `agent_work` and restore its note and widget when a session starts. The caller owns
+ * `card`, so the registered renderers are the same references that it publishes for display.
+ */
+export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool" | "appendEntry" | "on">, card: AgentToolCard, now: () => number = Date.now): void {
 	let current: OrdinaryWorkNote | undefined;
-	const card = ordinaryWorkCard();
 	pi.on("session_start", (_event, ctx) => {
 		current = retainedNote(ctx);
 		show(ctx, current);
