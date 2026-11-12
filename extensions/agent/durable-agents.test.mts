@@ -1,5 +1,4 @@
 import { deliveryState as readRetainedDelivery, storeDeliveryRow, retainedReceipt, receiptReferencePage, receiptDeliveryRequestId, receiptSourceIdentity } from "./delivery-store.ts";
-import { waitForDeliveryFixture } from "./delivery-store-fixture.mts";
 import { machineConfig } from "./settings-fixture.mts";
 /**
  * durable-agents tests: the native agent contribution in a real Harness.
@@ -33,7 +32,7 @@ import * as Durable from "@earendil-works/pi-durable";
 import { declareOpenWork, openWorkStatus } from "./open-work.ts";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { compile, obj } from "@earendil-works/pi-schema";
-import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution, publishAgentControlDispatch } from "./durable-agents.ts";
+import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution } from "./durable-agents.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerAgentExtension from "./index.ts";
 import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
@@ -41,15 +40,13 @@ import { THINKING_LEVELS } from "./configuration.ts";
 import { ProfileDoc, readProfile } from "./profile.ts";
 import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, requestContextHooks, requestContextSection, type ActiveRequestContext } from "./request-context.ts";
 import { handleStorageId } from "./identity.ts";
-import { AgentMetaDoc, AwaitInputSuppressed, readOutcome, submitConversation, settleDeliveries, type DeliveryReceipt } from "./durable-controls.ts";
+import { AgentMetaDoc, readOutcome, submitConversation, settleDeliveries, type DeliveryReceipt } from "./durable-controls.ts";
 import { AwaitDoc } from "./awaited-results.ts";
 
 import { DurableHost } from "./durable-host.ts";
-import { fixtureRegistry, gateTool } from "./durable-host-fixture.mts";
+import { fixtureRegistry } from "./durable-host-fixture.mts";
 import { ContinuityDoc } from "./continuity-native.ts";
 import { NATIVE_COMPACTION_SEED } from "./control-guidance.ts";
-import { readInspection } from "./durable-observation.ts";
-import { AgentTimerDoc, scheduleTimer } from "./durable-timers.ts";
 import { modelFailureText } from "./provider-block-facts.ts";
 
 const context = BACKGROUND_CONTEXT;
