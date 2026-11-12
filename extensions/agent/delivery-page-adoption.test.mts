@@ -56,7 +56,7 @@ it("adopts a drained earlier store so owned admissions and report appends work, 
 
 it("reports a live earlier Reporter task without changing it, keeps old active work pending, and stores nothing from an interrupted commit", { timeout: 30000 }, async (t) => {
 	const { harness, storage } = await openOldStore(t, false);
-	const interrupted = { inspect: harness.inspect.bind(harness), commit: (async (change, ctx) => harness.commit(async (tx) => { await change(tx); throw new Error("interrupted"); }, ctx)) as Harness["commit"] };
+	const interrupted = { commit: (async (change, ctx) => harness.commit(async (tx) => { await change(tx); throw new Error("interrupted"); }, ctx)) as Harness["commit"] };
 	await assert.rejects(adoptDeliveryPages(interrupted, storage, context), /interrupted/u);
 	await assert.rejects(deliveryState(harness, context), /requires migration from version 1.*adopt-delivery-pages\.ts/su);
 	const resumed = await adoptDeliveryPages(harness, storage, context);

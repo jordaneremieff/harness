@@ -3488,18 +3488,31 @@ node extensions/agent/adopt-delivery-pages.ts [--apply] [--storage <id>] [--agen
 
 Run it from the harness release or checkout. It reads the catalogue that hosts
 use: `<dir>/agent-sessions` with `--agent-dir`, otherwise `PI_AGENT_SESSIONS_DIR`,
-otherwise `agent-sessions` under `PI_AGENT_DIR` or Pi's agent directory.
-Each catalogue record names its storage file and agent directory by absolute
-path, so a copied catalogue still names the original storages: to try the
-command on a copy, rewrite `storagePath` and `agentDir` in the copied records
-first.
+otherwise `agent-sessions` under `PI_AGENT_DIR` or Pi's agent directory; the
+records sit in its `durable` directory. `--agent-dir` selects the catalogue
+only. Each record names its storage file and its agent directory by absolute
+path, and those are the targets that the command changes: the storage file,
+and the writer lease file under `durable-hosts` in the record's agent
+directory, which may lie outside the catalogue. The catalogue refuses a record
+whose storage file is not in its own directory, so a copied catalogue with
+unchanged records stops the command before it reads or changes any storage. To
+try the command on a copy, rewrite `storagePath` and `agentDir` in each copied
+record; with `storagePath` alone, the lease file goes to the original agent
+directory. The command never rewrites a record.
+
 `--storage` selects one catalogued storage. For each storage it takes the
 host's native writer lease (creating the lease file as a host does), so it never
-reads or writes a storage beside a running host. It prints counts only, never
-message content: `version 2 only`, `no pages`, `version 1`, `version 1 with
-active task` (a live version 1 Reporter task), `older storage schema`, `writer
-busy` and `unreadable`, then one `storage schema <n>: <count>` line for each
-SQLite schema version it read.
+reads or writes a storage beside a running host. It prints no message content.
+The first line names the catalogue directory: `dry run of catalogue <dir>` or
+`apply to catalogue <dir>`. Then one line names the storage file and agent
+directory of each storage that the run adopts, would adopt, skips, or that
+`--storage` names: `adopted <id>: <n> pages; storage <file>; agent directory
+<dir>`, `skipped <id>: <state>; ...`, or `storage <id>: <state>; ...` (a dry
+run, or a named storage that needs nothing; `no storage file` when the named
+file is absent). Counts follow, by state: `version 2 only`, `no pages`,
+`version 1`, `version 1 with active task` (a live version 1 Reporter task),
+`older storage schema`, `writer busy` and `unreadable`, then one `storage
+schema <n>: <count>` line for each SQLite schema version it read.
 
 Every run classifies each storage through a read-only SQLite connection that
 writes nothing to the storage file or its WAL. Without a WAL file it opens the
@@ -3514,9 +3527,19 @@ out; run the command again afterwards.
 
 The default is a dry run. `--apply` opens through Pi's storage only a storage
 that the read-only pass classified as `version 1` at the current schema, still
-under the same lease, and adopts it. It prints `skipped <id>: <state>` for each
-active-task, older-schema, busy or unreadable storage, and never opens or
-changes one. Rerun it after the host ends or the task settles.
+under the same lease, and adopts it. It skips each active-task, older-schema,
+busy or unreadable storage, and never opens or changes one. Rerun it after the
+host ends or the task settles. A storage whose adoption refuses stops the run
+with an error that names its ID and file; storages adopted before it stay
+adopted.
+
+`--apply` commits through a plain Durable Session over the opened storage
+(`createSession`), not a Harness. A Harness open recovers retained tasks: it
+commits each `running` task back to `pending` with one more restart and
+schedules reconciliation, abort cascades included. The adoption loads no task
+scheduler, starts no task, calls no model, and reads task records only to
+report live version 1 Reporter tasks. Every task record stays as stored, also
+when the adoption refuses; the next host open recovers retained tasks as usual.
 
 Adoption runs `adoptDeliveryPages` in `delivery-store.ts` in one commit per
 storage. It enumerates the current delivery lists once, walks each list from its

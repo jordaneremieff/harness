@@ -14,7 +14,7 @@ type StoredRow = { kind: Kind; value: Row | null; pendingPage: string | null; ki
 type List = { head: string | null; tail: string | null; count: number };
 type Page = { ownerList: string; refs: string[]; previous: string | null; next: string | null };
 type StoreState = { ready: boolean; nextPage: number; migrationKind: number; migrationOffset: number };
-type StorageReader = Pick<Storage, "scanDocuments" | "findDocument" | "document">;
+type StorageReader = Pick<Storage, "scanDocuments" | "findDocument" | "document" | "scanTasks">;
 
 /** Retained only until a completed representation transition retires it. */
 export const DeliveryArchiveDoc = defineDoc<AgentDeliveryState>({ kind: "agent.delivery", version: 1, scope: "session", initial: () => ({ intents: [], receipts: {}, reports: [] }), checkpointWhen: () => true });
@@ -604,22 +604,35 @@ async function walkList(storage: StorageReader, name: string, seen: Set<string>,
 	return current;
 }
 
+/** Live `agent.reporter` tasks of version 1, read from the stored task records without loading the scheduler. */
+async function activeReporterTasks(storage: StorageReader, context: Context): Promise<number[]> {
+	const ids: number[] = [];
+	let cursor: Cursor | undefined;
+	do {
+		const page = await storage.scanTasks({ kind: "agent.reporter" }, 256, cursor, context);
+		for (const task of page.items) if (task.version === 1 && task.state.status !== "terminal") ids.push(task.id);
+		cursor = page.next ?? undefined;
+	} while (cursor !== undefined);
+	return ids;
+}
+
 /**
  * Give every retained version 1 reference page its owner list, so a store written by an earlier release accepts
  * appends and owner-checked reads again. An explicit call of the storage owner runs it; opening a store does not.
  * One commit replaces every reachable version 1 page: its incarnation is retired and stays in Pi history, and a
  * version 2 incarnation at the same address keeps its references and links. Rows, pointers and lists are not
  * rewritten. An interruption therefore leaves the store wholly unadopted or wholly adopted; a call on an adopted
- * store changes nothing. Live version 1 Reporter tasks are reported, never changed.
+ * store changes nothing. The commit needs only a Session: a plain Session over the storage runs no task scheduler,
+ * so task records stay as stored. Live version 1 Reporter tasks are reported, never changed.
  */
-export async function adoptDeliveryPages(harness: Pick<Harness, "commit" | "inspect">, storage: StorageReader, context: Context): Promise<DeliveryPageAdoption> {
+export async function adoptDeliveryPages(session: Pick<Session, "commit">, storage: StorageReader, context: Context): Promise<DeliveryPageAdoption> {
 	const { owned, current } = await ownerlessPages(storage, context);
 	const unreached: string[] = [];
 	for (const id of await scanKeys(storage, DeliveryPageDoc.definition.kind, context)) {
 		if (owned.has(id)) continue;
 		if ((await storedPage(storage, id, context))?.version === 1) unreached.push(id);
 	}
-	if (owned.size > 0) await harness.commit(async (tx) => {
+	if (owned.size > 0) await session.commit(async (tx) => {
 		for (const [id, name] of owned) {
 			const old = copy(await tx.doc(DeliveryPageV1Doc, id, null));
 			await tx.retireDoc(DeliveryPageV1Doc, id);
@@ -630,8 +643,7 @@ export async function adoptDeliveryPages(harness: Pick<Harness, "commit" | "insp
 			page.next = old.next;
 		}
 	}, context);
-	const activeReporterTasks = (await harness.inspect(context)).tasks.flatMap((task) => task.record.kind === "agent.reporter" && task.record.version === 1 ? [task.record.id] : []);
-	return { adopted: owned.size, current, unreached, activeReporterTasks };
+	return { adopted: owned.size, current, unreached, activeReporterTasks: await activeReporterTasks(storage, context) };
 }
 
 /** Copy one bounded batch with its cursor. The original document remains authoritative until completion. */

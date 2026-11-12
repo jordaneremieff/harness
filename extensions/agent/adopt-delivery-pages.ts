@@ -4,14 +4,16 @@
  * Each storage is classified, and with `--apply` adopted, only while this process holds that storage's native writer
  * lease, so it never reads or writes beside a running host. Classification uses a read-only SQLite connection and
  * writes nothing to the storage file or its WAL: Pi's own storage open runs a schema transaction and applies pending
- * schema migrations, so only `--apply` uses it, and only for a current-schema `version 1` storage.
+ * schema migrations, so only `--apply` uses it, and only for a current-schema `version 1` storage. The adoption commits
+ * through a plain Session over that storage, not a Harness: a Harness open recovers retained tasks (a `running` task
+ * returns to `pending` with one more restart) and schedules their reconciliation, which page adoption must not do.
  */
 import { lstatSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
-import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { createSession } from "@earendil-works/pi-durable";
 import { CURRENT_SQLITE_SCHEMA_VERSION } from "@earendil-works/pi-durable/storage/sqlite";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -71,7 +73,10 @@ export async function classifyStorage(path: string): Promise<Classification> {
 	finally { await database?.close().catch(() => undefined); }
 }
 
-/** Classify one storage under its writer lease; with `apply`, adopt a current-schema version 1 storage in one commit. */
+/**
+ * Classify one storage under its writer lease; with `apply`, adopt a current-schema version 1 storage in one commit.
+ * A refused adoption names the storage and its file.
+ */
 async function visitStorage(record: CatalogRecord, apply: boolean, context: Context): Promise<Classification & { adopted?: number }> {
 	const claim = hostPaths(record).claim;
 	mkdirSync(dirname(claim), { recursive: true, mode: 0o700 });
@@ -82,15 +87,14 @@ async function visitStorage(record: CatalogRecord, apply: boolean, context: Cont
 		const classified = await classifyStorage(record.storagePath);
 		if (!apply || classified.state !== "version 1") return classified;
 		const storage = await openNodeSqliteStorage(record.storagePath);
-		// The adoption starts no task and calls no model; Harness requires both options to open.
-		const harness = await Harness.open(storage, { models: () => { throw new Error("Delivery page adoption calls no model"); }, registry: createRegistry() }, context).catch(async (error: unknown) => { await storage.close(context).catch(() => undefined); throw error; });
-		try { return { ...classified, adopted: (await adoptDeliveryPages(harness, storage, context)).adopted }; }
-		finally { await harness.close(context); }
+		const session = createSession(storage);
+		try { return { ...classified, adopted: (await adoptDeliveryPages(session, storage, context)).adopted }; }
+		catch (error) { throw new Error(`Storage ${record.storageId} (${record.storagePath}) refused adoption: ${error instanceof Error ? error.message : String(error)}`, { cause: error }); }
+		finally { await session.close(context); }
 	} finally { lease.release(); }
 }
 
-function catalogRecords(sessionsRoot: string, only: string | undefined): CatalogRecord[] {
-	const catalog = new AgentCatalog(sessionsRoot);
+function catalogRecords(catalog: AgentCatalog, only: string | undefined): CatalogRecord[] {
 	const ids = only !== undefined ? [only] : readdirSync(catalog.root).flatMap((name) => STORAGE_FILE.exec(name)?.[1] ?? []).sort();
 	return ids.map((id) => catalog.read(id));
 }
@@ -111,20 +115,35 @@ function tally(counts: Counts, schemas: Map<number, number>, result: Classificat
 	if (result.adopted !== undefined) { counts["adopted storages"] += 1; counts["adopted pages"] += result.adopted; }
 }
 
-/** Counts by storage state; with `apply`, the storages and pages adopted. Prints no message content. */
+/** The line naming one storage's targets, if the run adopts, would adopt or skips it, or `named` selects it. */
+function storageLine(record: CatalogRecord, result: Classification & { adopted?: number } | undefined, apply: boolean, named: boolean): string | undefined {
+	const target = `storage ${record.storagePath}; agent directory ${record.agentDir}`;
+	if (result === undefined) return named ? `storage ${record.storageId}: no storage file; ${target}` : undefined;
+	if (result.adopted !== undefined) return `adopted ${record.storageId}: ${result.adopted} pages; ${target}`;
+	const settled = SETTLED.has(result.state);
+	if (apply && !settled) return `skipped ${record.storageId}: ${result.state}; ${target}`;
+	return named || !settled ? `storage ${record.storageId}: ${result.state}; ${target}` : undefined;
+}
+
+/**
+ * Counts by storage state; with `apply`, the storages and pages adopted. Prints the catalogue once, then one line with
+ * the storage file and agent directory of each storage that it adopts, would adopt, skips or was named. Prints no
+ * message content.
+ */
 export async function runAdoption(options: AdoptionOptions): Promise<Record<StorageState | "adopted storages" | "adopted pages", number>> {
 	const context = options.context ?? BACKGROUND_CONTEXT;
-	const sessionsRoot = sessionsRootOf(options);
+	const catalog = new AgentCatalog(sessionsRootOf(options));
 	const counts = Object.fromEntries([...STORAGE_STATES, "adopted storages", "adopted pages"].map((key) => [key, 0])) as Record<StorageState | "adopted storages" | "adopted pages", number>;
 	const write = options.write ?? ((line: string) => process.stdout.write(`${line}\n`));
 	const schemas = new Map<number, number>();
-	for (const record of catalogRecords(sessionsRoot, options.storage)) {
-		if (lstatSync(record.storagePath, { throwIfNoEntry: false }) === undefined) continue;
-		const result = await visitStorage(record, options.apply, context);
-		tally(counts, schemas, result);
-		if (options.apply && result.adopted === undefined && !SETTLED.has(result.state)) write(`skipped ${record.storageId}: ${result.state}`);
+	write(`${options.apply ? "apply to" : "dry run of"} catalogue ${catalog.root}`);
+	for (const record of catalogRecords(catalog, options.storage)) {
+		const present = lstatSync(record.storagePath, { throwIfNoEntry: false }) !== undefined;
+		const result = present ? await visitStorage(record, options.apply, context) : undefined;
+		if (result !== undefined) tally(counts, schemas, result);
+		const line = storageLine(record, result, options.apply, options.storage !== undefined);
+		if (line !== undefined) write(line);
 	}
-	write(`${options.apply ? "applied" : "dry run"} in ${sessionsRoot}`);
 	for (const [state, count] of Object.entries(counts)) if (options.apply || !state.startsWith("adopted")) write(`${state}: ${count}`);
 	for (const [schema, count] of [...schemas].sort(([a], [b]) => a - b)) write(`storage schema ${schema}: ${count}`);
 	return counts;
