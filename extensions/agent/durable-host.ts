@@ -56,6 +56,7 @@ import { LiveObservationService, type ObservationScope } from "./live-observatio
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
 import { resetConversation } from "./durable-reset.ts";
 import { closeOpenWork, parseDependencyMarks, recordDependencyMarks } from "./open-work.ts";
+import { UnplacedWatchEnd } from "./unplaced-inputs.ts";
 import { TIMER_TASK_NAME, cancelTimer, listTimers, scheduleTimer, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
 
@@ -236,6 +237,7 @@ export class DurableHost {
 	private providerNotices?: ProviderRetryNotices;
 	private hookReports?: TaskHookReports;
 	private capacityReports?: ChildCapacityReports;
+	private unplacedWatchEnd?: UnplacedWatchEnd;
 	private continuity?: ContinuityMirror;
 	private readonly continuityMismatches = new Map<ConversationId, number>();
 	private continuityDiagnostic: ((error: unknown) => void) | undefined;
@@ -416,6 +418,7 @@ export class DurableHost {
 				host.reportDeliveryError(new Error(`Child capacity report failed: ${error instanceof Error ? error.message : String(error)}`));
 				report(error);
 			}, now);
+			host.unplacedWatchEnd = new UnplacedWatchEnd(harness, report);
 			host.recoveryError = (error) => {
 				host.deliveryError = `Queued-input recovery failed: ${error instanceof Error ? error.message : String(error)}`;
 				report(error);
@@ -426,6 +429,7 @@ export class DurableHost {
 			return host;
 		} catch (error) {
 			await opened?.capacityReports?.close().catch(() => undefined);
+			await opened?.unplacedWatchEnd?.close().catch(() => undefined);
 			continuity?.close();
 			await hookReports.close();
 			try {
@@ -1178,6 +1182,7 @@ export class DurableHost {
 		await this.recovery?.close();
 		await this.providerNotices?.close();
 		await this.capacityReports?.close();
+		await this.unplacedWatchEnd?.close();
 		await this.hookReports?.close();
 		this.continuity?.close();
 		this.providerModels?.close();
