@@ -295,7 +295,7 @@ it("preserves native lineage and effort awareness together through codemode", { 
 	const label = "\u0001😀".repeat(60);
 	const captured: ToolExecutionResult[] = [];
 	const calls: Readonly<Record<string, unknown>>[] = [];
-	const hostStatus = { conversations: [], live: false, storageId: "fixture-execution" };
+	const hostStatus = { conversations: [], live: false, storageId: "fixture-execution", coverage: { complete: true, returned: 0, scanned: 0, next: null } };
 	const f = await executionFixture(t, {
 		code: `const before = await tools.agent_status({});
 			for (let i = 0; i < 21; i++) await tools.agent_spawn({ name: ${JSON.stringify(label)} + i, model: ${JSON.stringify(`${fixtureProvider}/${fixtureModelId}`)} });
@@ -337,7 +337,7 @@ it("preserves native lineage and effort awareness together through codemode", { 
 	assert.equal(output.before.createdAgents, undefined);
 	assert.equal(output.before.awareness?.presence.efforts[0]?.id, peer);
 	const combined = output.combined;
-	assert.deepEqual({ conversations: combined.conversations, live: combined.live, storageId: combined.storageId }, hostStatus);
+	assert.deepEqual({ conversations: combined.conversations, live: combined.live, storageId: combined.storageId, coverage: combined.coverage }, hostStatus);
 	assert.equal(combined.awareness?.presence.efforts[0]?.id, peer);
 	assert.ok(combined.createdAgents !== undefined);
 	assert.equal(combined.createdAgents.agents.length, 20);

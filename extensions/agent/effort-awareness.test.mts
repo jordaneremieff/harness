@@ -322,7 +322,7 @@ it("adds awareness only to native untargeted status and preserves host fields an
 	publish(sessionsRoot, peer);
 	const requests: Message[][] = [];
 	const calls: Readonly<Record<string, unknown>>[] = [];
-	const hostStatus = { conversations: [], live: false, storageId: randomUUID() };
+	const hostStatus = { conversations: [], live: false, storageId: randomUUID(), coverage: { complete: true, returned: 0, scanned: 0, next: null } };
 	const faux = fauxProvider();
 	const models = createModels();
 	models.setProvider(faux.provider);
@@ -349,7 +349,7 @@ it("adds awareness only to native untargeted status and preserves host fields an
 	const text = overview?.role === "toolResult" ? overview.content.flatMap((part) => part.type === "text" && part.text.startsWith("{") ? [part.text] : []).at(0) : "";
 	assert.ok(text, JSON.stringify(overview));
 	const structured = JSON.parse(text ?? "") as typeof hostStatus & { awareness: Awaited<ReturnType<typeof readEffortAwareness>> };
-	assert.deepEqual({ conversations: structured.conversations, live: structured.live, storageId: structured.storageId }, hostStatus);
+	assert.deepEqual({ conversations: structured.conversations, live: structured.live, storageId: structured.storageId, coverage: structured.coverage }, hostStatus);
 	assert.equal(structured.awareness.presence.efforts[0]?.id, peer);
 	await say("selected");
 	const selected = requests.at(-1)?.findLast((message) => message.role === "toolResult");
