@@ -463,6 +463,46 @@ it("keeps one run identity when the first entry of the run appears after its fir
 	assert.deepEqual(f.errors, []);
 });
 
+/** A run that an idle continue starts with nothing to place: its first input is the continue, which has no entry. */
+async function continueRun(f: Fixture) {
+	await turn(f, "earlier");
+	await f.root.submit({ type: "write", entry: { kind: "capacity-test.note", model: [{ role: "user", content: "a note for the next request", timestamp: 1 }] } }, context);
+	const continued = await f.root.submit({ type: "continue" }, context);
+	await f.gate.entered(0);
+	assert.deepEqual((await liveRun(f)).inputs, [continued.id]);
+	return continued;
+}
+
+it("assigns the sample before an observer restart to a run that a continue started", { timeout: 30000 }, async (t) => {
+	const f = await fixture(t, mid, [answer(mid, 100_000), gateCall(mid, 210_000), gateCall(mid, 260_000), gateCall(mid, 270_000), answer(mid, 280_000)]);
+	const continued = await continueRun(f);
+	const a1 = await send(f, "a-1", ownerA, "model", "steer");
+	await f.reports.close();
+	assert.equal((await undeliveredReports(f.harness, ownerA, context)).length, 0, "the sample below the budget is no crossing");
+
+	const restarted = f.observer();
+	f.gate.release(0);
+	await f.gate.entered(1);
+	const crossing = await liveRun(f);
+	assert.equal(runIdentity(crossing), continued.id);
+	await restarted.flush();
+	const crossed = await reportsFor(f, ownerA, "child-budget:");
+	assert.equal(crossed.length, 1, "the sample stored before the restart and the first one after it are one crossing of the run");
+	assert.equal(crossed[0].requestId, planningBudgetSourceId(ownerA, storageId, continued.id));
+	assert.equal(crossed[0].message, planningBudgetBody(storageId, 260_000, 250_000, `${provider}/${mid.id}`));
+	assert.deepEqual(crossed[0].intervention, { producerRunId: crossing.taskId, producerResults: [{ sessionId: storageId, submissionId: a1.submissionId, requestId: "a-1" }] });
+
+	f.gate.release(1);
+	await f.gate.entered(2);
+	await restarted.flush();
+	f.gate.release(2);
+	assert.equal((await continued.wait(context)).status, "done");
+	await restarted.close();
+	assert.deepEqual(await undeliveredReports(f.harness, ownerA, context), crossed, "a later sample of the run adds no row");
+	assert.equal((await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND)).length, 1, "the crossing gives one own-budget notice");
+	assert.deepEqual(f.errors, []);
+});
+
 it("retains one own-budget notice per context episode and starts no run for it", { timeout: 30000 }, async (t) => {
 	const f = await fixture(t, large, [
 		answer(large, 200_000), answer(large, 310_000), answer(large, 320_000),

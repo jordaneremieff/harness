@@ -112,10 +112,16 @@ function runRef(live: LiveState, before: RunRef | undefined): RunRef | undefined
 	return { taskId: live.run.taskId, ...(id === undefined ? {} : { id }) };
 }
 
-/** Entries after the entry that placed a run's first input belong to that run while it is live. */
+/**
+ * Whether an entry was appended after a live run started. A run that an input started begins at the
+ * entry that placed that input. A run that an idle continue started places no entry: the commit that
+ * creates the continue also starts its run, and every ID of a storage comes from one increasing
+ * sequence, so an entry with a greater ID than the continue was appended in that run.
+ */
 async function inRun(tx: Tx, runId: number, entryId: EntryId): Promise<boolean> {
 	const first = await tx.submission(runId as SubmissionId);
-	return first?.type === "input" && first.entry !== undefined && entryId > first.entry;
+	if (first?.type === "input") return first.entry !== undefined && entryId > first.entry;
+	return first?.type === "continue" && entryId > first.id;
 }
 
 /** An assistant entry belongs to the run whose generation appended it. */
