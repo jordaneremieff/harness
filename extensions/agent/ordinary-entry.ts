@@ -79,6 +79,7 @@ import { MAX_CONTINUITY_SUMMARY, SelfCompaction } from "./self-compaction.ts";
 import { retainedSentWork, SENT_WORK_ENTRY } from "./session-work.ts";
 import { publishSettings } from "./settings.ts";
 import { createAgentToolCards, renderAgentPeerMessage } from "./tool-cards.ts";
+import { registerOrdinaryWork } from "./ordinary-work.ts";
 import { collectToolDisplay, publishToolDisplay } from "./tool-display.ts";
 import { promptProjectTrust } from "./trust-support.ts";
 
@@ -416,6 +417,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			return getManager().collaborate({ ...input, origin: "model", requestId: `collaboration:${ctx.sessionManager.getSessionId()}:${callId}` }, caller(ctx, pi));
 		},
 	);
+	registerOrdinaryWork(pi);
 	register("agent_profile", "Read or revision-check an agent's durable role and sourced expertise. Saved expertise is evidence, not fresh authority. Profile edits start no model turn.", ProfileParams, (input, ctx, callId) => {
 		if (typeof input.sessionId !== "string") throw new Error("A primary profile control requires an agent sessionId");
 		return control(input.action === "read" ? "profile-read" : "profile-update", { ...input, requestId: `profile:${ctx.sessionManager.getSessionId()}:${callId}` }, ctx);

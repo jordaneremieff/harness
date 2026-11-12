@@ -1700,6 +1700,25 @@ function workLines(details: Record<string, unknown>, theme: Theme, context: Agen
 	return action === "complete" ? closedWorkLines(details, item, subject, theme, context) : declaredWorkLines(item, subject, theme, context);
 }
 
+const NO_LINES: Component = { render: () => [], invalidate() {} };
+
+/**
+ * The card of `agent_work` in an ordinary session: the state note on one line. The note is the call, so a
+ * result adds no line unless the call failed.
+ */
+export function ordinaryWorkCard(): AgentToolCard {
+	return {
+		renderCall: (value, theme, context) => {
+			const args = record(value);
+			const label = text(args.note) || displayPreview(text(args.action), 20);
+			return cardLayout({ title: "agent_work", ...(label ? { label } : {}) }, theme, { expanded: context.expanded, previous: context.lastComponent });
+		},
+		renderResult: (result, options, theme, context) => context.isError === true
+			? cardLayout({ body: [theme.fg("error", resultPreview(resultText(result)))] }, theme, { expanded: options.expanded, previous: context.lastComponent })
+			: NO_LINES,
+	};
+}
+
 /** Call and result renderers for every registered agent tool, keyed by tool name. */
 export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readonly<Record<string, AgentToolCard>> {
 	const cards: Record<string, AgentToolCard> = {
