@@ -3,6 +3,7 @@ import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { ResultReference } from "./result-schema.ts";
 
 export const CONTINUITY_ENTRY = "agent.continuity";
+export const ORDINARY_CONTINUITY_ENTRY = "agent.admitted-request";
 
 /** Admission evidence only. Result bodies remain in the delivery store. */
 export type ContinuityFact = {
@@ -138,7 +139,7 @@ export function ordinaryContinuityText(ownerId: string, headId: string, entries:
 	let found = false;
 	for (const entry of entries) {
 		if (entry.id === headId) { found = true; break; }
-		if (entry.type === "custom" && entry.customType === CONTINUITY_ENTRY) {
+		if (entry.type === "custom" && entry.customType === ORDINARY_CONTINUITY_ENTRY) {
 			validateContinuityFact(entry.data);
 			facts.push(entry.data);
 		}

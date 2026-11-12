@@ -13,3 +13,8 @@ export function planningBudgetSourceId(ownerId: string, producerIdentity: string
 export function planningBudgetBody(identity: string, tokens: number, budget: number, model: string): string {
 	return `Child ${identity} reported ${tokens} context tokens, at or above its planning budget of ${budget} for ${model}. The budget is a planning preference, not a limit.`;
 }
+export function planningBudgetSelfId(headId: number, runId: number): string { return `agent.budget:${headId}:${runId}`; }
+/** The caller retains this text once; it does not replace a per-request suffix. */
+export function planningBudgetSelfBody(tokens: number, budget: number, model: string, observedAt: number): string {
+	return `Context use reached ${tokens} tokens at ${new Date(observedAt).toISOString()}, at or above the planning budget of ${budget} for ${model}. The budget is a planning preference, not a limit.`;
+}

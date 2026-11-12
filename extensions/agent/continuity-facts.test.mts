@@ -4,7 +4,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { Harness, MemoryStorage, type EntryId } from "@earendil-works/pi-durable";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
-import { ContinuityDoc, CONTINUITY_ENTRY, continuityText, foldContinuity, nativeContinuityText, ordinaryContinuityText, pruneContinuity, recordContinuityDelivered, recordContinuityFact, validateContinuityDelivered, validateContinuityFact, type ContinuityEvent, type ContinuityFact } from "./continuity-facts.ts";
+import { ContinuityDoc, ORDINARY_CONTINUITY_ENTRY, continuityText, foldContinuity, nativeContinuityText, ordinaryContinuityText, pruneContinuity, recordContinuityDelivered, recordContinuityFact, validateContinuityDelivered, validateContinuityFact, type ContinuityEvent, type ContinuityFact } from "./continuity-facts.ts";
 
 const requested = (requestId = "request-a", replyTo = "owner"): ContinuityFact => ({ phase: "requested", sessionId: "worker:2", requestId, replyTo });
 const admitted = (requestId = "request-a", submissionId = 1): ContinuityFact => ({ ...requested(requestId), phase: "admitted", submissionId });
@@ -85,7 +85,7 @@ it("does not publish facts from a failed storage transaction", async (t) => {
 });
 
 it("reads ordinary records before the exact compaction entry, beyond a fixed tail window", () => {
-	const custom = (id: string, data: ContinuityFact): SessionEntry => ({ type: "custom", customType: CONTINUITY_ENTRY, id, parentId: null, timestamp: "2026-01-01T00:00:00Z", data });
+	const custom = (id: string, data: ContinuityFact): SessionEntry => ({ type: "custom", customType: ORDINARY_CONTINUITY_ENTRY, id, parentId: null, timestamp: "2026-01-01T00:00:00Z", data });
 	const filler: SessionEntry[] = Array.from({ length: 4100 }, (_, index) => ({ type: "custom", customType: "other", id: `f-${index}`, parentId: null, timestamp: "2026-01-01T00:00:00Z" }));
 	const head: SessionEntry = { type: "compaction", id: "head", parentId: null, timestamp: "2026-01-01T00:00:00Z", summary: "Summary", firstKeptEntryId: "head", tokensBefore: 1 };
 	const entries = [custom("start", requested()), ...filler, head, custom("later", { ...requested(), phase: "refused" })];
