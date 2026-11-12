@@ -30,6 +30,7 @@ import {
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
+import { declareOpenWork, openWorkStatus } from "./open-work.ts";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { compile, obj } from "@earendil-works/pi-schema";
 import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution, publishAgentControlDispatch } from "./durable-agents.ts";
@@ -1244,6 +1245,51 @@ it("reports unavailable native release without inferring global host absence", a
 	const output = (await toolOutcomes(harness, root.id)).find(entry => entry.name === "agent_abort")?.text ?? "";
 	assert.match(output, /writer release is unconfirmed/u);
 	assert.doesNotMatch(output, /not running/u);
+});
+
+it("a local abort closes the open work of the target and of each conversation below it", async (t) => {
+	/** A live task that owns a conversation below the abort target and ends only at an abort. */
+	const HoldTask = Durable.defineTask<Record<string, never>, { phase: "hold" }, null>({
+		name: "fixture.hold",
+		version: 1,
+		initial: () => ({ phase: "hold" }),
+		phases: { hold: async (task, runtime, taskContext) => { await runtime.sleepUntil(Number.MAX_SAFE_INTEGER, task.state.checkpoint, taskContext); } },
+		abort: (_task, runtime, taskContext) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), taskContext),
+	});
+	const route = createRoute();
+	const holder: DispatchHolder = {};
+	const dispatch: AgentControlDispatch = async (method, params, callContext) => method === "resolve-target" ? params.sessionId : createDispatch(holder, [])(method, params, callContext);
+	const { registry } = buildRegistry(dispatch);
+	registry.install(Durable.defineExtension({ name: "fixture.hold", tasks: [HoldTask] }));
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	holder.harness = harness;
+	t.after(async () => { await harness.close(context); });
+	const child = await spawnChild(harness, root, route, "stopped-parent", "PARENT");
+	const childIdentity = `${storageId}:${child.conversationId}`;
+	const owner = await harness.commit((tx) => tx.createTask(HoldTask, {}, { ownership: { kind: "conversation" }, conversationId: child.conversationId }), context);
+	const below = await harness.commit(async (tx) => (await tx.createConversation({ ownership: { kind: "task", taskId: owner } })).id, context);
+	// Each conversation has one placed routed input and its declared open work without a dependency.
+	for (const [conversationId, requestId, replyTo] of [[child.conversationId, "parent-task", "requester-outside"], [below, "below-task", childIdentity]] as const) {
+		await harness.commit(async (tx) => {
+			await recordRequestContext(tx, conversationId, { requestId, requester: replyTo, replyTo, origin: "model" });
+			const entry = await tx.appendEntry(conversationId, { kind: "agent.input", data: { author: { role: "agent", identity: replyTo } }, model: [{ role: "user", content: "Task", timestamp: 1 }] });
+			const submission = await tx.createSubmission({ conversationId, requestId, type: "input", status: "placed", entry: entry.id });
+			(await tx.doc(Durable.LiveDoc, conversationId)).run = { taskId: 999_999 as Durable.TaskId, inputs: [submission.id], turns: 0 };
+		}, context);
+		const declared = await harness.commit((tx) => declareOpenWork(tx, storageId, conversationId, { results: [], note: "owes a final result" }, 10), context);
+		assert.ok(!("error" in declared), JSON.stringify(declared));
+	}
+	const work = async (conversationId: Durable.ConversationId) => {
+		const [item] = await harness.commit((tx) => openWorkStatus(tx, storageId, conversationId), context);
+		assert.ok(item);
+		return { state: item.state, ...(item.close === undefined ? {} : { status: item.close.status, delivery: item.close.delivery }) };
+	};
+	route.script.push({ tool: "agent_abort", args: { sessionId: childIdentity } });
+	await say(root, "ABORT");
+	const outcome = (await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_abort");
+	assert.equal(outcome?.isError, false, outcome?.text);
+	assert.deepEqual(await work(child.conversationId), { state: "closed", status: "stopped", delivery: "active" }, "the requester outside the scope gets the final report");
+	assert.deepEqual(await work(below), { state: "closed", status: "stopped", delivery: "terminal" }, "a report to the stopped target is kept out of delivery");
 });
 
 it("refuses an owner abort that crosses the caller's background anchor", async (t) => {

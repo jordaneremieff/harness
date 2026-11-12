@@ -60,7 +60,8 @@ import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema }
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_TOOL_NAMES, FOLLOW_UP_DELIVERY_BOUNDARY, NATIVE_COMPACTION_SEED, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines, type AgentControlToolName } from "./control-guidance.ts";
-import { abortScopeContains } from "./abort-scope.ts";
+import { abortScopeContains, abortScopeConversations } from "./abort-scope.ts";
+import { retainedReportRequest, storeDeliveryRow } from "./delivery-store.ts";
 import { TimerTask, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
 import { CheckInTask, createCheckIn } from "./durable-checkins.ts";
@@ -1327,6 +1328,27 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			sendTarget(api, context, args.sessionId, args.message, "steer", args.replyTo),
 	});
 
+	/**
+	 * Close the declared work of every conversation that one abort stopped. A final report whose recipient the same
+	 * abort stopped is not delivered: it would start that conversation again.
+	 */
+	const closeStoppedWork = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, scope: readonly Durable.ConversationId[]): Promise<void> => {
+		const stopped = new Set(scope);
+		const stoppedRecipient = (recipient: string): boolean => {
+			const local = localConversation(recipient, api.conversationId);
+			return local !== undefined && stopped.has(local);
+		};
+		for (const id of scope) await api.commit(async (tx) => {
+			for (const item of await closeOpenWork(tx, host.storageId, id, "stopped", api.now())) {
+				const requestId = item.close?.reportRequestId;
+				if (requestId === undefined || !stoppedRecipient(item.replyTo)) continue;
+				const row = await retainedReportRequest(tx, item.replyTo, requestId);
+				if (row !== undefined && !row.acknowledged) await storeDeliveryRow(tx, "report", { ...row, delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" } });
+			}
+			return undefined;
+		}, context);
+	};
+
 	const abortLocal = async (args: AbortInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
 		const conversationId = localConversation(args.sessionId, api.conversationId);
 		if (conversationId === undefined) return errorResult(`Cannot resolve session ${args.sessionId}.`);
@@ -1335,8 +1357,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (args.release === true) return dispatchControl("release", { sessionId: identity(conversationId), ...(args.background === true ? { background: true } : {}) }, `Release of ${args.sessionId} failed`);
 		const conversation = await api.conversation(conversationId, context);
 		if (conversation === undefined) return errorResult(`Conversation ${conversationId} is not retained.`);
+		// Read the scope before the abort, while the owning tasks are retained.
+		const scope = await api.commit((tx) => abortScopeConversations(tx, conversationId, args.background === true), context);
 		await conversation.abort(context, args.background === true ? { background: true } : undefined);
-		await api.commit((tx) => closeOpenWork(tx, host.storageId, conversationId, "stopped", api.now()), context);
+		await closeStoppedWork(api, context, scope);
 		return textResult(`Aborted ${args.sessionId}.`, { conversationId });
 	};
 
