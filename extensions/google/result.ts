@@ -63,14 +63,24 @@ export function errorResult(error: unknown): Result<never> {
 	return failure(new GoogleError("ADAPTER_ERROR", error instanceof Error ? error.message : String(error)));
 }
 
+/** One code point in its cleaned form: an escaped ESC, the character itself, or the replacement mark for another control. */
+function cleanChar(char: string): string {
+	const code = char.codePointAt(0) ?? 0;
+	if (code === 0x1b) return "\\u001b";
+	return code === 9 || code === 10 || (code >= 32 && code !== 127 && !(code >= 128 && code <= 159)) ? char : "\uFFFD";
+}
+
+/** The cleaned form of the source unit at `index` and the code points it consumes; CRLF and CR fold to LF. */
+function cleanUnit(chars: readonly string[], index: number): { piece: string; step: number } {
+	if (chars[index] !== "\r") return { piece: cleanChar(chars[index]), step: 1 };
+	return { piece: "\n", step: chars[index + 1] === "\n" ? 2 : 1 };
+}
+
 /** Remove terminal controls while retaining ordinary newlines and tabs in external text. */
 export function cleanText(value: string, maxBytes = RESULT_MAX_BYTES): string {
 	let text = "";
 	for (const char of value.replaceAll("\r\n", "\n").replaceAll("\r", "\n")) {
-		const code = char.codePointAt(0) ?? 0;
-		if (code === 0x1b) text += "\\u001b";
-		else if (code === 9 || code === 10 || (code >= 32 && code !== 127 && !(code >= 128 && code <= 159))) text += char;
-		else text += "�";
+		text += cleanChar(char);
 		if (Buffer.byteLength(text) > maxBytes) break;
 	}
 	while (Buffer.byteLength(text) > maxBytes) text = text.slice(0, -1);
@@ -94,28 +104,15 @@ export function sliceCleanText(
 	const start = Math.min(Math.max(0, offset), chars.length);
 	const end = Math.min(start + Math.max(0, limit), chars.length);
 	let text = "";
-	let consumed = 0;
-	for (let index = start; index < end; ) {
-		const current = chars[index];
-		let piece: string;
-		let step = 1;
-		if (current === "\r" && chars[index + 1] === "\n") {
-			piece = "\n";
-			step = 2;
-		} else if (current === "\r") {
-			piece = "\n";
-		} else {
-			const code = current.codePointAt(0) ?? 0;
-			if (code === 0x1b) piece = "\\u001b";
-			else if (code === 9 || code === 10 || (code >= 32 && code !== 127 && !(code >= 128 && code <= 159))) piece = current;
-			else piece = "\uFFFD";
-		}
-		if (Buffer.byteLength(text + piece) > maxBytes) break;
+	let bytes = 0;
+	let next = start;
+	while (next < end) {
+		const { piece, step } = cleanUnit(chars, next);
+		bytes += Buffer.byteLength(piece);
+		if (bytes > maxBytes) break;
 		text += piece;
-		consumed += step;
-		index += step;
+		next += step;
 	}
-	const next = start + consumed;
 	return { text, ...(next < chars.length ? { nextOffset: next } : {}), total: chars.length };
 }
 
