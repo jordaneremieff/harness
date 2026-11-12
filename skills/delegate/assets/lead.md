@@ -37,7 +37,7 @@ When the lead stops: helpers resolved, the answer composed, blockers named exact
 The exact session identity that receives the composed answer.
 
 ## Thread ID
-A thread the lead creates, runs, or joins when one serves the work; otherwise omit this slot. Keep contribution within 256 characters and message within 8,000 characters; write longer content to a file and post its path.
+A thread the lead creates, runs, or joins when one serves the work; otherwise omit this slot. Keep the participation text of a create or join within 256 characters and a post message within 8,000 characters; write longer content to a file and post its path.
 
 ## Provider or budget notes
 Quota walls, substitution order, or budget limits for the lead and any helpers.

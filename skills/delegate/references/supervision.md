@@ -83,7 +83,9 @@ request content. The same task fails again on that provider. Choose another
 explicit provider/model under your existing authority, or change the form of
 the task; the host never substitutes a model by itself. A reason that starts
 with `model_error:` carries the provider's text: read it before you repeat
-the task.
+the task. When a reason is only `model_error`, read the provider's text with
+`agent_inspect` `view: "result"` and the `submissionId` before you repeat the
+task.
 
 ## Context watch and reset
 

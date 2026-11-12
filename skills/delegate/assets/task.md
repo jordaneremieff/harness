@@ -37,7 +37,7 @@ The state at which the contributor stops and reports, including the blocker form
 The exact session identity that receives the answer, and any thread to update.
 
 ## Thread ID
-An existing thread to join or read when it serves this assignment; otherwise omit this slot. Keep contribution within 256 characters and message within 8,000 characters; write longer content to a file and post its path.
+An existing thread to join or read when it serves this assignment; otherwise omit this slot. Keep the participation text of a create or join within 256 characters and a post message within 8,000 characters; write longer content to a file and post its path.
 
 ## Provider or budget notes
 Quota walls, substitution order, or budget limits the contributor must respect.

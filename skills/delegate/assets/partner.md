@@ -25,7 +25,7 @@ The exact session identity or thread that receives the partner's judgment.
 The skills the partner reads before work, with the reason; name delegate when the partner will coordinate other agents.
 
 ## Thread ID
-A thread where the partnership works when one serves it; otherwise omit this slot. Keep contribution within 256 characters and message within 8,000 characters; write longer content to a file and post its path.
+A thread where the partnership works when one serves it; otherwise omit this slot. Keep the participation text of a create or join within 256 characters and a post message within 8,000 characters; write longer content to a file and post its path.
 
 ## End condition <!-- required -->
 When the exchange concludes: the decision made, the question answered, or the blocker named. Post to threads and make other tool calls first; the last message is the complete deliverable.

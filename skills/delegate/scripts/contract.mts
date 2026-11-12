@@ -13,8 +13,9 @@ const CHARS_PER_TOKEN = 4;
 
 // Frame field limits from the agent_collaborate tool definition (create fields,
 // maxLength): title 160, purpose 4000, authority 4000, source 2000,
-// restrictions 4000, acceptance 4000, integrator 256. The same definition caps
-// contribution at 256 and message at 8000; those apply to join and post.
+// restrictions 4000, acceptance 4000, integrator 256. The tool's handler caps
+// participation at 256 characters on create and join, and message at 8000 on
+// post, leave and close; this script checks neither.
 // Lengths are counted in Unicode code points, as JSON Schema maxLength does.
 // The tool's own refusal wins if its schema changes; update these then.
 const FRAME_LIMITS = {

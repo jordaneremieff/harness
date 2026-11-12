@@ -66,9 +66,9 @@ operator decision distinct from your interpretation.
   8,000 characters. Write longer content to a file and post its path.
   Do not split the content across repeated posts to evade the caps.
 - **Notify:** named `notify` recipients get active attention. Other members get
-  body-free passive event facts, with no model turn. At the next normal boundary,
-  verified facts appear as a frozen range marker per thread and recipient.
-  A later event gets a later marker; it does not change an earlier marker.
+  body-free passive event facts, with no model turn. Each passive notice arrives
+  as one message without the event body and names the exact `agent_collaborate`
+  read call for that event.
   Name recipients only when their attention matters now.
 - **Read:** the default read returns the frame, members, chronological events,
   and `nextBefore` for older pages. Follow that cursor with `before`.
@@ -79,9 +79,8 @@ operator decision distinct from your interpretation.
   `before`; a revision without `after` refuses.
 - **Time and recovery:** each event read shows its epoch `at` and derived ISO UTC
   `atUtc`. A null UTC value means the epoch exceeds the date conversion range.
-  Active excerpts mark a cut with `[cut]` and name an exact thread read for the
-  full event. Passive range markers name their read boundary and continuation.
-  The range does not claim that every event inside it was passive.
+  Active excerpts mark a cut with `[cut]`. Active and passive notices both name
+  an exact thread read for the full event.
 
 A read does not acknowledge addressed attention or indicate agreement. A create
 event omits its duplicate frame text in read output and marks that omission;
