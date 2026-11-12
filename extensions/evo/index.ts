@@ -50,6 +50,9 @@ export default function registerEvo(pi: ExtensionAPI): void {
 			const kickoff = buildEvoKickoff({
 				harnessRoot: HARNESS_ROOT,
 				invocationCwd: ctx.cwd,
+				// Pi runs a registered command only from the session's direct prompt surface and
+				// never expands one from an extension-injected message.
+				origin: "operator",
 				direction: invocation.direction,
 				release,
 			});

@@ -67,6 +67,15 @@ not truncated. The refusal directs the caller to shorten the direction and invok
 elevated grant. UI hosts receive an error notification; headless hosts receive a
 command error through Pi. Invalid input dispatches no kickoff.
 
+The kickoff states who invoked the command. The ordinary command is an operator
+invocation: Pi runs a registered command only from the session's direct prompt
+surface (the editor, an RPC client's prompt, or the launch arguments) and never
+expands one from an extension-injected message. Evo cannot tell a person from a
+program that drives that surface; the program speaks for whoever runs it. The
+Durable command receives its origin from the caller, as
+[Durable agents](#durable-agents) describes. Only an operator invocation carries
+the grant in [Authority](#authority).
+
 The kickoff encodes the direction as one JSON string on one line inside
 `<evo-direction-json>`. Escaped delimiters and newlines cannot create new prompt
 sections. The decoded text directs the run within the authority boundary above.
@@ -223,7 +232,7 @@ intent, not merely recommendations. Apply **Intent authority** in the universal
 task contracts. That rule owns carried decisions, delegated discretion, agent
 inference, quoted evidence, and conflict resolution.
 
-Invoking `/evo` authorizes:
+An operator invocation of `/evo` authorizes:
 
 - evidence reads and repository-required worktree procedures;
 - full Pi execution sessions under existing host authorization and project trust;
@@ -249,6 +258,20 @@ procedures needs an operator grant covering that act. Current explicit operator
 restrictions and restrictions in the direction take priority over the default
 grant. Apply direction and conversation grants before deciding authority is
 missing; stop only the affected act and complete independent authorized work.
+
+An invocation that an agent made through a tool call, or whose caller stated
+no origin, is not an operator grant. Its kickoff says so, names the invocation
+identity, and asserts none of the acts above. That run acts on the operator
+decisions that reach its session: in its governing conversation, in the task
+contract that led to the invocation, or carried in the direction with their
+source and scope. A carried decision keeps its authority, and the run acts on
+it without another approval; the carrying agent answers for its fidelity. The
+direction is otherwise an agent-authored task contract, and a claim that
+approval exists does not create it. Without a covering decision the run reads
+evidence, implements and commits locally as the repository's rules allow for
+ordinary work, holds each uncovered act (integration on `main`, activation,
+push, a new surface) at its exact boundary, and asks once with the complete
+artifact.
 
 Reserved acts need an operator decision covering them:
 
@@ -312,6 +335,16 @@ direction parser, release intake, and kickoff builder as the ordinary command.
 The host's cwd supplies the invocation workspace line. The kickoff is submitted
 as follow-up input, so a busy conversation queues it after the active turn.
 
+The command call carries the origin that its caller stated
+([contribution contract](../../docs/conventions/durable-contributions.md)):
+`operator` for an operator surface such as `/agent` or an attached terminal,
+`model` for the `agent_command` tool. A stated operator origin admits the same
+kickoff as the ordinary command. A model origin, and a call that states no
+origin, admit the kickoff without the command's grant, as
+[Authority](#authority) describes, and the command's answer tells the caller
+that the kickoff carries no operator grant of its own. The kickoff then names
+the invocation identity, which for the agent tool is its tool task.
+
 The command offers no model tools, so it declares no replay classes. Durability
 belongs to the submission instead. The command derives the request ID from the
 host-supplied invocation ID. A retry of the same invocation reuses its
@@ -333,14 +366,17 @@ binding, direction refusal, and the absence of model tools.
 - `release.test.mts` checks source validation, committed-coverage boundaries, context
   limits, recovery priority, and directed focus with isolated Git fixtures.
 - `command.ts` sanitizes and bounds the direction.
-- `kickoff.ts` frames intent, direction, authority, and the required workflow read.
+- `kickoff.ts` frames intent, invocation origin, direction, authority, and the
+  required workflow read. The command's grant appears only for an operator origin.
 - `durable.ts` builds the Durable contribution command: the same parser,
   release intake, and kickoff, submitted with a request ID from the invocation ID.
 - `durable.test.mts` runs the contribution in a real Durable Harness: admission,
-  separate identical invocations, retry reuse, the host-cwd binding, and
-  direction refusal.
+  separate identical invocations, retry reuse, the host-cwd binding,
+  direction refusal, and the admitted kickoff and answer for an operator, a
+  model, and an unstated origin.
 - `evo.test.mts` checks parser boundaries, JSON isolation, direction precedence,
-  the complete grant and reservations, and semantic requirements across the
+  the complete grant and reservations of an operator kickoff, the absence of
+  that grant for other origins, and semantic requirements across the
   kickoff and its owning workflow. It also checks mode-independent dispatch,
   errors, and the emitted contribution.
 - `evo.runtime.test.mts` loads the real extension into ordinary Pi sessions with a

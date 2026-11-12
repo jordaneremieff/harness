@@ -108,11 +108,13 @@ test("identical invocations submit separately and a retried invocation submits o
 		const expected = buildEvoKickoff({
 			harnessRoot: HARNESS_ROOT,
 			invocationCwd: "/workspace/current-project",
+			origin: "operator",
 			direction: "Improve document explanations",
 			release,
 		});
 		const first = await command.run({
 			args: "Improve document explanations",
+			origin: "operator",
 			conversation,
 			context: BACKGROUND_CONTEXT,
 			host,
@@ -123,6 +125,7 @@ test("identical invocations submit separately and a retried invocation submits o
 
 		const retry = await command.run({
 			args: "Improve document explanations",
+			origin: "operator",
 			conversation,
 			context: BACKGROUND_CONTEXT,
 			host,
@@ -134,6 +137,7 @@ test("identical invocations submit separately and a retried invocation submits o
 
 		const second = await command.run({
 			args: "Improve document explanations",
+			origin: "operator",
 			conversation,
 			context: BACKGROUND_CONTEXT,
 			host,
@@ -165,6 +169,7 @@ test("the invocation workspace comes from the host, not the conversation agent c
 		const release = await readPiReleaseIntake({ harnessRoot: HARNESS_ROOT });
 		await command.run({
 			args: "",
+			origin: "operator",
 			conversation,
 			context: BACKGROUND_CONTEXT,
 			host,
@@ -173,8 +178,46 @@ test("the invocation workspace comes from the host, not the conversation agent c
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
 		assert.deepEqual(
 			await userTexts(conversation),
-			[buildEvoKickoff({ harnessRoot: HARNESS_ROOT, invocationCwd: "/workspace/host-project", release })],
+			[buildEvoKickoff({ harnessRoot: HARNESS_ROOT, invocationCwd: "/workspace/host-project", origin: "operator", release })],
 		);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
+});
+
+test("only a stated operator invocation admits the command's grant", async () => {
+	const contribution = createEvoContribution({ source: ENTRYPOINT });
+	const command = contribution.commands?.[0];
+	assert.ok(command);
+	const { harness, conversation, host } = await openHarness(contribution, "/workspace/current-project");
+	try {
+		const release = await readPiReleaseIntake({ harnessRoot: HARNESS_ROOT });
+		const direction = "Push the docs fix to main";
+		const base = { harnessRoot: HARNESS_ROOT, invocationCwd: "/workspace/current-project", direction, release };
+		const run = (invocationId: string, origin?: "operator" | "model") =>
+			command.run({ args: direction, ...(origin === undefined ? {} : { origin }), conversation, context: BACKGROUND_CONTEXT, host, invocationId });
+
+		const byModel = await run("task:41", "model");
+		const unstated = await run("evo-invocation-unstated");
+		const byOperator = await run("evo-invocation-operator", "operator");
+		await harness.waitForIdle(BACKGROUND_CONTEXT);
+
+		const texts = await userTexts(conversation);
+		assert.deepEqual(texts, [
+			buildEvoKickoff({ ...base, origin: "model", invocation: "task:41" }),
+			buildEvoKickoff({ ...base, origin: "unknown", invocation: "evo-invocation-unstated" }),
+			buildEvoKickoff({ ...base, origin: "operator" }),
+		]);
+		for (const text of texts.slice(0, 2)) {
+			assert.doesNotMatch(text, /This invocation (?:also )?authorizes/);
+			assert.match(text, /This invocation is not an operator grant/);
+		}
+		assert.match(texts[0], /Invocation origin: an agent, through a tool call/);
+		assert.match(texts[1], /Invocation origin: not established/);
+		assert.match(texts[2], /This invocation also authorizes integration on main, required activation, and push/);
+		assert.match(String(byModel), /^Admitted the evo kickoff as submission \d+\. The kickoff records that an agent invoked it: it carries no operator grant of its own/);
+		assert.match(String(unstated), /^Admitted the evo kickoff as submission \d+\. The kickoff records that its origin is not established: it carries no operator grant of its own/);
+		assert.match(String(byOperator), /^Admitted the evo kickoff as submission \d+\.$/);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 	}

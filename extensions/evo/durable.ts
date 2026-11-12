@@ -54,6 +54,8 @@ export interface DurableCommand {
 /** One invocation of a contribution command. */
 export interface DurableCommandCall {
 	readonly args: string;
+	/** Who stated the invocation, when the caller said so. */
+	readonly origin?: "operator" | "model";
 	readonly conversation: Durable.Conversation;
 	readonly context: Context;
 	readonly host: DurableContributionHost;
@@ -79,9 +81,14 @@ export function createEvoContribution(options: EvoContributionOptions): DurableC
 			const invocation = parseEvoInvocation(call.args);
 			if (!invocation.ok) throw new Error(invocation.error);
 			const release = await readPiReleaseIntake({ harnessRoot: HARNESS_ROOT });
+			// Only a stated operator invocation carries the command's grant. An agent tool call
+			// and a caller that states no origin admit a kickoff that grants nothing itself.
+			const origin = call.origin ?? "unknown";
 			const kickoff = buildEvoKickoff({
 				harnessRoot: HARNESS_ROOT,
 				invocationCwd: call.host.cwd,
+				origin,
+				...(origin === "operator" ? {} : { invocation: call.invocationId }),
 				direction: invocation.direction,
 				release,
 			});
@@ -91,7 +98,9 @@ export function createEvoContribution(options: EvoContributionOptions): DurableC
 				{ type: "input", content: kickoff, whenBusy: "followUp", requestId: `evo:${call.invocationId}` },
 				call.context,
 			);
-			return `Admitted the evo kickoff as submission ${String(submission.id)}.`;
+			const admitted = `Admitted the evo kickoff as submission ${String(submission.id)}.`;
+			if (origin === "operator") return admitted;
+			return `${admitted} The kickoff records that ${origin === "model" ? "an agent invoked it" : "its origin is not established"}: it carries no operator grant of its own, and the run acts on carried operator decisions only.`;
 		},
 	};
 	return {

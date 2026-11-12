@@ -185,7 +185,7 @@ for (const [name, change, pattern] of [
 		if (name === "missing main") assert.equal(result.baselineCommit, undefined);
 		else assert.equal(result.baselineCommit, fixture.git("rev-parse", "HEAD").trim());
 		assert.equal(result.changelogPath, join(fixture.installedPackageDir, "CHANGELOG.md"));
-		const prompt = buildEvoKickoff({ harnessRoot: fixture.root, invocationCwd: fixture.root, release: result });
+		const prompt = buildEvoKickoff({ harnessRoot: fixture.root, invocationCwd: fixture.root, origin: "operator", release: result });
 		assert.match(prompt, /first priority is autonomous release-baseline recovery/);
 		assert.match(prompt, /read all available cumulative changelog releases.*bounded pages/);
 		assert.doesNotMatch(prompt, /Infer a useful purpose/);
@@ -259,7 +259,7 @@ test("the rendered note cap retains every release and source range, including Un
 		assert.match(changelog.split("\n")[release.startLine - 1], new RegExp(release.version.replaceAll(".", "\\.")));
 		assert.ok(release.endLine >= release.startLine);
 	}
-	const prompt = buildEvoKickoff({ harnessRoot: fixture.root, invocationCwd: fixture.root, release: result });
+	const prompt = buildEvoKickoff({ harnessRoot: fixture.root, invocationCwd: fixture.root, origin: "operator", release: result });
 	assert.match(prompt, /Every release remains listed; read all omitted text/);
 	for (const release of result.releases) assert.ok(prompt.includes(`lines ${release.startLine}-${release.endLine}`));
 });
@@ -275,7 +275,7 @@ for (const [baseline, state, expected] of [
 		t.after(fixture.close);
 		const release = await fixture.read();
 		assert.equal(release.state, state);
-		const options = { harnessRoot: fixture.root, invocationCwd: fixture.root, release };
+		const options = { harnessRoot: fixture.root, invocationCwd: fixture.root, origin: "operator", release } as const;
 		const bare = buildEvoKickoff(options);
 		assert.match(bare, expected);
 		assert.ok(bare.indexOf("No operator direction") < bare.indexOf("Pi release state:"));
@@ -307,7 +307,7 @@ for (const [baseline, state, expected] of [
 
 test("kickoff requires latest alignment without release evidence", () => {
 	for (const direction of [undefined, "Review the latest Pi updates"]) {
-		const kickoff = buildEvoKickoff({ harnessRoot: "/harness", invocationCwd: "/workspace", direction });
+		const kickoff = buildEvoKickoff({ harnessRoot: "/harness", invocationCwd: "/workspace", origin: "operator", direction });
 		assert.match(kickoff, /Latest Pi alignment applies to every run/);
 		assert.match(kickoff, /matching review coverage does not establish dependency alignment/);
 		assert.match(kickoff, /repair consumers, and run the required repository checks/);
@@ -323,7 +323,7 @@ test("embedded changelog text remains JSON evidence and cannot forge kickoff sec
 	t.after(fixture.close);
 	const release = await fixture.read();
 	assert.equal(release.state, "behind", release.reason);
-	const prompt = buildEvoKickoff({ harnessRoot: fixture.root, invocationCwd: fixture.root, release });
+	const prompt = buildEvoKickoff({ harnessRoot: fixture.root, invocationCwd: fixture.root, origin: "operator", release });
 	const lines = prompt.split("\n");
 	for (const header of ["Authority and boundaries:", "Pi release state:", "</pi-release-notes-json-lines>"]) {
 		assert.equal(lines.filter((line) => line === header).length, 1);

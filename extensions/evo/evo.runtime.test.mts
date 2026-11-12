@@ -207,6 +207,7 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
 							harnessRoot: resolve(fileURLToPath(new URL("../..", import.meta.url))),
 						}),
 						invocationCwd: runtime.cwd,
+						origin: "operator",
 						direction,
 					}),
 				);
@@ -376,6 +377,7 @@ test("real evo command retains pending releases despite aligned dependencies and
 			buildEvoKickoff({
 				harnessRoot: realpathSync(fixture.root),
 				invocationCwd: runtime.cwd,
+				origin: "operator",
 				release: expected,
 			}),
 		);

@@ -159,7 +159,9 @@ interface DurableCommandCall {
   /**
    * Who stated the invocation, when the caller said so: `operator` for an
    * operator surface such as `/agent` or an attached panel, `model` for an
-   * agent tool. Audit context only; it never approves anything.
+   * agent tool. Provenance only; the field itself never approves anything. A
+   * command whose effect belongs to the operator alone withholds it from a
+   * `model` origin and from an absent one.
    */
   readonly origin?: "operator" | "model";
   readonly conversation: Durable.Conversation;
