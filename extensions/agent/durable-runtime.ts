@@ -467,8 +467,6 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 
 	/** Open the Harness without scheduling, install every contribution, then start scheduling. */
 	const openHost = async (): Promise<DurableHost> => {
-		// With any other mode a boundary places one queued steer input and the rest wait behind the run.
-		if (services.settings.steeringMode !== "all") throw new Error(`The native host requires steeringMode "all"; the effective value is ${JSON.stringify(services.settings.steeringMode)}.`);
 		const opened = await DurableHost.open({ storagePath: metadata.storagePath, storageId: metadata.storageId, cwd: metadata.cwd,
 			models: services.services.modelRuntime, registry: services.registry, settings: services.settings, env: services.env,
 			retryMaxAttempts: services.services.settingsManager.getRetrySettings().enabled ? services.services.settingsManager.getRetrySettings().maxRetries + 1 : 1,
