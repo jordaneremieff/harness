@@ -1177,6 +1177,12 @@ function threadLabel(thread: string, context: AgentCardContext): string {
 	return title ? displayPreview(title, 100) : `thread ${displayIdentity(thread)}`;
 }
 
+function collaborationCallPreview(args: Record<string, unknown>): string | undefined {
+	if (args.action === "read") return [count(args.after) === undefined ? "" : `after ${String(args.after)}`, count(args.knownFrameRevision) === undefined ? "" : `known frame ${String(args.knownFrameRevision)}`].filter(Boolean).join(" · ") || undefined;
+	const message = args.action === "join" || args.action === "create" ? text(args.participation) : text(args.message);
+	return message ? displayPreview(message, 180) : undefined;
+}
+
 function renderCollaborateCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
 	const thread = text(args.threadId);
@@ -1185,8 +1191,7 @@ function renderCollaborateCall(value: unknown, theme: Theme, context: AgentCardC
 	// A known thread title already names the work; the storage label adds only an identity.
 	const named = Boolean(thread && context.lookup?.threadTitle?.(thread));
 	const subject = [text(args.action), topic, source && !named ? targetLabel(source, context) : ""].filter(Boolean).join(" · ");
-	const message = text(args.message);
-	return argumentCard("agent_collaborate", subject, message ? displayPreview(message, 180) : undefined, args, theme, context, true);
+	return argumentCard("agent_collaborate", subject, collaborationCallPreview(args), args, theme, context, true);
 }
 
 function collaborationReceiptLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
@@ -1200,7 +1205,22 @@ function collaborationReceiptLines(details: Record<string, unknown>, theme: Them
 	return undefined;
 }
 
+function forwardThreadLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
+	const coverage = record(details.coverage), next = record(details.next);
+	const lines = [
+		muted(theme, `${threadLabel(text(details.threadId), context)} · forward events · frame ${String(details.frameRevision)} · ${details.closed === true ? "closed" : "open"}`),
+		muted(theme, `${array(details.events).length} events · after ${String(coverage.after)} through ${String(coverage.through)}${coverage.complete === false ? " · bounded page" : ""} · ${String(details.pending)} pending notices`),
+	];
+	if (details.thread === undefined) lines.push(muted(theme, "Known frame not repeated"));
+	if (next.tool === "agent_collaborate" && next.action === "read") {
+		const { tool: _tool, ...args } = next;
+		lines.push(muted(theme, `Next events: agent_collaborate(${JSON.stringify(args)})`));
+	}
+	return lines;
+}
+
 function collaborationLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
+	if (details.direction === "forward") return forwardThreadLines(details, theme, context);
 	const receipt = collaborationReceiptLines(details, theme, context);
 	if (receipt) return receipt;
 	const thread = record(details.thread);
@@ -1590,6 +1610,10 @@ function awaitReplyLines(value: Record<string, unknown>): string[] {
 	const lines = [text(value.decision) ? `Wait ${displayText(text(value.decision))} · ${array(value.results).length} results · ${array(value.unresolved).length} unresolved` : "Await result"];
 	if (typeof value.queuedInputCount === "number") lines.push(`${value.queuedInputCount} queued inputs · committed InboxDoc`);
 	if (text(value.releaseReason)) lines.push(displayText(text(value.releaseReason)));
+	if (value.mode === "ordinary") {
+		lines.push(`Ordinary wait · ${displayText(text(value.reason))} · body ${displayText(text(value.bodyState))} · ${array(value.bodyPending).length} pending result bodies`);
+		if (value.bodyRoute === "normal-delivery") lines.push("Body route: normal delivery");
+	}
 	return lines;
 }
 

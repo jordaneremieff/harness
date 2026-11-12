@@ -8,7 +8,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult, Theme } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
-import { createAgentToolCards, type AgentCardContext } from "./tool-cards.ts";
+import { createAgentToolCards, operatorNoticeBody, type AgentCardContext } from "./tool-cards.ts";
 import { projectSelectedStatus, projectStorageStatus } from "./status-overview.ts";
 import { controlText, readableControlText, projectReportReceipt } from "./control-result.ts";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
@@ -27,6 +27,40 @@ const hintCount = (value: string) => (value.match(/to expand|expand for full/gu)
 
 describe("compact observation cards", () => {
 	const native = { identity: id, conversationId: 1, busy: true, name: "Reader", live: { run: { taskId: 9 } }, inbox: { items: [1] }, submissions: [], timers: [], agent: { model, thinkingLevel: "high" } };
+	it("shows ordinary wait deadline and pending-body facts without native run identities", () => {
+		const ref = { sessionId: id, submissionId: 7 };
+		const details = { mode: "ordinary", decision: "released", reason: "deadline", bodyPending: [ref], bodyState: "pending-delivery", bodyRoute: "normal-delivery", results: [], unresolved: [ref], elapsedMs: 300000 };
+		const card = createAgentToolCards().agent_await;
+		const output = screen(card.renderResult({ content: [{ type: "text", text: JSON.stringify(details) }], details }, { expanded: false, isPartial: false }, theme, context()));
+		assert.match(output, /Wait released · 0 results · 1 unresolved/u);
+		assert.match(output, /Ordinary wait · deadline · body pending-delivery · 1 pending result bodies/u);
+		assert.match(output, /Body route: normal delivery/u);
+		assert.doesNotMatch(output, /run|InboxDoc|agent_inspect/u);
+	});
+
+	it("distinguishes forward event pages with an omitted known frame from mutation receipts", () => {
+		const threadId = `${id}/thread`, next = { tool: "agent_collaborate", action: "read", threadId, after: 9, knownFrameRevision: 2, limit: 3 };
+		const details = { direction: "forward", threadId, frameRevision: 2, sequence: 12, closed: false, events: [{ sequence: 9, at: 1, atUtc: new Date(1).toISOString() }], next, pending: 0, coverage: { complete: false, bytes: 200, after: 8, through: 9 } };
+		const card = createAgentToolCards().agent_collaborate;
+		const output = screen(card.renderResult({ content: [], details }, { expanded: false, isPartial: false }, theme, context()));
+		assert.match(output, /forward events · frame 2 · open/u);
+		assert.match(output, /Known frame not repeated/u);
+		assert.doesNotMatch(output, /Recorded|Posted|agent_inspect/u);
+		assert.ok(output.includes(`agent_collaborate(${JSON.stringify({ action: "read", threadId, after: 9, knownFrameRevision: 2, limit: 3 })})`));
+		const call = screen(card.renderCall({ action: "read", threadId, after: 8, knownFrameRevision: 2 }, theme, context()));
+		assert.match(call, /after 8 · known frame 2/u);
+		const join = screen(card.renderCall({ action: "join", threadId, participation: "Check retained events" }, theme, context()));
+		assert.match(join, /Check retained events/u);
+	});
+
+	it("preserves the exact typed thread recovery call while removing generic evidence advice from the card body", () => {
+		const call = `agent_collaborate(${JSON.stringify({ action: "read", threadId: `${id}/thread`, before: 10, limit: 1 })})`;
+		const body = operatorNoticeBody(`An active excerpt [cut]\n\n${call}\n\nUse agent_inspect for retained source evidence.`);
+		assert.ok(body.includes(call));
+		assert.match(body, /\[cut\]/u);
+		assert.doesNotMatch(body, /agent_inspect/u);
+	});
+
 	it("shows compact selected facts and an exact full-detail call without inferring unknown primary activity", () => {
 		const cards = createAgentToolCards();
 		const details = projectSelectedStatus({ conversation: native, live: false, storageId: id });
