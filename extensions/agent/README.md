@@ -3474,23 +3474,53 @@ migration from version 1. These consequences apply to existing data:
   a task that waits to post its report, before a host with this release opens
   the storage.
 
-`adoptDeliveryPages(harness, storage, context)` in `delivery-store.ts` is the
-explicit transition for retained version 1 pages. Opening a storage never runs
-it; the storage owner calls it. It enumerates the current delivery lists once,
-walks each list from its head, and gives every reachable version 1 page that
-list as its owner. Each bounded batch commits together: the version 1
-incarnation is retired and stays in Pi's document history, and a version 2
-incarnation at the same address keeps the references and links. Rows,
-pointers, lists and request deduplication stay unchanged. An interruption
-leaves whole batches; a repeated call adopts only the remaining pages, and a
-call on an adopted storage changes nothing. A page that two lists reach, or a
-list that names an absent page, refuses the call. The result counts adopted and
-already-owned pages, names version 1 pages that no list reaches (left
-unchanged), and names live version 1 Reporter tasks. The transition never
-changes a task; such a task stays blocked until it is handled separately.
+#### Version 1 page transition
+
+A one-time manual command adopts retained version 1 pages:
+
+```sh
+node extensions/agent/adopt-delivery-pages.ts [--apply] [--storage <id>] [--agent-dir <dir>]
+```
+
+Run it from the harness release or checkout. It reads the catalogue that hosts
+use: `<dir>/agent-sessions` with `--agent-dir`, otherwise `PI_AGENT_SESSIONS_DIR`,
+otherwise `agent-sessions` under `PI_AGENT_DIR` or Pi's agent directory.
+`--storage` selects one catalogued storage. For each storage it takes the
+host's native writer lease (creating the lease file as a host does), so it never
+opens a storage beside a running host. It prints counts only, never message
+content: `version 2 only`, `no pages`, `version 1`, `version 1 with active task`
+(a live version 1 Reporter task), `writer busy` and `unreadable`.
+
+The default is a dry run. It changes no delivery data. Pi's SQLite storage has
+no read-only open: each open runs Pi's idempotent schema check in a write
+transaction, as a host open does. `--apply` adopts each `version 1` storage and
+prints `skipped <id>: <state>` for each busy, active-task or unreadable one; it
+never changes a skipped storage. Rerun it after the host ends or the task
+settles.
+
+Adoption runs `adoptDeliveryPages` in `delivery-store.ts` in one commit per
+storage. It enumerates the current delivery lists once, walks each list from its
+head, and gives every reachable version 1 page that list as its owner. The
+version 1 incarnation is retired and stays in Pi's document history; a version
+2 incarnation at the same address keeps the references and links. Rows,
+pointers, lists, tasks and request deduplication stay unchanged. An
+interruption therefore leaves a storage wholly unadopted or wholly adopted, and
+a repeated run changes nothing. A page that two lists reach, or a list that
+names an absent page, refuses that storage. Version 1 pages that no list
+reaches stay unchanged. Opening a storage never runs the adoption.
+
+Until adoption, an owned admission, a report append or a delivery read in a
+version 1 storage refuses with Pi's migration error, followed by the cause and
+the exact command for the running release. After adoption, a host of a release
+older than the page format still opens the storage and reads its delivery rows,
+pointers and lists, but refuses every page read and append, because the pages
+are a newer version than its own. Restore a copy of the storage file, taken while
+no host runs, to return to the earlier state. The command and
+`adoptDeliveryPages` serve only this transition: remove them when a dry run
+reports no `version 1` storage.
 
 No read path accepts version 1 pages, and no migration exists for the Reporter
-task. Preserve a storage restore point before the transition.
+task.
 
 The host completes a retained delivery transition before request admission,
 output observers and native resume. Each bounded batch commits its copied rows

@@ -1,5 +1,6 @@
 /** Native keyed delivery records and bounded reference pages. Payloads have one retained owner. */
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { canonicalIdentity } from "./native-identity.ts";
 import type { ReceiptReferencePage } from "./result-schema.ts";
 import type { Context } from "@earendil-works/chord/context";
@@ -23,6 +24,22 @@ const DeliveryPointerDoc = defineDocFamily<{ key: string | null }, null>({ kind:
 const CheckInFallbackDoc = defineDocFamily<{ accepted: boolean }, null>({ kind: "agent.check-in-fallback", version: 1, scope: "session", family: true, initial: () => ({ accepted: false }), checkpointWhen: () => true });
 const DeliveryListDoc = defineDocFamily<List, null>({ kind: "agent.delivery-list", version: 1, scope: "session", family: true, initial: () => ({ head: null, tail: null, count: 0 }), checkpointWhen: () => true });
 const DeliveryPageDoc = defineDocFamily<Page, null>({ kind: "agent.delivery-page", version: 2, scope: "session", family: true, initial: () => ({ ownerList: "", refs: [], previous: null, next: null }), checkpointWhen: () => true });
+/** Exact manual command that adopts version 1 pages; it ships beside this module. */
+export const ADOPTION_COMMAND = `node ${fileURLToPath(new URL("./adopt-delivery-pages.ts", import.meta.url))}`;
+
+/** Pi refuses a version 1 page; the refusal stays and names its cause and remedy. */
+function pageRefusal(error: unknown): unknown {
+	if (!(error instanceof Error) || !/requires migration from version 1/u.test(error.message)) return error;
+	return new Error(`${error.message}. This storage keeps delivery reference pages in the format of an earlier release, so delivery appends and reads refuse here. Run \`${ADOPTION_COMMAND}\` for a dry run, then add --apply (and --storage <id> for one storage) to adopt the pages.`, { cause: error });
+}
+async function pageAt(tx: Tx, id: string): Promise<Page> {
+	try { return await tx.doc(DeliveryPageDoc, id, null); }
+	catch (error) { throw pageRefusal(error); }
+}
+async function pageSnapshot(session: Pick<Session, "snapshot">, id: string, context: Context): Promise<Page | undefined> {
+	try { return await session.snapshot(DeliveryPageDoc, id, context); }
+	catch (error) { throw pageRefusal(error); }
+}
 function requirePageOwner(page: Page, name: string): void {
 	if (page.ownerList !== name) throw new Error("Delivery reference page has no current owner-list identity or belongs to another list");
 }
@@ -39,13 +56,13 @@ function copy<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
 
 async function appendReference(tx: Tx, name: string, key: string): Promise<string> {
 	const list = await tx.doc(DeliveryListDoc, name, null);
-	let page = list.tail === null ? undefined : await tx.doc(DeliveryPageDoc, list.tail, null);
+	let page = list.tail === null ? undefined : await pageAt(tx, list.tail);
 	if (page) requirePageOwner(page, name);
 	if (!page || page.refs.length === DELIVERY_PAGE_SIZE) {
 		const root = await tx.doc(DeliveryStoreDoc);
 		if (!Number.isSafeInteger(root.nextPage + 1)) throw new Error("Delivery page identity exhausted");
 		const id = String(++root.nextPage);
-		const next = await tx.doc(DeliveryPageDoc, id, null);
+		const next = await pageAt(tx, id);
 		next.ownerList = name;
 		next.previous = list.tail;
 		if (page) page.next = id;
@@ -62,16 +79,16 @@ async function appendReference(tx: Tx, name: string, key: string): Promise<strin
 
 async function removePending(tx: Tx, key: string, pageId: string, name = "pending"): Promise<void> {
 	const list = await tx.doc(DeliveryListDoc, name, null);
-	const page = await tx.doc(DeliveryPageDoc, pageId, null);
+	const page = await pageAt(tx, pageId);
 	requirePageOwner(page, name);
 	const index = page.refs.indexOf(key);
 	if (index < 0) throw new Error("Delivery pending reference is inconsistent");
 	page.refs.splice(index, 1);
 	list.count -= 1;
 	if (page.refs.length !== 0) return;
-	if (page.previous !== null) (await tx.doc(DeliveryPageDoc, page.previous, null)).next = page.next;
+	if (page.previous !== null) (await pageAt(tx, page.previous)).next = page.next;
 	else list.head = page.next;
-	if (page.next !== null) (await tx.doc(DeliveryPageDoc, page.next, null)).previous = page.previous;
+	if (page.next !== null) (await pageAt(tx, page.next)).previous = page.previous;
 	else list.tail = page.previous;
 	await tx.retireDoc(DeliveryPageDoc, pageId);
 }
@@ -176,7 +193,7 @@ async function listReferences(tx: Tx, name: string): Promise<string[]> {
 	const refs: string[] = [];
 	let id = list.head;
 	while (id !== null) {
-		const page = await tx.doc(DeliveryPageDoc, id, null);
+		const page = await pageAt(tx, id);
 		requirePageOwner(page, name);
 		refs.push(...page.refs);
 		id = page.next;
@@ -242,7 +259,7 @@ async function snapshotListRows(session: Pick<Session, "snapshot">, state: Agent
 	const list = await session.snapshot(DeliveryListDoc, name, context);
 	let id = list?.head ?? null;
 	while (id !== null) {
-		const page = await session.snapshot(DeliveryPageDoc, id, context);
+		const page = await pageSnapshot(session, id, context);
 		if (!page) throw new Error("Delivery reference has no retained page");
 		requirePageOwner(page, name);
 		for (const key of page.refs) {
@@ -280,7 +297,7 @@ export async function terminalDeliveryState(harness: Harness, context: Context):
 	for (const kind of ["intent", "receipt", "report"] as const) {
 		const list = await harness.snapshot(DeliveryListDoc, `terminal:${kind}`, context);
 		if (list?.head == null) continue;
-		const page = await harness.snapshot(DeliveryPageDoc, list.head, context);
+		const page = await pageSnapshot(harness, list.head, context);
 		if (!page?.refs.length) continue;
 		requirePageOwner(page, `terminal:${kind}`);
 		const row = await harness.snapshot(DeliveryRowDoc, page.refs[0], context);
@@ -294,10 +311,10 @@ export async function terminalDeliveryState(harness: Harness, context: Context):
 async function pendingReferencePage(harness: Harness, context: Context, cursor: string | undefined, kind: Kind | undefined) {
 	const list = await harness.snapshot(DeliveryListDoc, kind ? `pending:${kind}` : "pending", context);
 	let id = cursor ?? list?.head ?? null;
-	let page = id === null ? undefined : await harness.snapshot(DeliveryPageDoc, id, context);
+	let page = id === null ? undefined : await pageSnapshot(harness, id, context);
 	if (!page && cursor !== undefined) {
 		id = list?.head ?? null;
-		page = id === null ? undefined : await harness.snapshot(DeliveryPageDoc, id, context);
+		page = id === null ? undefined : await pageSnapshot(harness, id, context);
 	}
 	if (page) requirePageOwner(page, kind ? `pending:${kind}` : "pending");
 	return { id, page };
@@ -322,10 +339,10 @@ export async function pendingDeliveryPage(harness: Harness, context: Context, cu
 export async function automaticDeliveryPage(harness: Harness, context: Context, cursor?: string): Promise<{ reports: DeliveryReport[]; next: string | null }> {
 	const list = await harness.snapshot(DeliveryListDoc, "automatic", context);
 	let id = cursor ?? list?.head ?? null;
-	let page = id === null ? undefined : await harness.snapshot(DeliveryPageDoc, id, context);
+	let page = id === null ? undefined : await pageSnapshot(harness, id, context);
 	if (!page && cursor !== undefined) {
 		id = list?.head ?? null;
-		page = id === null ? undefined : await harness.snapshot(DeliveryPageDoc, id, context);
+		page = id === null ? undefined : await pageSnapshot(harness, id, context);
 	}
 	const reports: DeliveryReport[] = [];
 	if (!page || id === null) return { reports, next: null };
@@ -425,7 +442,7 @@ function selectedCursor(cursor: string | undefined, storageId: string, selected:
 }
 async function receiptEnd(tx: Tx, tail: string, answerEntryId: number, captured?: ReceiptCursorValue) {
 	const endPageId = captured?.endPageId ?? tail;
-	const end = await tx.doc(DeliveryPageDoc, endPageId, null);
+	const end = await pageAt(tx, endPageId);
 	validateAnswerPage(end, answerEntryId);
 	const endOffset = captured?.endOffset ?? end.refs.length;
 	if (endOffset < 1 || endOffset > end.refs.length) throw new Error("Receipt cursor terminal boundary changed or is invalid");
@@ -437,7 +454,7 @@ async function receiptRange(tx: Tx, storageId: string, selected: DeliveryReceipt
 	const captured = selectedCursor(cursor, storageId, selected);
 	const { endPageId, endOffset, end } = await receiptEnd(tx, list.tail, answerEntryId, captured);
 	const pageId = captured?.pageId ?? list.head;
-	const page = pageId === endPageId ? end : await tx.doc(DeliveryPageDoc, pageId, null);
+	const page = pageId === endPageId ? end : await pageAt(tx, pageId);
 	if (pageId !== endPageId) validateAnswerPage(page, answerEntryId);
 	const offset = captured?.offset ?? 0;
 	const limit = pageId === endPageId ? endOffset : page.refs.length;
@@ -590,33 +607,29 @@ async function walkList(storage: StorageReader, name: string, seen: Set<string>,
 /**
  * Give every retained version 1 reference page its owner list, so a store written by an earlier release accepts
  * appends and owner-checked reads again. An explicit call of the storage owner runs it; opening a store does not.
- * Each bounded batch replaces its pages in one commit: the version 1 incarnation is retired and stays in Pi history,
- * and a version 2 incarnation at the same address keeps its references and links. Rows, pointers and lists are not
- * rewritten. An interruption leaves whole batches, and a repeated call adopts only the remaining pages; a call on an
- * adopted store changes nothing. Live version 1 Reporter tasks are reported, never changed.
+ * One commit replaces every reachable version 1 page: its incarnation is retired and stays in Pi history, and a
+ * version 2 incarnation at the same address keeps its references and links. Rows, pointers and lists are not
+ * rewritten. An interruption therefore leaves the store wholly unadopted or wholly adopted; a call on an adopted
+ * store changes nothing. Live version 1 Reporter tasks are reported, never changed.
  */
-export async function adoptDeliveryPages(harness: Pick<Harness, "commit" | "inspect">, storage: StorageReader, context: Context, afterBatch?: () => void | Promise<void>): Promise<DeliveryPageAdoption> {
+export async function adoptDeliveryPages(harness: Pick<Harness, "commit" | "inspect">, storage: StorageReader, context: Context): Promise<DeliveryPageAdoption> {
 	const { owned, current } = await ownerlessPages(storage, context);
 	const unreached: string[] = [];
 	for (const id of await scanKeys(storage, DeliveryPageDoc.definition.kind, context)) {
 		if (owned.has(id)) continue;
 		if ((await storedPage(storage, id, context))?.version === 1) unreached.push(id);
 	}
-	const pending = [...owned];
-	for (let start = 0; start < pending.length; start += DELIVERY_PAGE_SIZE) {
-		await harness.commit(async (tx) => {
-			for (const [id, name] of pending.slice(start, start + DELIVERY_PAGE_SIZE)) {
-				const old = copy(await tx.doc(DeliveryPageV1Doc, id, null));
-				await tx.retireDoc(DeliveryPageV1Doc, id);
-				const page = await tx.doc(DeliveryPageDoc, id, null);
-				page.ownerList = name;
-				page.refs.push(...old.refs);
-				page.previous = old.previous;
-				page.next = old.next;
-			}
-		}, context);
-		await afterBatch?.();
-	}
+	if (owned.size > 0) await harness.commit(async (tx) => {
+		for (const [id, name] of owned) {
+			const old = copy(await tx.doc(DeliveryPageV1Doc, id, null));
+			await tx.retireDoc(DeliveryPageV1Doc, id);
+			const page = await tx.doc(DeliveryPageDoc, id, null);
+			page.ownerList = name;
+			page.refs.push(...old.refs);
+			page.previous = old.previous;
+			page.next = old.next;
+		}
+	}, context);
 	const activeReporterTasks = (await harness.inspect(context)).tasks.flatMap((task) => task.record.kind === "agent.reporter" && task.record.version === 1 ? [task.record.id] : []);
 	return { adopted: owned.size, current, unreached, activeReporterTasks };
 }
