@@ -75,6 +75,27 @@ describe("compact observation cards", () => {
 		assert.doesNotMatch(unknown, /Activity: idle/u);
 	});
 
+	it("shows retained run failure and parked delivery once each in a compact status card", () => {
+		const owner = "00000000-0000-4000-8000-0000000000aa";
+		const source = { storageId: id, pid: 1, inventory: { contributions: [], ordinaryOnly: [] },
+			deliveryError: `Delivery receipt:25 to ${owner}: parked: primary endpoint is absent; no live owning session for ${owner} and no registered primary accepted delivery`,
+			conversation: { conversationId: 1, identity: id, name: "Worker", busy: false, lastText: "worker answer", tasks: [],
+				live: { runFailure: { taskId: 26, inputs: [25], reason: "aborted", first: 24 } }, inbox: { items: [] }, submissions: [], timers: [],
+				agent: { model: { provider: "example", modelId: "worker" }, thinkingLevel: "off", extensions: [], tools: [] } } };
+		for (const failure of [{ taskId: 26, inputs: [25], reason: "aborted", first: 24 }, { taskId: 26, inputs: [25], reason: "model_error", detail: "Request failed\nat a tool", first: 24 }]) {
+			source.conversation.live.runFailure = failure;
+			const details = projectSelectedStatus(source);
+			const output = screen(createAgentToolCards().agent_status.renderResult({ content: [], details }, { expanded: false, isPartial: false }, theme, context()));
+			const lines = output.split("\n").map(line => line.trimStart());
+			assert.equal(lines.filter(line => line.startsWith("Run failure:")).length, 1);
+			assert.equal(lines.filter(line => line.startsWith("Delivery error:")).length, 1);
+			assert.ok(output.includes(`Run failure: ${failure.reason}`));
+			if (failure.detail !== undefined) assert.ok(output.includes("Request failed\\u000aat a tool"));
+			assert.match(output, /Delivery error: .*parked/u);
+			assert.doesNotMatch(output, /Delivery paused:/u);
+		}
+	});
+
 	it("distinguishes answer pagination from receipt-reference pagination in the card", () => {
 		const details = { view: "result", sessionId: id, conversationId: 1, submissionId: 7, status: "done", answer: "Readable answer", offset: 0, nextOffset: 4096, truncated: true,
 			answerContinuation: { tool: "agent_inspect", view: "result", sessionId: id, submissionId: 7, requestId: "input", offset: 4096 },

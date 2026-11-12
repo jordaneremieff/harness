@@ -54,7 +54,7 @@ export const StorageStatusPageInputSchema = obj({ view: lit("storage-page"), sto
 /** Object-root parameters survive provider conversion; execution validates selector combinations. */
 export const StatusToolInputSchema = obj({
 	sessionId: opt(str({ minLength: 1, description: "Select one conversation. Omit for the existing overview scope." })),
-	detail: opt(bool({ description: "Request full selected status with an explicit sessionId. Not valid with fleet or storage-page." })),
+	detail: opt(bool({ description: "Request full selected status with true and an explicit sessionId. False is equivalent to omission on every view." })),
 	view: opt<Schema<"fleet" | "storage-page">>({ type: "string", enum: ["fleet", "storage-page"], description: "Read sampled machine-local model evidence with fleet, without a sessionId. Optional exact model/provider filters select published evidence, not provider health. Use storage-page for one exact storageId." }),
 	...FleetSelectionProperties,
 	storageId: opt(storageStatusId), cursor: opt(map(unknown(), { description: "Opaque backend cursor. Pass the returned cursor object unchanged." })), limit: opt(storageStatusLimit),
@@ -441,6 +441,7 @@ export const CompactConversationSchema = obj({
 	runId: opt(id), queue: obj({ inbox: nullableCount, submissions: nullableCount }), timers: nullableCount,
 	awaiting: opt(CompactAwaitSchema),
 	providerBlock: opt(obj({ blockId: string, recovery: string })),
+	runFailure: opt(obj({ reason: str({ maxLength: 128 }), detail: opt(str({ maxLength: 512 })), reasonTruncated: opt(lit(true)), detailTruncated: opt(lit(true)) })),
 	context: lit("unknown"), omitted: arr(string), detail: StatusDetailCallSchema,
 });
 export const PresentationRefusalSchema = obj({ format: lit("refused"), cause: union([lit("byte-limit"), lit("source")]), reason: string, byteLimit: count });
@@ -452,7 +453,10 @@ export const RetainedReportReceiptSchema = obj({
 const compactEnvelope = {
 	format: lit("compact"), storageId: opt(string), live: opt(boolean), omitted: arr(string),
 };
-export const CompactSelectedStatusSchema = obj({ ...compactEnvelope, conversation: CompactConversationSchema });
+export const CompactSelectedStatusSchema = obj({
+	...compactEnvelope, conversation: CompactConversationSchema,
+	deliveryError: opt(str({ maxLength: 512 })), deliveryErrorTruncated: opt(lit(true)),
+});
 export const CompactStorageStatusSchema = obj({
 	...compactEnvelope, storageId: string, conversations: arr(CompactConversationSchema), coverage: StorageStatusCoverageSchema,
 });

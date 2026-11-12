@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { projectSelectedStatus, projectStorageStatus, reduceCompactStatus, validateStatusDetail } from "./status-overview.ts";
-import { StatusToolInputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { StatusOutputSchema, StatusToolInputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
 
 function row(index = 1) {
@@ -106,6 +106,97 @@ it("distinguishes missing selected sources, storage coverage and row identity fr
 
 const storageId = "01234567-0123-4123-8123-0123456789ab";
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+function recoveryStatus(failure?: { reason: string; detail?: string }) {
+	const owner = "00000000-0000-4000-8000-0000000000aa";
+	return { storageId, pid: 1, inventory: { contributions: [], ordinaryOnly: [] },
+		deliveryError: `Delivery receipt:25 to ${owner}: parked: primary endpoint is absent; no live owning session for ${owner} and no registered primary accepted delivery`,
+		conversation: { conversationId: 1, identity: storageId, name: "Worker", busy: false, lastText: "worker answer", tasks: [],
+			live: failure === undefined ? {} : { runFailure: { taskId: 26, inputs: [25], ...failure, first: 24 } }, inbox: { items: [] }, submissions: [], timers: [],
+			agent: { model: { provider: "example", modelId: "worker" }, thinkingLevel: "off", extensions: [], tools: [] } } };
+}
+
+it("keeps parked delivery and retained run failures visible in selected status", () => {
+	for (const failure of [undefined, { reason: "aborted" }, { reason: "model_error", detail: "Agent host: quota exceeded; explicit recovery required." }]) {
+		const source = recoveryStatus(failure), before = structuredClone(source);
+		structuredObservation(StatusOutputSchema, source);
+		const value = projectSelectedStatus(source);
+		assert.ok(value.format === "compact");
+		assert.equal(value.deliveryError, source.deliveryError);
+		assert.equal(value.conversation.busy, false);
+		assert.deepEqual(value.conversation.runFailure, failure);
+		structuredObservation(StatusToolOutputSchema, value);
+		assert.deepEqual(source, before);
+	}
+});
+
+it("redacts credentials and bounds recovery text before exposing a selected status", () => {
+	const source = recoveryStatus({ reason: "model_error", detail: `api_key=${"x".repeat(32)}\n${"failure ".repeat(150)}` });
+	source.deliveryError = `Authorization: Bearer ${"y".repeat(32)}\n${"parked ".repeat(150)}`;
+	const value = projectSelectedStatus(source);
+	assert.ok(value.format === "compact");
+	assert.ok(value.deliveryError !== undefined);
+	assert.ok(value.conversation.runFailure?.detail !== undefined);
+	assert.match(value.deliveryError, /\[credential omitted\]/u);
+	assert.match(value.conversation.runFailure.detail, /\[credential omitted\]/u);
+	assert.ok(Buffer.byteLength(value.deliveryError) <= 512);
+	assert.ok(Buffer.byteLength(value.conversation.runFailure.detail) <= 512);
+	assert.equal(value.deliveryErrorTruncated, true);
+	assert.equal(value.conversation.runFailure.detailTruncated, true);
+	assert.doesNotMatch(JSON.stringify(value), new RegExp(`${"x".repeat(32)}|${"y".repeat(32)}`, "u"));
+	structuredObservation(StatusToolOutputSchema, value);
+});
+
+it("keeps recovery facts after name reduction and omits them last with one exact recovery marker", () => {
+	const source = recoveryStatus({ reason: "model_error", detail: "Failure ".repeat(150) });
+	source.conversation.name = "n".repeat(160);
+	source.deliveryError = "Delivery parked ".repeat(150);
+	const base = projectSelectedStatus(source);
+	assert.ok(base.format === "compact");
+	const nameOnly = reduceCompactStatus(base);
+	const at = (padding: number) => {
+		const padded = structuredClone(source);
+		padded.conversation.agent.model.modelId += "m".repeat(padding);
+		const value = projectSelectedStatus(padded);
+		assert.ok(value.format === "compact");
+		assert.ok(bytes(value) <= 8192);
+		assert.deepEqual(value.conversation.model, padded.conversation.agent.model);
+		assert.equal(value.conversation.thinkingLevel, "off");
+		return value;
+	};
+	const namePressure = at(8192 - bytes(base) + 1);
+	assert.equal(namePressure.conversation.name, undefined);
+	assert.equal(namePressure.deliveryError, base.deliveryError);
+	assert.deepEqual(namePressure.conversation.runFailure, base.conversation.runFailure);
+	const deliveryPadding = 8192 - bytes(nameOnly) + 1;
+	const deliveryPressure = at(deliveryPadding);
+	assert.equal(deliveryPressure.deliveryError, undefined);
+	assert.deepEqual(deliveryPressure.conversation.runFailure, base.conversation.runFailure);
+	const omitted = deliveryPressure.omitted.filter(note => note.startsWith("Recovery facts omitted"));
+	assert.equal(omitted.length, 1);
+	assert.match(omitted[0] ?? "", /deliveryError/u);
+	assert.doesNotMatch(omitted[0] ?? "", /runFailure/u);
+	const allPressure = at(deliveryPadding + 8192 - bytes(deliveryPressure) + 1);
+	assert.equal(allPressure.deliveryError, undefined);
+	assert.equal(allPressure.conversation.runFailure, undefined);
+	const allOmitted = allPressure.omitted.filter(note => note.startsWith("Recovery facts omitted"));
+	assert.equal(allOmitted.length, 1);
+	assert.match(allOmitted[0] ?? "", /deliveryError, runFailure/u);
+	const call = `agent_status(${JSON.stringify({ sessionId: storageId, detail: true })})`;
+	assert.ok((omitted[0] ?? "").includes(call));
+	assert.ok((allOmitted[0] ?? "").includes(call));
+	const shortName = structuredClone(source);
+	shortName.conversation.name = "n";
+	const shortBase = projectSelectedStatus(shortName);
+	assert.ok(shortBase.format === "compact");
+	shortName.conversation.agent.model.modelId += "m".repeat(8192 - bytes(shortBase) + 1);
+	const shortPressure = projectSelectedStatus(shortName);
+	assert.ok(shortPressure.format === "compact");
+	assert.equal(shortPressure.conversation.name, undefined);
+	assert.equal(shortPressure.deliveryError, undefined);
+	assert.deepEqual(shortPressure.conversation.runFailure, shortBase.conversation.runFailure);
+	assert.ok(bytes(shortPressure) <= 8192);
+});
+
 function shortStoragePage(size: number, cold = false) {
 	const conversations = Array.from({ length: size }, (_, index) => ({
 		identity: index === 0 ? storageId : `${storageId}:${index + 1}`, conversationId: index + 1, name: "n", busy: false,
@@ -184,11 +275,15 @@ it("measures the exact fitting row count for connected and cold short-name pages
 	}
 });
 
-it("requires detail on an explicit selected read and does not alter unselected inputs", () => {
+it("requires an explicit selected read only when full detail is requested", () => {
 	for (const detail of [true, false]) {
 		assert.equal(matchesSchema(StatusToolInputSchema, { sessionId: "storage:1", detail }), true);
 		assert.doesNotThrow(() => validateStatusDetail({ sessionId: "storage:1", detail }));
-		for (const input of [{ detail }, { detail, view: "fleet" }, { sessionId: "storage", detail, view: "storage-page" }, { sessionId: "storage", detail, cursor: {} }, { sessionId: "storage", detail, limit: 1 }]) assert.throws(() => validateStatusDetail(input), /detail requires/u);
+	}
+	for (const input of [{ detail: true }, { detail: true, view: "fleet" }, { sessionId: "storage", detail: true, view: "storage-page" }, { sessionId: "storage", detail: true, cursor: {} }, { sessionId: "storage", detail: true, limit: 1 }]) assert.throws(() => validateStatusDetail(input), /detail requires/u);
+	for (const input of [{ detail: false }, { view: "fleet", detail: false }, { view: "storage-page", storageId, cursor: {}, limit: 50, detail: false }]) {
+		assert.equal(matchesSchema(StatusToolInputSchema, input), true);
+		assert.doesNotThrow(() => validateStatusDetail(input));
 	}
 	assert.doesNotThrow(() => validateStatusDetail({ view: "fleet" }));
 	assert.doesNotThrow(() => validateStatusDetail({}));

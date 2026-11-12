@@ -851,7 +851,7 @@ function snapshotIdentityLines(status: Record<string, unknown>, theme: Theme, co
 }
 
 function snapshotLines(status: Record<string, unknown>, details: Record<string, unknown>, theme: Theme, context: AgentCardContext, namedByReceipt = false): string[] {
-	if (details.format === "compact") return compactStatusLines(status, theme, context);
+	if (details.format === "compact") return compactStatusLines(status, details, theme, context);
 	const lines = snapshotIdentityLines(status, theme, context, namedByReceipt);
 	if (status.live === undefined && typeof status.state === "string") lines.push(muted(theme, `State: ${displayPreview(status.state, 40)}`));
 	else lines.push(...activityLines(status, readOnlySnapshot(details), theme));
@@ -868,17 +868,26 @@ function compactAwaitLines(awaiting: Record<string, unknown>, theme: Theme): str
 	});
 }
 
-function compactStatusLines(status: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
+function compactRecoveryLines(status: Record<string, unknown>, details: Record<string, unknown>, theme: Theme): string[] {
+	const lines: string[] = [];
+	const failure = record(status.runFailure);
+	if (typeof failure.reason === "string") lines.push(theme.fg("warning", `Run failure: ${displayText(failure.reason)}${failure.reasonTruncated === true ? " [truncated]" : ""}${typeof failure.detail === "string" ? ` · ${displayText(failure.detail)}${failure.detailTruncated === true ? " [truncated]" : ""}` : ""}`));
+	if (typeof details.deliveryError === "string") lines.push(theme.fg("warning", `Delivery error: ${displayText(details.deliveryError)}${details.deliveryErrorTruncated === true ? " [truncated]" : ""}`));
+	return lines;
+}
+
+function compactStatusLines(status: Record<string, unknown>, details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
 	const model = record(status.model), queue = record(status.queue), awaiting = record(status.awaiting);
 	const lines = [theme.fg("accent", snapshotLabel(text(status.identity), text(status.name), context))];
 	const configuration = resolvedModelLine(text(model.provider), text(model.modelId), text(status.thinkingLevel));
 	if (configuration) lines.push(muted(theme, configuration));
 	lines.push(muted(theme, `Activity: ${status.busy === true ? "working" : status.busy === false ? "idle" : "unknown"} · source ${text(status.availability) || "unknown"} · ${queue.inbox === null ? "unknown" : String(queue.inbox)} queued inputs · ${status.timers === null ? "unknown" : String(status.timers)} timers`));
-	lines.push(...compactAwaitLines(awaiting, theme));
+	lines.push(...compactRecoveryLines(status, details, theme), ...compactAwaitLines(awaiting, theme));
 	if ((count(awaiting.omittedResults) ?? 0) > 0) lines.push(muted(theme, `Await references omitted: ${String(awaiting.omittedResults)}`));
 	const block = record(status.providerBlock);
 	if (text(block.blockId)) lines.push(theme.fg("warning", `Provider block ${text(block.blockId)} · ${text(block.recovery)}`));
 	if (array(status.omitted).length) lines.push(muted(theme, `Omitted: ${array(status.omitted).join(", ")}`));
+	if (array(details.omitted).length) lines.push(muted(theme, `Omitted envelope fields: ${array(details.omitted).join(", ")}`));
 	const detail = record(status.detail);
 	if (detail.tool === "agent_status" && typeof detail.sessionId === "string") lines.push(muted(theme, `Full detail: agent_status(${JSON.stringify({ sessionId: detail.sessionId, detail: true })})`));
 	return lines;
@@ -916,7 +925,7 @@ export function renderAgentResult(result: AgentToolResult<unknown>, options: Too
 	const snapshotError = text(details.snapshotError);
 	if (snapshotError) lines.push(theme.fg("warning", `Snapshot unavailable: ${displayPreview(snapshotError, 240)}`));
 	const deliveryError = text(details.deliveryError) || text(record(details.status).deliveryError);
-	if (deliveryError) lines.push(theme.fg("warning", `Delivery paused: ${displayPreview(deliveryError, 240)}`));
+	if (deliveryError && details.format !== "compact") lines.push(theme.fg("warning", `Delivery paused: ${displayPreview(deliveryError, 240)}`));
 	if (options.expanded) {
 		if (snapshot) lines.push(...snapshotLines(snapshot, details, theme, { ...context, expanded: true }));
 		lines.push(theme.fg("toolOutput", boundedSource(output)));

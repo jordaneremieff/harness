@@ -5,6 +5,7 @@ import type { CatalogPriorityCoverage } from "./catalog.ts";
 import { CompactConversationSchema, type CompactSelectedStatusSchema, type CompactStorageStatusSchema, StorageStatusCoverageSchema, type ToolOverviewRow } from "./observation-schema.ts";
 import type { Static } from "@earendil-works/pi-schema";
 import { matchesSchema } from "./schema-check.ts";
+import { safeFactText } from "./primary-observation.ts";
 
 export interface StatusOverviewPrimary {
 	readonly sessionId: string;
@@ -330,7 +331,7 @@ function count(value: unknown): number | undefined { return Number.isSafeInteger
 
 /** Detail belongs to one explicit target, not to a page or a fleet selection. */
 export function validateStatusDetail(input: { sessionId?: unknown; detail?: unknown; view?: unknown; storageId?: unknown; cursor?: unknown; limit?: unknown }): void {
-	if (input.detail === undefined) return;
+	if (input.detail === undefined || input.detail === false) return;
 	if (typeof input.detail !== "boolean" || typeof input.sessionId !== "string" || !input.sessionId ||
 		input.view !== undefined || input.storageId !== undefined || input.cursor !== undefined || input.limit !== undefined)
 		throw new Error("detail requires one explicit sessionId and cannot be combined with fleet or storage-page selectors.");
@@ -414,6 +415,58 @@ function sourceAvailability(source: Record<string, unknown>): CompactConversatio
 	return source.inventory !== undefined || source.pid !== undefined ? "live" : "unknown";
 }
 
+function addSelectedRecovery(result: CompactSelected, source: Record<string, unknown>): void {
+	const failure = record(record(record(source.conversation).live).runFailure);
+	if (typeof failure.reason === "string") {
+		const reason = safeFactText(failure.reason, 128);
+		const fact: NonNullable<CompactConversation["runFailure"]> = { reason: reason.text };
+		if (reason.truncated) fact.reasonTruncated = true;
+		if (typeof failure.detail === "string") {
+			const detail = safeFactText(failure.detail, 512);
+			fact.detail = detail.text;
+			if (detail.truncated) fact.detailTruncated = true;
+		}
+		result.conversation.runFailure = fact;
+	}
+	if (typeof source.deliveryError === "string") {
+		const error = safeFactText(source.deliveryError, 512);
+		result.deliveryError = error.text;
+		if (error.truncated) result.deliveryErrorTruncated = true;
+	}
+}
+
+function omitSelectedRecoveryFact(value: CompactSelected, key: "deliveryError" | "runFailure"): boolean {
+	if (key === "deliveryError") {
+		if (value.deliveryError === undefined) return false;
+		delete value.deliveryError;
+		delete value.deliveryErrorTruncated;
+		return true;
+	}
+	if (value.conversation.runFailure === undefined) return false;
+	delete value.conversation.runFailure;
+	return true;
+}
+
+/** Recovery facts outlast name previews; run failure outlasts delivery diagnostics. */
+function reduceSelectedRecovery(value: CompactSelected): CompactSelected {
+	const reduced = structuredClone(value);
+	if (reduced.conversation.name !== undefined) {
+		delete reduced.conversation.name;
+		reduced.conversation.omitted = reduced.conversation.omitted.filter(note => note !== "name shortened");
+		reduced.omitted.push("name omitted for byte limit");
+	}
+	const omitted: string[] = [];
+	const detail = reduced.conversation.detail;
+	const call = `agent_status(${JSON.stringify({ sessionId: detail.sessionId, detail: true })})`;
+	const baseOmissions = [...reduced.omitted];
+	for (const key of ["deliveryError", "runFailure"] as const) {
+		if (measure(reduced) <= SELECTED_STATUS_BYTE_LIMIT) break;
+		if (omitSelectedRecoveryFact(reduced, key)) omitted.push(key);
+		if (omitted.length) reduced.omitted = [...baseOmissions, `Recovery facts omitted for byte limit: ${omitted.join(", ")}; full detail: ${call}`];
+	}
+	return measure(reduced) <= measure(value) ? reduced : value;
+}
+
 /** Public selected status is separate from the complete host record. */
 export function projectSelectedStatus(value: unknown): CompactSelected | PresentationRefusal {
 	const source = record(value);
@@ -422,7 +475,9 @@ export function projectSelectedStatus(value: unknown): CompactSelected | Present
 	let result: CompactSelected = { format: "compact", conversation, omitted: ["host inventory", "effort awareness"] };
 	if (typeof source.storageId === "string") result.storageId = source.storageId;
 	if (typeof source.live === "boolean") result.live = source.live;
+	addSelectedRecovery(result, source);
 	if (measure(result) > SELECTED_STATUS_BYTE_LIMIT) result = reduceCompactStatus(result);
+	if (measure(result) > SELECTED_STATUS_BYTE_LIMIT) result = reduceSelectedRecovery(result);
 	return measure(result) <= SELECTED_STATUS_BYTE_LIMIT ? result : refusal("byte-limit", SELECTED_STATUS_BYTE_LIMIT, "Mandatory selected identity, state, or recovery metadata exceeds the output byte limit; request detail:true.");
 }
 
