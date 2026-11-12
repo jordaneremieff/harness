@@ -1,6 +1,6 @@
 /** Admitted inputs that the recipient conversation holds in its inbox, not yet in its transcript. */
 import type { Context } from "@earendil-works/chord/context";
-import { defineDoc, defineTask, LiveDoc, type ConversationId, type Harness, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import { defineDoc, defineTask, LiveDoc, type ConversationId, type Harness, type SubmissionId, type SubmissionRecord, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { retainedReport, storeDeliveryRow } from "./delivery-store.ts";
 import { openWorkItems } from "./open-work.ts";
 import { RequestContextDoc } from "./request-context.ts";
@@ -35,7 +35,19 @@ export interface UnplacedAdmission {
 	readonly recipient?: string;
 }
 
-export type Placement = "placed" | "unplaced";
+/**
+ * Where an admitted input is. `unplaced`: in the recipient's inbox. `placed`: in its transcript.
+ * `withdrawn`: in neither; it left the inbox before placement, or the conversation has no such submission.
+ */
+export type Placement = "placed" | "unplaced" | "withdrawn";
+
+/** Placement that a committed submission record states; `conversationId` rejects a record of another conversation. */
+export function placementOf(record: SubmissionRecord | undefined, conversationId?: ConversationId): Placement {
+	if (record === undefined || (conversationId !== undefined && record.conversationId !== conversationId)) return "withdrawn";
+	if (record.status === "queued") return "unplaced";
+	// A settled input has an entry exactly when a boundary placed it before it ended.
+	return record.status === "unanswered" && record.entry === undefined ? "withdrawn" : "placed";
+}
 
 export interface UnplacedSummary {
 	readonly unplaced: number;
@@ -62,11 +74,12 @@ export async function pruneUnplacedInputs(tx: Tx, conversationId: ConversationId
 /**
  * Report the committed placement of one admitted submission and retain it while it is queued.
  * Call in a commit after the submit. A repeat for the same submission keeps the first admission time.
+ * A submission that is absent or that left the inbox without an entry reads `withdrawn`, never `placed`.
  */
 export async function recordUnplacedInput(tx: Tx, conversationId: ConversationId, admission: UnplacedAdmission): Promise<Placement> {
 	const inputs = await pruneUnplacedInputs(tx, conversationId);
 	const submission = await tx.submission(admission.submissionId as SubmissionId);
-	if (submission?.status !== "queued" || submission.conversationId !== conversationId) return "placed";
+	if (submission?.status !== "queued" || submission.conversationId !== conversationId) return placementOf(submission, conversationId);
 	const state = await tx.doc(UnplacedInputsDoc, conversationId);
 	if (admission.recipient !== undefined) state.recipient = admission.recipient;
 	if (!inputs.some((input) => input.submissionId === admission.submissionId))

@@ -13,7 +13,7 @@ import { waitForDeliveryFixture } from "./delivery-store-fixture.mts";
 import { onStoredCommit } from "./commit-observation.ts";
 import { OpenWorkDoc } from "./open-work.ts";
 import { RequestContextDoc } from "./request-context.ts";
-import { UNPLACED_NOTICE_MS, UnplacedInputsDoc, UnplacedWatchTask, currentStep, pruneUnplacedInputs, readUnplacedSummary, recordUnplacedInput, unplacedSummary, type InputClass, type UnplacedInput } from "./unplaced-inputs.ts";
+import { UNPLACED_NOTICE_MS, UnplacedInputsDoc, UnplacedWatchTask, currentStep, placementOf, pruneUnplacedInputs, readUnplacedSummary, recordUnplacedInput, unplacedSummary, type InputClass, type UnplacedInput } from "./unplaced-inputs.ts";
 
 const RECIPIENT = "store";
 const EPOCH = 1_800_000_000_000;
@@ -157,10 +157,11 @@ it("reports the committed placement, keeps the first admission time, and counts 
 	const pruned = await f.harness.commit(async (tx) => (await pruneUnplacedInputs(tx, f.id)).map((row) => row.requestId), BACKGROUND_CONTEXT);
 	assert.deepEqual(pruned, ["second"]);
 
-	const placed = await f.harness.commit((tx) => recordUnplacedInput(tx, f.id, { submissionId: first, class: "steer", sender: "sender-a", admittedAt: f.clock.now, recipient: RECIPIENT }), BACKGROUND_CONTEXT);
-	assert.equal(placed, "placed", "a settled submission is not unplaced");
+	const withdrawn = await f.harness.commit((tx) => recordUnplacedInput(tx, f.id, { submissionId: first, class: "steer", sender: "sender-a", admittedAt: f.clock.now, recipient: RECIPIENT }), BACKGROUND_CONTEXT);
+	assert.equal(withdrawn, "withdrawn", "an input that left the inbox without an entry is neither unplaced nor placed");
 	const absent = await f.harness.commit((tx) => recordUnplacedInput(tx, f.id, { submissionId: 999_999, class: "steer", sender: "sender-a", admittedAt: f.clock.now }), BACKGROUND_CONTEXT);
-	assert.equal(absent, "placed", "an unknown submission records no row");
+	assert.equal(absent, "withdrawn", "an unknown submission records no row and is not placed");
+	assert.equal((await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs.length, 1, "neither call records a row");
 	await settle(f, second);
 	assert.deepEqual(await readUnplacedSummary(f.harness, f.id, BACKGROUND_CONTEXT), { unplaced: 0 });
 });
@@ -401,4 +402,34 @@ it("notifies the reply recipient of open declared work when the current run serv
 	advance(closed, EPOCH + UNPLACED_NOTICE_MS);
 	await closed.harness.waitForTask(watch, bounded());
 	assert.deepEqual((await notices(closed)).map((report) => report.ownerId), ["sender-a"], "the reply recipient of closed work is not a requester");
+});
+
+it("states withdrawn, not placed, for a submission that is absent or left the inbox before placement", async (t) => {
+	const f = await open(t);
+	const record = (id: number) => f.harness.commit((tx) => tx.submission(id as SubmissionId), BACKGROUND_CONTEXT);
+	const place = (id: number) => f.harness.commit((tx) => recordUnplacedInput(tx, f.id, { submissionId: id, class: "followUp", sender: "sender-a", admittedAt: f.clock.now, recipient: RECIPIENT }), BACKGROUND_CONTEXT);
+
+	const queuedId = await queued(f, "queued");
+	assert.equal(placementOf(await record(queuedId), f.id), "unplaced");
+	await settle(f, queuedId);
+	assert.equal(placementOf(await record(queuedId), f.id), "withdrawn", "an abort withdrew the queued input: it has no entry");
+	assert.equal(await place(queuedId), "withdrawn");
+
+	const ids = await f.harness.commit(async (tx) => {
+		const entry = await tx.appendEntry(f.id, { kind: "agent.input", model: [{ role: "user", content: "placed", timestamp: f.clock.now }] });
+		const stopped = await tx.appendEntry(f.id, { kind: "agent.input", model: [{ role: "user", content: "stopped", timestamp: f.clock.now }] });
+		const answer = await tx.appendEntry(f.id, { kind: "pi.assistant", model: [] });
+		return {
+			placed: (await tx.createSubmission({ conversationId: f.id, requestId: "placed", type: "input", status: "placed", entry: entry.id })).id,
+			done: (await tx.createSubmission({ conversationId: f.id, requestId: "done", type: "input", status: "done", entry: entry.id, answer: answer.id })).id,
+			stopped: (await tx.createSubmission({ conversationId: f.id, requestId: "stopped", type: "input", status: "unanswered", entry: stopped.id, reason: "aborted" })).id,
+		};
+	}, BACKGROUND_CONTEXT);
+	assert.equal(await place(ids.placed), "placed");
+	assert.equal(await place(ids.done), "placed");
+	assert.equal(await place(ids.stopped), "placed", "an input that a boundary placed before its run stopped was placed");
+	assert.equal(await place(999_999), "withdrawn", "the conversation has no such submission");
+	assert.equal(placementOf(undefined), "withdrawn");
+	assert.equal(placementOf(await record(ids.placed), (f.id + 1) as ConversationId), "withdrawn", "a submission of another conversation is not this conversation's input");
+	assert.deepEqual((await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs ?? [], [], "no call recorded a row");
 });
