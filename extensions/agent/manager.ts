@@ -700,7 +700,7 @@ export class AgentManager {
 		if (versionError) throw versionError;
 		if (method === "attach") return this.attachClient(client, sessionId, params.model);
 		if (method === "report") {
-			const receipt = await client.request("submit", { sessionId, message: `Report from ${caller.id}:\n${String(params.message ?? "")}`, requestId: params.requestId ?? randomUUID(), whenBusy: "followUp" });
+			const receipt = await client.request("submit", { sessionId, message: `Report from ${caller.id}:\n${String(params.message ?? "")}`, requestId: params.requestId ?? randomUUID(), whenBusy: "followUp", inputClass: "report", inputSender: caller.id });
 			return { ...(receipt as Record<string, unknown>), boundary: REPORT_DELIVERY_BOUNDARY };
 		}
 		if (["submit", "rewind", "fork"].includes(method)) params.requestId ??= randomUUID();
