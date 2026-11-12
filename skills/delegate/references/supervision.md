@@ -5,9 +5,8 @@ operator input. Never poll, sleep, or loop on status or inspection, and never
 hold a run open for agent output. Continue your own part of the work while
 agents run. When none remains, a native agent declares the open result
 references with `agent_work` `continue` and ends the run with a state note.
-An ordinary session ends its turn with a short state note instead. Results
-arrive as events at its next tool boundary or start its next turn; it never
-polls.
+An ordinary session follows
+[ordinary event handling](../SKILL.md#6-supervise-without-polling).
 
 ## Contents
 
@@ -38,11 +37,10 @@ before you rely on dependent work.
 ## State notes
 
 A native agent that sent work and has none left declares the open work with
-`agent_work` `continue` and ends its run with a state note. An ordinary
-session ends its turn with a short state note without a tool declaration.
-Both notes say in their first words that they are not the result, and name
-the open work. Read them as open work, not as completion. Do not accept,
-integrate, or re-dispatch on a state note.
+`agent_work` `continue` and ends its run with a state note.
+The native note says in its first words that it is not the result, and names
+the open work. Read it as open work, not as completion. Do not accept,
+integrate, or re-dispatch on a native state note.
 
 For declared work in a native agent:
 - Read the open work in `agent_status` with the agent's `sessionId` when you

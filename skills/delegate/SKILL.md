@@ -267,9 +267,13 @@ inspections as a wait. After you send work:
   starts its next run. A record without a dependency gets no later run by
   itself; it stays open in the status until the native agent calls
   `agent_work` `complete`, which alone closes an item.
-  An ordinary session has no `agent_work` tool. When only delegated work
-  remains, it ends its turn with a short state note. Results arrive as events
-  at its next tool boundary or start its next turn; it never polls.
+  In an ordinary session, handle an event that needs no operator message
+  under "Operator status reports", then call `agent_work` `continue` with
+  the current state in `note`.
+  Make it the only call in the last tool batch and write no chat text.
+  `continue` stores the note as the current session state, shows it in a
+  widget above the input, and ends the turn without a further model call.
+  In this session, `agent_work` `complete` clears the note and widget.
 - **Stay reachable.** An input reaches a running agent at its next tool
   boundary, the end of its current round of tool calls. With parallel calls
   nothing is placed between two tool completions of one round. The reach of
@@ -283,7 +287,7 @@ inspections as a wait. After you send work:
   then do them in the same run. A report, a result, a check-in, and a thread
   notice are events: read them and continue. An answer names each request that
   it covers.
-- **Keep a state note apart from a result.** Open the note with words that say
+- **Keep a native state note apart from a result.** Open the note with words that say
   it is a state note and not the result. A native agent uses `agent_work`
   `complete` as the only act that completes declared work; it sends the final
   report to the reply recipient of the original request. A run that completes its request without
@@ -296,7 +300,7 @@ inspections as a wait. After you send work:
   the recipient's current step goes to the sender of an explicit send and to
   the recipient's requester. Act on the step that it names; do not send the
   input again.
-- **Read a contributor's state note as open work, not completion.** Read the
+- **Read a native contributor's state note as open work, not completion.** Read the
   open work in `agent_status` with its `sessionId`, and act when the final
   report arrives.
 

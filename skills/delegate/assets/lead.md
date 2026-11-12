@@ -22,7 +22,7 @@ The skills the lead reads before work, with the reason; name delegate when the l
 The parts you can see and any suggested helpers; the lead can do the work itself, revise the split, or use helpers selectively.
 
 ## Result references
-For delegated parts, direct the lead to keep exact result references, to hold no run open for them, and never to poll. When no other work remains, a native lead declares the open references with `agent_work` `continue` and ends its run with a state note. An ordinary lead ends its turn with a short state note instead; results arrive as events at its next tool boundary or start its next turn.
+For delegated parts, direct the lead to keep exact result references, to hold no run open for them, and never to poll. When no other work remains, a native lead declares the open references with `agent_work` `continue` and ends its run with a state note. An ordinary lead follows [ordinary event handling](../SKILL.md#6-supervise-without-polling).
 
 ## Composed answer <!-- required -->
 Direct the lead to return one answer that covers the whole result, with gaps named. When a native lead declared open work, its composed answer is the message of `agent_work` `complete`, which sends the final report to the reply route.

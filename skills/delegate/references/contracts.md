@@ -71,8 +71,9 @@ directory). When a structural check helps, check the filled copy with
   suggested helpers; the lead can do the work itself, revise the split, or use
   helpers selectively), result references (keep exact references for delegated
   parts; a native lead declares the open ones with `agent_work` `continue`,
-  while an ordinary lead ends its turn with a short state note; neither holds
-  a run open for results), and composed answer (one answer for the whole
+  while an ordinary lead follows
+  [ordinary event handling](../SKILL.md#6-supervise-without-polling); neither
+  holds a run open for results), and composed answer (one answer for the whole
   result, gaps named; a native lead ends declared work with `agent_work`
   `complete`).
 - **Review-only slots:** the claim under review, the evidence each verdict must
@@ -118,11 +119,10 @@ The contributor does its ready independent work first. A native contributor
 then declares the open work with `agent_work` `continue` and ends the run
 with a state note. An empty `results` is valid: it records a blocked or
 deferred task that depends on no producer, and no later run starts by itself
-for it. An ordinary contributor ends its turn with a short state note
-instead; results arrive as events at its next tool boundary or start its
-next turn, and it never polls. Both notes say first that they are state notes
-and not results; they name the open work and what the contributor does when
-each result arrives. A native contributor uses `agent_work` `complete`, with
+for it. An ordinary contributor follows
+[ordinary event handling](../SKILL.md#6-supervise-without-polling).
+The native state note says first that it is not the result; it names the open
+work and what the contributor does when each result arrives. A native contributor uses `agent_work` `complete`, with
 `status` `done` or `failed` and the result or exact blocker as `message`, to
 send the final report to the reply recipient of the original request.
 
@@ -138,6 +138,6 @@ model turn.
 - **Set an interval** for long work you must steer midway, or work where a
   silent stall would cost more than the watchdog turns.
 
-A state note from the contributor does not end the task for the owner: the
+A native state note from the contributor does not end the task for the owner: the
 work is open until the final report arrives. Read the open work in
 `agent_status`; do not poll.
