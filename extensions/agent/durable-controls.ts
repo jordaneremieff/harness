@@ -155,7 +155,7 @@ export type DeliveryOrigin = "operator" | "model";
 /** Retained delivery diagnostics; terminal decisions survive process reopen. */
 export type DeliveryDisposition = { readonly state: "parked" | "terminal"; readonly reason: string };
 
-/** One durable delivery intent, written before the submission it describes. */
+/** One durable delivery intent, written in the commit that admits its submission or, for a scheduled input, before it. */
 export type DeliveryIntent = {
 	readonly delivery?: DeliveryDisposition;
 	readonly requestId: string;
@@ -322,7 +322,7 @@ async function inputPlacement(tx: Tx, submissionId: SubmissionId): Promise<Place
 	return placementOf(await tx.submission(submissionId));
 }
 
-/** One admission's delivery identity, written before the submission it describes. */
+/** One admission's delivery identity, written in the commit that admits the submission it describes or before it. */
 export interface DeliveryAdmission {
 	readonly requestId: string;
 	readonly ownerId: string;
@@ -476,9 +476,9 @@ async function recordAdmittedInput(conversation: Conversation, submissionId: Sub
 }
 
 /**
- * Admit one input. A supplied owner writes the delivery intent before the
- * submission, so a crash between the two commits leaves a durable record that
- * `reconcileDeliveries()` resolves through Durable's request-ID deduplication.
+ * Admit one input. The native admission, the supplied owner's linked delivery
+ * intent and the unplaced row share one commit; a refusal stores none of them,
+ * and a retry of the request ID finds the admission or admits it once.
  */
 export async function submitConversation(
 	conversation: Conversation,
