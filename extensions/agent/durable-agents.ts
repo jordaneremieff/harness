@@ -29,7 +29,7 @@ import { forgetFailedAdmission, recordInputProvenance } from "./awaited-results.
 import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
 import { recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
-import { AGENT_WORK_DESCRIPTION, AgentWorkOutputSchema, AgentWorkParams, closeOpenWork, executeAgentWork } from "./open-work.ts";
+import { AGENT_WORK_DESCRIPTION, AgentWorkOutputSchema, AgentWorkParams, closeOpenWork, executeAgentWork, type OpenWorkView } from "./open-work.ts";
 import { AgentMetaDoc, placementMode, publishConversationIntent, recordAdmissionMeta, recordDeliveryIntent, linkDeliveryIntent, seededCompactionInstructions } from "./durable-controls.ts";
 import { recordAdmitted, recordRefused, recordRequested, recordScheduled, recordTimerCancelled, type OutgoingRequest } from "./continuity-admission.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema, profileText } from "./profile-schema.ts";
@@ -564,6 +564,14 @@ const SECTION_PREAMBLE = [
 	"Every conversation has an external identity: the bare storage id for the root, storageId:conversationId otherwise. Use the identity from agent_status or agent_list as sessionId for agent_send, agent_steer, agent_abort, agent_configure, agent_compact, agent_rewind, and agent_command.",
 	"Final answers route to each request's reply recipient. Use agent_send mode: report for interim notices; the creating owner is provenance, not every request's recipient.",
 ];
+
+/** Store the final report of one stopped item as terminal when the same abort stopped its recipient. */
+async function withholdStoppedReport(tx: Durable.Tx, item: OpenWorkView, stoppedRecipient: (recipient: string) => boolean): Promise<void> {
+	const requestId = item.close?.reportRequestId;
+	if (requestId === undefined || !stoppedRecipient(item.replyTo)) return;
+	const row = await retainedReportRequest(tx, item.replyTo, requestId);
+	if (row !== undefined && !row.acknowledged) await storeDeliveryRow(tx, "report", { ...row, delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" } });
+}
 
 /** Apply this slice's exposure table to one native registration. */
 function exposedControl<T extends Durable.ToolRegistration>(tool: T): T {
@@ -1339,12 +1347,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			return local !== undefined && stopped.has(local);
 		};
 		for (const id of scope) await api.commit(async (tx) => {
-			for (const item of await closeOpenWork(tx, host.storageId, id, "stopped", api.now())) {
-				const requestId = item.close?.reportRequestId;
-				if (requestId === undefined || !stoppedRecipient(item.replyTo)) continue;
-				const row = await retainedReportRequest(tx, item.replyTo, requestId);
-				if (row !== undefined && !row.acknowledged) await storeDeliveryRow(tx, "report", { ...row, delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" } });
-			}
+			for (const item of await closeOpenWork(tx, host.storageId, id, "stopped", api.now())) await withholdStoppedReport(tx, item, stoppedRecipient);
 			return undefined;
 		}, context);
 	};
