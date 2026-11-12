@@ -22,7 +22,6 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import { inputEntry } from "./input-entry.ts";
-import { classifyAwaitInput, reconcileInputRelease } from "./awaited-results.ts";
 import { defineDoc, defineDocFamily, defineTask, type ConversationId, type Cursor, type Harness, type SubmissionRecord, type TaskId, type TaskRecord, type TaskState, type TaskOutcome, type Tx } from "@earendil-works/pi-durable";
 import { linkDeliveryIntent, placementMode, recordDeliveryIntent, type DeliveryIntentState, type DeliveryOrigin } from "./durable-controls.ts";
 import { reconcileProfile } from "./profile.ts";
@@ -176,12 +175,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				retained = await tx.submissionByRequest(conversationId, task.input.requestId);
 				return undefined;
 			}, context);
-			let mode = task.input.mode;
-			await runtime.commit(async (tx) => {
-				const classification = await classifyAwaitInput(tx, { conversationId, requestId: task.input.requestId, classification: "automatic", automaticKind: "timer" });
-				if (classification.defer) mode = "followUp";
-				return undefined;
-			}, context);
+			const mode = task.input.mode;
 			let intent: DeliveryIntentState | undefined;
 			await runtime.commit(async (tx) => {
 				intent = await recordDeliveryIntent(tx, conversationId, {
@@ -200,7 +194,6 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				{ type: "input", content: task.input.message, requestId: task.input.requestId, whenBusy: placementMode(mode), entry: inputEntry(task.input.origin, task.input.requestContext?.requester, { class: "timer", sender: task.input.requestContext?.requester ?? task.input.ownerId, requestId: task.input.requestId }) },
 				context,
 			);
-			await runtime.commit(async (tx) => { await reconcileInputRelease(tx, conversationId, task.input.requestId); return undefined; }, context);
 			const firedAt = runtime.now();
 			const result: TimerResult = {
 				deadline: task.input.deadline,
@@ -246,10 +239,8 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					retained = await tx.submissionByRequest(conversationId, input.requestId);
 					return undefined;
 				}, context);
-				let mode = input.mode;
+				const mode = input.mode;
 				await runtime.commit(async (tx) => {
-					const classification = await classifyAwaitInput(tx, { conversationId, requestId: input.requestId, classification: "automatic", automaticKind: "timer" });
-					if (classification.defer) mode = "followUp";
 					await recordDeliveryIntent(tx, conversationId, { requestId: input.requestId, ownerId: input.ownerId, message: input.message, whenBusy: mode, origin: input.origin, checkInMinutes: input.checkInMinutes ?? 0, senderIdentity: input.identity, ...(input.requestContext === undefined ? {} : { requestContext: input.requestContext }) }, runtime.now(), "retained");
 					return undefined;
 				}, context);
@@ -257,7 +248,6 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					{ type: "input", content: input.message, requestId: input.requestId, whenBusy: placementMode(mode), entry: inputEntry(input.origin, input.requestContext?.requester, { class: "timer", sender: input.requestContext?.requester ?? input.ownerId, requestId: input.requestId }) },
 					context,
 				);
-				await runtime.commit(async (tx) => { await reconcileInputRelease(tx, conversationId, input.requestId); return undefined; }, context);
 				const result: TimerResult = {
 					deadline: input.deadline,
 					firedAt: settledAt,

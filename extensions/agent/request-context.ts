@@ -2,7 +2,8 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
-import { inputLabel, isInputKind } from "./input-entry.ts";
+import { inputLabel, isInputKind, sentInputClass } from "./input-entry.ts";
+import { retainedIntent } from "./delivery-store.ts";
 import { RequestRouteState, type RouteNote, type UserPrefix } from "./request-route-state.ts";
 import { defineDoc, LiveDoc, section, type ConversationId, type GenerationHooks, type Harness, type HookApi, type PromptSection, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 
@@ -187,7 +188,9 @@ async function newRouteNotes(harness: Harness, api: HookApi, context: Context): 
 			if (!entry || !message) continue;
 			const { requestId, requester, replyTo, origin } = route;
 			const label = inputLabel(entry, requestId, requester);
-			const labelled = label === undefined ? {} : { class: label.class, sender: label.sender ?? requester };
+			// A native operator entry has no data; its retained delivery intent keeps the busy mode that selects its class.
+			const inputClass = entry.kind === "pi.user" ? sentInputClass("operator", (await retainedIntent(tx, api.conversationId, requestId))?.whenBusy) : label?.class;
+			const labelled = label === undefined || inputClass === undefined ? {} : { class: inputClass, sender: label.sender ?? requester };
 			notes.push({ digest: inputDigest(message), entryId: entry.id, text: `<agent-request-route host="${tag}">\n${JSON.stringify({ requestId, requester, replyTo, origin, ...labelled })}\n</agent-request-route>` });
 		}
 		return notes;

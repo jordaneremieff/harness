@@ -25,7 +25,7 @@ import { storageStatusPageInput, validateStatusSelectors } from "./storage-statu
 import { agentChildrenDoc, type AgentChild } from "./children.ts";
 import { captureProviderRecovery, linkProviderRecovery } from "./provider-block.ts";
 import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
-import { forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
+import { forgetFailedAdmission, recordInputProvenance } from "./awaited-results.ts";
 import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
 import { recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
@@ -891,7 +891,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			await fact(() => recordAdmitted(tx, api.conversationId, outgoing, { sessionId: outgoing.sessionId, requestId: outgoing.requestId, submissionId: submission.id }));
 			return undefined;
 		}, context);
-		await api.commit(async (tx) => { await reconcileInputRelease(tx, input.conversationId, request.requestId); await linkProviderRecovery(tx, submission.id, recoveryOf); return undefined; }, context);
+		await api.commit(async (tx) => { await linkProviderRecovery(tx, submission.id, recoveryOf); return undefined; }, context);
 		const status = await submission.status(context);
 		if (status.id !== submission.id || status.requestId !== request.requestId || status.conversationId !== input.conversationId) throw new Error("Native admission identifiers disagree");
 		let placement: Placement = status.status === "queued" ? "unplaced" : "placed";

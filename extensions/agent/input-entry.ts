@@ -20,10 +20,10 @@ export function isInputClass(value: unknown): value is InputClass {
 	return typeof value === "string" && (INPUT_CLASSES as readonly string[]).includes(value);
 }
 
-/** Class of an input that a caller sent directly: operator input, a correction, or new work. */
+/** Class of an input that a caller sent directly: a correction, other operator input, or new work. */
 export function sentInputClass(origin: "operator" | "model" | undefined, whenBusy: "steer" | "followUp" | "reject" | null | undefined): InputClass {
-	if (origin === "operator") return "operator";
-	return whenBusy === "steer" ? "steer" : "followUp";
+	if (whenBusy === "steer") return "steer";
+	return origin === "operator" ? "operator" : "followUp";
 }
 
 /**
