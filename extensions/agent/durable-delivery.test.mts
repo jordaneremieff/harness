@@ -19,6 +19,7 @@ import { observeDeliveryEligibility, startDurableDelivery } from "./durable-deli
 import { mutateCollaboration } from "./collaboration.ts";
 import { DurableHost, type RequestParams } from "./durable-host.ts";
 import { retainProviderRetryNotices } from "./provider-notices.ts";
+import { completeOpenWork, declareOpenWork } from "./open-work.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, gateTool, hostOptions, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import type { HostConnection } from "./host-client.ts";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
@@ -365,7 +366,7 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	assert.deepEqual(details.submissions.map((member) => member.origin), expected.origins);
 	const own = details.submissions.filter((member) => member.ownerId === details.deliveryRecipient);
 	assert.equal(details.wake, own.some((member) => member.origin === "model"), "wake follows the recipient's own admissions");
-	assert.match(received[0]?.text ?? "", /^Agent “11111111-1111-4111-8111-111111111111” finished\./u);
+	assert.match(received[0]?.text ?? "", /^Agent “11111111-1111-4111-8111-111111111111” completed native input\./u);
 	assert.doesNotMatch(received[0]?.text ?? "", /submissions/u);
 	releaseDelivery();
 	if (recipients === "overlap") await received.waitForCount(2);
@@ -872,6 +873,7 @@ it("identifies an absent peer report without blocking a catalog owner's result",
 	assert.equal(calls[0]?.params.sessionId, record.storageId);
 	assert.equal(calls[0]?.params.ownerId, undefined, "the result does not create another ownership intent");
 	assert.match(String(calls[0]?.params.message), /Agent result from 11111111-1111-4111-8111-111111111111:1/u);
+	assert.match(String(calls[0]?.params.message), /\nRequest \S+ \(submission \d+\): native input completed; no declared work\. This answer is its result: dependency arrived\.\n/u, "the native follow-up names the state of each request");
 	assert.match(errors[0]?.message ?? "", /parked: native recipient has no catalog record/u);
 	const status = await source.request("status", {}, BACKGROUND_CONTEXT) as { deliveryError?: string };
 	assert.equal(status.deliveryError, errors[0]?.message, "status identifies the failed report, not the delivered result");
@@ -984,7 +986,7 @@ it("delivers a noncatalog owner to its registered primary channel with source me
 	assert.equal(typeof details.thinkingLevel, "string");
 	assert.equal(details.label, "11111111-1111-4111-8111-111111111111");
 	assert.equal(details.wake, true, "a model-origin admission wakes its owner");
-	assert.match(message.text, /^Agent “11111111-1111-4111-8111-111111111111” finished\./u);
+	assert.match(message.text, /^Agent “11111111-1111-4111-8111-111111111111” completed native input\./u);
 	assert.match(message.text, /Results do not establish task acceptance/u);
 	assert.doesNotMatch(message.text, /no live owning session/u);
 	assert.doesNotMatch(message.text, /submissions/u);
@@ -1035,7 +1037,7 @@ it("delivers an operator-only answer group without waking the primary", { timeou
 	const details = received[0]?.details as { wake?: unknown; submissions?: Array<{ origin?: string }> };
 	assert.equal(details.wake, false, "an operator-only answer group does not start a primary turn");
 	assert.deepEqual(details.submissions?.map((member) => member.origin), ["operator"]);
-	assert.match(received[0]?.text ?? "", /^Agent “11111111-1111-4111-8111-111111111111” finished\./u);
+	assert.match(received[0]?.text ?? "", /^Agent “11111111-1111-4111-8111-111111111111” completed native input\./u);
 	assert.doesNotMatch(received[0]?.text ?? "", /submissions/u);
 	await watcher.close();
 	assert.deepEqual(errors, [], "delivery completes without errors");
@@ -1173,6 +1175,64 @@ it("delivers only the recipient's submissions from a shared answer without self 
 		assert.deepEqual(details.submissions.map((member) => member.submissionId), [steer.submissionId]);
 		assert.equal(details.wake, true);
 		assert.equal(calls.mock.calls.filter((call) => call.arguments[0] === "submit").length, 0);
+	} finally { await watcher.close(); }
+});
+
+it("names the work state of each request of a shared answer and continues a cut final report exactly", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const path = join(root, "source.sqlite");
+	const sessionsRoot = join(root, "sessions");
+	const owner = randomUUID();
+	const received = eventLog<PrimaryDelivery>();
+	const channel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	const started = eventLog<void>();
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const storageId = "11111111-1111-4111-8111-111111111111";
+	const source = await DurableHost.open({ storagePath: path, storageId, cwd: root,
+		models: await scriptedRuntime([toolCallMessage("gate"), answerMessage(), answerMessage()]), registry: fixtureRegistry([gateTool(gate, () => started.push(undefined))]),
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
+	t.after(() => source.close());
+	t.after(release);
+	const declared = await source.request("task-submit", { message: "survey", requestId: "task-a", requester: owner, origin: "model" }) as { submissionId: SubmissionId };
+	await started.waitForCount(1);
+	const plain = await source.request("task-submit", { message: "quick question", requestId: "task-b", requester: owner, origin: "model", whenBusy: "steer" }) as { submissionId: SubmissionId };
+	const declaration = await source.harness.commit((tx) => declareOpenWork(tx, storageId, 1 as ConversationId, { request: "task-a", results: [], note: "survey continues" }, 1), BACKGROUND_CONTEXT);
+	assert.ok(!("error" in declaration), JSON.stringify(declaration));
+	release();
+	await source.wait(declared.submissionId, BACKGROUND_CONTEXT);
+	await source.wait(plain.submissionId, BACKGROUND_CONTEXT);
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, storageId, path), catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal });
+	try {
+		await received.waitForCount(1);
+		const text = received[0]?.text ?? "";
+		assert.match(text, /^Agent “[^”]+” completed native input\.\n/u);
+		assert.doesNotMatch(text, /finished/u, "native input completion never reads as finished work");
+		assert.match(text, new RegExp(`Request task-a \\(submission ${declared.submissionId}\\): native input completed; declared work remains open\\. This answer is a state note, not the final result`, "u"));
+		assert.match(text, new RegExp(`Request task-b \\(submission ${plain.submissionId}\\): native input completed; no declared work\\. This answer is its result: dependency arrived\\.`, "u"));
+
+		const message = `${"r".repeat(15_000)}😀${"s".repeat(5_000)}`;
+		const completed = await source.harness.commit((tx) => completeOpenWork(tx, storageId, 1 as ConversationId, { request: "task-a", status: "done", message }, 2), BACKGROUND_CONTEXT);
+		assert.ok(!("error" in completed) && completed.report !== undefined);
+		await received.waitForCount(2);
+		const report = received[1]?.text ?? "";
+		assert.match(report, /^Agent “[^”]+” sent a final work report\. Work completed with a final report \(done\) for request task-a \(report work-final:1:task-a\)\. This report is the result of that request: dependency arrived\./u);
+		const call = /Final report continues: agent_inspect\((\{.*\})\)/u.exec(report);
+		assert.ok(call, "a cut final report names its exact continuation");
+		const exact = completed.report.message;
+		const head = report.slice(report.indexOf("\n\n") + 2, report.indexOf("\n\n[text truncated]"));
+		assert.equal(exact.startsWith(head), true, "the delivered part is the start of the retained report");
+		let next: Record<string, unknown> | undefined = JSON.parse(call[1]) as Record<string, unknown>;
+		assert.equal(next.offset, head.length);
+		let rest = "";
+		while (next !== undefined) {
+			const { tool: _tool, ...params } = next;
+			const page = await source.request("inspect", params) as { finalReport: { text: string }; finalReportContinuation?: Record<string, unknown> };
+			rest += page.finalReport.text;
+			next = page.finalReportContinuation;
+		}
+		assert.equal(head + rest, exact, "the continuation reads the rest of the report exactly");
 	} finally { await watcher.close(); }
 });
 

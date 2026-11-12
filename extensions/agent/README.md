@@ -1731,9 +1731,35 @@ owes a final report; the oldest age is in milliseconds and is absent when the
 count is zero. The dashboard roster and selected conversation show that count
 and age even when the native input has settled.
 
-Delivered receipts for a declared item label its native answer as a state note,
-not a final result. Ordinary-primary details also carry `work` (`open` or
-`closed`) and `workLabel`. Enabled check-ins continue after the native input
+The text of each delivered receipt, which the receiving model reads, names the
+state of every request that the answer covers, one line per request (at most
+16, then a count of the rest):
+
+- `native input completed; no declared work`: the answer is the result of the
+  request, and its dependency arrived;
+- `native input completed; declared work remains open`: the answer is a state
+  note, and the final report arrives as a separate report;
+- `native input completed; declared work completed (<status>) with final
+  report <id>`: the answer is a state note, and the line names the exact
+  final-report read call;
+- `native input failed without an answer` or `native input stopped without an
+  answer`: no result arrived.
+
+The ordinary-primary headline says `completed native input`, never that the
+agent finished. A grouped answer with mixed states names each request with its
+own state. The producer host derives each line from its committed work facts;
+the producer's prose and the hidden structured details do not decide it.
+Ordinary-primary details also carry `work` (`open` or `closed`) and
+`workLabel` for the first request.
+
+A delivered final report starts with `Work completed with a final report
+(<status>) for request <id>` and says that the report is the result of that
+request, so its dependency arrived. When the body exceeds the delivery bound,
+the cut text ends with `Final report continues:` and the exact final-report
+read call at the cut offset. The read returns the rest of the retained
+report exactly.
+
+Enabled check-ins continue after the native input
 settles while declared work stays open; their note and dependency facts do not
 complete it. A host abort or context reset closes open items with `stopped` or
 `reset` and retains the fixed final report for each original reply recipient.
@@ -1747,7 +1773,8 @@ Sources: `open-work.ts` (`AgentWorkParams`, `declareOpenWork`,
 `continueWork`, `completeOpenWork`, `finalReport`, `OpenWorkDoc`,
 `openWorkStatus`, `receiptWork`, `closeOpenWork`), `durable-agents.ts`
 (`workTool`, `exposedControl`), `durable-observation.ts`
-(`readConversationStatus`), `durable-delivery.ts` (`receiptFollowText`), and
+(`readConversationStatus`), `durable-delivery.ts` (`receiptFollowText`,
+`receiptStateLine`, `finalReportLead`, `reportBody`), and
 `durable-checkins.ts` (`CheckInTask`).
 
 #### State note of an ordinary session

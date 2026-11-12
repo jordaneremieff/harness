@@ -33,7 +33,7 @@ import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { threadExcerpt, threadRecoveryText } from "./thread-notice-projection.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { finalReportToItself, receiptDependencyMarks, receiptWork, reportDependencyMarks, requestHasOpenWork } from "./open-work.ts";
+import { finalReportDeliveryFacts, finalReportToItself, receiptDependencyMarks, reportDependencyMarks, requestHasOpenWork, requestWork, type DependencyMark, type FinalReportDeliveryFacts, type FinalReportRead, type RequestWork } from "./open-work.ts";
 import type { ConversationId, Harness, Tx } from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
 import {
@@ -304,9 +304,9 @@ function rowWakes(row: DeliveryRow, recipient: string): boolean {
 	return own.some((receipt) => receiptOrigin(receipt) === "model");
 }
 
-/** Plain outcome word for one settled receipt. */
-function receiptOutcome(receipt: DeliveryReceipt): "finished" | "failed" | "stopped" {
-	if (receipt.status === "done") return "finished";
+/** Plain outcome words for one settled receipt: an answer completes the native input, not declared work. */
+function receiptOutcome(receipt: DeliveryReceipt): "completed native input" | "failed" | "stopped" {
+	if (receipt.status === "done") return "completed native input";
 	return receipt.reason === "aborted" ? "stopped" : "failed";
 }
 
@@ -404,17 +404,58 @@ function receiptFailureText(receipt: DeliveryReceipt, displayReason = receipt.re
 function deliveredResults(metadata: HostMetadata, row: ReceiptRow): ResultReference[] {
 	return row.receipts.map((receipt) => ({ sessionId: canonicalIdentity(metadata.storageId, receipt.conversationId), submissionId: receipt.submissionId, requestId: receipt.requestId }));
 }
-type ReceiptWork = NonNullable<Awaited<ReturnType<typeof receiptWork>>>;
 function receiptUnusable(receipt: DeliveryReceipt): boolean {
 	return receipt.status !== "done" || (receipt.answer ?? "").trim() === "";
 }
-function receiptFollowText(metadata: HostMetadata, row: ReceiptRow, continuity: readonly string[], work?: ReceiptWork): string {
+
+/** Requests of one answer group that the delivery text names one by one. */
+const RECEIPT_STATE_LINES = 16;
+/** One request of an answer group with its declared work, read from the producer's committed facts. */
+type ReceiptState = { readonly receipt: DeliveryReceipt; readonly work?: RequestWork };
+
+function inspectCallText(call: FinalReportRead): string {
+	const { tool: _tool, ...args } = call;
+	return `agent_inspect(${JSON.stringify(args)})`;
+}
+
+/**
+ * The state of one request in host words: native input completed with its result, work still open with a
+ * state note, or work closed with a separate final report. Producer prose never decides it.
+ */
+function receiptStateLine(state: ReceiptState): string {
+	const { receipt, work } = state;
+	const request = `Request ${receipt.requestId} (submission ${receipt.submissionId})`;
+	if (receipt.status !== "done") return `${request}: native input ${receiptOutcome(receipt)} without an answer; no result arrived.`;
+	if (work === undefined) return `${request}: native input completed; no declared work. This answer is its result: dependency arrived.`;
+	if (work.work === "open") return `${request}: native input completed; declared work remains open. This answer is a state note, not the final result; the final report arrives as a separate report.`;
+	const { finalReport } = work;
+	return `${request}: native input completed; declared work completed${finalReport.status === undefined ? "" : ` (${finalReport.status})`} with final report ${finalReport.requestId}. This answer is a state note, not the final result. Read the final report: ${inspectCallText(finalReport.read)}`;
+}
+
+function receiptStateText(states: readonly ReceiptState[]): string {
+	const lines = states.slice(0, RECEIPT_STATE_LINES).map(receiptStateLine);
+	if (states.length > RECEIPT_STATE_LINES) lines.push(`${states.length - RECEIPT_STATE_LINES} more requests share this answer; read the state of each with agent_inspect view: result.`);
+	return lines.join("\n");
+}
+
+function receiptFollowText(metadata: HostMetadata, row: ReceiptRow, continuity: readonly string[], states: readonly ReceiptState[]): string {
 	const receipt = row.receipt;
 	const result =
 		receipt.status === "done"
 			? (receipt.answer ?? "No assistant text.")
 			: receiptFailureText(receipt, row.displayReason);
-	return `Agent result from ${metadata.storageId}:${receipt.conversationId} (${submissionLabel(row)}).${work === undefined ? "" : ` ${work.label}.`} Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, receipt)}${receiptGroupContinuationText(row, metadata.storageId)}${continuity.length === 0 ? "" : `\n\n${continuity.join("\n")}`}`;
+	return `Agent result from ${metadata.storageId}:${receipt.conversationId} (${submissionLabel(row)}).\n${receiptStateText(states)}\nResults do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, receipt)}${receiptGroupContinuationText(row, metadata.storageId)}${continuity.length === 0 ? "" : `\n\n${continuity.join("\n")}`}`;
+}
+
+/** The request and close status of a final report; a cut body names the exact call that continues it. */
+function finalReportLead(facts: FinalReportDeliveryFacts): string {
+	return `Work completed with a final report${facts.status === undefined ? "" : ` (${facts.status})`} for request ${facts.requestId} (report ${facts.reportRequestId}). This report is the result of that request: dependency arrived.`;
+}
+function reportBody(report: DeliveryReport, facts: FinalReportDeliveryFacts | undefined): { text: string; truncated: boolean } {
+	const body = boundedReportText(report);
+	if (facts === undefined || !body.truncated) return body;
+	const kept = body.text.length - PEER_TRUNCATION_MARKER.length;
+	return { text: `${body.text.slice(0, kept)}\n\n[text truncated] Final report continues: ${inspectCallText({ ...facts.read, offset: kept })}`, truncated: true };
 }
 
 function reportOptionalDetails(report: DeliveryReport) {
@@ -440,26 +481,32 @@ function reportProvenance(report: DeliveryReport): Omit<InputProvenance, "conver
 	if (report.checkIn !== undefined) return { classification: "automatic", automaticKind: "checkIn", sender: report.senderIdentity, producerRequestId: report.checkIn.requestId };
 	return { classification: report.passive ? "automatic" : "report", sender: report.senderIdentity, ...(report.intervention === undefined ? {} : { intervention: report.intervention }) };
 }
-function reportFollowText(report: DeliveryReport): string {
+function reportFollowText(report: DeliveryReport, facts?: FinalReportDeliveryFacts): string {
 	if (report.checkIn !== undefined)
 		return `Check-in from ${report.senderIdentity} (source ${report.sourceId}): still working, not finished. ${checkInSummary(report.checkIn)}. ${CHECK_IN_GUIDANCE}\n\n${boundedPeerText(report.message).text}`;
-	return `${report.threadId === undefined ? "Report" : "Thread notice"} from ${report.senderIdentity} (source ${report.sourceId}). Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${boundedReportText(report).text}`;
+	const lead = facts === undefined ? "" : ` ${finalReportLead(facts)}`;
+	return `${facts !== undefined ? "Final work report" : report.threadId === undefined ? "Report" : "Thread notice"} from ${report.senderIdentity} (source ${report.sourceId}).${lead} Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${reportBody(report, facts).text}`;
 }
 
 /** Primary-channel text: display name, plain outcome, and exact answer continuation. */
-function channelText(metadata: HostMetadata, row: DeliveryRow, label: string, originalOwnerId: string, fallback: boolean): string {
+function channelText(metadata: HostMetadata, row: DeliveryRow, label: string, originalOwnerId: string, fallback: boolean, facts: ChannelFacts): string {
 	const fallbackLabel = fallback ? ` ${FALLBACK_LABEL} for ${originalOwnerId}.` : "";
 	if (row.kind === "receipt") {
 		const result =
 			row.receipt.status === "done"
 				? (row.receipt.answer ?? "No assistant text.")
 				: receiptFailureText(row.receipt, row.displayReason);
-		return `Agent “${label}” ${receiptOutcome(row.receipt)}.${fallbackLabel} Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, row.receipt)}${receiptGroupContinuationText(row, metadata.storageId)}\n\nUse agent_inspect for retained source evidence.`;
+		return `Agent “${label}” ${receiptOutcome(row.receipt)}.${fallbackLabel}\n${receiptStateText(facts.states)}\nResults do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, row.receipt)}${receiptGroupContinuationText(row, metadata.storageId)}\n\nUse agent_inspect for retained source evidence.`;
 	}
 	if (row.report.checkIn !== undefined)
 		return `Agent “${label}” still working, not finished (check-in from ${row.report.senderIdentity}; source ${row.report.sourceId}). ${checkInSummary(row.report.checkIn)}.${fallbackLabel} ${CHECK_IN_GUIDANCE}\n\n${boundedPeerText(row.report.message).text}\n\nUse agent_inspect for retained source evidence.`;
-	return `${row.report.threadId === undefined ? `Agent “${label}” sent a report.` : `Thread notice from agent “${label}”.`}${fallbackLabel} Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${boundedReportText(row.report).text}${row.report.threadId === undefined ? "\n\nUse agent_inspect for retained source evidence." : ""}`;
+	const final = facts.finalReport;
+	const lead = final !== undefined ? `Agent “${label}” sent a final work report. ${finalReportLead(final)}` : row.report.threadId === undefined ? `Agent “${label}” sent a report.` : `Thread notice from agent “${label}”.`;
+	return `${lead}${fallbackLabel} Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${reportBody(row.report, final).text}${row.report.threadId === undefined ? "\n\nUse agent_inspect for retained source evidence." : ""}`;
 }
+
+/** Per-request work of a receipt group, or the final-report facts of a report, read before the text is built. */
+type ChannelFacts = { readonly states: readonly ReceiptState[]; readonly finalReport?: FinalReportDeliveryFacts };
 
 function asError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
@@ -745,6 +792,28 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		return dependencyMarks.length === 0 ? {} : { dependencyMarks };
 	};
 
+	/** Each request of an answer group with its declared work; the named lines read the producer's facts. */
+	const receiptStates = async (row: ReceiptRow): Promise<ReceiptState[]> => {
+		const states: ReceiptState[] = [];
+		for (const [index, receipt] of row.receipts.entries()) {
+			const work = index >= RECEIPT_STATE_LINES || receipt.status !== "done" ? undefined
+				: await requestWork(workReader, metadata.storageId, receipt.conversationId, { requestId: receipt.requestId, submissionId: receipt.submissionId, ownerId: receipt.ownerId });
+			states.push({ receipt, ...(work === undefined ? {} : { work }) });
+		}
+		return states;
+	};
+	/** Marks and final-report facts of one report delivery. */
+	const reportFacts = async (report: DeliveryReport): Promise<{ marks: { dependencyMarks?: DependencyMark[] }; finalReport?: FinalReportDeliveryFacts }> => {
+		const marks = await reportMarks(report);
+		const finalReport = finalReportDeliveryFacts(report, marks.dependencyMarks ?? []);
+		return { marks, ...(finalReport === undefined ? {} : { finalReport }) };
+	};
+	const channelFacts = async (row: DeliveryRow): Promise<ChannelFacts> => {
+		if (row.kind === "receipt") return { states: await receiptStates(row) };
+		const { finalReport } = await reportFacts(row.report);
+		return { states: [], ...(finalReport === undefined ? {} : { finalReport }) };
+	};
+
 	const reportCurrent = async (row: DeliveryRow): Promise<boolean> => {
 		if (row.kind !== "report" || (row.report.checkIn === undefined && row.report.providerRetry === undefined)) return true;
 		const report = row.report;
@@ -767,15 +836,16 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			const requestId = receiptRequestId(metadata, row.receipt);
 			const communicationParams = deliveryCommunicationParams(row, host);
 			const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
-			const work = await receiptWork(workReader, row.receipt.conversationId, row.receipt.requestId);
+			const states = await receiptStates(row);
 			const dependencyMarks = await receiptDependencyMarks(workReader, metadata.storageId, row.receipts);
-			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row, continuity, work), requestId, provenance: { classification: "automatic" }, ...communicationParams, deliveredResults: deliveredResults(metadata, row), dependencyMarks, whenBusy: "followUp" });
+			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row, continuity, states), requestId, provenance: { classification: "automatic" }, ...communicationParams, deliveredResults: deliveredResults(metadata, row), dependencyMarks, whenBusy: "followUp" });
 			return;
 		}
 		if (!await reportCurrent(row)) return;
 		const requestId = reportRequestId(metadata, row.report);
 		const communicationParams = deliveryCommunicationParams(row, host);
-		await host.request(row.report.passive ? "passive-submit" : "submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, ...communicationParams, ...(await reportMarks(row.report)), provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" });
+		const facts = await reportFacts(row.report);
+		await host.request(row.report.passive ? "passive-submit" : "submit", { sessionId: row.report.ownerId, message: reportFollowText(row.report, facts.finalReport), requestId, ...communicationParams, ...facts.marks, provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" });
 	};
 
 	const acknowledgeRow = async (row: DeliveryRow, owners: readonly string[]): Promise<void> => {
@@ -864,7 +934,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const shared = sharedRowDetails(row, identity, originalOwnerId, deliveryRecipient, liveOwner, fallback, status, body);
 		if (row.kind === "receipt") {
 			const receipt = row.receipt;
-			const work = await receiptWork(workReader, receipt.conversationId, receipt.requestId);
+			const work = (await receiptStates({ ...row, receipts: [receipt] })).at(0)?.work;
 			return {
 				...shared,
 				...(work === undefined ? {} : { work: work.work, workLabel: work.label }),
@@ -918,7 +988,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const message: PrimaryDelivery = {
 			requireRetained: true,
 			sourceId: rowSourceId(metadata, row, fallback ? deliveryRecipient : undefined),
-			text: channelText(metadata, row, displayName(status, identity), originalOwnerId, fallback),
+			text: channelText(metadata, row, displayName(status, identity), originalOwnerId, fallback, await channelFacts(row)),
 			details: await rowDetails(row, identity, originalOwnerId, deliveryRecipient, liveOwner, fallback, status),
 		};
 		if (!await reportCurrent(row)) return false;
@@ -1091,7 +1161,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			const requestId = receiptRequestId(metadata, row.receipt);
 			const communicationParams = deliveryCommunicationParams(row, host);
 			const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
-			const work = await receiptWork(workReader, row.receipt.conversationId, row.receipt.requestId);
+			const states = await receiptStates(row);
 			const dependencyMarks = await receiptDependencyMarks(workReader, metadata.storageId, row.receipts);
 			await connection.request(
 				"submit",
@@ -1099,7 +1169,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 					sessionId: owner,
 					provenance: { classification: "automatic" },
 					...communicationParams,
-					message: receiptFollowText(metadata, row, continuity, work),
+					message: receiptFollowText(metadata, row, continuity, states),
 					deliveredResults: deliveredResults(metadata, row),
 					dependencyMarks,
 					requestId,
@@ -1111,9 +1181,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			if (!await reportCurrent(row)) return;
 			const requestId = reportRequestId(metadata, row.report);
 			const communicationParams = deliveryCommunicationParams(row, host);
+			const facts = await reportFacts(row.report);
 			await connection.request(
 				row.report.passive ? "passive-submit" : "submit",
-				{ sessionId: row.report.ownerId, message: reportFollowText(row.report), requestId, ...communicationParams, ...(await reportMarks(row.report)), provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" },
+				{ sessionId: row.report.ownerId, message: reportFollowText(row.report, facts.finalReport), requestId, ...communicationParams, ...facts.marks, provenance: reportProvenance(row.report), ...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }), whenBusy: row.report.steer ? "steer" : "followUp" },
 				{ requestId, signal },
 			);
 		}
