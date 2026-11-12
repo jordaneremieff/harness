@@ -4,8 +4,7 @@ import { inputEntry, sentInputClass } from "./input-entry.ts";
 import { defineTask, LiveDoc, UsageDoc, type ConversationId, type Tx, type UsageState, type ToolSlot, type LiveState, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
 import { placementMode, type DeliveryOrigin, type DeliveryMessage } from "./durable-controls.ts";
 import { checkInFallback, currentCheckInReport, retainedReport, storeDeliveryRow } from "./delivery-store.ts";
-import { producerRetryFact, readAwaitFact } from "./await-observation.ts";
-import { awaitFactLines, retryFactLines } from "./await-facts.ts";
+import { producerRetryFact, retryFactLines } from "./await-facts.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
 
 export type CheckInInput = {
@@ -77,8 +76,6 @@ async function digest(tx: Tx, input: CheckInInput, inputEntry: EntryId | undefin
 	const live = await tx.doc(LiveDoc, id);
 	const usage = await tx.doc(UsageDoc, id);
 	const watched = await tx.submissionByRequest(id, input.requestId);
-	const awaiting = watched === undefined ? undefined : await readAwaitFact(tx, input.senderIdentity.split(":")[0], id, watched.id);
-	if (awaiting !== undefined) return { cost: retainedCost(usage), digest: bounded(awaitFactLines(awaiting).join("\n"), 2400) };
 	const recent = await recentActivity(tx, id, inputEntry);
 	// Native input placement follows the prior tool round and clears its live tools.
 	const running = inputEntry === undefined ? [] : runningTools(live);

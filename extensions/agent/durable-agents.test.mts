@@ -41,8 +41,7 @@ import { ProfileDoc, readProfile } from "./profile.ts";
 import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, requestContextHooks, requestContextSection, type ActiveRequestContext } from "./request-context.ts";
 import { handleStorageId } from "./identity.ts";
 import { AgentMetaDoc, AwaitInputSuppressed, readOutcome, submitConversation, settleDeliveries, type DeliveryReceipt } from "./durable-controls.ts";
-import { AwaitDoc, type AwaitState, type AwaitOutcome } from "./awaited-results.ts";
-import { readAwaitFact, releaseAwait, recordProducerAwait } from "./await-observation.ts";
+import { AwaitDoc } from "./awaited-results.ts";
 
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, gateTool } from "./durable-host-fixture.mts";
@@ -91,7 +90,6 @@ const TestChildren = Durable.defineDoc<ChildrenState>({
 const CONTROL_TOOLS = [
 	"agent_abort",
 	"agent_attach",
-	"agent_await",
 	"agent_collaborate",
 	"agent_command",
 	"agent_compact",
@@ -111,7 +109,6 @@ const CONTROL_TOOLS = [
 ];
 
 const REPLAY_CLASSIFICATION: Record<string, string> = {
-	agent_await: "safe",
 	agent_collaborate: "safe",
 	agent_spawn: "safe",
 	agent_send: "safe",
@@ -555,48 +552,6 @@ it("declares every control tool with an explicit replay classification", () => {
 	assert.equal(contribution.source, "/abs/extensions/agent/index.ts");
 });
 
-it("offers agent_await to the model only, so a script cannot nest a wait", () => {
-	const { extension } = buildRegistry();
-	assert.deepEqual(extension.tools?.find((tool) => tool.name === "agent_await")?.callers, ["model"]);
-	assert.deepEqual(extension.tools?.find((tool) => tool.name === "agent_compact")?.callers, ["model"]);
-	for (const tool of extension.tools ?? []) if (tool.name !== "agent_await" && tool.name !== "agent_compact") assert.equal(tool.callers, undefined, `${tool.name} stays callable by scripts`);
-});
-
-it("describes normal follow-up timing and active await release in both tool registrations", async () => {
-	const ordinary: { name: string; description: string }[] = [];
-	await registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: { name: string; description: string }) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
-	const { extension } = buildRegistry();
-	for (const tools of [ordinary, extension.tools ?? []]) {
-		const send = tools.find((tool) => tool.name === "agent_send");
-		const awaiting = tools.find((tool) => tool.name === "agent_await");
-		assert.ok(send);
-		if (tools === ordinary) assert.equal(awaiting, undefined, "ordinary primaries do not advertise native await");
-		else assert.ok(awaiting, "native conversations retain await");
-		const sendText = send.description ?? "";
-		const awaitText = awaiting?.description ?? "";
-		assert.match(sendText, /followUp normally waits for the current run to end/u);
-		assert.match(sendText, /admitted explicit followUp releases an active agent_await/u);
-		assert.match(sendText, /input already queued when the wait starts/u);
-		assert.match(sendText, /both inputs may share one answer/u);
-		assert.match(sendText, /A report sent from an ordinary primary uses explicit admission/u);
-		assert.match(sendText, /even from an unrelated sender/u);
-		assert.match(sendText, /A report sent from a native Durable agent uses retained report provenance/u);
-		assert.match(sendText, /only a named awaited producer's report releases the wait/u);
-		assert.match(sendText, /unrelated native reports stay queued/u);
-		assert.match(sendText, /Automatic native Reporter result copies remain raw follow-ups/u);
-		assert.match(sendText, /Model-origin reports to ordinary primaries use steer/u);
-		assert.match(sendText, /steer does not interrupt a running tool/u);
-		assert.doesNotMatch(sendText, /mode followUp or report to a Durable agent waits/u);
-		assert.doesNotMatch(sendText, /Reports and follow-ups to Durable agents wait/u);
-		if (tools === ordinary) continue;
-		assert.match(awaitText, /followUp queued before or during agent_await/u);
-		assert.match(awaitText, /input joins the current work and may share its answer/u);
-		assert.match(awaitText, /Retained report-provenance input releases the wait only for a named awaited producer/u);
-		assert.match(awaitText, /Unrelated report-provenance input, automatic traffic, and raw native Reporter result copies do not release the wait/u);
-		assert.match(awaitText, /Explicit release also returns control on the original request/u);
-	}
-});
-
 it("saves an explicit handle-less creation role and documents it in both schemas", async (t) => {
 	const ordinary: { name: string; parameters: { properties: Record<string, { description?: string }> } }[] = [];
 	await registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: typeof ordinary[number]) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
@@ -687,75 +642,6 @@ it("accepts every shared thinking level in native spawn, configure, and attach s
 	}
 });
 
-it("forwards native await cancellation through the registered entrypoint contribution", { timeout: 30000 }, async (t) => {
-	let contribution: { create(host: AgentContributionHost): Durable.Extension | Promise<Durable.Extension> } | undefined;
-	await registerAgentExtension({ events: { on: () => () => {}, emit(event: string, value: unknown) { if (event === "durable:contribution") contribution = value as { create(host: AgentContributionHost): Durable.Extension | Promise<Durable.Extension> }; } }, on() {}, registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
-	assert.ok(contribution);
-	let observed!: () => void;
-	const observing = new Promise<void>((resolve) => { observed = resolve; });
-	let cancelled = false;
-	const restore = publishAgentControlDispatch(async (method, _params, requestContext) => {
-		assert.equal(method, "receipts");
-		const signal = requestContext?.abortSignal;
-		assert.ok(signal, "the loaded contribution must retain invocation cancellation");
-		observed();
-		return new Promise((_resolve, reject) => signal.addEventListener("abort", () => { cancelled = true; reject(new Error("Observation cancelled")); }, { once: true }));
-	});
-	t.after(restore);
-	const registry = Durable.createRegistry();
-	registry.install(await contribution.create({ onClose() {}, durable: Durable, storageId, cwd: testCwd, agentDir: testAgentDir, services: testServices }));
-	const route = createRoute();
-	route.script.push({ tool: "agent_await", args: { results: [{ sessionId: "remote-storage", submissionId: 77 }] } });
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
-	t.after(() => harness.close(context));
-	const original = await root.submit({ type: "input", content: "Await a foreign result", requestId: "entrypoint-await" }, context);
-	await Promise.race([observing, original.wait(context).then(() => { throw new Error("The original request ended before foreign observation"); })]);
-	await root.abort(context);
-	assert.equal((await original.wait(context)).status, "unanswered");
-	await root.waitForIdle(context);
-	assert.equal(cancelled, true);
-});
-
-it("keeps an aborted request unanswered and retains the producer receipt for normal delivery", async (t) => {
-	const route = createRoute();
-	let finish!: (answer: AssistantMessage) => void;
-	const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	const models = createTestModels((...args) => {
-		if (messageText(args[0].messages.findLast((message) => message.role !== "system")) === "HELD-AFTER-ABORT") return held;
-		if (route.script.length > 0 && args[0].messages.some((message) => messageText(message) === "Reconsider the retained result")) return scriptedAnswer(route.batch, route.script);
-		return route.route(...args);
-	});
-	const holder: DispatchHolder = {}; const { registry } = buildRegistry(createDispatch(holder, []));
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models); holder.harness = harness;
-	t.after(async () => { finish(fauxAssistantMessage("RESULT")); await harness.close(context); });
-	route.script.push({ tool: "agent_spawn", args: { prompt: "HELD-AFTER-ABORT", name: "independent" } });
-	await say(root, "Dispatch independent work");
-	const outcome = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_spawn");
-	assert.ok(outcome);
-	const result = (outcome.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
-	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	route.script.push({ tool: "agent_await", args: { results: [result] } });
-	const original = await root.submit({ type: "input", content: "Await independent work" }, context);
-	await ready;
-	const calls = route.requests.length;
-	await root.abort(context);
-	assert.equal((await original.wait(context)).status, "unanswered");
-	finish(fauxAssistantMessage("RESULT"));
-	await settle(harness, root.id);
-	assert.equal(route.requests.length, calls, "Reporter does not start a second answer turn");
-	await settleDeliveries(harness, context);
-	const receipt = await harness.commit((tx) => retainedReceipt(tx, result.submissionId), context);
-	assert.equal(receipt?.ownerId, storageId);
-	assert.equal(receipt?.acknowledged, false, "the common delivery watcher still owns normal intake");
-	assert.equal((await original.status(context)).status, "unanswered");
-	route.script.push({ tool: "agent_await", args: { results: [result] } });
-	await say(root, "Reconsider the retained result");
-	const observed = await toolOutcomes(harness, root.id);
-	const resumed = observed.findLast((item) => item.name === "agent_await" && item.isError !== true);
-	assert.ok(resumed, JSON.stringify({ observed, queued: route.script.length, latestInput: route.requests.at(-1)?.map((message) => ({ role: message.role, text: messageText(message).slice(0, 160) })) }));
-	assert.equal((resumed.details as { results: { answer?: string }[] }).results[0]?.answer, "RESULT", "a new explicit request still reads the retained producer result");
-});
-
 it("releases failed admission provenance before preparation exhausts its bound", async (t) => {
 	let providerCalls = 0;
 	const route = createRoute();
@@ -825,51 +711,6 @@ it("arms no check-in for a model task that names no interval", async (t) => {
 	assert.equal(checkIns.length, 0, "the default interval of zero arms no watchdog");
 });
 
-it("keeps the original input placed while one native await accepts two exact results without provider turns", { timeout: 30000 }, async (t) => {
-	const route = createRoute();
-	const finishes: Array<(answer: AssistantMessage) => void> = [];
-	const held = [0, 1].map(() => new Promise<AssistantMessage>((resolve) => finishes.push(resolve)));
-	const models = createTestModels((...args) => {
-		const last = args[0].messages.findLast((message) => message.role !== "system");
-		const task = messageText(last);
-		return last?.role === "user" && task.startsWith("HELD-") ? held[Number(task.slice(5))] : route.route(...args);
-	});
-	const holder: DispatchHolder = {};
-	const { registry } = buildRegistry(createDispatch(holder, []));
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models);
-	holder.harness = harness;
-	t.after(async () => { for (const finish of finishes) finish(fauxAssistantMessage("FINISHED")); await harness.close(context); });
-	const results = [];
-	for (const index of [0, 1]) {
-		const producer = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-		const input = await producer.submit({ type: "input", content: `HELD-${index}`, requestId: `exact:${index}` }, context);
-		results.push({ sessionId: `${storageId}:${producer.id}`, submissionId: input.id, requestId: `exact:${index}` });
-	}
-	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
-	const watch = await harness.watchDoc(AwaitDoc, context);
-	assert.ok(watch);
-	let ready!: () => void;
-	let first!: () => void;
-	const declared = new Promise<void>((resolve) => { ready = resolve; });
-	const accepted = new Promise<void>((resolve) => { first = resolve; });
-	watch.start(async (call) => { const state = call.kind === "value" ? call.value : undefined; if (state?.declarations.some((item) => item.decision === "awaiting")) ready(); if (state?.declarations.some((item) => item.outcomes.length === 1)) first(); });
-	t.after(() => watch.stop());
-	route.script.push({ tool: "agent_await", args: { results } });
-	const original = await root.submit({ type: "input", content: "Await both exact inputs" }, context);
-	await declared;
-	const calls = route.requests.length;
-	assert.equal((await original.status(context)).status, "placed");
-	finishes[0](fauxAssistantMessage("RESULT-ONE"));
-	await accepted;
-	assert.equal((await original.status(context)).status, "placed");
-	assert.equal(route.requests.length, calls, "accepted partial results do not invoke the provider");
-	finishes[1](fauxAssistantMessage("RESULT-TWO"));
-	assert.equal((await original.wait(context)).status, "done");
-	const output = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_await");
-	assert.equal(output?.isError, false, output?.text);
-	assert.ok(output?.text.includes("RESULT-ONE") && output.text.includes("RESULT-TWO"));
-});
-
 for (const contentRefusal of [true, false]) it(`retains ${contentRefusal ? "content refusal" : "unclassified failure"} receipts without a second Reporter input`, { timeout: 10000 }, async (t) => {
 	const raw = `${contentRefusal ? "This content was flagged for possible cybersecurity risk" : "Unknown request rejection"}; api_key=sk-abcdefghijklmnopqrstuv; ${"x".repeat(2000)}`;
 	const route = createRoute(); let finish!: (message: AssistantMessage) => void; let calls = 0;
@@ -903,264 +744,6 @@ for (const contentRefusal of [true, false]) it(`retains ${contentRefusal ? "cont
 	assert.ok(Buffer.byteLength(expected) <= 1024); assert.doesNotMatch(expected, /abcdefghijkl/u);
 });
 
-for (const contentRefusal of [true, false]) it(`returns retained ${contentRefusal ? "content refusal" : "unclassified failure"} text through native await`, { timeout: 10000 }, async (t) => {
-	const raw = `${contentRefusal ? "This content was flagged for possible cybersecurity risk" : "Unknown request rejection"}; api_key=sk-abcdefghijklmnopqrstuv; ${"x".repeat(2000)}`;
-	const route = createRoute(); let finish!: (message: AssistantMessage) => void; let calls = 0;
-	const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	const models = createTestModels((...args) => {
-		const last = args[0].messages.findLast((message) => message.role !== "system");
-		if (last?.role === "user" && messageText(last) === "REFUSED-TASK") { calls++; return held; }
-		return route.route(...args);
-	});
-	const holder: DispatchHolder = {}; const { registry } = buildRegistry(createDispatch(holder, []));
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models, { retry: { enabled: true, maxRetries: 3 } }); holder.harness = harness;
-	t.after(async () => { finish(fauxAssistantMessage("FINISHED")); await harness.close(context); });
-	route.script.push({ tool: "agent_spawn", args: { name: "refused-task", prompt: "REFUSED-TASK" } }); await say(root, "Dispatch a task");
-	const spawned = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_spawn"); assert.ok(spawned);
-	const result = (spawned.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
-	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
-	const declared = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	route.script.push({ tool: "agent_await", args: { results: [result] } });
-	const awaiting = await root.submit({ type: "input", content: "Await the exact task" }, context); await declared;
-	finish(fauxAssistantMessage([], { stopReason: "error", errorMessage: raw }));
-	const input = await harness.submission(result.submissionId as Durable.SubmissionId, context); assert.ok(input);
-	const native = await input.wait(context); assert.equal(native.status, "unanswered");
-	if (native.status !== "unanswered") assert.fail("Expected a native model failure");
-	assert.equal(native.reason, "model_error"); assert.equal(native.detail, raw);
-	const expected = modelFailureText("model_error", raw);
-	const observed = await readOutcome(harness, result.submissionId as Durable.SubmissionId, context);
-	assert.equal(observed.reason, expected); assert.equal(observed.providerBlock, undefined);
-	await awaiting.wait(context); await settle(harness, root.id);
-	const output = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_await"); assert.ok(output);
-	const returned = JSON.parse(output.text) as { decision: string; results: AwaitOutcome[] };
-	assert.equal(returned.decision, "failed"); assert.equal(returned.results[0]?.reason, expected);
-	assert.equal(calls, 1, "the native host does not retry or substitute the model");
-	assert.ok(Buffer.byteLength(expected) <= 1024); assert.doesNotMatch(expected, /abcdefghijkl/u);
-});
-
-async function waitForAwait(harness: Durable.Harness, predicate: (state: AwaitState) => boolean): Promise<void> {
-	const watch = await harness.watchDoc(AwaitDoc, context);
-	assert.ok(watch);
-	try {
-		await new Promise<void>((resolve) => {
-			watch.start(async (call) => { if (call.kind === "value" && predicate(call.value)) resolve(); });
-			void harness.snapshot(AwaitDoc, context).then((state) => { if (state && predicate(state)) resolve(); });
-		});
-	} finally { await watch.stop(); }
-}
-
-for (const event of ["explicit", "report", "automatic", "abort", "reset", "failure", "unavailable"] as const) it(`native await handles ${event} without ending the original request early`, { timeout: 10000 }, async (t) => {
-	const route = createRoute();
-	let finish!: (answer: AssistantMessage) => void;
-	const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	const models = createTestModels((...args) => messageText(args[0].messages.findLast((message) => message.role !== "system")) === "HELD-RESULT" ? held : route.route(...args));
-	const holder: DispatchHolder = {}; const { registry } = buildRegistry(createDispatch(holder, []));
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models); holder.harness = harness;
-	t.after(async () => { finish(fauxAssistantMessage("RESULT")); await harness.close(context); });
-	const producer = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-	const source = await producer.submit({ type: "input", content: "HELD-RESULT", requestId: "held-source" }, context);
-	const result = { sessionId: `${storageId}:${producer.id}`, submissionId: event === "unavailable" ? 99999 : source.id, ...(event === "unavailable" ? {} : { requestId: "held-source" }) };
-	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
-	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	route.script.push({ tool: "agent_await", args: { results: [result] } });
-	const original = await root.submit({ type: "input", content: "AWAIT" }, context);
-	const readiness = await Promise.race([ready.then(() => "ready"), original.wait(context).then(() => "ended")]);
-	assert.equal(readiness, "ready", JSON.stringify(await toolOutcomes(harness, root.id)));
-	const calls = route.requests.length;
-	if (event === "automatic") {
-		await assert.rejects(submitConversation(root, { message: "NAMED CHECK-IN", requestId: "named-check", provenance: { classification: "automatic", automaticKind: "checkIn", sender: result.sessionId, producerRequestId: result.requestId } }, context), AwaitInputSuppressed);
-		const timer = await submitConversation(root, { message: "TIMER INPUT", requestId: "timer-input", whenBusy: "steer", provenance: { classification: "automatic", automaticKind: "timer" } }, context);
-		assert.equal(route.requests.length, calls); assert.equal((await original.status(context)).status, "placed");
-		assert.equal((await harness.snapshot(Durable.InboxDoc, root.id, context))?.items.find((item) => item.id === timer.submissionId)?.mode, "followUp");
-		finish(fauxAssistantMessage("RESULT")); await original.wait(context);
-	} else if (event === "explicit" || event === "report") {
-		await submitConversation(root, { message: "CORRECTION INCLUDE", requestId: "interactive", whenBusy: "followUp", provenance: { classification: event, sender: result.sessionId } }, context);
-		assert.equal((await original.wait(context)).status, "done");
-		assert.ok(route.requests.some((messages) => messages.some((message) => messageText(message) === "CORRECTION INCLUDE")), "the original post-tools call sees the input");
-		assert.equal((await source.status(context)).status, "placed", "release does not cancel peer work");
-	} else if (event === "reset") {
-		await root.reset(undefined, context);
-		assert.equal((await original.status(context)).status, "placed", "native reset is a queued passive write until the boundary");
-		assert.equal(route.requests.length, calls);
-		finish(fauxAssistantMessage("RESULT")); assert.equal((await original.wait(context)).status, "unanswered", "the native reset retires the original input at its boundary");
-	} else if (event === "abort") {
-		await root.abort(context);
-		const ended = await original.status(context); assert.equal(ended.status, "unanswered"); assert.equal(ended.reason, "aborted");
-		assert.equal(route.requests.length, calls); assert.equal((await source.status(context)).status, "placed");
-	} else {
-		if (event === "failure") {
-			const stopped = producer.abort(context);
-			finish(fauxAssistantMessage("FINISHED"));
-			await stopped;
-		}
-		assert.equal((await original.wait(context)).status, "done");
-		const output = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_await");
-		assert.equal(output?.isError, false, output?.text);
-		assert.ok(output?.text.includes(event === "failure" ? "unanswered" : "unavailable"));
-	}
-});
-
-for (const tool of ["agent_spawn", "agent_send"] as const) it(`keeps an original ${tool} recipient await intact across admission and Reporter replay`, { timeout: 10000 }, async (t) => {
-	const directory = mkdtempSync(join(tmpdir(), "original-await-replay-")); t.after(() => rmSync(directory, { recursive: true, force: true }));
-	const route = createRoute(); let finish!: (message: AssistantMessage) => void;
-	const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	const foreign = await DurableHost.open({ storageId: "foreign", storagePath: join(directory, "foreign.sqlite"), cwd: directory, registry: fixtureRegistry(), models: createTestModels(() => held), agent: { model } }, context);
-	t.after(async () => { finish(fauxAssistantMessage("DEPENDENCY-DONE")); await foreign.close(); });
-	let releaseRecipient!: (message: AssistantMessage) => void;
-	const recipientAnswer = new Promise<AssistantMessage>((resolve) => { releaseRecipient = resolve; });
-	let recipientCalls = 0;
-	const models = createTestModels((...args) => {
-		const request = args[0]; const last = request.messages.findLast((message) => message.role !== "system");
-		if (request.messages.some((message) => message.role === "user" && messageText(message) === "RECIPIENT-WAIT")) {
-			recipientCalls++;
-			return last?.role === "user" ? recipientAnswer : fauxAssistantMessage("RECIPIENT-DONE");
-		}
-		return route.route(...args);
-	});
-	const holder: DispatchHolder = {}; const base = createDispatch(holder, []);
-	const dispatch: AgentControlDispatch = (method, params, ctx = context) => method === "receipts" ? foreign.request(method, params, ctx) : base(method, params, ctx);
-	const { registry } = buildRegistry(dispatch);
-	const path = join(directory, "caller.sqlite");
-	const first = await openHarness(await openNodeSqliteStorage(path), registry, models); holder.harness = first.harness;
-	let currentHarness = first.harness;
-	t.after(async () => { releaseRecipient(fauxAssistantMessage("STOPPED")); await currentHarness.close(context); });
-	const target = await first.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-	await first.harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
-	const ready = waitForAwait(first.harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	route.script.push({ tool, args: tool === "agent_spawn" ? { name: "await-recipient", prompt: "RECIPIENT-WAIT" } : { sessionId: `${storageId}:${target.id}`, message: "RECIPIENT-WAIT" } });
-	await say(first.root, "Dispatch an original request");
-	const output = (await toolOutcomes(first.harness, first.root.id)).find((item) => item.name === tool); assert.ok(output);
-	const result = (output.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
-	const admission = await foreign.request("submit", { sessionId: "foreign", message: "HELD-DEPENDENCY", requestId: "dependency", ownerId: result.sessionId, origin: "model" }, context) as { submissionId: number };
-	releaseRecipient(fauxAssistantMessage([fauxToolCall("agent_await", { results: [{ sessionId: "foreign", submissionId: admission.submissionId, requestId: "dependency" }] })], { stopReason: "toolUse" }));
-	await ready;
-	const recipientId = Number(result.sessionId.split(":")[1]) as Durable.ConversationId;
-	const recipient = await first.harness.conversation(recipientId, context); assert.ok(recipient);
-	await submitConversation(recipient, { message: "RECIPIENT-WAIT", requestId: result.requestId, provenance: { classification: "explicit", sender: storageId } }, context);
-	assert.equal((await first.harness.snapshot(AwaitDoc, context))?.declarations.find((item) => item.conversationId === recipientId)?.decision, "awaiting");
-	const reporters = await first.harness.snapshot(TestChildren, first.root.id, context);
-	const reporterId = Object.values(reporters?.reporters ?? {})[0] as Durable.TaskId;
-	const reporter = await first.harness.commit((tx) => tx.task(reporterId), context); assert.ok(reporter);
-	assert.equal((reporter.state as { checkpoint?: { phase?: string } }).checkpoint?.phase, "deliver");
-	await first.harness.close(context);
-	const reopened = await openHarness(await openNodeSqliteStorage(path), registry, models); holder.harness = reopened.harness; currentHarness = reopened.harness;
-	const retained = await reopened.harness.submission(result.submissionId as Durable.SubmissionId, context); assert.ok(retained);
-	const current = await reopened.harness.conversation(recipientId, context); assert.ok(current);
-	await submitConversation(current, { message: "RECIPIENT-WAIT", requestId: result.requestId, provenance: { classification: "explicit", sender: storageId } }, context);
-	assert.equal((await retained.status(context)).status, "placed");
-	assert.equal((await reopened.harness.snapshot(AwaitDoc, context))?.declarations.find((item) => item.conversationId === recipientId)?.decision, "awaiting");
-	assert.equal(recipientCalls, 1, "neither original admission replay nor Reporter replay resumes the waiting model");
-	finish(fauxAssistantMessage("DEPENDENCY-DONE"));
-	assert.equal((await retained.wait(context)).status, "done");
-	await settle(reopened.harness, reopened.root.id);
-	assert.equal(recipientCalls, 2);
-});
-
-async function completedPeerResults(harness: Durable.Harness, names: string[]): Promise<AwaitOutcome[]> {
-	const outcomes: AwaitOutcome[] = [];
-	for (const name of names) {
-		const producer = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-		const source = await producer.submit({ type: "input", content: `CONTRACT: reply ${name}`, requestId: name }, context);
-		const terminal = await readOutcome(harness, source.id, context);
-		assert.equal(terminal.status, "done");
-		outcomes.push({ result: { sessionId: `${storageId}:${producer.id}`, submissionId: source.id, requestId: name }, status: "done", answer: terminal.answer, answerEntryId: terminal.answerEntryId });
-	}
-	return outcomes;
-}
-for (const mode of ["covered", "partial", "late", "placed"] as const) it(`native await withdraws only fully covered queued delivery inputs with mode=${mode}`, { timeout: 10000 }, async (t) => {
-	const route = createRoute(); const holder: DispatchHolder = {}; let release!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	let sources: AwaitOutcome[] = [];
-	const base = createDispatch(holder, []);
-	const deliveryId = "deliver:foreign:answer:shared";
-	const dispatch: AgentControlDispatch = async (method, params, ctx = context) => {
-		if (method !== "receipts") return base(method, params, ctx);
-		await gate;
-		const result = params.result as { submissionId: number };
-		const outcome = sources.find((item) => item.result.submissionId === result.submissionId); assert.ok(outcome);
-		return { outcome: { ...outcome, submissionId: outcome.result.submissionId, requestId: outcome.result.requestId }, delivery: { requestId: deliveryId, sourceId: "foreign:answer:shared", recipient: storageId, answerEntryId: outcome.answerEntryId, results: sources.map((item) => item.result), complete: true } };
-	};
-	const { registry } = buildRegistry(dispatch); const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route)); holder.harness = harness;
-	t.after(async () => { release(); await harness.close(context); });
-	sources = (await completedPeerResults(harness, ["ONE", "TWO"])).map((outcome) => ({ ...outcome, result: { ...outcome.result, sessionId: "foreign" } }));
-	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
-	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	route.script.push({ tool: "agent_await", args: { results: (mode === "partial" ? sources.slice(0, 1) : sources).map((item) => item.result) } });
-	const original = await root.submit({ type: "input", content: mode === "placed" ? "DELIVERED-COPY" : "AWAIT-COVERAGE", ...(mode === "placed" ? { requestId: deliveryId } : {}) }, context); await ready;
-	let copy: Durable.Submission | undefined;
-	if (mode === "placed") copy = original;
-	else if (mode !== "late") copy = await root.submit({ type: "input", content: "DELIVERED-COPY", requestId: deliveryId, whenBusy: "followUp" }, context);
-	release(); await original.wait(context); await root.waitForIdle(context);
-	if (mode === "late") { copy = await root.submit({ type: "input", content: "DELIVERED-COPY", requestId: deliveryId, whenBusy: "followUp" }, context); await copy.wait(context); await root.waitForIdle(context); }
-	assert.ok(copy); const status = await copy.status(context);
-	assert.equal(status.status, mode === "covered" ? "unanswered" : "done");
-	if (status.status === "unanswered") assert.equal(status.reason, "aborted");
-	assert.equal((await userTexts(harness, root.id)).filter((text) => text === "DELIVERED-COPY").length, mode === "covered" ? 0 : 1);
-	assert.equal((await original.status(context)).status, "done");
-});
-
-it("withdraws a queued same-storage receipt input by its actual request ID", { timeout: 10000 }, async (t) => {
-	const route = createRoute(); let finish!: (answer: AssistantMessage) => void;
-	const producer = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	const models = createTestModels((...args) => messageText(args[0].messages.findLast((message) => message.role !== "system")) === "HELD-REPORT" ? producer : route.route(...args));
-	const holder: DispatchHolder = {}; const base = createDispatch(holder, []);
-	let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
-	let queued!: () => void; const delivered = new Promise<void>((resolve) => { queued = resolve; });
-	let reportId = "";
-	const dispatch: AgentControlDispatch = async (method, params, ctx = context) => {
-		const result = await base(method, params, ctx);
-		if (method === "receipts") {
-			reportId = (result as { delivery: { requestId: string } }).delivery.requestId;
-			await root.submit({ type: "input", content: "COMMON-RECEIPT-BODY", requestId: reportId, whenBusy: "followUp" }, context);
-			queued(); await gate;
-		}
-		return result;
-	};
-	const { registry } = buildRegistry(dispatch); const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models); holder.harness = harness;
-	t.after(async () => { finish(fauxAssistantMessage("RESULT")); release(); await harness.close(context); });
-	route.script.push({ tool: "agent_spawn", args: { prompt: "HELD-REPORT", name: "report-producer", checkInMinutes: 0 } });
-	await say(root, "Dispatch report work");
-	const admission = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_spawn"); assert.ok(admission);
-	const result = (admission.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
-	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	route.script.push({ tool: "agent_await", args: { results: [result] } });
-	const original = await root.submit({ type: "input", content: "Await queued receipt" }, context); await ready;
-	finish(fauxAssistantMessage("RESULT")); await delivered; release();
-	await original.wait(context); await root.waitForIdle(context);
-	const report = await harness.commit((tx) => tx.submissionByRequest(root.id, reportId), context);
-	assert.equal(report?.status, "unanswered"); if (report?.status === "unanswered") assert.equal(report.reason, "aborted");
-	assert.equal((await userTexts(harness, root.id)).includes("COMMON-RECEIPT-BODY"), false);
-});
-
-it("projects native awaiting facts and releases only the selected live run without stopping its producer", { timeout: 10000 }, async (t) => {
-	const route = createRoute(); let finish!: (message: AssistantMessage) => void; let producerDone = false;
-	const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	const models = createTestModels((...args) => messageText(args[0].messages.findLast((message) => message.role !== "system")) === "HELD-FACTS" ? held.then((value) => { producerDone = true; return value; }) : route.route(...args));
-	const holder: DispatchHolder = {}; const base = createDispatch(holder, []);
-	const { registry } = buildRegistry((method, params, ctx) => method === "observe-producer-await" ? Promise.resolve(undefined) : base(method, params, ctx));
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models); holder.harness = harness;
-	t.after(async () => { finish(fauxAssistantMessage("RESULT")); await harness.close(context); });
-	route.script.push({ tool: "agent_spawn", args: { prompt: "HELD-FACTS", name: "facts-producer", checkInMinutes: 0 } }); await say(root, "Dispatch fact work");
-	const admission = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_spawn"); assert.ok(admission);
-	const result = (admission.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
-	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	route.script.push({ tool: "agent_await", args: { results: [result] } }); const original = await root.submit({ type: "input", content: "Await facts" }, context); await ready;
-	const automatic = await root.submit({ type: "input", content: "ORDINARY-QUEUED", whenBusy: "followUp", requestId: "ordinary-fact" }, context);
-	const fact = await harness.commit((tx) => readAwaitFact(tx, storageId, root.id), context); assert.ok(fact);
-	assert.deepEqual(fact.heldInputs, [original.id]); assert.equal(fact.results[0].status, "pending"); assert.equal(fact.queuedInputCount, 1);
-	const current = (await harness.snapshot(AwaitDoc, context))?.declarations.find((item) => item.runId === fact.runId); assert.ok(current);
-	await harness.commit((tx) => recordProducerAwait(tx, current.taskId as Durable.TaskId, { sessionId: result.sessionId, observedAt: 1, source: "producer await-state", awaiting: { runId: 999, heldInputs: [result.submissionId], results: [{ result: { sessionId: storageId, submissionId: original.id }, status: "pending" }], queuedInputCount: 0, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 0, results: 0 } } }), context);
-	const mutual = await harness.commit((tx) => readAwaitFact(tx, storageId, root.id), context); assert.deepEqual(mutual?.likelyCycle, [result.sessionId]);
-	assert.equal((await harness.commit((tx) => releaseAwait(tx, storageId, root.id, fact.runId + 1), context)).released, false);
-	assert.equal((await original.status(context)).status, "placed");
-	const released = await harness.commit((tx) => releaseAwait(tx, storageId, root.id, fact.runId), context);
-	assert.equal(released.released, true); assert.equal(released.awaiting?.queuedInputCount, 1);
-	await original.wait(context); await automatic.wait(context); await root.waitForIdle(context);
-	assert.equal(producerDone, false); assert.equal(await harness.commit((tx) => readAwaitFact(tx, storageId, root.id), context), undefined);
-	const output = (await toolOutcomes(harness, root.id)).findLast((item) => item.name === "agent_await"); assert.ok(output); assert.equal(JSON.parse(output.text).decision, "released");
-	finish(fauxAssistantMessage("RESULT"));
-});
-
 for (const ownership of ["unowned", "owned", "mismatching-reference"] as const) it(`checks exact receipt ownership with ${ownership} native request identity`, { timeout: 10000 }, async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "exact-receipt-"));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -1188,230 +771,6 @@ for (const ownership of ["unowned", "owned", "mismatching-reference"] as const) 
 		assert.deepEqual(selected.delivery.results, [{ sessionId: "foreign", submissionId: terminal.id, requestId: retainedRequestId }]);
 		assert.equal((await input.status(context)).requestId, undefined, "receipt lookup never adds a native request key");
 	}
-});
-
-for (const sharedRecipient of [false, true]) it(`native await tests queued group coverage only for the selected recipient with shared-recipient=${sharedRecipient}`, { timeout: 10000 }, async (t) => {
-	const directory = mkdtempSync(join(tmpdir(), "multi-owner-await-")); t.after(() => rmSync(directory, { recursive: true, force: true }));
-	let start!: () => void; const started = new Promise<void>((resolve) => { start = resolve; });
-	let releaseSource!: () => void; const sourceGate = new Promise<void>((resolve) => { releaseSource = resolve; });
-	let sourceCalls = 0;
-	const source = await DurableHost.open({ storageId: "foreign", storagePath: join(directory, "source.sqlite"), cwd: directory, registry: fixtureRegistry([gateTool(sourceGate, start)]), models: createTestModels(() => sourceCalls++ === 0 ? fauxAssistantMessage([fauxToolCall("gate", {})], { stopReason: "toolUse" }) : fauxAssistantMessage("SHARED-ANSWER")), agent: { model } }, context);
-	t.after(async () => { releaseSource(); await source.close(); });
-	const a = await source.request("submit", { message: "work A", requestId: "multi-a", ownerId: storageId, origin: "operator" }, context) as { submissionId: number };
-	await started;
-	const b = await source.request("submit", { message: "work B", requestId: "multi-b", ownerId: sharedRecipient ? storageId : "other-owner", origin: "operator", whenBusy: "steer" }, context) as { submissionId: number };
-	releaseSource(); const first = await source.wait(a.submissionId as Durable.SubmissionId, context); const second = await source.wait(b.submissionId as Durable.SubmissionId, context);
-	assert.equal(first.answerEntryId, second.answerEntryId);
-	const result = { sessionId: "foreign", submissionId: a.submissionId, requestId: "multi-a" };
-	const description = await source.request("receipts", { ownerId: storageId, result }, context) as { delivery: { requestId: string; results: { submissionId: number }[]; complete: boolean } };
-	assert.equal(description.delivery.complete, true); assert.deepEqual(description.delivery.results.map((item) => item.submissionId).sort((left, right) => left - right), sharedRecipient ? [a.submissionId, b.submissionId] : [a.submissionId]);
-	const route = createRoute(); const holder: DispatchHolder = {}; const base = createDispatch(holder, []);
-	let resume!: () => void; const gate = new Promise<void>((resolve) => { resume = resolve; });
-	const dispatch: AgentControlDispatch = async (method, params, ctx = context) => { if (method !== "receipts") return base(method, params, ctx); await gate; return source.request(method, params, ctx); };
-	let copy: Durable.Submission | undefined; let atReturn: string | undefined;
-	const callerModels = createTestModels(async (...args) => {
-		if (copy !== undefined && args[0].messages.at(-1)?.role === "toolResult") atReturn = (await copy.status(context)).status;
-		return route.route(...args);
-	});
-	const { registry } = buildRegistry(dispatch); const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, callerModels); holder.harness = harness;
-	t.after(async () => { resume(); await harness.close(context); });
-	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
-	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	route.script.push({ tool: "agent_await", args: { results: [result] } });
-	const original = await root.submit({ type: "input", content: "Await only A" }, context); await ready;
-	copy = await root.submit({ type: "input", content: `SHARED-COPY submissions ${description.delivery.results.map((item) => item.submissionId).join(", ")}`, requestId: description.delivery.requestId, whenBusy: "followUp" }, context);
-	assert.equal((await copy.status(context)).status, "queued");
-	resume(); await original.wait(context); await root.waitForIdle(context);
-	assert.equal(atReturn, sharedRecipient ? "queued" : "unanswered", "only an uncovered same-recipient member preserves the queued input");
-	assert.equal((await copy.status(context)).status, sharedRecipient ? "done" : "unanswered");
-	assert.equal((await userTexts(harness, root.id)).filter((text) => text.startsWith("SHARED-COPY")).length, sharedRecipient ? 1 : 0);
-});
-
-for (const receiptFirst of [false, true]) it(`awaits a foreign recipient result and follows its exact continuation with receipt-first=${receiptFirst}`, { timeout: 10000 }, async (t) => {
-	const directory = mkdtempSync(join(tmpdir(), "foreign-await-")); t.after(() => rmSync(directory, { recursive: true, force: true }));
-	let finish!: (message: AssistantMessage) => void; const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	const foreign = await DurableHost.open({ storageId: "foreign", storagePath: join(directory, "source.sqlite"), cwd: directory, registry: fixtureRegistry(), models: createTestModels(() => held), agent: { model } }, context);
-	t.after(async () => { finish(fauxAssistantMessage("FINISHED")); await foreign.close(); });
-	const admission = await foreign.request("submit", { message: "foreign work", requestId: "foreign-result", ownerId: storageId, origin: "operator" }, context) as { submissionId: Durable.SubmissionId };
-	const result = { sessionId: "foreign", submissionId: admission.submissionId, requestId: "foreign-result" };
-	const route = createRoute(); const holder: DispatchHolder = {}; const base = createDispatch(holder, []);
-	let resumeObservation!: () => void; const observationGate = new Promise<void>((resolve) => { resumeObservation = resolve; });
-	t.after(() => resumeObservation());
-	const dispatch: AgentControlDispatch = async (method, params, callContext = context) => {
-		if (method !== "receipts") return base(method, params, callContext);
-		if (receiptFirst) await observationGate;
-		return foreign.request(method, params, callContext);
-	};
-	const { registry } = buildRegistry(dispatch); const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route)); holder.harness = harness;
-	t.after(() => harness.close(context));
-	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
-	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	route.script.push({ tool: "agent_await", args: { results: [result] } });
-	const original = await root.submit({ type: "input", content: "AWAIT FOREIGN" }, context); await ready;
-	assert.equal((await original.status(context)).status, "placed");
-	await assert.rejects(foreign.request("receipts", { ownerId: "third-agent", result, wait: true }, context), /not addressed/u);
-	const answer = `${"x".repeat(15999)}😀${"y".repeat(4000)}TAIL`;
-	finish(fauxAssistantMessage(answer));
-	let queuedReceipt: Durable.Submission | undefined;
-	if (receiptFirst) {
-		await foreign.wait(admission.submissionId, context);
-		const selected = await foreign.request("receipts", { ownerId: storageId, result }, context) as { delivery: { requestId: string } };
-		queuedReceipt = await root.submit({ type: "input", content: "EXCERPT", whenBusy: "followUp", requestId: selected.delivery.requestId }, context);
-		resumeObservation();
-	}
-	assert.equal((await original.wait(context)).status, "done");
-	if (queuedReceipt !== undefined) { const status = await queuedReceipt.status(context); assert.equal(status.status, "unanswered"); if (status.status === "unanswered") assert.equal(status.reason, "aborted"); }
-	const tool = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_await"); assert.ok(tool);
-	const output = JSON.parse(tool.text);
-	const continuation = output.results[0].continuation;
-	assert.equal(continuation.sessionId, "foreign"); assert.equal(continuation.offset, 0);
-	const conversation = await foreign.harness.conversation(Durable.ROOT_CONVERSATION_ID, context); assert.ok(conversation);
-	let complete = ""; let offset = 0;
-	for (let pages = 0; pages < 16; pages++) {
-		const page = await readInspection(foreign.harness, "foreign", conversation, { view: "exact", entryId: continuation.entryId, offset }, context) as { text: string; nextOffset: number | null };
-		complete += page.text;
-		if (page.nextOffset === null) break;
-		offset = page.nextOffset;
-	}
-	assert.ok(complete.includes(answer));
-	assert.equal((await foreign.receipts(storageId)).length, 1, "observation does not acknowledge the normal source receipt");
-});
-
-for (const partial of [false, true]) it(`reopens the caller's original native await with partial=${partial}`, { timeout: 10000 }, async (t) => {
-	const directory = mkdtempSync(join(tmpdir(), "reopen-await-")); t.after(() => rmSync(directory, { recursive: true, force: true }));
-	const finishes: Array<(message: AssistantMessage) => void> = [];
-	const held = [0, 1].map(() => new Promise<AssistantMessage>((resolve) => finishes.push(resolve)));
-	let sourceCalls = 0;
-	const foreign = await DurableHost.open({ storageId: "foreign", storagePath: join(directory, "foreign.sqlite"), cwd: directory, registry: fixtureRegistry(), models: createTestModels((request) => {
-		sourceCalls++; const text = messageText(request.messages.findLast((item) => item.role !== "system")); return held[Number(text.slice(-1))];
-	}), agent: { model } }, context);
-	t.after(async () => { for (const finish of finishes) finish(fauxAssistantMessage("FINISHED")); await foreign.close(); });
-	const results = [];
-	for (const index of [0, 1]) {
-		const conversation = index === 0 ? await foreign.harness.root(context) : await foreign.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-		const sessionId = index === 0 ? "foreign" : `foreign:${conversation.id}`;
-		const admission = await foreign.request("submit", { sessionId, message: `HELD-${index}`, requestId: `foreign:${index}`, ownerId: storageId, origin: "operator" }, context) as { submissionId: number };
-		results.push({ sessionId, submissionId: admission.submissionId, requestId: `foreign:${index}` });
-	}
-	const route = createRoute(); const holder: DispatchHolder = {}; const base = createDispatch(holder, []);
-	const dispatch: AgentControlDispatch = (method, params, ctx = context) => method === "receipts" ? foreign.request(method, params, ctx) : base(method, params, ctx);
-	const { registry } = buildRegistry(dispatch); const models = createTestModels(route.route); const path = join(directory, "caller.sqlite");
-	const first = await openHarness(await openNodeSqliteStorage(path), registry, models); holder.harness = first.harness;
-	await first.harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
-	const ready = waitForAwait(first.harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	route.script.push({ tool: "agent_await", args: { results } });
-	const original = await first.root.submit({ type: "input", content: "REOPEN AWAIT" }, context); await ready;
-	if (partial) {
-		const accepted = waitForAwait(first.harness, (state) => state.declarations.some((item) => item.outcomes.length === 1));
-		finishes[0](fauxAssistantMessage("RESULT-ONE")); await accepted;
-	}
-	await first.harness.close(context);
-	const reopened = await openHarness(await openNodeSqliteStorage(path), registry, models); holder.harness = reopened.harness;
-	t.after(() => reopened.harness.close(context));
-	const retained = await reopened.harness.submission(original.id, context); assert.ok(retained);
-	assert.equal((await retained.status(context)).status, "placed");
-	assert.equal(route.requests.length, 1, "safe tool replay does not call the model");
-	finishes[0](fauxAssistantMessage("RESULT-ONE")); finishes[1](fauxAssistantMessage("RESULT-TWO"));
-	assert.equal((await retained.wait(context)).status, "done");
-	const output = (await toolOutcomes(reopened.harness, reopened.root.id)).find((item) => item.name === "agent_await");
-	assert.ok(output?.text.includes("RESULT-ONE") && output.text.includes("RESULT-TWO"), output?.text);
-	assert.equal(route.requests.length, 2); assert.equal(sourceCalls, 2, "caller replay does not redispatch source work");
-});
-
-for (const known of [true, false]) it(`serializes simultaneous local cycle declarations with known-request=${known}`, { timeout: 10000 }, async (t) => {
-	const finishes: Array<(message: AssistantMessage) => void> = [];
-	const held = [0, 1].map(() => new Promise<AssistantMessage>((resolve) => finishes.push(resolve)));
-	const route = createRoute();
-	const models = createTestModels((...args) => {
-		const text = messageText(args[0].messages.findLast((item) => item.role !== "system"));
-		return text.startsWith("PENDING-") ? held[Number(text.slice(-1))] : route.route(...args);
-	});
-	const holder: DispatchHolder = {}; const { registry } = buildRegistry(createDispatch(holder, []));
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models); holder.harness = harness;
-	t.after(async () => { for (const finish of finishes) finish(fauxAssistantMessage("FINISHED")); await harness.close(context); });
-	const peer = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-	const inputs = await Promise.all([root, peer].map((conversation, index) => conversation.submit({ type: "input", content: `PENDING-${index}`, requestId: `cycle:${index}` }, context)));
-	const refs = inputs.map((input, index) => ({ sessionId: index === 0 ? storageId : `${storageId}:${peer.id}`, submissionId: input.id, ...(known ? { requestId: `cycle:${index}` } : {}) }));
-	for (const index of [0, 1]) finishes[index](fauxAssistantMessage([fauxToolCall("agent_await", { results: [refs[1 - index]] })], { stopReason: "toolUse" }));
-	assert.deepEqual((await Promise.all(inputs.map((input) => input.wait(context)))).map((item) => item.status), ["done", "done"]);
-	const outcomes = [...await toolOutcomes(harness, root.id), ...await toolOutcomes(harness, peer.id)].filter((item) => item.name === "agent_await");
-	assert.equal(outcomes.filter((item) => item.isError).length, 1);
-	assert.match(outcomes.find((item) => item.isError)?.text ?? "", /local result cycle/u);
-});
-
-for (const order of ["before", "during"] as const) it(`closes the named check-in admission race when declaration occurs ${order} admission`, { timeout: 10000 }, async (t) => {
-	const route = createRoute(); let ownerFinish!: (message: AssistantMessage) => void; let sourceFinish!: (message: AssistantMessage) => void;
-	const ownerHeld = new Promise<AssistantMessage>((resolve) => { ownerFinish = resolve; }); const sourceHeld = new Promise<AssistantMessage>((resolve) => { sourceFinish = resolve; });
-	const models = createTestModels((...args) => {
-		const text = messageText(args[0].messages.findLast((item) => item.role !== "system"));
-		if (text === "PAUSE-CHECKIN") return ownerHeld;
-		return text === "HELD-CHECKIN-SOURCE" ? sourceHeld : route.route(...args);
-	});
-	const holder: DispatchHolder = {}; const base = createDispatch(holder, []);
-	let observed!: () => void; const observing = new Promise<void>((resolve) => { observed = resolve; });
-	const { registry } = buildRegistry(async (method, params, ctx) => { if (method === "receipts") observed(); return base(method, params, ctx); });
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models); holder.harness = harness;
-	t.after(async () => { ownerFinish(fauxAssistantMessage("FINISHED")); sourceFinish(fauxAssistantMessage("FINISHED")); await harness.close(context); });
-	const producer = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-	const source = await producer.submit({ type: "input", content: "HELD-CHECKIN-SOURCE", requestId: "watched-source" }, context);
-	const result = { sessionId: `${storageId}:${producer.id}`, submissionId: source.id, requestId: "watched-source" };
-	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
-	const original = await root.submit({ type: "input", content: "PAUSE-CHECKIN" }, context);
-	const releaseOwner = () => ownerFinish(fauxAssistantMessage([fauxToolCall("agent_await", { results: [result] })], { stopReason: "toolUse" }));
-	const submit = root.submit.bind(root);
-	if (order === "during") t.mock.method(root, "submit", async (...args: Parameters<typeof root.submit>) => { releaseOwner(); await observing; return submit(...args); });
-	const automatic = { message: "NAMED RACE CHECK-IN", requestId: "race-check", whenBusy: "steer" as const, provenance: { classification: "automatic" as const, automaticKind: "checkIn" as const, sender: result.sessionId, producerRequestId: result.requestId } };
-	if (order === "during") await assert.rejects(submitConversation(root, automatic, context), AwaitInputSuppressed);
-	else { await submitConversation(root, automatic, context); releaseOwner(); await observing; }
-	assert.equal((await original.status(context)).status, "placed");
-	assert.equal((await harness.snapshot(Durable.InboxDoc, root.id, context))?.items.length, 0);
-	assert.equal((await harness.commit((tx) => tx.submissionByRequest(root.id, "race-check"), context))?.status, "unanswered");
-	sourceFinish(fauxAssistantMessage("RESULT")); await original.wait(context);
-	assert.equal((await userTexts(harness, root.id)).includes("NAMED RACE CHECK-IN"), false);
-});
-
-it("keeps configured check-ins and native scheduled delivery token-idle during the original await", { timeout: 10000 }, async (t) => {
-	const epoch = Date.now(); t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: epoch });
-	let finish!: (message: AssistantMessage) => void; const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	let callerCalls = 0;
-	const models = createTestModels((request) => {
-		const last = request.messages.findLast((item) => item.role !== "system"); const text = messageText(last);
-		if (text === "CONTRACT: reply HELD") return held;
-		callerCalls++;
-		if (last?.role === "user" && text === "START DEFAULT") return fauxAssistantMessage([fauxToolCall("agent_spawn", { prompt: "CONTRACT: reply HELD", checkInMinutes: 30 })], { stopReason: "toolUse" });
-		if (last?.role === "toolResult" && last.toolName === "agent_spawn") {
-			const reference = JSON.parse(text.split("\nResult: ")[1].split("\n")[0]);
-			return fauxAssistantMessage([fauxToolCall("agent_await", { results: [reference] })], { stopReason: "toolUse" });
-		}
-		return fauxAssistantMessage("FINAL");
-	});
-	const holder: DispatchHolder = {}; const { registry } = buildRegistry(createDispatch(holder, []));
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models); holder.harness = harness;
-	t.after(async () => { finish(fauxAssistantMessage("RESULT")); await harness.close(context); });
-	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
-	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	const admission = await submitConversation(root, { message: "START DEFAULT", requestId: "original-default", ownerId: "requester", origin: "model", checkInMinutes: 30, senderIdentity: storageId }, context);
-	await ready;
-	const original = await harness.submission(admission.submissionId, context); assert.ok(original);
-	const checks = (await harness.inspect(context)).tasks.filter((item) => item.record.kind === "agent.check-in");
-	assert.equal(checks.length, 2, "configured spawn and original request both retain their check-ins");
-	const interval = Math.max(...checks.map((item) => (item.record.input as { intervalMs: number }).intervalMs));
-	const reportsReady = waitForDeliveryFixture(harness, context, (state) => state.reports.length >= 2 ? true : undefined);
-	t.mock.timers.tick(interval); await reportsReady;
-	const reports = (await readRetainedDelivery(harness, context, true))?.reports ?? [];
-	assert.ok(reports.some((report) => report.ownerId === "requester"), "the requester still gets check-ins about the awaiter");
-	const named = reports.find((report) => report.ownerId === storageId); assert.ok(named?.checkIn);
-	const calls = callerCalls;
-	await assert.rejects(submitConversation(root, { message: named.message, requestId: named.requestId, whenBusy: "steer", provenance: { classification: "automatic", automaticKind: "checkIn", sender: named.senderIdentity, producerRequestId: named.checkIn.requestId } }, context), AwaitInputSuppressed);
-	await harness.commit(async (tx) => { await tx.doc(AgentTimerDoc); }, context);
-	const timerWatch = await harness.watchDoc(AgentTimerDoc, context); assert.ok(timerWatch);
-	let fired!: () => void; const timerFired = new Promise<void>((resolve) => { fired = resolve; });
-	timerWatch.start(async (call) => { const state = call.kind === "value" ? call.value : undefined; if (state?.timers.some((item) => item.status === "fired")) fired(); });
-	await scheduleTimer(harness, { scheduleId: "automatic-native", deadline: Date.now(), conversationId: root.id, identity: storageId, message: "SCHEDULED INPUT", mode: "steer", origin: "model", ownerId: "requester", requestId: "scheduled-native", createdAt: Date.now() }, context);
-	await timerFired; await timerWatch.stop();
-	assert.equal(callerCalls, calls); assert.equal((await original.status(context)).status, "placed");
-	assert.equal((await harness.snapshot(Durable.InboxDoc, root.id, context))?.items.length, 1);
-	finish(fauxAssistantMessage("RESULT")); await original.wait(context); await root.waitForIdle(context);
 });
 
 it("reports the requested and effective thinking level when native creation clamps it", async (t) => {
@@ -1915,7 +1274,7 @@ it("drives one model-issued call per control tool", async (t) => {
 	await run("agent_abort", { sessionId: childSessionId, timerId: 3 });
 
 	const outcomes = await toolOutcomes(harness, root.id);
-	for (const tool of CONTROL_TOOLS.filter((name) => name !== "agent_await")) {
+	for (const tool of CONTROL_TOOLS) {
 		const found = outcomes.filter((outcome) => outcome.name === tool);
 		assert.ok(found.length >= 1, `${tool} was called`);
 		assert.ok(
@@ -2348,7 +1707,7 @@ it("renders the delegation guidance into the model-facing section", async () => 
 		exposed.filter((tool) => tool.deferred === true).map((tool) => tool.name).sort(),
 		["agent_attach", "agent_command", "agent_configure", "agent_fork", "agent_inspect", "agent_list", "agent_place", "agent_profile", "agent_reset", "agent_rewind"],
 	);
-	assert.deepEqual(exposed.filter((tool) => tool.callers?.includes("model") && !tool.callers.includes("tools")).map((tool) => tool.name).sort(), ["agent_await", "agent_compact"]);
+	assert.deepEqual(exposed.filter((tool) => tool.callers?.includes("model") && !tool.callers.includes("tools")).map((tool) => tool.name).sort(), ["agent_compact"]);
 	for (const name of ["agent_inspect", "agent_list", "agent_attach", "agent_place", "agent_fork", "agent_rewind", "agent_reset", "agent_configure", "agent_profile", "agent_command"])
 		assert.doesNotMatch(text ?? "", new RegExp(`^- ${name}:`, "mu"), `${name} contributes no guidance until offered`);
 	const deferredOnly = await section.render(

@@ -4,7 +4,6 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { Harness, LiveDoc, MemoryStorage } from "@earendil-works/pi-durable";
 import { recordReport, submitConversation } from "./durable-controls.ts";
 import { interventionMatches, parseReportIntervention } from "./report-intervention.ts";
-import { projectAwaitOutcomes, type AwaitOutcome } from "./awaited-results.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, gateTool, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 const storageId = "10000000-0000-4000-8000-000000000001";
 const recipient = "20000000-0000-4000-8000-000000000002";
@@ -40,19 +39,4 @@ it("retains one validated report and replays it after its producer run ends", { 
 	await harness.waitForIdle(context);
 	assert.deepEqual(await recordReport(harness, params, context), recorded);
 	await assert.rejects(recordReport(harness, { ...params, intervention: { ...intervention, producerRunId: intervention.producerRunId + 1 } }, context), /another intervention association/);
-});
-
-it("projects one shared answer body without changing retained outcome rows", () => {
-	const result = { sessionId: storageId, submissionId: 1, requestId: "one" };
-	const rows: AwaitOutcome[] = [
-		{ result, status: "done", answerEntryId: 7, answer: "shared" },
-		{ result: { ...result, submissionId: 2, requestId: "two" }, status: "done", answerEntryId: 7, answer: "shared", truncated: true, continuation: { tool: "agent_inspect", view: "exact", sessionId: storageId, entryId: 7, offset: 0 } },
-	];
-	const projected = projectAwaitOutcomes(rows);
-	assert.equal(projected[0].answer, "shared");
-	assert.equal(projected[1].answer, undefined);
-	assert.equal(projected[1].continuation, undefined);
-	assert.deepEqual(projected[1].sameAnswerAs, result);
-	assert.equal(rows[1].answer, "shared");
-	assert.equal(rows[1].sameAnswerAs, undefined);
 });

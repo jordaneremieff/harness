@@ -1,6 +1,7 @@
 import { str, int, bool, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
-/** Bounded semantic wait facts, separate from native task scheduling state. */
-import { ResultReferenceSchema } from "./result-schema.ts";
+/** Bounded provider-retry facts of a producer run, separate from native task scheduling state. */
+import { AgentDoc, LiveDoc, type ConversationId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
+import { ResultReferenceSchema, type ResultReference } from "./result-schema.ts";
 import { safeFactText } from "./primary-observation.ts";
 
 export const ProducerRetrySchema = obj({
@@ -16,6 +17,33 @@ export const ProducerRetrySchema = obj({
 });
 export type ProducerRetry = Static<typeof ProducerRetrySchema>;
 export type ProducerState = { awaiting?: OwnAwaitFact; execution?: ProducerRetry };
+
+async function retryInputMatches(tx: Tx, conversationId: ConversationId, result: ResultReference): Promise<boolean> {
+	if (result.requestId === undefined) return true;
+	const input = await tx.submissionByRequest(conversationId, result.requestId);
+	return input?.id === result.submissionId && input.status === "placed";
+}
+
+/** Retry belongs only to placed inputs of the current native run. */
+export async function producerRetryFact(tx: Tx, conversationId: ConversationId, results: readonly ResultReference[], maxAttempts?: number): Promise<ProducerRetry | undefined> {
+	const live = await tx.doc(LiveDoc, conversationId);
+	if (live.run === undefined || live.generation?.retry === undefined) return undefined;
+	const task = await tx.task(live.run.taskId);
+	if (task === undefined || task.abortRequested || task.state.status === "terminal") return undefined;
+	const correlated: ResultReference[] = [];
+	for (const result of results.slice(0, 16)) {
+		if (!live.run.inputs.includes(result.submissionId as SubmissionId)) continue;
+		if (!await retryInputMatches(tx, conversationId, result)) continue;
+		correlated.push(result);
+	}
+	if (correlated.length === 0) return undefined;
+	const agent = await tx.doc(AgentDoc, conversationId);
+	const error = safeFactText(live.generation.retry.error);
+	return { state: "provider-retry", runId: live.run.taskId, results: correlated,
+		...(agent.model === undefined ? {} : { model: { provider: safeFactText(agent.model.provider, 256).text, modelId: safeFactText(agent.model.modelId, 256).text } }),
+		attempt: live.generation.attempt, ...(maxAttempts === undefined ? {} : { maxAttempts }),
+		nextRetryAt: live.generation.retry.at, error: error.text, errorTruncated: error.truncated };
+}
 
 /** Provider error text is a claim, not a scheduling guarantee or diagnosis. */
 export function retryFactLines(retry: ProducerRetry): string[] {

@@ -1,7 +1,6 @@
 import { compile, num, str, opt, obj, type Schema } from "@earendil-works/pi-schema";
 import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { AgentPreferencesSchema, validPreferences, validPresets } from "./preference-schema.ts";
-import { AwaitOutputSchema } from "./awaited-results.ts";
 import { DispatchOutputSchema } from "./result-schema.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import assert from "node:assert/strict";
@@ -90,9 +89,8 @@ it("preference records preserve key patterns, property limits and optional value
 	assert.equal(compile(AgentPreferencesSchema).check({ version: 1, presets: {} }), true);
 });
 
-it("open dispatch facts and await queue snapshots retain additional fields", () => {
+it("open dispatch facts retain additional fields", () => {
 	assert.equal(compile(DispatchOutputSchema).check({ admitted: true }), true);
-	assert.equal(compile(AwaitOutputSchema).check({ decision: "settled", results: [], unresolved: [], originalInputs: [], queuedInputCount: 0, queueSnapshot: { source: "committed InboxDoc", conversationId: 1, runId: 1, extra: true } }), true);
 });
 
 it("schema checks reject non-finite numbers recursively and bound diagnostic output", () => {
