@@ -62,6 +62,8 @@ for (const method of ["snapshot", "observe-open", "observe-frame", "receipts", "
 
 operations["recovery-state"] = { ...operations["recovery-state"], response: "recovery-state/1.1.0" };
 operations.changes = { request: "changes/2.0.0", response: "changes/2.0.0" };
+operations["collaboration-read"] = { request: "collaboration-read/1.1.0", response: "collaboration-read/2.0.0" };
+operations["collaboration-mutate"] = { ...operations["collaboration-mutate"], request: "collaboration-mutate/2.0.0" };
 
 /** Release identifies source; operation identities, not release ordering, authorize calls. */
 export const HOST_CONTRACT: RuntimeContract = Object.freeze({

@@ -103,6 +103,25 @@ it("refuses only recovery-state for a peer without the active-delivery response"
 	assert.equal(contractRefusal("receipts", peer), undefined);
 });
 
+it("refuses only thread read and mutation for a peer without forward reads and participation declarations", () => {
+	assert.deepEqual(HOST_CONTRACT.operations["collaboration-list"], { request: "collaboration-list/1.0.0", response: "collaboration-list/1.0.0" });
+	assert.deepEqual(HOST_CONTRACT.operations["collaboration-read"], { request: "collaboration-read/1.1.0", response: "collaboration-read/2.0.0" });
+	assert.deepEqual(HOST_CONTRACT.operations["collaboration-mutate"], { request: "collaboration-mutate/2.0.0", response: "collaboration-mutate/1.0.0" });
+	for (const [method, side] of [["collaboration-read", "request"], ["collaboration-read", "response"], ["collaboration-mutate", "request"]] as const) {
+		const current = HOST_CONTRACT.operations[method];
+		const peer = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, [method]: { ...current, [side]: `${method}/1.0.0` } } };
+		const mismatch = `${method} ${side} contract ${method}/1.0.0 differs from ${current[side]}.`;
+		assert.equal(operationContractMismatch(method, peer.operations[method]), mismatch);
+		assert.ok(contractRefusal(method, peer)?.message.startsWith(`${mismatch} This Pi uses agent release`));
+		assert.equal(operationContractMismatch(method, current, peer), `${method} ${side} contract ${current[side]} differs from ${method}/1.0.0.`);
+		for (const name of Object.keys(HOST_CONTRACT.operations)) if (name !== method) assert.equal(contractRefusal(name, peer), undefined, name);
+	}
+	const peer = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations } };
+	for (const method of ["collaboration-read", "collaboration-mutate"]) peer.operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
+	assert.deepEqual(Object.keys(HOST_CONTRACT.operations).filter(name => contractRefusal(name, peer) !== undefined), ["collaboration-read", "collaboration-mutate"]);
+	assert.equal(contractRefusal("collaboration-list", peer), undefined);
+});
+
 it("accepts unchanged operations despite added operations and different source releases", () => {
 	const peer: RuntimeContract = { ...HOST_CONTRACT, release: "8.0.0", operations: { ...HOST_CONTRACT.operations, extra: { request: "extra/1.0.0", response: "extra/1.0.0" } } };
 	assert.equal(contractRefusal("submit", peer), undefined);

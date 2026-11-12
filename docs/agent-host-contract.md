@@ -468,7 +468,7 @@ For every member in the following set, request and response are both `<member>/1
 ```text
 close attach acknowledge abort release reset
  timer-list timer-cancel observe-close models
- collaboration-list collaboration-read collaboration-mutate await-release
+ collaboration-list await-release
 ```
 
 `changes` uses `changes/2.0.0` for request and response. Its initial and later frames are `{revision,writerId,view?}`. `writerId` comes from the server's immutable current hello identity. `view` is the runtime's latest successful bounded catalogue publication, retained after `updateView` succeeds and before notification. A revision without a view proves no publication. The client consumes the initial subscription value and later frames only for the current link and binding. Loss, rebind, local close and successful owner close clear that evidence; obsolete callbacks cannot restore it. A changes-operation mismatch refuses without a fallback and remains visible as unavailable publication evidence. Sources: `extensions/agent/{host-changes,host-client,host-process,durable-runtime,version-contract}.ts`.
@@ -522,6 +522,8 @@ Overrides and remaining members:
 | profile-list | profile-list/1.0.0 | H-profile-list | absent |
 | task-submit | task-submit/1.0.0 | task-submit/1.2.0 | absent |
 | await-state | await-state/1.1.0 | await-state/1.1.0 | absent |
+| collaboration-read | collaboration-read/1.1.0 | collaboration-read/2.0.0 | absent |
+| collaboration-mutate | collaboration-mutate/2.0.0 | collaboration-mutate/1.0.0 | absent |
 
 Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema, not a hash of a response instance. The current schema-derived identities are:
 
