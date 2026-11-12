@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { after, describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { OpenWorkDependencyView, OpenWorkDetails, OpenWorkView } from "./open-work.ts";
 import { CustomMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, TUI_KEYBINDINGS, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import {
@@ -330,8 +331,8 @@ describe("agent result cards", () => {
 
 	it("shows a declared work item with its dependencies and a closed item with its final report row", () => {
 		const card = createAgentToolCards().agent_work, options = { ...cardKeys, expanded: false, isPartial: false };
-		const dependency = (n: number, state: string) => ({ sessionId: `producer-${n}`, submissionId: n, requestId: `input-${n}`, state, inspect: { tool: "agent_inspect", view: "result", sessionId: `producer-${n}`, submissionId: n } });
-		const item = { requestId: "request-1", submissionId: 3, requester: "storage-a", replyTo: "storage-a", origin: "model", note: "Two reviews remain", state: "open", declaredAt: 1,
+		const dependency = (n: number, state: OpenWorkDependencyView["state"]): OpenWorkDependencyView => ({ sessionId: `producer-${n}`, submissionId: n, requestId: `input-${n}`, state, inspect: { tool: "agent_inspect", view: "result", sessionId: `producer-${n}`, submissionId: n } });
+		const item: OpenWorkView = { requestId: "request-1", submissionId: 3, requester: "storage-a", replyTo: "storage-a", origin: "model", note: "Two reviews remain", state: "open", declaredAt: 1, updatedAt: 1,
 			dependencies: [dependency(1, "open"), dependency(2, "state-note"), dependency(3, "arrived"), dependency(4, "open"), dependency(5, "open")] };
 		const open = screen(card.renderResult(result({ action: "continue", item }), options, theme, context()), 180);
 		assert.match(open, /Work open · request request-1 · 5 dependencies/u);
@@ -344,6 +345,22 @@ describe("agent result cards", () => {
 		const closed = screen(card.renderResult(result({ action: "complete", requestId: "request-1", status: "failed", deduped: true, report, item: { ...item, state: "closed" } }), options, theme, context()), 180);
 		assert.match(closed, /Work closed \(failed\) · request request-1 · already closed/u);
 		assert.match(closed, /Final report retained · storage-a · acknowledgement pending/u);
+		const empty: OpenWorkDetails = { action: "continue", item: { ...item, dependencies: [], updatedAt: 2 } };
+		const emptyOutput = screen(card.renderResult(result(empty), options, theme, context()), 180);
+		assert.match(emptyOutput, /Work open · request request-1 · 0 dependencies/u);
+		assert.doesNotMatch(emptyOutput, /withdrawn|Work closed/u);
+		const unavailable: OpenWorkDetails = { action: "continue", item: { ...item, dependencies: [{ ...dependency(1, "open"), unavailable: `Producer facts missing ${"x".repeat(300)}` }] } };
+		const unavailableOutput = screen(card.renderResult(result(unavailable), options, theme, context()), 240);
+		assert.match(unavailableOutput, /unavailable: Producer facts missing/u);
+		assert.doesNotMatch(unavailableOutput, /x{121}/u);
+		for (const status of ["stopped", "reset"] as const) {
+			const retained: OpenWorkDetails = { action: "complete", requestId: item.requestId, status, deduped: true,
+				item: { ...item, state: "closed", close: { status, message: "Stopped", at: 2, reportRequestId: report.requestId, delivery: "terminal" } } };
+			const output = screen(card.renderResult(result(retained), options, theme, context()), 180);
+			assert.ok(output.includes(`Work closed (${status})`));
+			assert.match(output, /Final report delivery: terminal/u);
+			assert.doesNotMatch(output, /Final report retained|acknowledgement pending/u);
+		}
 		const call = screen(card.renderCall({ action: "continue", request: "request-1", results: [{ sessionId: "producer-1", submissionId: 1 }], note: "Two reviews remain" }, theme, context()), 180);
 		assert.match(call, /agent_work/u);
 		assert.match(call, /request request-1 · 1 result reference/u);

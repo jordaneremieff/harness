@@ -1654,6 +1654,8 @@ function workLines(details: Record<string, unknown>, theme: Theme, context: Agen
 		const status = text(details.status), report = record(details.report), owner = text(report.ownerId);
 		const lines = [theme.fg(status === "done" ? "toolOutput" : "warning", `Work closed (${displayPreview(status, 20) || "status unknown"}) · ${subject}${details.deduped === true ? " · already closed" : ""}`)];
 		if (text(report.sourceId)) lines.push(muted(theme, `Final report retained${owner ? ` · ${targetLabel(owner, context)}` : ""} · ${report.acknowledged === true ? "acknowledged" : "acknowledgement pending"}`));
+		const delivery = text(record(item.close).delivery);
+		if (delivery) lines.push(theme.fg(["parked", "terminal", "absent"].includes(delivery) ? "warning" : "muted", `Final report delivery: ${displayPreview(delivery, 20)}`));
 		return lines;
 	}
 	const dependencies = array(item.dependencies).map(record), replyTo = text(item.replyTo), note = text(item.note);
@@ -1661,8 +1663,8 @@ function workLines(details: Record<string, unknown>, theme: Theme, context: Agen
 	if (replyTo) lines.push(muted(theme, `Final report to ${targetLabel(replyTo, context)}`));
 	if (note) lines.push(muted(theme, `Note: ${displayPreview(note, 160)}`));
 	for (const dependency of dependencies.slice(0, WORK_DEPENDENCY_ROWS)) {
-		const reference = text(dependency.requestId);
-		lines.push(muted(theme, `${targetLabel(text(dependency.sessionId), context)} · submission ${String(count(dependency.submissionId) ?? "unknown")}${reference ? ` · request ${displayPreview(reference, 80)}` : ""} · ${displayPreview(text(dependency.state), 20) || "state unknown"}`));
+		const reference = text(dependency.requestId), unavailable = text(dependency.unavailable);
+		lines.push(muted(theme, `${targetLabel(text(dependency.sessionId), context)} · submission ${String(count(dependency.submissionId) ?? "unknown")}${reference ? ` · request ${displayPreview(reference, 80)}` : ""} · ${displayPreview(text(dependency.state), 20) || "state unknown"}${unavailable ? ` · unavailable: ${displayPreview(unavailable, 120)}` : ""}`));
 	}
 	if (dependencies.length > WORK_DEPENDENCY_ROWS) lines.push(muted(theme, `${dependencies.length - WORK_DEPENDENCY_ROWS} more dependencies`));
 	return lines;
