@@ -585,6 +585,17 @@ it("labels a spawn prompt and a send without a mode as new work, and only a stee
 	assert.match(mode.description ?? "", /Default followUp: new work/u, "the schema states the default class");
 });
 
+it("states the tool-round boundary for a steer and the check-in default of zero in the native tool descriptions", () => {
+	const { extension } = buildRegistry();
+	const description = (name: string): string => extension.tools?.find((tool) => tool.name === name)?.description ?? "";
+	assert.match(description("agent_steer"), /placed at its next tool boundary, the end of its current tool round/u);
+	assert.doesNotMatch(description("agent_steer"), /next step/u);
+	for (const name of ["agent_send", "agent_spawn"]) {
+		assert.match(description(name), /Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent\.checkInMinutes setting, names an interval; the default is 0\./u, name);
+		assert.doesNotMatch(description(name), /send automatic owner check-ins/u, name);
+	}
+});
+
 it("saves an explicit handle-less creation role and documents it in both schemas", async (t) => {
 	const ordinary: { name: string; parameters: { properties: Record<string, { description?: string }> } }[] = [];
 	await registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: typeof ordinary[number]) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);

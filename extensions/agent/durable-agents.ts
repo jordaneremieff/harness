@@ -1137,7 +1137,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const spawnTool = { ...durable.defineTool({
 		name: "agent_spawn",
 		description:
-			"Create an agent conversation. The same cwd uses an owned conversation in this storage; a different cwd starts an agent in a new storage. Answers report back to you. Unanswered tasks also send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. checkInMinutes 0 disables. Names may repeat.",
+			"Create an agent conversation. The same cwd uses an owned conversation in this storage; a different cwd starts an agent in a new storage. Answers report back to you. Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. At a check-in, assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. Names may repeat.",
 		parameters: presetParams(SpawnParams),
 		replay: "safe",
 		execute: async (args: SpawnInput, api, context) => {
@@ -1302,7 +1302,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const sendTool = durable.defineTool({
 		name: "agent_send",
 		description:
-			`Send a message to an agent conversation. A busy conversation receives it at its next tool boundary, the end of its current tool round; mode is the class of the message, not a placement time. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Reports request attention by default. For progress that asks for no action, set mode:'report',passive:true. Passive reports enter context at the next result or normal boundary. They do not wake the recipient. Keep questions, blockers, corrections and capacity interventions active. Send explicit instructions as followUp or steer, not passive reports. Task answers report back to you. With deliverAt, schedule the input instead of admitting it now. Unanswered tasks send automatic owner check-ins. Assess progress, let work continue, steer a wrap-up, or abort a hung tool. checkInMinutes 0 disables.`,
+			`Send a message to an agent conversation. A busy conversation receives it at its next tool boundary, the end of its current tool round; mode is the class of the message, not a placement time. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Reports request attention by default. For progress that asks for no action, set mode:'report',passive:true. Passive reports enter context at the next result or normal boundary. They do not wake the recipient. Keep questions, blockers, corrections and capacity interventions active. Send explicit instructions as followUp or steer, not passive reports. Task answers report back to you. With deliverAt, schedule the input instead of admitting it now. Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. At a check-in, assess progress, let work continue, steer a wrap-up, or abort a hung tool.`,
 		parameters: SendParams,
 		replay: "safe",
 		execute: async (args: SendInput, api, context) => {
@@ -1318,7 +1318,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const steerTool = durable.defineTool({
 		name: "agent_steer",
 		description:
-			"Redirect a live agent conversation. The message reaches it at its next step; the answer reports back to you.",
+			"Redirect a live agent conversation. The message is placed at its next tool boundary, the end of its current tool round, and corrects its current work; the answer reports back to you.",
 		parameters: SteerParams,
 		replay: "safe",
 		execute: async (args: SteerInput, api, context) =>
