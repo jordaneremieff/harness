@@ -65,8 +65,9 @@ directory). When a structural check helps, check the filled copy with
 - **Lead-only slots:** division of work (the parts you can see and any
   suggested helpers; the lead can do the work itself, revise the split, or use
   helpers selectively), result references (keep exact references for delegated
-  parts and await them natively), and composed answer (one answer for the
-  whole result, gaps named).
+  parts and name the open ones in each state note; hold no run open for
+  them), and composed answer (one answer for the whole result, gaps named;
+  after a state note it goes to the reply route as a final report).
 - **Review-only slots:** the claim under review, the evidence each verdict must
   reach, and independence. Challenge contracts, omitted cases and evidence from
   defining sources rather than adopt the author's conclusion. Repeating the
@@ -94,12 +95,22 @@ discovery that changes the plan.
 |---|---|---|
 | Correction to busy work | `steer` | The change, its source, the affected step, and what to do with work already done |
 | Next act at a check-in | `steer` | One concrete act, its completion condition, and the end condition if it changed |
-| New task to a reused agent | `followUp` | A sufficient task message; on a busy Durable agent it waits for the current run and may share one answer |
+| New task to a reused agent | `followUp` | A sufficient task message; a busy agent gets it at its next tool boundary and may cover it in one answer with its current work |
 | Notice without an answer | `report` | The fact, its source, and whether any action is expected |
+| Final result after a state note | `report` to the request's reply recipient | First line: that it is the final result, and the request it answers; then the result or the exact blocker |
 | Operator decision relay | `steer` or thread post with `kind: "carried-authority"` | The verbatim words, source, and scope |
 
-Every terminal answer from a contributor carries the result or the exact
-blocker, never a waiting note.
+A terminal answer from a contributor carries the result or the exact blocker.
+One case differs: a run that ends while work the contributor sent is open.
+That answer is a state note. Its first words say that it is a state note and
+not the result; it names the open work by exact result references and what the
+contributor does when each arrives. A state note is not a result. The final
+result then goes to the request's reply recipient with `agent_send`
+`mode: "report"`.
+
+An input reaches a running agent at its next tool boundary. Send a busy agent
+a `steer` only when it must change its current work; a `report` or `followUp`
+joins the work it already has.
 
 ## Check-in intervals
 
@@ -113,8 +124,6 @@ model turn.
 - **Set an interval** for long work you must steer midway, or work where a
   silent stall would cost more than the watchdog turns.
 
-A native agent waiting in `agent_await` reacts to input by origin. A report or
-followUp from an ordinary primary releases the wait; the agent applies it and
-awaits the unresolved references again. A report from a native agent that is
-not an awaited producer stays queued until the wait ends. Send a waiting agent
-input only when it must act on it now.
+A state note from the contributor does not end the task for the owner: the
+work is open until the final result arrives. Read the open work in
+`agent_status`; do not poll.

@@ -22,10 +22,10 @@ The skills the lead reads before work, with the reason; name delegate when the l
 The parts you can see and any suggested helpers; the lead can do the work itself, revise the split, or use helpers selectively.
 
 ## Result references
-For delegated parts, direct the lead to keep exact result references and await them natively, never to poll.
+For delegated parts, direct the lead to keep exact result references, to hold no run open for them, and never to poll. When no other work remains, the lead ends its run with a state note that names the open references.
 
 ## Composed answer <!-- required -->
-Direct the lead to return one answer that covers the whole result, with gaps named.
+Direct the lead to return one answer that covers the whole result, with gaps named. After a state note, the composed answer goes to the reply route as a report whose first line says that it is the final result and names the request.
 
 ## Acceptance evidence <!-- required -->
 The checks or observable facts that establish the composed answer is complete.

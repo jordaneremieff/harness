@@ -17,7 +17,7 @@ it in an assignment.
 
 | Extension | Purpose | Tools or commands | Read more |
 |---|---|---|---|
-| agent | Durable agent sessions, delegation, waits, threads, intent, profiles | `agent_*` tools, `/agent` | `extensions/agent/README.md` |
+| agent | Durable agent sessions, delegation, delivery, threads, intent, profiles | `agent_*` tools, `/agent` | `extensions/agent/README.md` |
 | registry | Look up session tools, skills, prompts, models, settings, and context usage | `registry` | `extensions/registry/README.md` |
 | memory | Durable operator knowledge: preferences, decisions, verified lessons | `memory_search`, `memory_read`, `memory_write`, `memory_edit` | `extensions/memory/README.md` |
 | history | Exact earlier entries of the current session | `history_search`, `history_read` | `extensions/history/README.md` |

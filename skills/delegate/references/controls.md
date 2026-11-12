@@ -9,7 +9,7 @@ answers win over this table.
 
 - Start and shape the work
 - Dispatch and deliver
-- Wait and receive
+- Receive results
 - Supervise and correct
 - Context and continuity
 - Provider limits
@@ -32,18 +32,20 @@ answers win over this table.
 |---|---|---|---|---|
 | Give an agent a task | `agent_spawn` with prompt, or `agent_send` | Answer-bearing calls return `result: { sessionId, submissionId, requestId? }`; keep it | Admission is not settlement; a receipt is not acceptance | `#controls` |
 | Spawn to host a thread | `agent_spawn` without prompt | Creation-only spawn returns no result reference; send the task after the thread exists | Do not spawn an agent only to hold a thread | `#peer-threads` |
-| New work for a busy Durable agent | `agent_send` `mode: "followUp"` | Waits for the current run to end | It joins the current work and may share one answer | `#controls` |
-| Interim notice to an owner | `agent_send` `mode: "report"` | No answer route and no check-in | Do not replace a terminal answer with a report | `#recovery-and-delivery` |
+| New work for a busy Durable agent | `agent_send` `mode: "followUp"` | Placed at the agent's next tool boundary; it joins the current work | It may share one answer with the current work | `#controls` |
+| Interim notice to an owner | `agent_send` `mode: "report"` | No answer route and no check-in | An interim notice is not the final result; its first line says which it is | `#recovery-and-delivery` |
+| Final result after a state note | `agent_send` `mode: "report"` to the request's reply recipient | The first line says that it is the final result and names the request | A state note is not a result | `#recovery-and-delivery` |
 | Input at a time | `agent_send` with `deliverAt` | Durable timer; cancel with `agent_abort` `timerId` | Not a wait loop; the storage host must run at the deadline | `#controls` |
 
-## Wait and receive
+## Receive results
 
 | Moment | Control | Decision | Pitfall | Anchor |
 |---|---|---|---|---|
-| A native Durable session needs several results | `agent_await` with exact references | One call, at most 16 references; no provider calls while waiting | Ordinary primaries have no `agent_await` tool; they receive each answer through normal delivery | `#await-exact-peer-results` |
-| The wait releases early | `agent_await` again | Explicit input or the first provider retry releases with partial outcomes; apply the input, then await the unresolved references on the same request | Never answer only to wait | `#await-exact-peer-results` |
-| A long answer is cut | `agent_inspect` | Use the exact continuation the await result names | A truncated answer is not a failed one | `#await-exact-peer-results` |
-| An ordinary primary waits | none | End the turn or do independent work; results arrive by delivery | Do not poll status or inspect in a loop | `#recovery-and-delivery` |
+| Work is sent and other work remains for you | none | Do your own part; each result, report, or message arrives as an event | No call waits for a result; do not poll status or inspect in a loop | `#recovery-and-delivery` |
+| Work is sent and nothing remains for you | none | End the run with a short state note: the open result references, and what you do when each arrives; an arriving result starts your next run | Do not hold the run open for agent output | `#recovery-and-delivery` |
+| A command can take more than about two minutes | a background job (`bash` with `background`) | Its completion arrives as an event; an input reaches you at your next tool boundary | A chain of long foreground calls keeps every sender out for its whole length | `#controls` |
+| A contributor ends a run with a state note | `agent_status` with `sessionId` | The note means open work, not completion; read the open work there | Do not poll; the final result arrives as a report | `#controls` |
+| A long answer is cut | `agent_inspect` `view: "result"` with the `submissionId` | Read the complete answer from the retained result | A truncated answer is not a failed one | `#live-conversation-and-history` |
 
 ## Supervise and correct
 

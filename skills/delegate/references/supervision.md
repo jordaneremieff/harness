@@ -1,12 +1,15 @@
 # Supervision
 
 Supervise from delivered events: results, check-ins, thread notices, and
-operator input. Never poll, sleep, or loop on status or inspection. Continue
-your own part of the work while agents run.
+operator input. Never poll, sleep, or loop on status or inspection, and never
+hold a run open for agent output. Continue your own part of the work while
+agents run; when none remains, end the run with a state note that names the
+open result references.
 
 ## Contents
 
 - Check-in triage
+- State notes
 - Stalls
 - The displaced-answer pitfall
 - Quota walls
@@ -29,6 +32,20 @@ last tool lines, and an unfinished-reply excerpt. Decide one of three:
 After a steer, check that the next check-in or result shows the change
 before you rely on dependent work.
 
+## State notes
+
+An agent that sent work and has none left ends its run with a state note. The
+note says in its first words that it is not the result, and it names the open
+work. Read it as open work, not as completion:
+
+- Do not accept, integrate, or re-dispatch on a state note.
+- Read the open work in `agent_status` with the agent's `sessionId` when you
+  need its current state. Do not poll it.
+- The final result arrives as a report whose first line says that it is the
+  final result and names the request. Act on that.
+- An answer that is neither a result nor a marked state note falls under "The
+  displaced-answer pitfall".
+
 ## Stalls
 
 Read `agent_inspect` `view: "activity"` for what the agent did last, and
@@ -40,7 +57,8 @@ submissions. Common causes:
 - **Repeating a failed method:** steer it to a different source or method.
 - **Blocked tool:** a long command without a bound. Abort and give a bounded
   command.
-- **Busy on a queued followUp:** it runs after the current work ends.
+- **New work behind the current step:** a followUp is placed at the agent's
+  next tool boundary; the agent finishes its current step first.
 
 ## The displaced-answer pitfall
 

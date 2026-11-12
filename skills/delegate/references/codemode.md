@@ -80,10 +80,10 @@ return sent.map((s) => (s.ref ? { name: s.name, ref: s.ref } : { name: s.name, f
 ```
 
 A task message that already lives in a scratch file can come from
-`await tools.read({ path })`. A native Durable session that needs the results
-for its answer waits in one call: `agent_await` with `results` set to the
-stored references (at most 16). An ordinary primary does not wait; results
-arrive through delivery.
+`await tools.read({ path })`. No call waits for the results: each one arrives
+as an event. Do the work that remains for you. When none remains, end the run
+with a short state note that names the stored references still open and what
+you do when each arrives.
 
 ## Fleet sweep
 

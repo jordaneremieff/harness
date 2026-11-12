@@ -15,7 +15,7 @@ description: >
   evidence question (dig), orientation only (prime), Pi session audits
   (audit), harness surface changes (harness), or a small task the session can
   finish directly.
-compatibility: Requires Pi with the harness agent extension (spawn, send, steer, status, inspect, collaborate, intent, profile, reset; await in native Durable sessions) and codemode. Points to sibling sources extensions/agent/README.md and skills/dig/SKILL.md. Uses the operator's presets and delegation preferences; no fixed model or provider roster.
+compatibility: Requires Pi with the harness agent extension (spawn, send, steer, status, inspect, collaborate, intent, profile, reset) and codemode. Points to sibling sources extensions/agent/README.md and skills/dig/SKILL.md. Uses the operator's presets and delegation preferences; no fixed model or provider roster.
 ---
 
 # Delegate
@@ -83,13 +83,13 @@ contributor's proposal changes the problem.
 
 These facts shape the choice:
 
-- **Waiting differs by session kind.** A native Durable session sees its own
-  identity and request routes in its instructions and can call `agent_await` on
-  exact result references. An ordinary primary has no `agent_await`. It stays
-  responsive, receives each answer through normal delivery, and can integrate
-  answers as they arrive. When one composed answer from a native agent serves
-  the work, that agent can do the main work itself and use helpers selectively.
-  Neither capability prescribes staffing.
+- **No session waits for agent output.** Results, reports, and messages
+  arrive as events, in an ordinary primary and in a native Durable session
+  alike. Each session does its own part, ends its run when nothing remains for
+  it, and integrates answers as they arrive. A native Durable session sees its
+  own identity and request routes in its instructions. When one composed
+  answer from an agent serves the work, that agent can do the main work itself
+  and use helpers selectively. Delivery prescribes no staffing.
 - **Recurring concern:** a standing agent with a handle and a role.
 - **Independent check:** a fresh agent, from a different model family where the
   claim matters. Agreement between agents that share a briefing counts as one
@@ -248,8 +248,28 @@ direction, and operator status reports follow "Operator status reports".
 
 ## 6. Supervise without polling
 
-Results and check-ins arrive automatically. Do not poll status, sleep, or repeat
-inspections as a wait. Continue your own part of the work while agents run.
+Results, reports, and check-ins arrive as events. Do not hold a run open for
+agent output. No call waits for a result; do not poll status, sleep, or repeat
+inspections as a wait. After you send work:
+
+- **Do the work that remains for you.** When none remains, end the run with a
+  short state note: the open work by its exact result references, and what you
+  do when each one arrives. A result, a report, or a message starts your next
+  run.
+- **Stay reachable.** An input reaches a running agent at its next tool
+  boundary, the end of its current round of tool calls. The reach of the
+  operator and of every other agent is therefore one tool call of yours. Run a
+  command that can take more than about two minutes as a background job
+  (`bash` with `background`); its completion arrives as an event. Do not chain
+  long foreground calls.
+- **Keep a state note apart from a result.** Open the note with words that say
+  it is a state note and not the result. When the work is complete, send the
+  final result of the request to its reply recipient with `agent_send`
+  `mode: "report"`. Its first line says that it is the final result and names
+  the request.
+- **Read a contributor's state note as open work, not completion.** Read the
+  open work in `agent_status` with its `sessionId`, and act when the final
+  result arrives.
 
 At each check-in, read the bounded content and act: let work continue with a
 reason, steer a concrete next act, or abort a hung tool. Verify that a steer
@@ -258,8 +278,8 @@ and reset it with a handoff before it overflows. Read
 `references/supervision.md` for triage, stalls, quota walls, context resets,
 and the displaced-answer pitfall.
 
-**Complete when:** every check-in has a decision, and no agent works on a stale
-frame.
+**Complete when:** every check-in has a decision, no agent works on a stale
+frame, and no run of yours stays open only for agent output.
 
 ## 7. Integrate and accept
 
