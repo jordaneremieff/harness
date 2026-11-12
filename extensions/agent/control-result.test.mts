@@ -53,7 +53,8 @@ it("removes report body from retained sender receipts and preserves acknowledged
 		const original = { sourceId: "report:r1", requestId: "r1", ownerId: "recipient", senderIdentity: "sender", replyTo: null, createdAt: 7, acknowledged, passive: true,
 			message: "Private multiline\nreport body", operatorMessage: "Private excerpt" };
 		const before = structuredClone(original), receipt = projectReportReceipt(original) as Record<string, unknown>;
-		assert.deepEqual(receipt, { sourceId: "report:r1", requestId: "r1", ownerId: "recipient", senderIdentity: "sender", replyTo: null, createdAt: 7, acknowledged, passive: true, boundary: REPORT_RECEIPT_BOUNDARY });
+		assert.deepEqual(receipt, { sourceId: "report:r1", requestId: "r1", ownerId: "recipient", senderIdentity: "sender", replyTo: null, createdAt: 7, acknowledged, passive: true, boundary: REPORT_RECEIPT_BOUNDARY,
+			...(acknowledged ? {} : { placement: "unplaced", delivery: "pending" }) });
 		assert.doesNotMatch(controlText(receipt), /Private|operatorMessage|message/u);
 		assert.deepEqual(original, before);
 	}
@@ -67,15 +68,20 @@ it("preserves ordinary admission facts and failures without inventing retention"
 	for (const failure of [{ error: "failed", sourceId: "r", acknowledged: false }, { admitted: false, reason: "unavailable" }, { outcome: "failed", reason: "uncertain" }, { queued: "unknown" }]) assert.equal(projectReportReceipt(failure), failure);
 });
 
-it("keeps a stated placement on retained and admitted report receipts and omits any other value", () => {
-	const retained = { sourceId: "report:one", acknowledged: false };
+it("keeps a stated placement on report receipts, omits any other value and marks an unacknowledged report unplaced", () => {
+	const retained = { sourceId: "report:one", acknowledged: true };
 	const admitted = { identity: "native", conversationId: 1, submissionId: 7, deduped: false };
 	for (const placement of ["placed", "unplaced"]) {
 		assert.deepEqual(projectReportReceipt({ ...retained, placement }), { ...retained, placement, boundary: REPORT_RECEIPT_BOUNDARY });
 		assert.deepEqual(projectReportReceipt({ ...admitted, placement }), { ...admitted, placement });
 	}
 	for (const placement of ["queued", true, null, { state: "placed" }])
-		assert.deepEqual(projectReportReceipt({ ...retained, placement }), { ...retained, boundary: REPORT_RECEIPT_BOUNDARY });
+		assert.deepEqual(projectReportReceipt({ ...retained, placement, delivery: placement }), { ...retained, boundary: REPORT_RECEIPT_BOUNDARY });
+	assert.deepEqual(projectReportReceipt({ ...admitted, placement: "unplaced", delivery: "pending" }), { ...admitted, placement: "unplaced", delivery: "pending" });
+	for (const placement of [undefined, "placed", "unplaced"])
+		assert.deepEqual(projectReportReceipt({ ...retained, acknowledged: false, placement }), { ...retained, acknowledged: false, placement: "unplaced", delivery: "pending", boundary: REPORT_RECEIPT_BOUNDARY });
+	assert.deepEqual(projectReportReceipt({ ...retained, acknowledged: false, delivery: "admitted" }), { ...retained, acknowledged: false, delivery: "admitted", boundary: REPORT_RECEIPT_BOUNDARY });
+	assert.deepEqual(projectReportReceipt({ ...retained, delivery: "admitted" }), { ...retained, delivery: "admitted", boundary: REPORT_RECEIPT_BOUNDARY });
 });
 
 it("omits a host intervention association of any shape and refuses a malformed result reference", () => {

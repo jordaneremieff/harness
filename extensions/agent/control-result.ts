@@ -66,7 +66,12 @@ export function projectReportReceipt(value: unknown): unknown {
 	const result: Record<string, unknown> = {};
 	for (const key of REPORT_RECEIPT_KEYS) if (Object.hasOwn(source, key)) result[key] = structuredClone(source[key]);
 	if (REPORT_PLACEMENTS.includes(source.placement)) result.placement = source.placement;
-	if (retained) result.boundary = REPORT_RECEIPT_BOUNDARY;
+	if (source.delivery === "pending" || source.delivery === "admitted") result.delivery = source.delivery;
+	if (retained) {
+		result.boundary = REPORT_RECEIPT_BOUNDARY;
+		// Without a stated delivery, an unacknowledged retained report is not delivered, so it cannot be in the recipient's context.
+		if (source.acknowledged === false && result.delivery === undefined) Object.assign(result, { placement: "unplaced", delivery: "pending" });
+	}
 	if (Buffer.byteLength(JSON.stringify(result), "utf8") > REPORT_RECEIPT_BYTE_LIMIT)
 		return { format: "refused", reason: "Report receipt identity/state metadata exceeds the output byte limit; the retained delivery is unchanged.", byteLimit: REPORT_RECEIPT_BYTE_LIMIT };
 	return result;
