@@ -219,17 +219,25 @@ changes, the tab closes, the browser process exits, or the caller cancels.
 | `timeout`, `cancelled` | The tool stopped waiting. Page-side work can continue; the tool forgets the pending result so a late settlement stores nothing. |
 | `document-replaced`, `target-closed` | The page document changed (its document token differs), the tab closed, or the browser process exited before the result was read; the outcome is unknown. |
 | `observation-failed` | A page read could not answer during the wait (lost permission, changed JavaScript settings, or no readable reply); the outcome is unknown. |
-| `unknown` | The start reply held no readable result after the expression was delivered, or the unchanged document holds no record of the run; the expression may have run. |
+| `unknown` | The page holds no record of the run: the start request may not have reached the page, or the record is gone from an unchanged document; the expression may have run. |
 | `syntax-error` | The expression did not parse; nothing was sent. |
 
-An awaited outcome stays in a record in the page until the tool acknowledges it,
-so a poll reply lost in transport does not lose the result: the next poll reads
-the same record, and the expression never runs again to recover it. After the
-tool reads an outcome, times out, or is cancelled, it sends one removal request.
-If that request is lost too, the record expires: each new evaluation in the
-document first removes records older than five minutes (a record serves only
-the one tool call that created it, which waits at most two minutes) and keeps
-at most eight records, oldest removed first. One record holds at most
+Every outcome, synchronous or awaited, stays in a record in the page until the
+tool removes it or the record expires, so a reply lost in transport does not
+lose the result. After a lost poll reply the next poll reads the same record. After a lost start
+reply (a transport timeout or exit once the request may have reached the
+browser, or a reply with no page result) the tool reads the record instead of
+resending the expression, at least once even when the wait limit has passed;
+the report then carries `startReply.status: "lost"` beside the transport
+failure. The expression never runs again to recover a result. After the tool
+reads an outcome through a poll, times out, or is cancelled during the wait,
+it sends one removal request. A synchronous outcome that arrives in the start
+reply gets no removal request, so the common call costs one Apple Event; its
+record leaves through expiry or the record limit. If a removal request is lost,
+the record expires the same way: each new evaluation in the document first
+removes records older than five minutes (a record serves only the one tool call
+that created it, whose wait limit is at most two minutes) and keeps at most eight
+records, oldest removed first. One record holds at most
 `maxBytes` of encoded value plus a bounded error. A replaced document starts
 with no records.
 

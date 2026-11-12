@@ -398,10 +398,10 @@ const encodeError = (error, maxBytes) => {
 
 /**
  * Evaluation records kept in the page world. A record holds a pending run or its
- * settled outcome until the tool acknowledges it with `evaluationForgetScript`, so
- * a poll reply lost in transport leaves the outcome readable by the next poll. A
- * record is needed only within the one tool call that created it, which never
- * waits longer than two minutes, so a record older than `RUN_TTL_MS` is abandoned.
+ * settled outcome until the tool removes it with `evaluationForgetScript`, so a
+ * start or poll reply lost in transport leaves the outcome readable by a poll. A
+ * record is needed only within the one tool call that created it, whose wait
+ * limit is at most two minutes, so a record older than `RUN_TTL_MS` is abandoned.
  * At most `RUN_LIMIT` records are kept; the oldest goes first. One settled record
  * holds at most `maxBytes` of encoded value (262144 at most) plus a bounded error.
  */
@@ -410,8 +410,9 @@ export const RUN_TTL_MS = 300_000;
 
 /**
  * Starts an evaluation. The expression is spliced into the script after a syntax
- * check by the caller. A synchronous exception reports `threw`; a thenable is
- * awaited in the page and its settlement is stored for `evaluationPollScript`.
+ * check by the caller. A synchronous outcome is returned and also recorded, so a
+ * lost start reply can be recovered by `evaluationPollScript`; a thenable is
+ * awaited in the page and its settlement is recorded for the poll.
  */
 export function evaluationStartScript(
 	expectOrigin: string,
@@ -430,18 +431,18 @@ while (S.runs.size >= ${RUN_LIMIT}) S.runs.delete(S.runs.keys().next().value);
 const __pbEntry = { state: "pending", at: __pbNow };
 S.runs.set(__pbRun, __pbEntry);
 const __pbSettle = (patch) => { if (S.runs.get(__pbRun) === __pbEntry) Object.assign(__pbEntry, patch, { settledAt: Date.now() }); };
+const __pbDone = (outcome) => { __pbSettle(outcome); return JSON.stringify({ kind: "settled", page: page(), outcome }); };
 let __pbValue;
 try {
   __pbValue = (
 ${expression}
 );
 } catch (error) {
-  S.runs.delete(__pbRun);
-  return JSON.stringify({ kind: "settled", page: page(), outcome: { state: "threw", error: encodeError(error, __pbMax) } });
+  return __pbDone({ state: "threw", error: encodeError(error, __pbMax) });
 }
 let __pbThen = null;
 try { __pbThen = __pbValue !== null && (typeof __pbValue === "object" || typeof __pbValue === "function") ? __pbValue.then : null; }
-catch (error) { S.runs.delete(__pbRun); return JSON.stringify({ kind: "settled", page: page(), outcome: { state: "threw", error: encodeError(error, __pbMax) } }); }
+catch (error) { return __pbDone({ state: "threw", error: encodeError(error, __pbMax) }); }
 if (typeof __pbThen === "function") {
   Promise.resolve(__pbValue).then(
     (value) => __pbSettle({ state: "fulfilled", awaited: true, ...encodeValue(value, __pbMax) }),
@@ -449,8 +450,7 @@ if (typeof __pbThen === "function") {
   );
   return JSON.stringify({ kind: "pending", page: page() });
 }
-S.runs.delete(__pbRun);
-return JSON.stringify({ kind: "settled", page: page(), outcome: { state: "fulfilled", awaited: false, ...encodeValue(__pbValue, __pbMax) } });
+return __pbDone({ state: "fulfilled", awaited: false, ...encodeValue(__pbValue, __pbMax) });
 })()`;
 }
 

@@ -1053,6 +1053,53 @@ it("recovers a settled result after a lost poll reply, with one run and no repla
 	assert.equal(world.records(), 0, "the acknowledgement removes the record");
 });
 
+it("recovers a synchronous result after a lost start reply without resending the expression", async () => {
+	const world = pageWorld((kind) => (kind === "start" ? "after-run" : "none"));
+	const { deps, requests } = fakes(world.run, { access: { chrome: "interact" } });
+	const result = await browserEvaluate({ ...AWAITED, expression: "(shared.effects += 1, 7)" }, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "fulfilled");
+	assert.equal(obj(report.execution).value, 7);
+	assert.equal(obj(report.startReply).status, "lost");
+	assert.equal(world.effects(), 1);
+	assert.equal(count(requests, "start"), 1);
+	assert.equal(world.records(), 0);
+});
+
+it("recovers an awaited result after a lost start reply", async () => {
+	const world = pageWorld((kind) => (kind === "start" ? "after-run" : "none"));
+	const { deps, requests } = fakes(world.run, { access: { chrome: "interact" } });
+	const result = await browserEvaluate(AWAITED, undefined, deps);
+	assert.equal(result.details.status, "fulfilled");
+	assert.equal(obj(reportOf(result).execution).value, 42);
+	assert.equal(world.effects(), 1);
+	assert.equal(count(requests, "start"), 1);
+});
+
+it("keeps a lost start unknown when the request never reached the page", async () => {
+	const world = pageWorld((kind) => (kind === "start" ? "before-run" : "none"));
+	const { deps, requests } = fakes(world.run, { access: { chrome: "interact" } });
+	const result = await browserEvaluate(AWAITED, undefined, deps);
+	assert.equal(result.details.status, "unknown");
+	assert.match(String(obj(reportOf(result).execution).note), /may or may not have run/);
+	assert.equal(world.effects(), 0);
+	assert.equal(count(requests, "start"), 1);
+});
+
+it("returns a synchronous result in one request and leaves its record to the record limit", async () => {
+	const world = pageWorld();
+	const { deps, requests } = fakes(world.run, { access: { chrome: "interact" } });
+	for (let index = 0; index < RUN_LIMIT + 2; index++) {
+		const result = await browserEvaluate({ ...AWAITED, expression: "(shared.effects += 1, 7)" }, undefined, deps);
+		assert.equal(result.details.status, "fulfilled");
+	}
+	assert.equal(requests.length, RUN_LIMIT + 2);
+	assert.equal(world.records(), RUN_LIMIT);
+	world.advanceClock(RUN_TTL_MS + 1);
+	await browserEvaluate({ ...AWAITED, expression: "(shared.effects += 1, 7)" }, undefined, deps);
+	assert.equal(world.records(), 1);
+});
+
 it("reports a genuine document replacement during the wait", async () => {
 	const world: PageWorld = pageWorld((kind) => {
 		if (kind === "evaluation-poll") world.replace();
@@ -1111,24 +1158,26 @@ it("keeps an outcome unknown when no record or read settles it, and never reruns
 	assert.equal(cleared.effects(), 1);
 });
 
-it("reports an unreadable evaluation start as an unknown execution, not a refusal", async () => {
-	const run = evaluateRunner(() =>
-		ok({
-			window: "1",
-			url: null,
-			title: null,
-			result: null,
-			metadataError: { number: -1728, message: "Can't get tab." },
-		}),
+it("reports an unreadable evaluation start with no page record as an unknown execution, not a refusal", async () => {
+	const run = evaluateRunner(
+		() =>
+			ok({
+				window: "1",
+				url: null,
+				title: null,
+				result: null,
+				metadataError: { number: -1728, message: "Can't get tab." },
+			}),
+		() => executed({ kind: "missing", page: PAGE }),
 	);
 	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
 	const result = await browserEvaluate(EVALUATE_PARAMS, undefined, deps);
 	const report = reportOf(result);
-	assert.equal(result.details.status, "observation-failed");
+	assert.equal(result.details.status, "unknown");
 	assert.equal(result.isError, true);
 	assert.equal(blockedReason(result), undefined);
 	assert.equal(obj(report.execution).status, "unknown");
-	assert.equal(typeof report.replay, "string");
+	assert.equal(obj(report.startReply).reason, "no-page-result");
 	assert.equal(requests.filter((request) => scriptKind(request) === "start").length, 1);
 });
 
@@ -1196,19 +1245,32 @@ it("keeps the error name and message of a rejected promise and of a thrown value
 	assert.equal(threwError.message, "thrown");
 });
 
-it("reports an unknown start after a transport failure and never starts the expression twice", async () => {
+it("keeps a start whose reply and record reads are all lost unknown, and never starts the expression twice", async () => {
 	const run = runFrom({
 		execute: () => {
 			throw new TransportError("timeout", "unknown", "No reply within 400 ms.");
 		},
 	});
 	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
-	const result = await browserEvaluate(EVALUATE_PARAMS, undefined, deps);
+	const result = await browserEvaluate({ ...EVALUATE_PARAMS, timeoutMs: 200 }, undefined, deps);
 	const report = reportOf(result);
-	assert.equal(result.details.status, "transport-failed");
-	assert.equal(obj(report.execution).status, "unknown");
-	assert.equal(typeof report.replay, "string");
+	assert.equal(result.details.status, "observation-failed");
+	assert.equal(obj(report.transport).status, "failed");
+	assert.equal(obj(report.startReply).status, "lost");
 	assert.equal(requests.filter((request) => scriptKind(request) === "start").length, 1);
+});
+
+it("reports a start that never reached the browser as not started", async () => {
+	const run = runFrom({
+		execute: () => {
+			throw new TransportError("spawn", "none", "osascript is not available on this system.");
+		},
+	});
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserEvaluate(EVALUATE_PARAMS, undefined, deps);
+	assert.equal(result.details.status, "transport-failed");
+	assert.equal(obj(reportOf(result).execution).status, "not-started");
+	assert.equal(requests.length, 1);
 });
 
 /* ---------------------------------------------------------------- capture */

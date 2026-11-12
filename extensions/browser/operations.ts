@@ -959,9 +959,12 @@ interface Settlement {
 	note?: string;
 }
 
-type EvaluationStep = Settlement | { step: "pending" | "unreadable" };
+type EvaluationStep = Settlement | { step: "pending"; doc: unknown } | { step: "unreadable" };
 
-/** One read of a pending evaluation. */
+/**
+ * One read of a pending evaluation. `startDoc` is null when the start reply was lost,
+ * so no document token is known yet and a missing record cannot show replacement.
+ */
 async function evaluationStep(
 	deps: BrowserDeps,
 	resolved: Resolved,
@@ -976,35 +979,43 @@ async function evaluationStep(
 		const script = evaluationPollScript(runId);
 		poll = envelope(await executeInTab(deps, resolved.spec, resolved.target, script, signal, POLL_TIMEOUT_MS));
 	} catch (error) {
-		const failure = readFailure(error);
-		if (failure.kind === "cancelled") {
-			return {
-				status: "cancelled",
-				outcome: null,
-				note: "Cancellation stopped the wait; page-side work may continue.",
-			};
-		}
-		if (failure.kind === "closed")
-			return { status: "target-closed", outcome: null, note: "The tab closed before the result was read." };
-		if (failure.kind === "exited")
-			return {
-				status: "target-closed",
-				outcome: null,
-				note: "The browser process exited before the result was read.",
-			};
-		if (failure.kind === "unavailable")
-			return {
-				status: "observation-failed",
-				outcome: null,
-				note: `The page could not be read (${failure.reason}); the outcome is unknown.`,
-			};
-		return { step: "unreadable" };
+		return failedEvaluationRead(error);
 	}
+	return readEvaluationPoll(poll, startDoc);
+}
+
+function failedEvaluationRead(error: unknown): EvaluationStep {
+	const failure = readFailure(error);
+	if (failure.kind === "cancelled") {
+		return {
+			status: "cancelled",
+			outcome: null,
+			note: "Cancellation stopped the wait; page-side work may continue.",
+		};
+	}
+	if (failure.kind === "closed")
+		return { status: "target-closed", outcome: null, note: "The tab closed before the result was read." };
+	if (failure.kind === "exited")
+		return {
+			status: "target-closed",
+			outcome: null,
+			note: "The browser process exited before the result was read.",
+		};
+	if (failure.kind === "unavailable")
+		return {
+			status: "observation-failed",
+			outcome: null,
+			note: `The page could not be read (${failure.reason}); the outcome is unknown.`,
+		};
+	return { step: "unreadable" };
+}
+
+function readEvaluationPoll(poll: Facts, startDoc: unknown): EvaluationStep {
 	if (poll.kind === "settled") {
 		const outcome = record(poll.outcome);
 		return { status: String(outcome?.state), outcome };
 	}
-	if (record(poll.page)?.doc !== startDoc) {
+	if (startDoc !== null && record(poll.page)?.doc !== startDoc) {
 		return {
 			status: "document-replaced",
 			outcome: null,
@@ -1015,10 +1026,13 @@ async function evaluationStep(
 		return {
 			status: "unknown",
 			outcome: null,
-			note: "The document is unchanged but holds no record of this run; the outcome is unknown and the tool does not rerun the expression.",
+			note:
+				startDoc === null
+					? "The page holds no record of this run; the expression may or may not have run, and the tool does not resend it."
+					: "The document is unchanged but holds no record of this run; the outcome is unknown and the tool does not rerun the expression.",
 		};
 	}
-	return { step: "pending" };
+	return { step: "pending", doc: record(poll.page)?.doc ?? null };
 }
 
 /** Polls the page for a pending evaluation until it settles, the time limit passes, or the document changes. */
@@ -1031,10 +1045,12 @@ async function awaitEvaluation(
 	signal?: AbortSignal,
 ): Promise<Settlement> {
 	let last: "pending" | "unreadable" | null = null;
+	let doc = startDoc;
 	for (let attempt = 0; deps.now() < deadline; attempt++) {
-		const step = await evaluationStep(deps, resolved, runId, startDoc, attempt, signal);
+		const step = await evaluationStep(deps, resolved, runId, doc, attempt, signal);
 		if ("step" in step) {
 			last = step.step;
+			if (step.step === "pending" && doc === null) doc = step.doc;
 			continue;
 		}
 		return step;
@@ -1076,7 +1092,31 @@ function unreadableEvaluation(subject: Subject, note: string): BrowserResult {
 	);
 }
 
-/** Sends the start script once; a transport failure reports the run as not started or unknown and is never retried. */
+/** A start reply that never arrived or held no result, after the script may have reached the page. */
+interface LostStart {
+	transport: Facts;
+	reason: string;
+}
+
+function failedStart(error: unknown, subject: Subject): { early: BrowserResult } | { lost: LostStart } {
+	if (!(error instanceof TransportError)) throw error;
+	if (error.delivery === "unknown" && error.kind !== "cancelled") {
+		const transport = { status: "failed", kind: error.kind, delivery: error.delivery, message: error.message };
+		return { lost: { transport, reason: error.kind } };
+	}
+	const early = transportResult("browser_evaluate", error, {
+		target: subject.facts,
+		execution: { status: error.delivery === "none" ? "not-started" : "unknown" },
+		replay: "not attempted; the expression may have run",
+	});
+	return { early };
+}
+
+/**
+ * Sends the start script once and never resends it. A failure known to precede
+ * delivery, or a cancellation, ends the call; a lost reply is recovered from the
+ * page record by the caller.
+ */
 async function startEvaluation(
 	params: EvaluateParams,
 	resolved: Resolved,
@@ -1085,20 +1125,14 @@ async function startEvaluation(
 	timeoutMs: number,
 	deps: BrowserDeps,
 	signal?: AbortSignal,
-): Promise<{ data: Facts } | { early: BrowserResult }> {
+): Promise<{ data: Facts } | { early: BrowserResult } | { lost: LostStart }> {
 	const { spec, target, expectOrigin } = resolved;
 	let reply: ExecuteReply;
 	try {
 		const script = evaluationStartScript(expectOrigin as string, runId, params.expression, params.maxBytes ?? 32_768);
 		reply = await executeInTab(deps, spec, target, script, signal, Math.max(CALL_TIMEOUT_MS, timeoutMs));
 	} catch (error) {
-		if (!(error instanceof TransportError)) throw error;
-		const early = transportResult("browser_evaluate", error, {
-			target: subject.facts,
-			execution: { status: error.delivery === "none" ? "not-started" : "unknown" },
-			replay: "not attempted; the expression may have run",
-		});
-		return { early };
+		return failedStart(error, subject);
 	}
 	let data: Facts;
 	try {
@@ -1106,12 +1140,7 @@ async function startEvaluation(
 	} catch (error) {
 		if (!(error instanceof Blocked) || error.reason !== "no-page-result") throw error;
 		subject.update(target, { url: reply.url, title: reply.title }, reply.window);
-		return {
-			early: unreadableEvaluation(
-				subject,
-				"The page script was delivered but returned no readable result; the expression may have run.",
-			),
-		};
+		return { lost: { transport: { status: "ok" }, reason: "no-page-result" } };
 	}
 	subject.update(target, record(data.page), reply.window);
 	if (data.kind === "origin-mismatch") throw originMismatch(expectOrigin, record(data.page));
@@ -1123,18 +1152,65 @@ async function startEvaluation(
 	return { data };
 }
 
-function evaluationResult(subject: Subject, settlement: Settlement, elapsedMs: number): BrowserResult {
+function evaluationResult(
+	subject: Subject,
+	settlement: Settlement,
+	elapsedMs: number,
+	lost: LostStart | null,
+): BrowserResult {
 	const status = settledStatus(settlement);
 	const { state: _state, ...outcome } = settlement.outcome ?? {};
 	const execution = { status, ...outcome, elapsedMs, ...(settlement.note ? { note: settlement.note } : {}) };
 	const report = {
 		target: subject.facts,
-		transport: { status: "ok" },
+		transport: lost?.transport ?? { status: "ok" },
+		...(lost
+			? {
+					startReply: {
+						status: "lost",
+						reason: lost.reason,
+						note: "The start reply was lost; the tool read the page record of this run and did not resend the expression.",
+					},
+				}
+			: {}),
 		execution,
 		world:
 			"isolated: shares the DOM, storage, cookies, and network identity with the page, not its JavaScript variables",
 	};
-	return result("browser_evaluate", status, `expression ${status}. ${UNTRUSTED}`, report, status !== "fulfilled");
+	const headline = lost
+		? `expression ${status}, read from the page record after the start reply was lost. ${UNTRUSTED}`
+		: `expression ${status}. ${UNTRUSTED}`;
+	return result("browser_evaluate", status, headline, report, status !== "fulfilled");
+}
+
+/** The outcome from the start reply, or from the page record after a pending start or a lost start reply. */
+async function settle(
+	deps: BrowserDeps,
+	resolved: Resolved,
+	runId: string,
+	data: Facts | null,
+	lost: LostStart | null,
+	deadline: number,
+	signal?: AbortSignal,
+): Promise<Settlement> {
+	if (data?.kind === "settled") return { status: String(record(data.outcome)?.state), outcome: record(data.outcome) };
+	// A lost start reply gets at least one read of the record, even after the wait limit.
+	const limit = lost ? Math.max(deadline, deps.now() + 1) : deadline;
+	const startDoc = data ? (record(data.page)?.doc ?? null) : null;
+	return awaitEvaluation(deps, resolved, runId, startDoc, limit, signal);
+}
+
+/** Acknowledges a read outcome, or abandons a run the tool stopped waiting for. A failure leaves expiry to the page. */
+async function forgetRun(deps: BrowserDeps, resolved: Resolved, runId: string): Promise<void> {
+	const { spec, target } = resolved;
+	const forget = {
+		op: "execute",
+		bundleId: spec.bundleId,
+		pid: target.pid,
+		tab: target.tab,
+		script: evaluationForgetScript(runId),
+	};
+	await call(deps, forget, undefined, 2_000).catch(() => undefined);
 }
 
 export async function browserEvaluate(
@@ -1153,30 +1229,20 @@ export async function browserEvaluate(
 				return result(tool, "syntax-error", `not sent: the expression does not parse (${problem}).`, report, true);
 			}
 			const resolved = resolveTarget(params, "interact", deps);
-			const { spec, target } = resolved;
-			subject.update(target, null);
+			subject.update(resolved.target, null);
 			const runId = randomUUID();
 			const timeoutMs = params.timeoutMs ?? 10_000;
 			const startedAt = deps.now();
 			const started = await startEvaluation(params, resolved, subject, runId, timeoutMs, deps, signal);
 			if ("early" in started) return started.early;
-			const { data } = started;
-			const settlement: Settlement =
-				data.kind === "settled"
-					? { status: String(record(data.outcome)?.state), outcome: record(data.outcome) }
-					: await awaitEvaluation(deps, resolved, runId, record(data.page)?.doc, startedAt + timeoutMs, signal);
-			if (data.kind === "pending" && !RECORD_GONE.has(settlement.status)) {
-				// Acknowledges a read outcome, or abandons a run the tool stopped waiting for.
-				const forget = {
-					op: "execute",
-					bundleId: spec.bundleId,
-					pid: target.pid,
-					tab: target.tab,
-					script: evaluationForgetScript(runId),
-				};
-				await call(deps, forget, undefined, 2_000).catch(() => undefined);
-			}
-			return evaluationResult(subject, settlement, deps.now() - startedAt);
+			const lost = "lost" in started ? started.lost : null;
+			const data = "data" in started ? started.data : null;
+			const settlement = await settle(deps, resolved, runId, data, lost, startedAt + timeoutMs, signal);
+			// A synchronous outcome in the start reply is not acknowledged, so the common call costs
+			// one Apple Event; its record leaves through expiry or the record limit.
+			const acknowledge = data?.kind !== "settled" && !RECORD_GONE.has(settlement.status);
+			if (acknowledge) await forgetRun(deps, resolved, runId);
+			return evaluationResult(subject, settlement, deps.now() - startedAt, lost);
 		},
 		() => ({ target: subject.facts }),
 	);
