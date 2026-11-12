@@ -117,11 +117,11 @@ export function continuityText(ownerId: string, headId: string | number, facts: 
 }
 /**
  * Declared open work as one context head first saw it. The rows carry identifiers only: an item's
- * note and the state of its dependencies change after the read, and the status of the selected
- * session holds them, so the text names that exact call.
+ * note and the state of its dependencies change after the read, and the detailed status of the
+ * selected session holds them, so the text names that exact call.
  */
 export function continuityWorkText(ownerId: string, items: readonly ContinuityOpenWork[] | undefined): string {
-	const status = `agent_status(${JSON.stringify({ sessionId: ownerId })})`;
+	const status = `agent_status(${JSON.stringify({ sessionId: ownerId, detail: true })})`;
 	if (items === undefined) return `Declared open work of this session: not read for this context head. Read it with ${status}.`;
 	const rows = items.map((item) => JSON.stringify({
 		requestId: item.requestId, replyTo: item.replyTo,
