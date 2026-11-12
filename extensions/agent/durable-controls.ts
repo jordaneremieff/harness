@@ -428,9 +428,14 @@ function admissionProvenance(conversationId: ConversationId, params: DurableSubm
 	}
 	return provenance;
 }
-function awaitInputMode(classification: { defer: boolean; release: boolean }, mode: DurableSubmitParams["whenBusy"]): "steer" | "followUp" | "reject" | undefined {
-	if (classification.defer) return "followUp";
-	return classification.release ? "steer" : mode;
+/**
+ * Busy mode of every native input submit. Pi places a queued input at the
+ * boundary after the current tool round only when its mode is `steer`; every
+ * other value, an omitted one included, waits for the run end. Each active
+ * input therefore submits as an explicit `steer`. `reject` keeps its meaning.
+ */
+export function placementMode(mode: "steer" | "followUp" | "reject" | null | undefined): "steer" | "reject" {
+	return mode === "reject" ? "reject" : "steer";
 }
 async function suppressAdmittedCheckIn(conversation: Conversation, submission: import("@earendil-works/pi-durable").Submission, provenance: import("./awaited-results.ts").InputProvenance, context: Context, communication: DurableSubmitParams["communication"], now: () => number, deduped: boolean): Promise<void> {
 	const decision = await conversation.commit(async (tx) => {
@@ -544,7 +549,7 @@ async function admitConversation(conversation: Conversation, params: DurableSubm
 			type: "input",
 			content: message,
 			requestId,
-			whenBusy: awaitInputMode(classification, whenBusy),
+			whenBusy: placementMode(whenBusy),
 			entry: inputEntry(origin, inputAuthor(params)),
 		},
 		context,
@@ -1261,7 +1266,7 @@ export async function reconcileDeliveries(harness: Harness, context: Context): P
 				continue;
 			}
 			const request = (await harness.snapshot(RequestContextDoc, intent.conversationId, context))?.requests.find((item) => item.requestId === intent.requestId);
-			const admitted = await conversation.submit({ type: "input", content: deliveredMessage(intent.message), entry: inputEntry(intent.origin, request?.requester), requestId: intent.requestId, ...(intent.whenBusy === null ? {} : { whenBusy: intent.whenBusy }) }, context);
+			const admitted = await conversation.submit({ type: "input", content: deliveredMessage(intent.message), entry: inputEntry(intent.origin, request?.requester), requestId: intent.requestId, whenBusy: placementMode(intent.whenBusy) }, context);
 			submissionId = admitted.id;
 		}
 		const resolved = submissionId;

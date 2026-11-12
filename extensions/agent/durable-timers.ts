@@ -24,7 +24,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { inputEntry } from "./input-entry.ts";
 import { classifyAwaitInput, reconcileInputRelease } from "./awaited-results.ts";
 import { defineDoc, defineDocFamily, defineTask, type ConversationId, type Cursor, type Harness, type SubmissionRecord, type TaskId, type TaskRecord, type TaskState, type TaskOutcome, type Tx } from "@earendil-works/pi-durable";
-import { linkDeliveryIntent, recordDeliveryIntent, type DeliveryIntentState, type DeliveryOrigin } from "./durable-controls.ts";
+import { linkDeliveryIntent, placementMode, recordDeliveryIntent, type DeliveryIntentState, type DeliveryOrigin } from "./durable-controls.ts";
 import { reconcileProfile } from "./profile.ts";
 import { validateRequestContext, type RequestContext } from "./request-context.ts";
 import { parseDeliverAt } from "./timer-input.ts";
@@ -196,7 +196,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				return undefined;
 			}, context);
 			const submission = await conversation.submit(
-				{ type: "input", content: task.input.message, requestId: task.input.requestId, whenBusy: mode, entry: inputEntry(task.input.origin, task.input.requestContext?.requester) },
+				{ type: "input", content: task.input.message, requestId: task.input.requestId, whenBusy: placementMode(mode), entry: inputEntry(task.input.origin, task.input.requestContext?.requester) },
 				context,
 			);
 			await runtime.commit(async (tx) => { await reconcileInputRelease(tx, conversationId, task.input.requestId); return undefined; }, context);
@@ -252,7 +252,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					return undefined;
 				}, context);
 				const submission = await conversation.submit(
-					{ type: "input", content: input.message, requestId: input.requestId, whenBusy: mode, entry: inputEntry(input.origin, input.requestContext?.requester) },
+					{ type: "input", content: input.message, requestId: input.requestId, whenBusy: placementMode(mode), entry: inputEntry(input.origin, input.requestContext?.requester) },
 					context,
 				);
 				await runtime.commit(async (tx) => { await reconcileInputRelease(tx, conversationId, input.requestId); return undefined; }, context);

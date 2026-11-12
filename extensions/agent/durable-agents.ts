@@ -29,7 +29,7 @@ import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProve
 import { executeAwait } from "./await-execution.ts";
 import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
-import { AgentMetaDoc, publishConversationIntent, recordAdmissionMeta, recordDeliveryIntent, linkDeliveryIntent, seededCompactionInstructions } from "./durable-controls.ts";
+import { AgentMetaDoc, placementMode, publishConversationIntent, recordAdmissionMeta, recordDeliveryIntent, linkDeliveryIntent, seededCompactionInstructions } from "./durable-controls.ts";
 import { recordAdmitted, recordRefused, recordRequested, recordScheduled, recordTimerCancelled, type OutgoingRequest } from "./continuity-admission.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema, profileText } from "./profile-schema.ts";
 import { cleanupRequestContexts } from "./request-context.ts";
@@ -869,7 +869,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			admission.armed = true;
 			return undefined;
 		}, context);
-		const submission = await conversation.submit({ type: "input", content: input.message, whenBusy: input.whenBusy, requestId: request.requestId, entry: inputEntry("model", request.requester) }, context).catch(async (error) => {
+		const submission = await conversation.submit({ type: "input", content: input.message, whenBusy: placementMode(input.whenBusy), requestId: request.requestId, entry: inputEntry("model", request.requester) }, context).catch(async (error) => {
 			await api.commit(async (tx) => {
 				await forgetFailedAdmission(tx, input.conversationId, request.requestId);
 				// No submission under the request ID proves that nothing was admitted.
