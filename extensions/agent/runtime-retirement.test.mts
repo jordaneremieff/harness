@@ -567,16 +567,22 @@ it("delivers a parked row when its owner registers before the source host retire
 	const reportError = f.native.reportDeliveryError.bind(f.native);
 	t.mock.method(f.native, "reportDeliveryError", (error?: Error) => { reportError(error); if (error) errors.push(error); });
 	const host = await runHost(() => f.runtime, { metadata: f.metadata, idleMs: 0, announceReady: () => {} });
-	t.after(() => host.close());
-	await f.runtime.request("report", { ownerId: f.ownerId, senderIdentity: f.metadata.storageId, message: "parked", requestId: "parked-before-return" }, "report");
-	await errors.waitForCount(1);
-	const notices = eventLog<string>();
-	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir });
-	t.after(() => manager.close());
-	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: randomUUID(), cwd: f.cwd });
-	await manager.registerPrimary(f.ownerId, { cwd: f.cwd, signal: new AbortController().signal, send: (text) => notices.push(text) });
-	await notices.waitForCount(1, 3000);
-	assert.equal(notices.length, 1);
+	try {
+		await f.runtime.request("report", { ownerId: f.ownerId, senderIdentity: f.metadata.storageId, message: "parked", requestId: "parked-before-return" }, "report");
+		await errors.waitForCount(1);
+		const notices = eventLog<string>();
+		const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir });
+		try {
+			await manager.control("attach", { sessionId: f.metadata.storageId }, { id: randomUUID(), cwd: f.cwd });
+			await manager.registerPrimary(f.ownerId, { cwd: f.cwd, signal: new AbortController().signal, send: (text) => notices.push(text) });
+			await notices.waitForCount(1, 3000);
+			assert.equal(notices.length, 1);
+		} finally {
+			await manager.close();
+		}
+	} finally {
+		await host.close();
+	}
 });
 
 it("keeps cached dead-owner delivery cold after clean retirement and wakes at exact owner registration", { timeout: 15000 }, async (t) => {
