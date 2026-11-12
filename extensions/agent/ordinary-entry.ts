@@ -183,6 +183,7 @@ const inspect = obj(
 		submissionId: opt(nativeEntryId),
 		operationId: opt(id),
 		receiptCursor: opt(str({ minLength: 1, maxLength: 2048, description: "Recipient reference continuation from a result page. Separate from answer offset and history cursor." })),
+		finalReport: opt(bool({ description: "Result view only: page the retained final report of the selected input's declared work instead of its answer; offset continues it." })),
 	},
 	{},
 );
@@ -468,10 +469,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_inspect",
-		"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry only, not the live selected branch. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId or operationId. Images, signatures, and redacted thinking stay omitted.",
+		"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry only, not the live selected branch. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId or operationId. When the request declared work, the answer is a state note: work.finalReport.read pages its final report with finalReport true. Images, signatures, and redacted thinking stay omitted.",
 		inspect,
 		(input, ctx) => {
 			if (input.receiptCursor !== undefined && input.view !== "result") throw new Error("receiptCursor requires result view");
+			if (input.finalReport !== undefined && input.view !== "result") throw new Error("finalReport requires result view");
 			return control("inspect", input, ctx);
 		},
 	);

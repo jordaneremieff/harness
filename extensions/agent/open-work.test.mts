@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { Harness, LiveDoc, MemoryStorage, type ConversationId, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import { Harness, LiveDoc, MemoryStorage, type ConversationId, type EntryId, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { onStoredCommit } from "./commit-observation.ts";
-import { deliveryPendingCount, retainedReportRequest } from "./delivery-store.ts";
+import { deliveryPendingCount, retainedReportRequest, storeDeliveryRow } from "./delivery-store.ts";
+import { acknowledgeReports } from "./durable-controls.ts";
+import { readInspection, RESULT_PAGE_BYTES } from "./durable-observation.ts";
+import { readableControlText } from "./control-result.ts";
+import { InspectToolOutputSchema } from "./observation-schema.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { inputEntry } from "./input-entry.ts";
 import {
 	AgentWorkOutputSchema, CLOSED_WORK_LIMIT, OPEN_WORK_LIMIT, OpenWorkDoc, boundClosedItems, closeOpenWork, closeWork, completeOpenWork, completeWork, continueWork,
-	declareOpenWork, dependencyState, executeAgentWork, finalReportLabel, finalReportRequestId, finalReportToItself, openWorkCheckInLines, openWorkItems, openWorkStatus,
+	declareOpenWork, dependencyState, executeAgentWork, finalReportLabel, finalReportRead, finalReportRequestId, finalReportToItself, openWorkCheckInLines, openWorkItems, openWorkStatus,
 	DEPENDENCY_MARK_LIMIT, markedState, parseAgentWorkInput, parseDependencyMarks, receiptDependencyMarks, receiptWork, recordDependencyMarks, reportDelivery, reportDependencyMarks,
-	requestHasOpenWork, stateNoteLabel, withDependencyMarks, withoutVoidItems, type OpenWorkItem, type WorkRoute,
+	requestHasOpenWork, requestWork, stateNoteLabel, withDependencyMarks, withoutVoidItems, type OpenWorkItem, type WorkRoute,
 } from "./open-work.ts";
 import { recordRequestContext, type RequestContext } from "./request-context.ts";
 import { matchesSchema } from "./schema-check.ts";
@@ -362,7 +366,8 @@ it("names both causes when a repeated complete finds no retained item", async (t
 	assert.match(text(dropped), new RegExp(`closed earlier than the last ${CLOSED_WORK_LIMIT} closed items that the conversation keeps`, "u"));
 	assert.match(text(dropped), /changed nothing and sent no report/u);
 	assert.equal((await harness.commit((tx) => retainedReportRequest(tx, "recipient-c", `work-final:${conversation.id}:task-0`), context))?.message, "Final work result (done) for request task-0\n\nresult 0", "the first report stays the only one");
-	assert.equal(text(await executeAgentWork({ action: "complete", request: "never-declared", status: "done", message: "m" }, host(202), context)), text(dropped).replace("task-0", "never-declared"));
+	assert.match(text(dropped), new RegExp(`A final report of an earlier close stays readable: agent_inspect\\(\\{"view":"result","sessionId":"${STORAGE}","submissionId":\\d+,"finalReport":true,"offset":0\\}\\)$`, "u"));
+	assert.equal(text(await executeAgentWork({ action: "complete", request: "never-declared", status: "done", message: "m" }, host(202), context)), text(dropped).replace("task-0", "never-declared").replace(/\. A final report of an earlier close .*$/su, ""), "a request without an input of this conversation names no read call");
 });
 
 it("reads the status through snapshots without a committed change", async (t) => {
@@ -382,4 +387,87 @@ it("reads the status through snapshots without a committed change", async (t) =>
 	assert.equal(await receiptWork({ harness, context }, producer.id, "task-a"), undefined);
 	assert.deepEqual(changes, [], "a snapshot read commits no change, also for a conversation without the document");
 	assert.equal(await harness.snapshot(OpenWorkDoc, producer.id, context), undefined);
+});
+
+type ResultFields = {
+	answer?: string;
+	reason: string;
+	work?: { state: string; answer: string; label: string; finalReport?: { status?: string; delivery: string; read: unknown } };
+	finalReport: { requestId: string; ownerId: string; status?: string; length: number; text: string };
+	finalReportContinuation?: Record<string, unknown>;
+};
+
+async function answeredWith(tx: Tx, conversationId: ConversationId, id: SubmissionId, text: string): Promise<EntryId> {
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	const answer = await tx.appendEntry(conversationId, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "test", model: "test", timestamp: 2, stopReason: "stop", usage }] });
+	tx.settleSubmission(id, { status: "done", answer: answer.id });
+	delete (await tx.doc(LiveDoc, conversationId)).run;
+	return answer.id;
+}
+
+it("reads the exact final report in pages after acknowledgement and after the closed item left the document", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	const self = STORAGE;
+	const host = (now: number) => ({ harness, storageId: STORAGE, conversationId: conversation.id, now });
+	const inspect = async (params: Record<string, unknown>) => await readInspection(harness, STORAGE, conversation, { view: "result", ...params }, context) as ResultFields;
+	const id = await harness.commit((tx) => placed(tx, conversation.id, route()), context);
+	await harness.commit((tx) => declareOpenWork(tx, STORAGE, conversation.id, { results: [], note: "own work remains" }, 10), context);
+	const stateNote = "State note: the survey continues in background.";
+	const answerEntryId = await harness.commit((tx) => answeredWith(tx, conversation.id, id, stateNote), context);
+	const record = await harness.commit((tx) => tx.submission(id), context);
+	await harness.commit((tx) => storeDeliveryRow(tx, "receipt", { submissionId: id, requestId: "task-a", ownerId: "recipient-c", conversationId: conversation.id, operationId: null, origin: "model", status: "done", entryId: record?.type === "input" && "entry" in record ? record.entry ?? null : null, answerEntryId, answer: stateNote, reason: null, acknowledged: false }, true), context);
+
+	const open = await inspect({ submissionId: id });
+	assert.deepEqual([open.answer, open.work?.state, open.work?.answer, open.work?.label, open.work?.finalReport], [stateNote, "open", "state-note", stateNoteLabel("open"), undefined]);
+	assert.match((await inspect({ submissionId: id, finalReport: true })).reason, /open; its final report does not exist yet/u);
+
+	// A long report with a surrogate pair across the first page boundary.
+	const message = `${"a".repeat(4095 - finalReportLabel("done", "task-a").length - 2)}😀${"b".repeat(9000)}`;
+	const done = await executeAgentWork({ action: "complete", request: "task-a", status: "done", message }, host(20), context);
+	assert.ok(matchesSchema(AgentWorkOutputSchema, done.details));
+	const read = finalReportRead(self, id);
+	assert.deepEqual(done.details.item.close?.read, read, "the completion names the read call");
+	assert.deepEqual((await openWorkStatus({ harness, context }, STORAGE, conversation.id))[0].close?.read, read, "the status names the read call");
+	const exact = `${finalReportLabel("done", "task-a")}\n\n${message}`;
+	const readAll = async (): Promise<string> => {
+		let text = "";
+		let call: Record<string, unknown> | undefined = { ...read };
+		while (call !== undefined) {
+			const { tool: _tool, view: _view, sessionId: _session, ...params } = call;
+			const page = await inspect(params);
+			assert.ok(matchesSchema(InspectToolOutputSchema, page), "the page matches the public output schema");
+			assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= RESULT_PAGE_BYTES);
+			assert.equal(page.answer, undefined, "a final report page carries no answer");
+			assert.deepEqual([page.finalReport.requestId, page.finalReport.ownerId, page.finalReport.status, page.finalReport.length], [`work-final:${conversation.id}:task-a`, "recipient-c", "done", exact.length]);
+			text += page.finalReport.text;
+			call = page.finalReportContinuation;
+		}
+		return text;
+	};
+	assert.equal(await readAll(), exact, "the pages join to the retained report exactly");
+
+	const answer = await inspect({ submissionId: id });
+	assert.deepEqual([answer.answer, answer.work?.state, answer.work?.answer, answer.work?.finalReport?.read], [stateNote, "closed", "state-note", read], "the original answer keeps its state-note label");
+	assert.match(readableControlText(answer), /^State note, not a final result: the final work result \(done\) is a separate report\.\n\nState note: the survey/u);
+	assert.match(readableControlText(answer), /Read the final report: agent_inspect\(\{"view":"result","sessionId":"storage-a","submissionId":\d+,"finalReport":true,"offset":0\}\)/u);
+
+	await acknowledgeReports(harness, "recipient-c", ["report:work-final:1:task-a"], context);
+	assert.equal((await harness.commit((tx) => retainedReportRequest(tx, "recipient-c", `work-final:${conversation.id}:task-a`), context))?.acknowledged, true);
+	assert.equal(await readAll(), exact, "acknowledgement keeps the report readable");
+
+	for (let index = 0; index <= CLOSED_WORK_LIMIT; index++) {
+		const later = await harness.commit((tx) => placed(tx, conversation.id, route(`later-${index}`)), context);
+		await harness.commit((tx) => declareOpenWork(tx, STORAGE, conversation.id, { results: [], note: "own work remains" }, 30 + index), context);
+		await harness.commit((tx) => answered(tx, conversation.id, later), context);
+		assert.equal((await executeAgentWork({ action: "complete", request: `later-${index}`, status: "failed", message: `later ${index}` }, host(100 + index), context)).isError, undefined);
+	}
+	assert.equal((await harness.snapshot(OpenWorkDoc, conversation.id, context))?.items.some((item) => item.requestId === "task-a"), false, "the closed item left the work document");
+	assert.equal(await readAll(), exact, "the report stays readable after the closed item left");
+	const evicted = await inspect({ submissionId: id });
+	assert.deepEqual([evicted.answer, evicted.work?.state, evicted.work?.label, evicted.work?.finalReport?.status, evicted.work?.finalReport?.delivery], [stateNote, "closed", stateNoteLabel("closed", "done"), "done", "delivered"]);
+	const work = await requestWork({ harness, context }, STORAGE, conversation.id, { requestId: "task-a", submissionId: id, ownerId: "recipient-c" });
+	assert.equal(work?.work, "closed");
+	assert.equal(await requestWork({ harness, context }, STORAGE, conversation.id, { requestId: "never-declared", submissionId: id, ownerId: "recipient-c" }), undefined);
+	await assert.rejects(inspect({ submissionId: id, finalReport: true, receiptCursor: "x" }), /finalReport and receiptCursor select different pages/u);
+	await assert.rejects(readInspection(harness, STORAGE, conversation, { view: "history", finalReport: true }, context), /finalReport selects only the result view/u);
 });

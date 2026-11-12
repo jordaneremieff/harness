@@ -723,7 +723,7 @@ export class AgentManager {
 	async observePrimary(sessionId: string, input: Record<string, unknown> = {}): Promise<OrdinaryPrimaryObservation> {
 		const view = input.view ?? "activity";
 		if (view !== "status" && view !== "activity" && view !== "history") throw new Error("Ordinary primary inspection supports activity and history only; native branch, search, exact and result views are unavailable.");
-		for (const key of ["entryId", "fromId", "offset", "query", "source", "submissionId", "operationId", "receiptCursor"]) {
+		for (const key of ["entryId", "fromId", "offset", "query", "source", "submissionId", "operationId", "receiptCursor", "finalReport"]) {
 			if (input[key] !== undefined) throw new Error(`Ordinary primary inspection does not support ${key}; use its returned cursor for retained ancestry.`);
 		}
 		const descriptor = readPrimaryEndpointDescriptor(this.options.root, sessionId);

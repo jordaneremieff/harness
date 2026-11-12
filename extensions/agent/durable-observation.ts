@@ -28,7 +28,7 @@ import { snapshotDeliveryState, deliveryState, latestReceipt, migrateDeliverySto
 import type { AnswerContinuation, ReceiptGroup } from "./observation-schema.ts";
 import { timerStatusRows } from "./durable-timers.ts";
 import { readUnplacedSummary } from "./unplaced-inputs.ts";
-import { openWorkItems, openWorkStatus, type OpenWorkView } from "./open-work.ts";
+import { openWorkItems, openWorkStatus, requestWork, type FinalReportFact, type FinalReportRead, type OpenWorkView, type RequestWork } from "./open-work.ts";
 import { snapshotProviderBlock, snapshotInputProviderBlock, snapshotInputRecovery, readProviderBlock, readInputProviderBlock, readInputRecovery } from "./provider-block.ts";
 import { modelFailureText, PROVIDER_BLOCK_ERROR, type ProviderBlockFact } from "./provider-block-facts.ts";
 import type { CommunicationView } from "./communication.ts";
@@ -98,6 +98,8 @@ export interface DurableInspectParams {
 	readonly requestId?: string;
 	readonly operationId?: string;
 	readonly receiptCursor?: string;
+	/** Result view only: page the retained final report of the selected input's request instead of its answer. */
+	readonly finalReport?: boolean;
 }
 
 /** Entry kinds a conversation surface never displays. They are not part of the visible transcript. */
@@ -552,16 +554,23 @@ export function resolveSessionConversationId(storageId: string, sessionId: strin
 	throw new Error(`session ${sessionId} does not belong to storage ${storageId}`);
 }
 
+/** The receipt-reference cursor and the final-report selector page the result view, never both at once. */
+function checkResultPageSelectors(view: string | undefined, receiptCursor: unknown, finalReport: boolean | undefined): void {
+	if (finalReport !== undefined && view !== "result") throw new TypeError("finalReport selects only the result view");
+	if (finalReport === true && receiptCursor !== undefined) throw new TypeError("finalReport and receiptCursor select different pages");
+	if (receiptCursor === undefined) return;
+	if (view !== "result") throw new TypeError("receiptCursor selects only the result view");
+	if (typeof receiptCursor !== "string" || receiptCursor.length === 0 || receiptCursor.length > 2048) throw new TypeError("receiptCursor must contain 1 to 2048 characters");
+}
+
 /** Parse one inspection request into its native parameters. */
 export function parseInspectParams(params: RequestParams | undefined): DurableInspectParams {
 	const view = requestString(params, "view");
 	const requestId = requestString(params, "requestId");
 	if (requestId === "") throw new TypeError("requestId must be nonempty");
 	const receiptCursor = requestString(params, "receiptCursor");
-	if (receiptCursor !== undefined) {
-		if (view !== "result") throw new TypeError("receiptCursor selects only the result view");
-		if (receiptCursor.length === 0 || receiptCursor.length > 2048) throw new TypeError("receiptCursor must contain 1 to 2048 characters");
-	}
+	const finalReport = requestBoolean(params, "finalReport");
+	checkResultPageSelectors(view, receiptCursor, finalReport);
 	const offset = requestInteger(params, "offset");
 	if (view === "result" && offset !== undefined && offset < 0) throw new RangeError("result offset must be a nonnegative safe integer");
 	const source = requestString(params, "source");
@@ -576,6 +585,7 @@ export function parseInspectParams(params: RequestParams | undefined): DurableIn
 		...optionalParam("fromId", requestPositiveId(params?.fromId, "fromId") as EntryId | undefined),
 		...optionalParam("offset", offset),
 		...optionalParam("receiptCursor", receiptCursor),
+		...(finalReport === true ? { finalReport } : {}),
 		...optionalParam("query", requestString(params, "query")),
 		...optionalParam("source", source as DurableInspectParams["source"] | undefined),
 		...optionalParam("submissionId", requestPositiveId(params?.submissionId, "submissionId") as SubmissionId | undefined),
@@ -2029,9 +2039,59 @@ interface ResultPage {
 	readonly truncated?: boolean;
 	readonly answerContinuation?: AnswerContinuation;
 	readonly receiptGroup?: ReceiptGroup;
+	readonly work?: ResultWork;
+	readonly finalReport?: FinalReportPage;
+	readonly finalReportContinuation?: FinalReportRead;
 	readonly providerBlock?: ProviderBlockFact;
 	readonly recoveryOf?: string;
 	readonly usage: UsageState;
+}
+
+/** Declared work of the selected request: its answer is a state note, and the final report is separate. */
+interface ResultWork {
+	readonly state: "open" | "closed";
+	readonly answer: "state-note";
+	readonly label: string;
+	readonly finalReport?: FinalReportFact;
+}
+interface FinalReportPage {
+	readonly requestId: string;
+	readonly ownerId: string;
+	readonly status?: FinalReportFact["status"];
+	readonly text: string;
+	readonly length: number;
+	readonly offset: number;
+	readonly nextOffset: number | null;
+	readonly truncated: boolean;
+}
+
+function resultWork(work: RequestWork): ResultWork {
+	return { state: work.work, answer: "state-note", label: work.label, ...(work.work === "closed" ? { finalReport: work.finalReport } : {}) };
+}
+
+async function selectedWork(harness: Harness, storageId: string, record: Extract<SubmissionRecord, { type: "input" }>, context: Context): Promise<RequestWork | undefined> {
+	if (record.status !== "done" || record.requestId === undefined) return undefined;
+	const ownerId = (await snapshotReceipt(harness, record.id, context))?.ownerId;
+	return requestWork({ harness, context }, storageId, record.conversationId, { requestId: record.requestId, submissionId: record.id, ...(ownerId === undefined ? {} : { ownerId }) });
+}
+
+/** One page of the retained final report; the answer and the receipt group stay on their own pages. */
+function finalReportPage(base: ResultPage, record: Extract<SubmissionRecord, { type: "input" }>, work: RequestWork | undefined, offset: number): ResultPage {
+	if (record.status !== "done") throw new InspectionRequestError("finalReport requires a native input that settled with an answer");
+	const identity = { ...base, entryId: record.entry, answerEntryId: record.answer };
+	if (work === undefined) throw new InspectionRequestError(`Request ${record.requestId ?? `of submission ${record.id}`} declared no work: its answer is its result, and no final report exists`);
+	if (work.work === "open") return boundedResult({ ...identity, work: resultWork(work), reason: "The declared work of this request is open; its final report does not exist yet" });
+	const text = work.report?.message;
+	if (text === undefined) return boundedResult({ ...identity, work: resultWork(work), reason: `Final report ${work.finalReport.requestId} is not retained for ${work.finalReport.ownerId}` });
+	if (offset > text.length) throw new RangeError("result offset exceeds the retained final report length");
+	const cut = fragment(text, offset, RESULT_PAGE_UNITS);
+	const { requestId, ownerId, status } = work.finalReport;
+	return boundedResult({
+		...identity,
+		work: resultWork(work),
+		finalReport: { requestId, ownerId, ...(status === undefined ? {} : { status }), text: cut.text, length: text.length, offset: cut.start, nextOffset: cut.nextOffset, truncated: cut.truncated },
+		...(cut.nextOffset === null ? {} : { finalReportContinuation: { ...work.finalReport.read, offset: cut.nextOffset } }),
+	});
 }
 
 interface ResultSelection { readonly record?: SubmissionRecord; readonly operationId?: string; readonly reason?: string }
@@ -2142,11 +2202,17 @@ async function readResult(harness: Harness, storageId: string, conversation: Con
 		usage,
 	};
 	if (record.type !== "input" || (record.status !== "done" && record.status !== "unanswered")) {
-		if (params.receiptCursor !== undefined) throw new InspectionRequestError("receiptCursor requires a settled native input");
+		if (params.receiptCursor !== undefined || params.finalReport === true) throw new InspectionRequestError(`${params.finalReport === true ? "finalReport" : "receiptCursor"} requires a settled native input`);
 		return boundedResult({ ...base, ...("entry" in record ? optionalParam("entryId", record.entry) : {}) });
 	}
-	const receiptGroup = await resultReceiptGroup(harness, storageId, record, sessionId, params.receiptCursor, context);
-	const selected = { ...base, ...optionalParam("receiptGroup", receiptGroup) };
+	return settledResult(harness, storageId, base, record, params, context);
+}
+
+async function settledResult(harness: Harness, storageId: string, base: ResultPage, record: Extract<SubmissionRecord, { type: "input"; status: "done" | "unanswered" }>, params: DurableInspectParams, context: Context): Promise<ResultPage> {
+	const work = await selectedWork(harness, storageId, record, context);
+	if (params.finalReport === true) return finalReportPage(base, record, work, params.offset ?? 0);
+	const receiptGroup = await resultReceiptGroup(harness, storageId, record, base.sessionId, params.receiptCursor, context);
+	const selected = { ...base, ...optionalParam("receiptGroup", receiptGroup), ...(work === undefined ? {} : { work: resultWork(work) }) };
 	if (record.status === "done") return readResultBody(harness, selected, record, params, context);
 	const providerBlock = await observedInputProviderBlock(harness, record.id, context);
 	return boundedResult({ ...selected, ...(record.entry === undefined ? {} : { entryId: record.entry }), reason: modelFailureText(record.reason, record.detail, providerBlock), ...(providerBlock === undefined ? {} : { providerBlock }) });
@@ -2156,10 +2222,7 @@ async function readResult(harness: Harness, storageId: string, conversation: Con
 export async function readInspection(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context, options: DurableInspectionOptions = {}): Promise<unknown> {
 	const view = params.view ?? "history";
 	if (params.requestId !== undefined && view !== "result") throw new TypeError("requestId selects only the result view");
-	if (params.receiptCursor !== undefined) {
-		if (view !== "result") throw new TypeError("receiptCursor selects only the result view");
-		if (typeof params.receiptCursor !== "string" || params.receiptCursor.length === 0 || params.receiptCursor.length > 2048) throw new TypeError("receiptCursor must contain 1 to 2048 characters");
-	}
+	checkResultPageSelectors(view, params.receiptCursor, params.finalReport);
 	switch (view) {
 		case "history":
 			return readHistoryPage(harness, storageId, conversation, params, "history", context);

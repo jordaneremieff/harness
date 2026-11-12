@@ -22,7 +22,7 @@ import { DeliveryRowDoc, reportKey, retainedReportRequest, storeDeliveryRow } fr
 import { recordReportInTransaction, type DeliveryReceipt, type DeliveryReport } from "./durable-controls.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 import { RequestContextDoc, type RequestContext } from "./request-context.ts";
-import { DEPENDENCY_MARK_LIMIT, WORK_DEPENDENCY_LIMIT, parseAgentWorkInput, type AgentWorkInput, type DependencyMark, type FinalReportDelivery, type OpenWorkDependencyView, type OpenWorkDetails, type OpenWorkView } from "./open-work-schema.ts";
+import { DEPENDENCY_MARK_LIMIT, WORK_DEPENDENCY_LIMIT, parseAgentWorkInput, type AgentWorkInput, type DependencyMark, type FinalReportDelivery, type FinalReportRead, type OpenWorkDependencyView, type OpenWorkDetails, type OpenWorkView } from "./open-work-schema.ts";
 import type { ResultReference } from "./result-schema.ts";
 
 export * from "./open-work-schema.ts";
@@ -110,6 +110,18 @@ export function finalReportToItself(storageId: string, report: Pick<DeliveryRepo
 
 export function finalReportLabel(status: WorkCloseStatus, requestId: string): string {
 	return `Final work result (${status}) for request ${requestId}`;
+}
+
+const CLOSE_STATUSES: readonly WorkCloseStatus[] = ["done", "failed", "stopped", "reset"];
+
+/** Status of a retained final report, read from the label line that the host writes before its text. */
+function labelledStatus(message: string, requestId: string): WorkCloseStatus | undefined {
+	return CLOSE_STATUSES.find((status) => message.startsWith(`${finalReportLabel(status, requestId)}\n\n`));
+}
+
+/** The call that reads the final report of the request whose input is `submissionId`, from `offset`. */
+export function finalReportRead(sessionId: string, submissionId: number, offset = 0): FinalReportRead {
+	return { tool: "agent_inspect", view: "result", sessionId, submissionId, finalReport: true, offset };
 }
 
 /** Receipt label of an input whose answer is not the result of its request. */
@@ -268,7 +280,8 @@ export function reportDelivery(report: Pick<DeliveryReport, "acknowledged" | "de
  * when it is absent, which is a committed change; a read that must commit nothing, such as a status
  * read, uses the snapshot reader.
  */
-export type OpenWorkReader = Tx | { readonly harness: Harness; readonly context: Context };
+export type SnapshotReader = { readonly harness: Harness; readonly context: Context };
+export type OpenWorkReader = Tx | SnapshotReader;
 
 function isTx(reader: OpenWorkReader): reader is Tx {
 	return !("harness" in reader);
@@ -377,16 +390,62 @@ async function dependencyViews(reader: OpenWorkReader, storageId: string, item: 
 	return views;
 }
 
-async function itemView(reader: OpenWorkReader, storageId: string, item: OpenWorkItem, state: OpenWorkView["state"], evidence: DependencyEvidence): Promise<OpenWorkView> {
+function finalReportDelivery(storageId: string, ownerId: string, reportRequestId: string, report: DeliveryReport | undefined): FinalReportDelivery {
+	return finalReportToItself(storageId, { requestId: reportRequestId, ownerId }) ? "retained" : reportDelivery(report);
+}
+
+async function itemView(reader: OpenWorkReader, storageId: string, conversationId: ConversationId, item: OpenWorkItem, state: OpenWorkView["state"], evidence: DependencyEvidence): Promise<OpenWorkView> {
 	const { requestId, submissionId, requester, replyTo, origin, note, declaredAt, updatedAt, close } = item;
-	const delivery = close === undefined ? undefined
-		: finalReportToItself(storageId, { requestId: close.reportRequestId, ownerId: replyTo }) ? "retained" as const
-		: reportDelivery(await readFinalReport(reader, replyTo, close.reportRequestId));
+	const delivery = close === undefined ? undefined : finalReportDelivery(storageId, replyTo, close.reportRequestId, await readFinalReport(reader, replyTo, close.reportRequestId));
 	return {
 		requestId, submissionId, requester, replyTo, origin, note, state, declaredAt, updatedAt,
-		...(close === undefined ? {} : { close: { status: close.status, message: close.message, at: close.at, reportRequestId: close.reportRequestId, ...(delivery === undefined ? {} : { delivery }) } }),
+		...(close === undefined ? {} : { close: { status: close.status, message: close.message, at: close.at, reportRequestId: close.reportRequestId, ...(delivery === undefined ? {} : { delivery }), read: finalReportRead(canonicalIdentity(storageId, conversationId), submissionId) } }),
 		dependencies: await dependencyViews(reader, storageId, item, evidence),
 	};
+}
+
+/** Identity, delivery state and read call of the final report of one request. */
+export type FinalReportFact = {
+	readonly requestId: string;
+	readonly ownerId: string;
+	readonly status?: WorkCloseStatus;
+	readonly delivery: FinalReportDelivery;
+	readonly read: FinalReportRead;
+};
+/**
+ * Declared work of one request. `open`: the settled answer is a state note and no final report exists yet.
+ * `closed`: the settled answer is a state note and `finalReport` names the separate final report.
+ */
+export type RequestWork =
+	| { readonly work: "open"; readonly label: string }
+	| { readonly work: "closed"; readonly label: string; readonly finalReport: FinalReportFact; readonly report?: DeliveryReport };
+
+/**
+ * Declared work of one request; undefined for a request that declared none, whose answer is its result.
+ * The retained item answers first. A closed item can leave the bounded work document, but its final
+ * report row stays at its fixed key, so that row answers after the item is gone: the bound of the
+ * document never changes what a settled answer was. `ownerId` is the reply recipient of the request's
+ * retained receipt, which admission keeps equal to the route's reply recipient; the conversation's own
+ * identity covers a report retained for itself. It takes the snapshot reader only: a transaction read
+ * would create the absent rows that it probes.
+ */
+export async function requestWork(reader: SnapshotReader, storageId: string, conversationId: ConversationId, input: { readonly requestId: string; readonly submissionId: number; readonly ownerId?: string }): Promise<RequestWork | undefined> {
+	const self = canonicalIdentity(storageId, conversationId);
+	const reportRequestId = finalReportRequestId(conversationId, input.requestId);
+	const item = (await currentItems(reader, conversationId)).find((candidate) => candidate.requestId === input.requestId);
+	if (item !== undefined && item.close === undefined) return { work: "open", label: stateNoteLabel("open") };
+	const closed = (ownerId: string, status: WorkCloseStatus | undefined, report: DeliveryReport | undefined): RequestWork => ({
+		work: "closed",
+		label: stateNoteLabel("closed", status),
+		finalReport: { requestId: reportRequestId, ownerId, ...(status === undefined ? {} : { status }), delivery: finalReportDelivery(storageId, ownerId, reportRequestId, report), read: finalReportRead(self, item?.submissionId ?? input.submissionId) },
+		...(report === undefined ? {} : { report }),
+	});
+	if (item?.close !== undefined) return closed(item.replyTo, item.close.status, await readFinalReport(reader, item.replyTo, reportRequestId));
+	for (const ownerId of new Set([input.ownerId ?? self, self])) {
+		const report = await readFinalReport(reader, ownerId, reportRequestId);
+		if (report !== undefined && report.senderIdentity === self) return closed(ownerId, labelledStatus(report.message, input.requestId), report);
+	}
+	return undefined;
 }
 
 /** References of open items whose producer is in another storage; their facts come from that storage's host. */
@@ -408,7 +467,7 @@ export async function remoteDependencies(reader: OpenWorkReader, storageId: stri
 export async function openWorkStatus(reader: OpenWorkReader, storageId: string, conversationId: ConversationId, facts?: ReadonlyMap<string, DependencyFact>): Promise<OpenWorkView[]> {
 	const views: OpenWorkView[] = [];
 	const evidence = { arrivals: await readArrivals(reader, conversationId), ...(facts === undefined ? {} : { facts }) };
-	for (const item of await currentItems(reader, conversationId)) views.push(await itemView(reader, storageId, item, isOpen(item) ? "open" : "closed", evidence));
+	for (const item of await currentItems(reader, conversationId)) views.push(await itemView(reader, storageId, conversationId, item, isOpen(item) ? "open" : "closed", evidence));
 	return views;
 }
 
@@ -471,7 +530,7 @@ export async function declareOpenWork(tx: Tx, storageId: string, conversationId:
 	const outcome = continueWork(items, { requestId, ...(route === undefined ? {} : { route }), results: input.results, note: input.note, self: canonicalIdentity(storageId, conversationId), now });
 	if ("error" in outcome) return outcome;
 	state.items = outcome.items;
-	return { change: outcome.change, item: await itemView(tx, storageId, outcome.item, "open", { arrivals: state.arrivals ?? [] }) };
+	return { change: outcome.change, item: await itemView(tx, storageId, conversationId, outcome.item, "open", { arrivals: state.arrivals ?? [] }) };
 }
 
 async function finalReport(tx: Tx, storageId: string, conversationId: ConversationId, item: OpenWorkItem, message: string): Promise<DeliveryReport> {
@@ -493,19 +552,31 @@ export type CompleteWorkInput = { readonly request: string; readonly status: "do
 export type CompletedWork = { item: OpenWorkView; deduped: boolean; report?: DeliveryReport };
 
 /**
+ * Refusal without a retained item. For an input of this conversation it names the read call of a final
+ * report that an earlier close may have retained; the read itself reports whether one exists. The
+ * transaction reads no delivery row here: a transaction read creates an absent row.
+ */
+async function missingItem(tx: Tx, storageId: string, conversationId: ConversationId, requestId: string, rejection: Rejection): Promise<Rejection> {
+	const record = await tx.submissionByRequest(conversationId, requestId);
+	if (record?.type !== "input") return rejection;
+	const { tool: _tool, ...read } = finalReportRead(canonicalIdentity(storageId, conversationId), record.id);
+	return { error: `${rejection.error}. A final report of an earlier close stays readable: agent_inspect(${JSON.stringify(read)})` };
+}
+
+/**
  * `complete`: one commit closes the item and retains its final report for the retained reply recipient.
  * A repeated call returns the retained close and row. The row is delivered at least once.
  */
 export async function completeOpenWork(tx: Tx, storageId: string, conversationId: ConversationId, input: CompleteWorkInput, now: number): Promise<CompletedWork | Rejection> {
 	const { state, items } = await draftItems(tx, conversationId);
 	const outcome = completeWork(items, { requestId: input.request, status: input.status, message: input.message, conversationId, now });
-	if ("error" in outcome) return outcome;
+	if ("error" in outcome) return missingItem(tx, storageId, conversationId, input.request, outcome);
 	const close = outcome.item.close;
 	const report = outcome.deduped
 		? close === undefined ? undefined : await retainedReportRequest(tx, outcome.item.replyTo, close.reportRequestId)
 		: await finalReport(tx, storageId, conversationId, outcome.item, input.message);
 	if (!outcome.deduped) state.items = outcome.items;
-	return { item: await itemView(tx, storageId, outcome.item, "closed", { arrivals: state.arrivals ?? [] }), deduped: outcome.deduped, ...(report === undefined ? {} : { report }) };
+	return { item: await itemView(tx, storageId, conversationId, outcome.item, "closed", { arrivals: state.arrivals ?? [] }), deduped: outcome.deduped, ...(report === undefined ? {} : { report }) };
 }
 
 /**
@@ -523,7 +594,7 @@ export async function closeOpenWork(tx: Tx, storageId: string, conversationId: C
 	const views: OpenWorkView[] = [];
 	for (const item of outcome.closed) {
 		await finalReport(tx, storageId, conversationId, item, hostCloseMessage(item, reason));
-		views.push(await itemView(tx, storageId, item, "closed", { arrivals: state.arrivals ?? [] }));
+		views.push(await itemView(tx, storageId, conversationId, item, "closed", { arrivals: state.arrivals ?? [] }));
 	}
 	return views;
 }
@@ -560,6 +631,17 @@ export async function reportDependencyMarks(tx: Tx, storageId: string, report: P
 	if (!Number.isSafeInteger(conversationId) || canonicalIdentity(storageId, conversationId) !== report.senderIdentity || await tx.conversation(conversationId) === undefined) return [];
 	const record = await tx.submissionByRequest(conversationId, match[2]);
 	return record?.type === "input" ? [{ sessionId: report.senderIdentity, submissionId: record.id, requestId: match[2], state: "arrived" }] : [];
+}
+
+/** Original request, close status and read call of a final report, from the arrived mark of its delivery. */
+export type FinalReportDeliveryFacts = { readonly requestId: string; readonly reportRequestId: string; readonly status?: WorkCloseStatus; readonly read: FinalReportRead };
+
+export function finalReportDeliveryFacts(report: Pick<DeliveryReport, "requestId" | "message">, marks: readonly DependencyMark[]): FinalReportDeliveryFacts | undefined {
+	const match = FINAL_REPORT_ID.exec(report.requestId);
+	const mark = match === null ? undefined : marks.find((candidate) => candidate.requestId === match[2] && candidate.state === "arrived");
+	if (mark === undefined) return undefined;
+	const status = labelledStatus(report.message, mark.requestId);
+	return { requestId: mark.requestId, reportRequestId: report.requestId, ...(status === undefined ? {} : { status }), read: finalReportRead(mark.sessionId, mark.submissionId) };
 }
 
 /**

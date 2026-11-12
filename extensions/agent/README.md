@@ -1696,8 +1696,19 @@ record does not cancel its producers.
 The work document retains every open item and the newest 16 closed items.
 For an older close or a request that never declared work, completion returns
 an error that names both possible causes. It changes nothing and sends
-no report. This bound does not itself remove the separately retained final
-report.
+no report. For an input of this conversation the error also names the exact
+final-report read call. This bound does not remove the separately retained
+final report.
+
+The final report keeps its own identity: the report request ID
+`work-final:<conversation>:<request>` and its reply recipient. The completion
+result and each closed status item carry `close.read`, the exact call
+`agent_inspect({view: "result", sessionId, submissionId, finalReport: true,
+offset: 0})` on the declaring input. It returns the retained report text,
+including its label line, in pages; see Result pages. The read stays
+available after the recipient acknowledged the report and after the closed
+item left the work document, because it reads the retained report row by its
+fixed key.
 
 Read `agent_status({sessionId, detail: true})` for `openWork`. Each item names
 its original route, note, state and dependencies. A dependency is `open` while
@@ -1856,6 +1867,22 @@ pages. Two continuations exist, and neither advances the other:
   recipient of the selected receipt. A page read with `receiptCursor` returns
   the result identity and the next reference page, without the answer body.
 
+When the request of the selected input declared work, its answer is a state
+note, not the result. The page then carries `work`: `state` (`open` or
+`closed`), `answer: "state-note"`, the state-note `label`, and for closed work
+`finalReport` with the report request ID, reply recipient, close status,
+delivery state and `read` call. The page never presents the state note as the
+final report. The work facts come from the retained work item, or, after that
+item left the bounded work document, from the retained final report row.
+
+- `finalReport: true` selects the final report instead of the answer. The
+  page returns `finalReport` with `text`, `length`, `offset`, `nextOffset` and
+  `truncated`, in pages of the same 4,096 UTF-16 code units, and
+  `finalReportContinuation` while text remains. The pages join to the
+  retained report text exactly. A page for open work returns `reason` and no
+  text; a request without declared work refuses. `finalReport` refuses
+  outside the result view and with `receiptCursor`.
+
 Execute each returned call unchanged. A complete result page, including its
 identity, body and receipt metadata, fits 65,536 serialised UTF-8 bytes; a
 larger page is refused. `receiptCursor` contains 1 to 2,048 characters, selects
@@ -1873,12 +1900,14 @@ and, when it differs, the page that holds the captured end. It examines at most
 64 membership references of the current page and returns at most 16.
 
 The `agent_inspect` input of ordinary primaries and of Durable agents accepts
-`receiptCursor` and refuses it outside the result view. Both return the result
-view as readable text: the identity and page facts, the answer page, and each
-continuation as an exact call.
+`receiptCursor` and `finalReport` and refuses them outside the result view.
+Both return the result view as readable text: the identity and page facts, the
+answer page, and each continuation as an exact call. A state note starts with
+its label, and the text names the final report and its read call.
 
-Sources: `durable-observation.ts` (`readResult`, `RESULT_PAGE_UNITS`,
-`RESULT_PAGE_BYTES`), `delivery-store.ts` (`receiptReferencePage`), and
+Sources: `durable-observation.ts` (`readResult`, `finalReportPage`,
+`RESULT_PAGE_UNITS`, `RESULT_PAGE_BYTES`), `open-work.ts` (`requestWork`,
+`finalReportRead`), `delivery-store.ts` (`receiptReferencePage`), and
 `durable-host.ts` (`selectedReceipt`).
 
 Normal delivery stays independent. It keeps its recipient-scoped identity and

@@ -377,7 +377,7 @@ describe("agent result cards", () => {
 		assert.doesNotMatch(unavailableOutput, /x{121}/u);
 		for (const status of ["stopped", "reset"] as const) {
 			const retained: OpenWorkDetails = { action: "complete", requestId: item.requestId, status, deduped: true,
-				item: { ...item, state: "closed", close: { status, message: "Stopped", at: 2, reportRequestId: report.requestId, delivery: "terminal" } } };
+				item: { ...item, state: "closed", close: { status, message: "Stopped", at: 2, reportRequestId: report.requestId, delivery: "terminal", read: { tool: "agent_inspect", view: "result", sessionId: "storage-a:2", submissionId: item.submissionId, finalReport: true, offset: 0 } } } };
 			const output = screen(card.renderResult(result(retained), options, theme, context()), 180);
 			assert.ok(output.includes(`Work closed (${status})`));
 			assert.match(output, /Final report delivery: terminal/u);

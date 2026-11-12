@@ -501,6 +501,7 @@ const InspectParams = obj(
 		requestId: opt(str({ minLength: 1, description: "Native request ID within the selected conversation; result view only." })),
 		operationId: opt(str({ minLength: 1 })),
 		receiptCursor: opt(str({ minLength: 1, maxLength: 2048, description: "Recipient-reference continuation from result receiptGroup.next; separate from answer offset." })),
+		finalReport: opt(bool({ description: "Result view only: page the retained final report of the selected input's declared work instead of its answer; offset continues it." })),
 	},
 	{},
 );
@@ -1729,11 +1730,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_inspect",
 			description:
-				"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry only, not the live selected branch. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId, a conversation-qualified native requestId, or the separate retained operationId. Missing results return unavailable; supplied selectors must agree. Result answerContinuation pages readable answer text; receiptGroup.next pages recipient references with receiptCursor. Follow each returned call unchanged. Images, signatures, and redacted thinking stay omitted.",
+				"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry only, not the live selected branch. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId, a conversation-qualified native requestId, or the separate retained operationId. Missing results return unavailable; supplied selectors must agree. Result answerContinuation pages readable answer text; receiptGroup.next pages recipient references with receiptCursor. When the request declared work, the answer is a state note: work.finalReport.read pages its final report with finalReport true. Follow each returned call unchanged. Images, signatures, and redacted thinking stay omitted.",
 			parameters: InspectParams,
 			replay: "safe",
 			execute: async (args: InspectInput) => {
 				if (args.receiptCursor !== undefined && args.view !== "result") return errorResult("receiptCursor selects only the result view");
+				if (args.finalReport !== undefined && args.view !== "result") return errorResult("finalReport selects only the result view");
 				return hostObservation(
 					"inspect",
 					{
@@ -1751,6 +1753,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 							"requestId",
 							"operationId",
 							"receiptCursor",
+							"finalReport",
 						]),
 					},
 					`Inspect of ${args.sessionId ?? "the calling conversation"} failed`,

@@ -26,7 +26,7 @@ import { CommunicationViewSchema } from "./communication.ts";
 import { STORAGE_STATUS_ID_PATTERN } from "./storage-status.ts";
 import { ProviderBlockFactSchema } from "./provider-block-facts.ts";
 import { ResultReferenceSchema } from "./result-schema.ts";
-import { OpenWorkViewSchema } from "./open-work-schema.ts";
+import { FinalReportFactSchema, FinalReportReadSchema, OpenWorkViewSchema } from "./open-work-schema.ts";
 
 const string = str();
 const boolean = bool();
@@ -610,6 +610,12 @@ const retainedResultProperties = {
 	answer: opt(string),
 	offset: opt(count), nextOffset: opt(nullableCount), truncated: opt(boolean),
 	answerContinuation: opt(AnswerContinuationSchema), receiptGroup: opt(ReceiptGroupSchema),
+	work: opt(obj({ state: union([lit("open"), lit("closed")]), answer: lit("state-note"), label: string, finalReport: opt(FinalReportFactSchema) })),
+	finalReport: opt(obj({
+		requestId: string, ownerId: string, status: opt(union([lit("done"), lit("failed"), lit("stopped"), lit("reset")])),
+		text: string, length: count, offset: count, nextOffset: nullableCount, truncated: boolean,
+	})),
+	finalReportContinuation: opt(FinalReportReadSchema),
 	usage: UsageStateSchema,
 };
 const RetainedResultOutputSchema = obj(retainedResultProperties);

@@ -75,9 +75,33 @@ export const OpenWorkDependencySchema = obj({
 });
 export type OpenWorkDependencyView = Static<typeof OpenWorkDependencySchema>;
 
+/**
+ * Exact call that reads the retained final report of a request in pages: the result view of the request's
+ * input with `finalReport: true`. `offset` counts UTF-16 code units of the retained report text.
+ */
+export const FinalReportReadSchema = obj({
+	tool: lit("agent_inspect"),
+	view: lit("result"),
+	sessionId: identityText,
+	submissionId: submissionNumber,
+	finalReport: lit(true),
+	offset: int({ minimum: 0 }),
+});
+export type FinalReportRead = Static<typeof FinalReportReadSchema>;
+
 /** `retained`: the reply recipient is the declaring conversation, so the report is kept for reading and never admitted as an input. */
 const ReportDeliverySchema = union([lit("active"), lit("parked"), lit("fallback"), lit("terminal"), lit("delivered"), lit("absent"), lit("retained")]);
 export type FinalReportDelivery = Static<typeof ReportDeliverySchema>;
+const CloseStatusSchema = union([lit("done"), lit("failed"), lit("stopped"), lit("reset")]);
+
+/** Identity of one final report: its report request ID, its reply recipient, and the call that reads it. */
+export const FinalReportFactSchema = obj({
+	requestId: str({ minLength: 1 }),
+	ownerId: identityText,
+	status: opt(CloseStatusSchema),
+	delivery: ReportDeliverySchema,
+	read: FinalReportReadSchema,
+});
 
 export const OpenWorkViewSchema = obj({
 	requestId: requestText,
@@ -97,6 +121,8 @@ export const OpenWorkViewSchema = obj({
 		reportRequestId: str({ minLength: 1 }),
 		/** Delivery state of the final report row. */
 		delivery: opt(ReportDeliverySchema),
+		/** Reads the complete retained final report in pages. */
+		read: FinalReportReadSchema,
 	})),
 	dependencies: arr(OpenWorkDependencySchema, { maxItems: WORK_DEPENDENCY_LIMIT }),
 });
