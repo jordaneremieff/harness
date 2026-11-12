@@ -9,7 +9,7 @@ import type { Models, StreamOptions } from "@earendil-works/pi-ai";
 import type { Static } from "@earendil-works/pi-schema";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { LiveDoc, InboxDoc, type ConversationId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
+import { InboxDoc, type ConversationId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 import { matchesSchema } from "./schema-check.ts";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, completed, pending, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, gateTool, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
@@ -294,7 +294,7 @@ it("preserves user model bytes and keeps communication out of input metadata", a
 		const input = native.items.find((entry) => entry.id === outcome.entryId);
 		assert.equal(input?.model?.[0]?.role, "user");
 		assert.equal(input?.model?.[0]?.content, message);
-		assert.deepEqual(input?.data, { author: { role: "unknown" } });
+		assert.deepEqual(input?.data, { author: { role: "unknown" }, class: "report", sender, requestId: "active" });
 		const snapshot = await readConversationSnapshotPage(host.harness, ROOT, {}, BACKGROUND_CONTEXT, storageId);
 		const view = parseCommunicationView(snapshot.entries.find((entry) => entry.id === String(outcome.entryId))?.communication);
 		assert.equal(view?.state, "ready");
@@ -484,84 +484,47 @@ async function controlledRuntime(pendingAt: number) {
 	return { models: runtime, held: held.promise, release: () => release() };
 }
 
-for (const abortResult of ["already_placed", "settled", "aborted"] as const) it(`captures before late suppression with native abort result ${abortResult}`, { timeout: 60_000 }, async (t) => {
+for (const abortResult of ["already_placed", "settled", "aborted"] as const) it(`captures communication before native abort result ${abortResult}`, { timeout: 60_000 }, async () => {
 	const control = await controlledRuntime(abortResult === "settled" ? 2 : 1);
 	await withHost(async (host, storageId) => {
-		const original = host.harness.conversation.bind(host.harness), wrapped = new WeakSet<object>();
-		let nativeAbort: string | undefined, nativeId: number | undefined, nativeAdmissions = 0;
-		if (abortResult === "aborted") {
-			const owner = await original(ROOT, BACKGROUND_CONTEXT);
-			assert.ok(owner);
-			await owner.submit({ type: "input", requestId: "held-owner", content: "Held owner" }, BACKGROUND_CONTEXT);
-			await control.held;
-		}
-		t.mock.method(host.harness, "conversation", async (...args: Parameters<typeof original>) => {
-			const conversation = await original(...args);
-			if (conversation !== undefined && !wrapped.has(conversation)) {
-				wrapped.add(conversation);
-				const submit = conversation.submit.bind(conversation);
-				t.mock.method(conversation, "submit", async (...args: [Durable.SubmissionDraft, typeof BACKGROUND_CONTEXT]) => {
-					const submission = await submit(...args);
-					if (args[0].requestId !== "late-check-in") return submission;
-					nativeAdmissions++;
-					nativeId = submission.id;
-					if (abortResult === "settled") {
-						await readOutcome(host.harness, submission.id, BACKGROUND_CONTEXT);
-						await submit({ type: "input", requestId: "held-owner", content: "Held owner" }, BACKGROUND_CONTEXT);
-					}
-					await control.held;
-					await host.harness.commit(async (tx) => {
-						const live = await tx.doc(LiveDoc, ROOT);
-						assert.ok(live.run);
-						const task = await tx.task(live.run.taskId);
-						assert.ok(task && task.state.status !== "terminal");
-						const state = await tx.doc(AwaitDoc);
-						assert.equal(state.declarations.length, 0);
-						state.declarations.push({ taskId: live.run.taskId, callId: "active-await", conversationId: ROOT, runId: live.run.taskId, cohort: [], inputs: [...live.run.inputs], results: [{ sessionId: sender, submissionId: 1, requestId: "producer" }], outcomes: [], decision: "awaiting" });
-					}, BACKGROUND_CONTEXT);
-					const abort = submission.abort.bind(submission);
-					t.mock.method(submission, "abort", async (...args: Parameters<typeof abort>) => {
-						const state = await host.harness.snapshot(AwaitDoc, BACKGROUND_CONTEXT);
-						const captured = state?.provenance.find((row) => row.requestId === "late-check-in");
-						assert.equal(captured?.submissionId, submission.id);
-						assert.equal(captured?.communicationIntent?.value?.recordedAt, 17);
-						assert.equal(captured?.communicationIntent?.linkedEntryId !== undefined, abortResult !== "aborted");
-						nativeAbort = await abort(...args);
-						return nativeAbort;
-					});
-					return submission;
-				});
-			}
-			return conversation;
-		});
+		const conversation = await host.harness.conversation(ROOT, BACKGROUND_CONTEXT);
+		assert.ok(conversation);
 		try {
-			const result = await host.request("submit", { requestId: "late-check-in", message: "Original check-in bytes", whenBusy: "followUp", communication, provenance: { classification: "automatic", automaticKind: "checkIn", sender, producerRequestId: "producer" } }) as { submissionId?: number; suppressed?: boolean };
-			assert.equal(nativeAbort, abortResult);
-			assert.equal(nativeAdmissions, 1);
-			assert.ok(nativeId);
-			const native = await host.harness.submission(nativeId as SubmissionId, BACKGROUND_CONTEXT);
-			const status = await native?.status(BACKGROUND_CONTEXT);
-			assert.ok(status?.type === "input");
 			if (abortResult === "aborted") {
-				assert.deepEqual(result, { suppressed: true });
+				await conversation.submit({ type: "input", requestId: "held-owner", content: "Held owner" }, BACKGROUND_CONTEXT);
+				await control.held;
+			}
+			const result = await host.request("submit", { requestId: "check-in", message: "Original check-in bytes", whenBusy: "followUp", communication, provenance: { classification: "automatic", automaticKind: "checkIn", sender, producerRequestId: "producer" } }) as { submissionId: SubmissionId; suppressed?: boolean };
+			assert.equal(result.suppressed, undefined, "admission does not suppress an automatic input");
+			const native = await host.harness.submission(result.submissionId, BACKGROUND_CONTEXT);
+			assert.ok(native);
+			if (abortResult === "settled") {
+				await native.wait(BACKGROUND_CONTEXT);
+				await conversation.submit({ type: "input", requestId: "held-owner", content: "Held owner" }, BACKGROUND_CONTEXT);
+			}
+			await control.held;
+			const state = await host.harness.snapshot(AwaitDoc, BACKGROUND_CONTEXT);
+			const captured = state?.provenance.find((row) => row.requestId === "check-in");
+			assert.equal(captured?.submissionId, native.id);
+			assert.equal(captured?.communicationIntent?.value?.recordedAt, 17);
+			assert.equal(captured?.communicationIntent?.linkedEntryId !== undefined, abortResult !== "aborted");
+			assert.equal(await native.abort(BACKGROUND_CONTEXT), abortResult);
+			const status = await native.status(BACKGROUND_CONTEXT);
+			assert.ok(status.type === "input");
+			if (abortResult === "aborted") {
 				assert.equal(status.status, "unanswered");
 				assert.equal(status.entry, undefined);
 			} else {
-				assert.equal(result.submissionId, nativeId);
 				assert.ok(status.entry);
-				const conversation = await original(ROOT, BACKGROUND_CONTEXT);
-				assert.ok(conversation);
 				const entries = await conversation.entries({}, 20, undefined, BACKGROUND_CONTEXT);
 				assert.equal(entries.items.find((entry) => entry.id === status.entry)?.model?.[0]?.content, "Original check-in bytes");
 				const page = await readConversationSnapshotPage(host.harness, ROOT, {}, BACKGROUND_CONTEXT, storageId);
 				const view = parseCommunicationView(page.entries.find((entry) => entry.id === String(status.entry))?.communication);
 				assert.equal(view?.state, "ready");
-				if (view?.state !== "ready" || view.target.mode !== "input") throw new Error("Late capture missing");
+				if (view?.state !== "ready" || view.target.mode !== "input") throw new Error("Admitted communication missing");
 				assert.deepEqual(view.value, { ...communication, recordedAt: 17 });
-				assert.equal(view.target.submissionId, nativeId);
+				assert.equal(view.target.submissionId, native.id);
 			}
-			const conversation = await original(ROOT, BACKGROUND_CONTEXT);
-			assert.ok(conversation);
 			const entries = await conversation.entries({}, 20, undefined, BACKGROUND_CONTEXT);
 			assert.equal(entries.items.filter((entry) => isInputKind(entry.kind)).length, abortResult === "settled" ? 2 : 1);
 			assert.equal(entries.items.filter((entry) => entry.kind === "agent.communication").length, abortResult === "aborted" ? 0 : 1);
