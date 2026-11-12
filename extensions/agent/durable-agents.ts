@@ -29,6 +29,7 @@ import { forgetFailedAdmission, recordInputProvenance } from "./awaited-results.
 import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
 import { recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
+import { AGENT_WORK_DESCRIPTION, AgentWorkOutputSchema, AgentWorkParams, closeOpenWork, executeAgentWork } from "./open-work.ts";
 import { AgentMetaDoc, placementMode, publishConversationIntent, recordAdmissionMeta, recordDeliveryIntent, linkDeliveryIntent, seededCompactionInstructions } from "./durable-controls.ts";
 import { recordAdmitted, recordRefused, recordRequested, recordScheduled, recordTimerCancelled, type OutgoingRequest } from "./continuity-admission.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema, profileText } from "./profile-schema.ts";
@@ -1337,6 +1338,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const conversation = await api.conversation(conversationId, context);
 		if (conversation === undefined) return errorResult(`Conversation ${conversationId} is not retained.`);
 		await conversation.abort(context, args.background === true ? { background: true } : undefined);
+		await api.commit((tx) => closeOpenWork(tx, host.storageId, conversationId, "stopped", api.now()), context);
 		return textResult(`Aborted ${args.sessionId}.`, { conversationId });
 	};
 
@@ -1860,6 +1862,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		),
 	});
 
+	const workTool = durable.defineTool({
+		name: "agent_work",
+		description: AGENT_WORK_DESCRIPTION,
+		parameters: AgentWorkParams,
+		replay: "safe",
+		execute: async (args, api, context) => executeAgentWork(args, { harness: api, storageId: host.storageId, conversationId: api.conversationId, now: await api.memo("agent-work-time", api.now(), context) }, context),
+	});
+
 	const guidance = durable.section("agent-controls", (input) => {
 		const selected = input.agent.tools.map((tool) => tool.name);
 		const anyControl = selected.some((name) => (AGENT_CONTROL_TOOL_NAMES as readonly string[]).includes(name));
@@ -1885,6 +1895,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		tasks: [Anchor, Reporter, TimerTask],
 		tools: [
 			structuredControl(spawnTool, DispatchOutputSchema),
+			structuredControl(workTool, AgentWorkOutputSchema),
 			profileTool,
 			intentTool,
 			structuredControl(sendTool, DispatchOutputSchema),
