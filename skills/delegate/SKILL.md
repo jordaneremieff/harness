@@ -282,6 +282,9 @@ a complete gate. Assign one final owner for the relevant candidate and execution
 basis under the repository's completion policy; contributors' local passes do
 not establish integration or release.
 
+Land each finished change as soon as the repository's completion policy permits;
+team coordination adds no steps to that policy.
+
 **Complete when:** accepted claims have sufficient applicable evidence, material
 interactions are resolved, and every finding has its required disposition.
 
