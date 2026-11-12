@@ -627,7 +627,8 @@ follow-up text labels the answer as a state note; ordinary-primary details add
 `work:"open"|"closed"` and `workLabel`. Check-ins configured for that request
 continue while declared work stays open. Host abort and reset close open items
 with a fixed `stopped` or `reset` final report, without producer cancellation
-as part of item closure.
+as part of item closure. An input-group stop has no declared-work closure
+call site.
 
 Source: `extensions/agent/open-work.ts` (`OpenWorkDoc`, `AgentWorkParams`,
 `declareOpenWork`, `completeOpenWork`, `finalReportRequestId`, `withoutVoidItems`),

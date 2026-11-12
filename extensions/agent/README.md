@@ -1691,7 +1691,8 @@ not a final result. Ordinary-primary details also carry `work` (`open` or
 settles while declared work stays open; their note and dependency facts do not
 complete it. A host abort or context reset closes open items with `stopped` or
 `reset` and retains the fixed final report for each original reply recipient.
-Closure itself stops no producer.
+Closure itself stops no producer. Stopping one input group does not invoke
+this declared-work closure.
 
 Sources: `open-work.ts` (`AgentWorkParams`, `declareOpenWork`,
 `continueWork`, `completeOpenWork`, `finalReport`, `OpenWorkDoc`,
