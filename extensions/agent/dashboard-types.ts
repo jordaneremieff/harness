@@ -112,6 +112,8 @@ export interface AgentConversationSummary {
 	openWorkCount?: number;
 	/** Age in milliseconds of the oldest open work item at the observation. */
 	openWorkOldest?: number;
+	/** Epoch milliseconds when the unplaced-input and open-work ages were observed. */
+	ageObservedAt?: number;
 }
 
 /**

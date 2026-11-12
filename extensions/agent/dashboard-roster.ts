@@ -234,19 +234,24 @@ export function activityOf(row: AgentConversationSummary): string {
 	if (row.state === "working") return row.currentTool ? oneLine(`${row.currentTool.name} ${argumentSummary(row.currentTool.argument)}`) : "Responding";
 	return row.latestReply ? oneLine(row.latestReply) : row.state === "starting" ? "Starting agent" : "No reply yet";
 }
+/** An absent observation time leaves the published age unchanged. */
+function ageAt(age: number, observedAt: number | undefined, now: number): number {
+	return age + (observedAt === undefined || !Number.isFinite(observedAt) ? 0 : Math.max(0, now - observedAt));
+}
+
 /** Admitted inputs that the agent has not read yet, with the age of the oldest one; empty when none waits. */
-export function unplacedText(row: Pick<AgentConversationSummary, "unplaced" | "oldest">): string {
+export function unplacedText(row: Pick<AgentConversationSummary, "unplaced" | "oldest" | "ageObservedAt">, now = Date.now()): string {
 	if (!row.unplaced) return "";
 	if (row.oldest === undefined) return `unplaced: ${row.unplaced}`;
-	const seconds = Math.floor(row.oldest / 1000), minutes = Math.floor(seconds / 60);
+	const seconds = Math.floor(ageAt(row.oldest, row.ageObservedAt, now) / 1000), minutes = Math.floor(seconds / 60);
 	const age = minutes < 1 ? `${seconds}s` : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 	return `unplaced: ${row.unplaced}, oldest: ${age}`;
 }
 /** Declared work stays visible after its input settles and before its final report. */
-export function openWorkText(row: Pick<AgentConversationSummary, "openWorkCount" | "openWorkOldest">): string {
+export function openWorkText(row: Pick<AgentConversationSummary, "openWorkCount" | "openWorkOldest" | "ageObservedAt">, now = Date.now()): string {
 	if (!row.openWorkCount) return "";
 	if (row.openWorkOldest === undefined) return `work open: ${row.openWorkCount}`;
-	const seconds = Math.floor(row.openWorkOldest / 1000), minutes = Math.floor(seconds / 60);
+	const seconds = Math.floor(ageAt(row.openWorkOldest, row.ageObservedAt, now) / 1000), minutes = Math.floor(seconds / 60);
 	const age = minutes < 1 ? `${seconds}s` : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 	return `work open: ${row.openWorkCount}, oldest: ${age}`;
 }
@@ -259,13 +264,13 @@ function rosterModel(row: AgentConversationSummary): string {
  * tool; every other row shows its model, reasoning level and cost. Inputs that the agent has not
  * read yet show as a count with the age of the oldest one.
  */
-export function rosterDetail(row: AgentConversationSummary): { text: string; color: ThemeColor } {
+export function rosterDetail(row: AgentConversationSummary, now = Date.now()): { text: string; color: ThemeColor } {
 	const reason = attentionReason(row);
 	// The list keeps the reason's first sentence; the selected agent's header shows all of it.
-	const openWork = openWorkText(row);
+	const openWork = openWorkText(row, now);
 	if (reason) return { text: [openWork, reason.split(/(?<=[.!?])\s/u)[0] ?? reason].filter(Boolean).join(" · "), color: currentFault(row) ? "error" : "warning" };
 	const facts = [rosterModel(row), costOf(row)].filter(Boolean).join(" · ");
-	const unplaced = unplacedText(row);
+	const unplaced = unplacedText(row, now);
 	if (row.state === "working") return { text: [openWork, activityOf(row), unplaced, facts].filter(Boolean).join(" · "), color: "muted" };
 	return { text: [openWork, unplaced, facts].filter(Boolean).join(" · "), color: "muted" };
 }
@@ -282,7 +287,7 @@ function rosterRow(
 	const appearance = sessionAppearance[row.state];
 	const time = dashboardTime(row.modifiedAt, exactTime, now);
 	void primaryId;
-	const detail = rosterDetail(row);
+	const detail = rosterDetail(row, now);
 	// An exact date is long, so it shares the detail row instead of shortening the name.
 	const block = listBlock({ title: uniqueName(row, rows), glyph: appearance.glyph, glyphColor: appearance.color, detail: detail.text, detailColor: detail.color, time, timeOnDetail: exactTime, selected: row.id === selected }, width, theme);
 	return { lines: block.lines, timeX: block.timeX, timeWidth: block.timeWidth, timeLine: block.timeLine };
@@ -403,7 +408,8 @@ export function rosterLines(
 		cache = new Map();
 		themes.set(theme, cache);
 	}
-	const key = JSON.stringify([selected, width, height, Math.floor(now / 60000), viewport?.start, viewport?.exactTime, viewport?.primaryId, viewport?.footer, viewport?.errorsOnly]);
+	const ticking = rows.some((row) => Number.isFinite(row.ageObservedAt) && ((row.unplaced && row.oldest !== undefined) || (row.openWorkCount && row.openWorkOldest !== undefined)));
+	const key = JSON.stringify([selected, width, height, Math.floor(now / (ticking ? 1000 : 60000)), viewport?.start, viewport?.exactTime, viewport?.primaryId, viewport?.footer, viewport?.errorsOnly]);
 	let derived = cache.get(key);
 	if (!derived) {
 		derived = deriveRoster(rows, selected, width, height, now, theme, viewport);

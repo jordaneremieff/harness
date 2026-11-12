@@ -174,14 +174,15 @@ const CONVERSATION_ROWS = 4;
 
 /** Roster fields that change when an agent's host starts, works, finishes, or stops. */
 function rosterMark(row: AgentConversationSummary): string {
-	return `${row.id}|${row.modifiedAt}|${row.state}|${row.cost}|${row.owner}|${row.unplaced ?? ""}|${row.oldest === undefined ? "" : Math.floor(row.oldest / 60000)}|${row.openWorkCount ?? ""}|${row.openWorkOldest === undefined ? "" : Math.floor(row.openWorkOldest / 60000)}`;
+	return `${row.id}|${row.modifiedAt}|${row.state}|${row.cost}|${row.owner}|${row.unplaced ?? ""}|${row.oldest === undefined ? "" : Math.floor(row.oldest / 60000)}|${row.openWorkCount ?? ""}|${row.openWorkOldest === undefined ? "" : Math.floor(row.openWorkOldest / 60000)}|${row.ageObservedAt ?? ""}`;
 }
 
 /** Counts and oldest ages of unplaced inputs and open work; absent when the source supplies none. */
-function observedWorkFacts(status: object): Pick<AgentConversationSummary, "unplaced" | "oldest" | "openWorkCount" | "openWorkOldest"> {
+function observedWorkFacts(status: object, observedAt: string): Pick<AgentConversationSummary, "unplaced" | "oldest" | "openWorkCount" | "openWorkOldest" | "ageObservedAt"> {
 	const { unplaced, oldest, openWorkCount, openWorkOldest } = status as { unplaced?: unknown; oldest?: unknown; openWorkCount?: unknown; openWorkOldest?: unknown };
 	const count = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
-	return { unplaced: count(unplaced), oldest: count(oldest), openWorkCount: count(openWorkCount), openWorkOldest: count(openWorkOldest) };
+	const at = Date.parse(observedAt);
+	return { unplaced: count(unplaced), oldest: count(oldest), openWorkCount: count(openWorkCount), openWorkOldest: count(openWorkOldest), ageObservedAt: Number.isFinite(at) ? at : undefined };
 }
 
 const projectOf = (row: AgentConversationSummary) => row.cwd.split("/").filter(Boolean).at(-1) ?? row.cwd;
@@ -741,7 +742,7 @@ export class AgentDashboard implements Component, Focusable {
 		return {
 			...row,
 			owner: "here",
-			...observedWorkFacts(frame.status),
+			...observedWorkFacts(frame.status, frame.observedAt),
 			name: frame.status.name ?? row.name,
 			firstMessage: frame.status.firstMessage ?? row.firstMessage,
 			state: frame.status.busy

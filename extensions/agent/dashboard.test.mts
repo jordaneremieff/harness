@@ -71,7 +71,7 @@ it("keeps owed final reports visible in the roster, conversation view and compac
 	const observed = source([row("one", { state: "idle", openWorkCount: 2, openWorkOldest: 300000 })]);
 	let notify = () => {};
 	observed.subscribe = (listener) => { notify = listener; return () => {}; };
-	const base = conversationFrame();
+	const base = conversationFrame({ observedAt: new Date().toISOString() });
 	const status = { ...base.status, busy: false, openWorkCount: 2, openWorkOldest: 300000 };
 	let frame: ConversationFrame = { ...base, status };
 	observed.frame = () => frame;
