@@ -29,6 +29,19 @@ Ordinary primaries are not Durable targets. Their separate presence/message chan
 
 A `submit` request that delivers a result accepts optional `deliveredResults`: every `{sessionId,submissionId,requestId}` reference that the delivered body settles, not the bounded sample of the communication value. The host validates the list before it admits the body and refuses an invalid list without an admission. After admission it marks each matching outgoing request of the target conversation as delivered, also when the body is a deduplicated replay. Source: `extensions/agent/durable-host.ts`, `durable-delivery.ts`, `continuity-native.ts`.
 
+A `submit` request also accepts optional
+`dependencyMarks:[{sessionId,submissionId,requestId,state:"state-note"|"arrived"}]`,
+with at most 64 marks. The host validates them before admission and retains
+them for the target conversation only after a successful admission, including
+a deduplicated replay. Result delivery sends a state-note mark for declared
+work and an arrived mark for an ordinary result; explicit final-report
+delivery sends an arrived mark. Passive reports carry none. These marks
+record admitted dependency evidence, not task acceptance. Sources:
+`extensions/agent/open-work.ts` (`DependencyMarksSchema`, `recordDependencyMarks`,
+`receiptDependencyMarks`, `reportDependencyMarks`),
+`extensions/agent/durable-host.ts` (`submitRequest`), and
+`extensions/agent/durable-delivery.ts` (`startDurableDelivery`).
+
 The existing `submit` and `passive-submit` request objects accept optional `communication: Communication`. This application value never changes native input parameters, model content, admission order, cancellation, reply routing or settlement. Inputs without an envelope keep the original path. Metadata rejection does not reject or resubmit an otherwise valid input.
 
 `Communication` is a closed object with `format: "agent.communication/1"`, `sender`, `body`, `recordedAt`, `kind` and `metadata`. Sender identity is the canonical external conversation identity; optional name and kind are checked supplied facts, not labels or inferred roles. Body has `text`, `complete` and `redacted`. Redaction or omission requires `complete:false`. These local same-user assertions establish neither cryptographic authentication nor instruction authority.
@@ -497,7 +510,7 @@ Overrides and remaining members:
 | Member | Request | Response | Durable |
 |---|---|---|---|
 | recovery-state | recovery-state/1.0.0 | recovery-state/1.1.0 | absent |
-| submit | submit/1.6.0 | submit/1.3.0 | absent |
+| submit | submit/1.7.0 | submit/1.3.0 | absent |
 | report | report/2.0.0 | report/1.2.0 | absent |
 | passive-submit | passive-submit/2.0.0 | passive-submit/1.0.0 | absent |
 | spawn | spawn/2.0.0 | spawn/2.1.0 | absent |
@@ -533,7 +546,7 @@ Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema
 
 ```text
 H-inspect       fda259edeae325c7625547e95c55e22cf0bbe1b6b912b51bc3d8d209b396dc67
-H-status        904232de9e63ae3790df588ecad4a97c979c5dcebd7f19b9a1b5940109ff5b1c
+H-status        871a8a860aae252aa4348778e834748ac591ddd060910584ff686dcf9a998c0b
 H-list          1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6
 H-dashboard     b17aa145d9ddf70804f1ae1c522d8a90b396b0bca91d3e7a498418cd66e3b3e2
 H-profile-read  396c6aa90325ba4f92e72f38538561c810d31eb6dde087341591b34af479400b
@@ -608,21 +621,31 @@ The native input still settles through Pi. Its state-note answer is not the
 final work result. A dependency arrival or input settlement never closes an
 item. A declaring input that ends `unanswered` invalidates its open item; the
 original unanswered receipt remains the outcome. `complete` closes the item
-and retains its final report for `replyTo` atomically. Its report ID derives
+and retains its final report for `replyTo` atomically. When `replyTo` is the
+declaring conversation, the report remains retained for reading and is never
+admitted to it as an input. Its close shows `delivery:"retained"`. The same
+rule applies to final reports from abort and reset. Its report ID derives
 from the conversation and original request. While its close remains retained,
 repeated completion returns it without another report; closed items do not
 reopen. The work document keeps all open items and the newest 16 closed items.
 Eviction removes the old work item, not its separately retained report. A
-completion after eviction has no declared item to complete. Report
+completion after eviction or without any prior declaration fails, names both
+possible causes, changes nothing and sends no report. Report
 delivery stays at least once and independent of task acceptance.
 
 Full native conversation status exposes `openWork`; compact status leaves the
 list out. An item view has `state:"open"|"closed"`, its route, note, timestamps,
 dependencies and optional close. Dependency state is `open`, `state-note` or
-`arrived`. A dependency in another storage currently reads `open` with
-`unavailable` and an exact inspect call, not a claimed producer outcome.
+`arrived`. For another storage, an admitted labelled state-note receipt records
+`state-note`; an admitted ordinary result or explicit final report records
+`arrived`. The recipient retains the producer's typed `dependencyMarks` in its
+work document. Marks match the exact conversation, submission and request;
+`arrived` never regresses to `state-note`. Without a matching admitted mark,
+the dependency reads `open` with `unavailable` and an exact inspect call, not a
+claimed producer outcome. A result delivered elsewhere marks nothing here;
+older admissions carry no mark, and inspection creates none.
 A close names `status`, `message`, `at`, `reportRequestId` and, when readable, final-report `delivery` (`active`,
-`parked`, `fallback`, `terminal`, `delivered` or `absent`). A delivery state does
+`parked`, `fallback`, `terminal`, `delivered`, `absent` or `retained`). A delivery state does
 not change the declared-work state.
 
 Delivered state-note receipts retain the normal result identity. Their native

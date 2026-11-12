@@ -1670,23 +1670,36 @@ agent_work({
 ```
 
 `complete` closes the item and retains one final report for its original reply
-recipient in the same commit. While the close remains retained, a repeated
-completion returns it and creates no second report. Normal report delivery remains at least once;
+recipient in the same commit. If that recipient is the declaring conversation
+itself, the report remains retained for reading and is never admitted to that
+conversation as an input. Its close shows `delivery: "retained"`; the same rule
+applies to the final reports from abort and reset. Otherwise normal report
+delivery remains at least once. While the close remains retained, a repeated
+completion returns it and creates no second report;
 this is not an exactly-once context-delivery claim. An arrived dependency and a
 settled input never invoke completion. Closed items do not reopen. The work
 record does not cancel its producers.
 
 The work document retains every open item and the newest 16 closed items.
-After an older close leaves that document, another completion returns no
-retained close; it does not create a new item. This bound does not itself
-remove the separately retained final report.
+For an older close or a request that never declared work, completion fails
+with one answer that names both possible causes. It changes nothing and sends
+no report. This bound does not itself remove the separately retained final
+report.
 
 Read `agent_status({sessionId, detail: true})` for `openWork`. Each item names
 its original route, note, state and dependencies. A dependency is `open` while
 its input is unsettled, `state-note` when its input settled but its own work
-remains open, or `arrived` when its settled input has no open work. A dependency
-in another storage currently reads `open` with `unavailable` and an exact
-result-inspection call; that state is not proof that it is pending or complete.
+remains open, or `arrived` when its settled input has no open work. For a
+producer in another storage, an admitted labelled state-note receipt records
+`state-note`; an admitted ordinary result or explicit final report records
+`arrived`. The producer's delivery carries typed `dependencyMarks`, and the
+recipient retains them for its own open work. An `arrived` mark never becomes
+`state-note` again.
+
+Without a matching admitted mark, that remote dependency remains `open` with
+`unavailable` and an exact inspection call, not a claimed pending outcome.
+A result delivered to another conversation marks nothing here. Deliveries
+admitted before this contract carry no mark; result inspection creates none.
 A closed item carries its final-report identity and, when available, delivery state.
 Compact status omits this full list.
 
@@ -3566,8 +3579,8 @@ inheritance. Their responses use 2.1.0 and include prompted-input placement
 beside preset names and selection origins. Configure requests and responses use 1.3.0 for explicit
 provider-block recovery alongside machine preference snapshots and selection
 receipts; target retention remains unchanged. Task-submit requests use 1.1.0,
-and submit requests use 1.6.0, for explicit input labels alongside retained
-routes and delivered-result references. Both responses use 1.3.0 for committed
+and submit requests use 1.7.0, for explicit input labels and dependency marks
+alongside retained routes and delivered-result references. Both responses use 1.3.0 for committed
 placement beside recovery links and the retained recipient. Timer-cancel responses use 1.1.0 for the resolved
 conversation identity; the request identity remains at 1.0.0. Report requests
 use 2.0.0 for passive reports and exact producer associations, and report
