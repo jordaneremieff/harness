@@ -31,6 +31,25 @@ it("projects selected status without inventories, historical arrays or a host aw
 	assert.deepEqual(source, before);
 });
 
+it("publishes the unplaced input count and the oldest age only when the host row states them", () => {
+	const project = (extra: Record<string, unknown>) => {
+		const value = projectSelectedStatus({ conversation: { ...row(), ...extra }, storageId: "storage" });
+		assert.equal(value.format, "compact");
+		return (value as { conversation: Record<string, unknown> }).conversation;
+	};
+	const waiting = project({ unplaced: 3, oldest: 372000 });
+	assert.equal(waiting.unplaced, 3);
+	assert.equal(waiting.oldest, 372000);
+	const none = project({ unplaced: 0, oldest: 372000 });
+	assert.equal(none.unplaced, 0);
+	assert.equal(Object.hasOwn(none, "oldest"), false);
+	for (const extra of [{}, { oldest: 372000 }, { unplaced: -1 }, { unplaced: "3" }]) {
+		const absent = project(extra);
+		assert.equal(Object.hasOwn(absent, "unplaced"), false);
+		assert.equal(Object.hasOwn(absent, "oldest"), false);
+	}
+});
+
 it("qualifies cold and ordinary-primary observations without inferring live progress", () => {
 	const cold = projectSelectedStatus({ conversation: { ...row(), live: null, inbox: null }, storageId: "storage", live: false });
 	assert.equal(cold.format, "compact");

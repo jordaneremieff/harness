@@ -303,6 +303,28 @@ describe("agent result cards", () => {
 		assert.doesNotMatch(screen(card), /not running|remains active/u);
 	});
 
+	it("shows unplaced inputs in a compact status and placement in admission and report receipts", () => {
+		const options = { ...cardKeys, expanded: false, isPartial: false };
+		const compact = (extra: Record<string, unknown>) => result({ format: "compact", omitted: [], conversation: { identity: "storage-a", conversationId: 1, busy: true, availability: "live",
+			queue: { inbox: 2, submissions: 2 }, timers: 0, context: "unknown", omitted: [], detail: { tool: "agent_status", sessionId: "storage-a", detail: true }, ...extra } });
+		assert.match(screen(renderAgentResult(compact({ unplaced: 2, oldest: 372000 }), options, theme, context()), 180), /timers · unplaced: 2, oldest: 6m 12s/u);
+		assert.match(screen(renderAgentResult(compact({ unplaced: 0 }), options, theme, context()), 180), /timers · unplaced: 0$/mu);
+		assert.doesNotMatch(screen(renderAgentResult(compact({}), options, theme, context()), 180), /unplaced/u);
+		const line = /placed at the recipient's next tool boundary/u;
+		const receipt = { submissionId: 9, conversationId: 1, deduped: false, identity: "storage-a" };
+		const unplaced = screen(renderSendResult(result({ ...receipt, placement: "unplaced" }), options, theme, context()), 180);
+		assert.match(unplaced, /submission 9 · unplaced/u);
+		assert.match(unplaced, line);
+		const placed = screen(renderSteerResult(result({ ...receipt, placement: "placed" }), options, theme, context()), 180);
+		assert.match(placed, /submission 9 · placed/u);
+		assert.doesNotMatch(placed, line);
+		assert.doesNotMatch(screen(renderSendResult(result({ ...receipt, placement: "queued" }), options, theme, context()), 180), /submission 9 ·/u);
+		assert.match(screen(renderAgentResult(result({ sessionId: "storage-a", admission: { ...receipt, placement: "unplaced" } }), options, theme, context()), 180), line);
+		const retained = screen(renderSendResult(result({ sourceId: "report:one", ownerId: "storage-a", acknowledged: false, placement: "unplaced" }), options, theme, context({ args: { mode: "report" } })), 180);
+		assert.match(retained, /Acknowledgement pending · unplaced/u);
+		assert.match(retained, line);
+	});
+
 	it("shows admission receipts, fork, rewind, configure, abort, and command outcomes", () => {
 		const receipt = { submissionId: 9, conversationId: 1, deduped: false, identity: "storage-a" };
 		const send = screen(renderSendResult(result(receipt), { ...cardKeys, expanded: false, isPartial: false }, theme, context()));

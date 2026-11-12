@@ -319,7 +319,7 @@ export function buildStatusOverview(
 }
 
 export const SELECTED_STATUS_BYTE_LIMIT = 8 * 1024;
-type CompactConversation = Static<typeof CompactConversationSchema>;
+type CompactConversation = Static<typeof CompactConversationSchema> & { unplaced?: number; oldest?: number };
 type CompactSelected = Static<typeof CompactSelectedStatusSchema>;
 type CompactStorage = Static<typeof CompactStorageStatusSchema>;
 export interface PresentationRefusal { format: "refused"; cause: "byte-limit" | "source"; reason: string; byteLimit: number }
@@ -359,12 +359,22 @@ function compactConversation(source: unknown, availability: CompactConversation[
 	if (typeof model.provider === "string" && typeof model.modelId === "string") result.model = { provider: model.provider, modelId: model.modelId };
 	if (typeof agent.thinkingLevel === "string") result.thinkingLevel = agent.thinkingLevel;
 	if ((count(run.taskId) ?? 0) > 0) result.runId = Number(run.taskId);
+	addCompactUnplaced(result, row);
 	const block = record(row.providerBlock);
 	if (typeof block.blockId === "string") {
 		result.providerBlock = { blockId: block.blockId, recovery: `agent_configure({sessionId:${JSON.stringify(row.identity)},model:<explicit provider/model>}), then a new agent_send follow-up` };
 		result.omitted.push("provider evidence; use detail or result view");
 	}
 	return result;
+}
+
+/** Inputs admitted but not yet in the conversation's context: their count, and the age in milliseconds of the oldest one. */
+function addCompactUnplaced(result: CompactConversation, row: Record<string, unknown>): void {
+	const unplaced = count(row.unplaced);
+	if (unplaced === undefined) return;
+	result.unplaced = unplaced;
+	const oldest = count(row.oldest);
+	if (unplaced > 0 && oldest !== undefined) result.oldest = oldest;
 }
 
 /** Accept descriptive-field reduction only when its omission metadata also fits within the original size. */

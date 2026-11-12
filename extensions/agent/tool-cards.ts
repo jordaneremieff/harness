@@ -613,6 +613,12 @@ function muted(theme: Theme, value: string): string {
 	return theme.fg("muted", value);
 }
 
+/** A receipt states placement only when its source does: whether the input is in the recipient's context. */
+function receiptPlacement(details: Record<string, unknown>): "placed" | "unplaced" | undefined {
+	return details.placement === "placed" || details.placement === "unplaced" ? details.placement : undefined;
+}
+const UNPLACED_INPUT_LINE = "The input is placed at the recipient's next tool boundary";
+
 function controlReceiptLines(details: Record<string, unknown>, theme: Theme, subject: string, context: AgentCardContext): string[] | undefined {
 	const identity = text(details.identity);
 	const conversationId = count(details.conversationId);
@@ -620,7 +626,10 @@ function controlReceiptLines(details: Record<string, unknown>, theme: Theme, sub
 	const lines = [theme.fg("toolOutput", `${subject}${identity ? targetSuffix(identity, context) : conversationId !== undefined ? ` · conversation ${conversationId}` : ""}`)];
 	const submission = count(details.submissionId);
 	if (submission !== undefined) lines[0] += muted(theme, ` · submission ${submission}`);
+	const placement = receiptPlacement(details);
+	if (placement !== undefined) lines[0] += muted(theme, ` · ${placement}`);
 	if (details.deduped === true) lines.push(muted(theme, "Already admitted"));
+	if (placement === "unplaced") lines.push(muted(theme, UNPLACED_INPUT_LINE));
 	return lines;
 }
 
@@ -810,7 +819,7 @@ function activityLines(status: Record<string, unknown>, readOnly: boolean, theme
 	const current = running.find((slot) => slot.status === "running");
 	const inbox = record(status.inbox);
 	const pending = Array.isArray(inbox.items) ? inbox.items.length : undefined;
-	const parts = [`Activity: ${working ? "working" : "idle"}`, current ? `tool ${displayPreview(text(current.name), 100)}` : undefined, pending === undefined ? "pending unknown" : `${pending} pending`];
+	const parts = [`Activity: ${working ? "working" : "idle"}`, current ? `tool ${displayPreview(text(current.name), 100)}` : undefined, pending === undefined ? "pending unknown" : `${pending} pending`, unplacedText(status)];
 	const lines = [muted(theme, parts.filter(Boolean).join(" · "))];
 	if (readOnly) lines.unshift(theme.fg("muted", "Read-only snapshot; live owner state unavailable"));
 	for (const slot of running.slice(0, 4)) lines.push(muted(theme, runningSlotLine(slot)));
@@ -822,6 +831,17 @@ function activityLines(status: Record<string, unknown>, readOnly: boolean, theme
 	if (saved) lines.push(muted(theme, saved));
 	lines.push(...retryLines(live, theme));
 	return lines;
+}
+
+/** Admitted inputs that are not yet in the conversation's context, with the age of the oldest one. */
+function unplacedText(status: Record<string, unknown>): string {
+	const unplaced = count(status.unplaced);
+	if (unplaced === undefined) return "";
+	const oldest = count(status.oldest);
+	if (unplaced === 0 || oldest === undefined) return `unplaced: ${unplaced}`;
+	const seconds = Math.floor(oldest / 1000), minutes = Math.floor(seconds / 60);
+	const age = seconds < 60 ? `${seconds}s` : minutes < 60 ? `${minutes}m ${seconds % 60}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+	return `unplaced: ${unplaced}, oldest: ${age}`;
 }
 
 function snapshotLabel(identity: string, name: string, context: AgentCardContext): string {
@@ -874,7 +894,7 @@ function compactStatusLines(status: Record<string, unknown>, details: Record<str
 	const lines = [theme.fg("accent", snapshotLabel(text(status.identity), text(status.name), context))];
 	const configuration = resolvedModelLine(text(model.provider), text(model.modelId), text(status.thinkingLevel));
 	if (configuration) lines.push(muted(theme, configuration));
-	lines.push(muted(theme, `Activity: ${status.busy === true ? "working" : status.busy === false ? "idle" : "unknown"} · source ${text(status.availability) || "unknown"} · ${queue.inbox === null ? "unknown" : String(queue.inbox)} queued inputs · ${status.timers === null ? "unknown" : String(status.timers)} timers`));
+	lines.push(muted(theme, `Activity: ${status.busy === true ? "working" : status.busy === false ? "idle" : "unknown"} · source ${text(status.availability) || "unknown"} · ${queue.inbox === null ? "unknown" : String(queue.inbox)} queued inputs · ${status.timers === null ? "unknown" : String(status.timers)} timers${unplacedText(status) ? ` · ${unplacedText(status)}` : ""}`));
 	lines.push(...compactRecoveryLines(status, details, theme));
 	const block = record(status.providerBlock);
 	if (text(block.blockId)) lines.push(theme.fg("warning", `Provider block ${text(block.blockId)} · ${text(block.recovery)}`));
@@ -892,7 +912,7 @@ function nestedReceiptLines(details: Record<string, unknown>, theme: Theme, cont
 	const snapshot = snapshotStatus(details);
 	const identity = text(admission.identity) || text(details.sessionId) || text(snapshot?.identity);
 	const receiptContext = identity === text(snapshot?.identity) ? { ...context, args: { ...record(context.args), sessionId: identity } } : context;
-	return controlReceiptLines({ ...admission, identity }, theme, "Admitted", receiptContext);
+	return controlReceiptLines({ placement: details.placement, ...admission, identity }, theme, "Admitted", receiptContext);
 }
 
 function collapsedAgentLines(details: Record<string, unknown>, output: string, theme: Theme, context: AgentCardContext): string[] {
@@ -937,8 +957,10 @@ function primaryMessageLines(details: Record<string, unknown>, theme: Theme, con
 
 function reportReceiptLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	if (!text(details.sourceId) || typeof details.acknowledged !== "boolean") return undefined;
+	const placement = receiptPlacement(details);
 	return [theme.fg("toolOutput", `Report retained${text(details.ownerId) ? targetSuffix(text(details.ownerId), context) : ""}`),
-		muted(theme, `${details.acknowledged ? "Acknowledged" : "Acknowledgement pending"}${details.passive === true ? " · passive" : ""}`),
+		muted(theme, `${details.acknowledged ? "Acknowledged" : "Acknowledgement pending"}${details.passive === true ? " · passive" : ""}${placement === undefined ? "" : ` · ${placement}`}`),
+		...(placement === "unplaced" ? [muted(theme, UNPLACED_INPUT_LINE)] : []),
 		muted(theme, text(details.boundary) || "Retention or acknowledgement does not establish model consumption or task acceptance.")];
 }
 

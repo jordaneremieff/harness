@@ -67,6 +67,17 @@ it("preserves ordinary admission facts and failures without inventing retention"
 	for (const failure of [{ error: "failed", sourceId: "r", acknowledged: false }, { admitted: false, reason: "unavailable" }, { outcome: "failed", reason: "uncertain" }, { queued: "unknown" }]) assert.equal(projectReportReceipt(failure), failure);
 });
 
+it("keeps a stated placement on retained and admitted report receipts and omits any other value", () => {
+	const retained = { sourceId: "report:one", acknowledged: false };
+	const admitted = { identity: "native", conversationId: 1, submissionId: 7, deduped: false };
+	for (const placement of ["placed", "unplaced"]) {
+		assert.deepEqual(projectReportReceipt({ ...retained, placement }), { ...retained, placement, boundary: REPORT_RECEIPT_BOUNDARY });
+		assert.deepEqual(projectReportReceipt({ ...admitted, placement }), { ...admitted, placement });
+	}
+	for (const placement of ["queued", true, null, { state: "placed" }])
+		assert.deepEqual(projectReportReceipt({ ...retained, placement }), { ...retained, boundary: REPORT_RECEIPT_BOUNDARY });
+});
+
 it("omits a host intervention association of any shape and refuses a malformed result reference", () => {
 	const intervention = { producerRunId: 3, producerResults: [{ sessionId: "producer", submissionId: 7, requestId: "input" }] };
 	const source = { sourceId: "report:one", acknowledged: true };

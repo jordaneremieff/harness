@@ -51,6 +51,8 @@ const REPORT_RECEIPT_KEYS = [
 	"sourceId", "requestId", "ownerId", "senderIdentity", "createdAt", "acknowledged", "passive", "replyTo",
 	"sessionId", "identity", "conversationId", "submissionId", "result", "deduped", "admitted", "queued", "boundary",
 ] as const;
+/** Whether the input is in the recipient's context; an unplaced input enters it at the recipient's next tool boundary. */
+const REPORT_PLACEMENTS: readonly unknown[] = ["placed", "unplaced"];
 
 /** Only successful report sender replies pass through this projection; the recipient body stays intact. */
 export function projectReportReceipt(value: unknown): unknown {
@@ -63,6 +65,7 @@ export function projectReportReceipt(value: unknown): unknown {
 		return { format: "refused", reason: "Report receipt result reference is invalid; the retained delivery is unchanged.", byteLimit: REPORT_RECEIPT_BYTE_LIMIT };
 	const result: Record<string, unknown> = {};
 	for (const key of REPORT_RECEIPT_KEYS) if (Object.hasOwn(source, key)) result[key] = structuredClone(source[key]);
+	if (REPORT_PLACEMENTS.includes(source.placement)) result.placement = source.placement;
 	if (retained) result.boundary = REPORT_RECEIPT_BOUNDARY;
 	if (Buffer.byteLength(JSON.stringify(result), "utf8") > REPORT_RECEIPT_BYTE_LIMIT)
 		return { format: "refused", reason: "Report receipt identity/state metadata exceeds the output byte limit; the retained delivery is unchanged.", byteLimit: REPORT_RECEIPT_BYTE_LIMIT };
