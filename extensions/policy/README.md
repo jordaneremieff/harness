@@ -1733,6 +1733,10 @@ from older shapes remain readable as tool records, but evaluation coverage witho
 irrelevant-count field is unknown; no older-shape reader or migration is supplied.
 Correlation
 loss is explicit. Records do not invent a terminal result for an unfinished call.
+An ordinary call is correlated by Pi's tool call ID from `tool_execution_start`
+to `tool_execution_end`. Pi starts each execution once, so a start under the ID of
+an ended call is a new execution: providers reuse call IDs, and the later call is
+observed, corrected, approved and recorded on its own.
 Ordinary records retain no raw argument or result payload by default. Command capture
 keeps its separately bounded best-effort secret redaction. Preview and explicit
 control artifacts are not telemetry payload capture.

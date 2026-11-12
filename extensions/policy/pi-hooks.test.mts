@@ -925,6 +925,38 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 			await f.cleanup();
 		}
 	});
+	it("observes and corrects a later execution that reuses an ended provider call id", async () => {
+		const f = await setup([["errors", errorProgram]], "enforce");
+		try {
+			let executions = 0;
+			f.setTools([
+				{
+					name: "sample",
+					description: "controlled",
+					parameters: inputSchema,
+					execute: async (_id, args) => {
+						executions++;
+						return { content: [{ type: "text", text: "ok" }], details: { failed: args.fail === true } };
+					},
+				},
+			]);
+			const first = await f.run([{ id: "reused", arguments: { name: "first" } }]);
+			const second = await f.run([{ id: "reused", arguments: { name: "second", fail: true } }], { continueSession: true });
+			const errorOf = (messages: unknown[]) =>
+				(messages as Array<{ role: string; isError?: boolean }>).find((message) => message.role === "toolResult")?.isError;
+			assert.equal(executions, 2);
+			assert.equal(errorOf(first.messages), false);
+			assert.equal(errorOf(second.messages), true);
+			const records = await f.telemetry();
+			assert.deepEqual(records.map((row) => [row.callId, row.error, row.outcome]), [
+				["reused", false, "success"],
+				["reused", true, "execution-error"],
+			]);
+			assert.deepEqual(f.errors, []);
+		} finally {
+			await f.cleanup();
+		}
+	});
 	it("records denied, invalid, truncated, and unknown-tool calls at the terminal fallback", async () => {
 		const denial: FactsProgram = {
 			phase: "input",

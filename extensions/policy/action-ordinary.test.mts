@@ -328,6 +328,20 @@ test("ordinary parallel retries execute one local write", { timeout: 30000 }, as
 	}
 });
 
+test("ordinary approved write executes when the provider reuses the refused call's id", { timeout: 30000 }, async () => {
+	const f = await fixture();
+	try {
+		const refused = await f.run([ai.fauxToolCall(SEND, args, { id: "reused-provider-id" })], plainRequest);
+		assert.equal(refused.isError, true);
+		await f.approve();
+		const approved = await f.run([ai.fauxToolCall(SEND, args, { id: "reused-provider-id" })], "Send the approved message.");
+		assert.equal(approved.isError, false, JSON.stringify(approved.content));
+		assert.equal(f.writes.length, 1);
+	} finally {
+		await f.close();
+	}
+});
+
 for (const kind of ["early-replacement", "early-mutation", "later-mutation", "later-replacement"] as const)
 	test(`ordinary exact execution boundary: ${kind}`, { timeout: 30000 }, async () => {
 		let enabled = false;

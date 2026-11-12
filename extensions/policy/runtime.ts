@@ -636,8 +636,10 @@ export class PolicyRuntime {
 			},
 		};
 	}
+	/** Pi starts each execution once, so a start under an ended call ID is a new execution that reuses the provider's ID. */
 	private track(call: ObservedCall): void {
-		if (this.ended.has(call.callId) || !trackPending(this.pending, call)) this.incomplete++;
+		this.ended.delete(call.callId);
+		if (!trackPending(this.pending, call)) this.incomplete++;
 	}
 	private notice(call: ObservedCall, ctx: ExtensionContext): void {
 		if (this.effectiveMode() !== "notice" || ctx.mode !== "tui" || !call.classes.length || call.effects.notified)
@@ -657,8 +659,7 @@ export class PolicyRuntime {
 		event: { toolName: string; toolCallId: string; args: unknown },
 		ctx: ExtensionContext,
 	): Promise<void> {
-		if (this.closed || !this.enabled() || this.pending.has(event.toolCallId) || this.ended.has(event.toolCallId))
-			return;
+		if (this.closed || !this.enabled() || this.pending.has(event.toolCallId)) return;
 		const generation = this.generation;
 		const snapshot = await this.load(ctx);
 		if (!this.live(generation)) return;
