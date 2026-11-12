@@ -580,6 +580,8 @@ remain blocked at their public delivery and aggregate-accounting surfaces,
 respectively. The command snapshots and ordinary retained notices do not claim
 those capabilities.
 
+### Percentage gates
+
 At the decision threshold, one tool round refuses substantive calls and preserves
 `stash_write` plus declared continuity tools. Later calls below the stop threshold
 run normally. At the stop threshold, new substantive tool calls are refused.
