@@ -56,15 +56,7 @@ const REPORT_PLACEMENTS: readonly unknown[] = ["placed", "unplaced"];
 /** The state of the retained row at its recipient; only an admitted row can be placed. */
 const REPORT_DELIVERIES: readonly unknown[] = ["pending", "parked", "terminal", "admitted"];
 
-/** Only successful report sender replies pass through this projection; the recipient body stays intact. */
-export function projectReportReceipt(value: unknown): unknown {
-	const source = record(value);
-	if (!source || source.error !== undefined || source.isError === true || source.outcome === "failed" || source.admitted === false) return value;
-	const retained = typeof source.sourceId === "string" && typeof source.acknowledged === "boolean";
-	const admitted = source.admitted === true || typeof source.submissionId === "number";
-	if (!retained && !admitted) return value;
-	if (source.result !== undefined && !matchesSchema(ResultReferenceSchema, source.result))
-		return { format: "refused", reason: "Report receipt result reference is invalid; the retained delivery is unchanged.", byteLimit: REPORT_RECEIPT_BYTE_LIMIT };
+function reportReceiptFields(source: Record<string, unknown>, retained: boolean): Record<string, unknown> {
 	const result: Record<string, unknown> = {};
 	for (const key of REPORT_RECEIPT_KEYS) if (Object.hasOwn(source, key)) result[key] = structuredClone(source[key]);
 	if (REPORT_PLACEMENTS.includes(source.placement)) result.placement = source.placement;
@@ -74,6 +66,19 @@ export function projectReportReceipt(value: unknown): unknown {
 		// Without a stated delivery, an unacknowledged retained report is not delivered, so it cannot be in the recipient's context.
 		if (source.acknowledged === false && result.delivery === undefined) Object.assign(result, { placement: "unplaced", delivery: "pending" });
 	}
+	return result;
+}
+
+/** Only successful report sender replies pass through this projection; the recipient body stays intact. */
+export function projectReportReceipt(value: unknown): unknown {
+	const source = record(value);
+	if (!source || source.error !== undefined || source.isError === true || source.outcome === "failed" || source.admitted === false) return value;
+	const retained = typeof source.sourceId === "string" && typeof source.acknowledged === "boolean";
+	const admitted = source.admitted === true || typeof source.submissionId === "number";
+	if (!retained && !admitted) return value;
+	if (source.result !== undefined && !matchesSchema(ResultReferenceSchema, source.result))
+		return { format: "refused", reason: "Report receipt result reference is invalid; the retained delivery is unchanged.", byteLimit: REPORT_RECEIPT_BYTE_LIMIT };
+	const result = reportReceiptFields(source, retained);
 	if (Buffer.byteLength(JSON.stringify(result), "utf8") > REPORT_RECEIPT_BYTE_LIMIT)
 		return { format: "refused", reason: "Report receipt identity/state metadata exceeds the output byte limit; the retained delivery is unchanged.", byteLimit: REPORT_RECEIPT_BYTE_LIMIT };
 	return result;
