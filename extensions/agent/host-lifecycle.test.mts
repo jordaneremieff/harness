@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
@@ -14,7 +14,7 @@ import { fixtureMetadata } from "./host-fixture.mts";
 import { HostError, hostPaths, HOST_READY_PREFIX } from "./host-protocol.ts";
 import { runHost } from "./host-process.ts";
 import { tryNativeWriterLease } from "./native-lease.ts";
-import { runtimeFixture } from "./durable-runtime-fixture.mts";
+import { runtimeFixture, trackHost } from "./durable-runtime-fixture.mts";
 
 function assertReleased(metadata: Parameters<typeof hostPaths>[0]): void {
 	assert.equal(existsSync(hostPaths(metadata).claim), true);
@@ -114,6 +114,8 @@ it("preserves a malformed contract error without waiting for a live writer to di
 });
 
 it("a wire close exits the durable process and releases its writer claim", { timeout: 15000 }, async (t) => {
+	let stop = async () => {};
+	t.after(() => stop());
 	const fixture = runtimeFixture(t);
 	const child = spawn(process.execPath, [fileURLToPath(new URL("./durable-runner.ts", import.meta.url)), JSON.stringify(fixture.metadata)], {
 		cwd: fixture.cwd,
@@ -121,10 +123,10 @@ it("a wire close exits the durable process and releases its writer claim", { tim
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	const exited = once(child, "exit");
-	t.after(async () => {
+	stop = async () => {
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 		await exited;
-	});
+	};
 	let stderr = "";
 	child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString()}`.slice(-8192); });
 	await new Promise<void>((resolve, reject) => {
@@ -140,6 +142,25 @@ it("a wire close exits the durable process and releases its writer claim", { tim
 	assert.equal(code, 0, stderr);
 	assert.equal(signal, null);
 	assertReleased(fixture.metadata);
+});
+
+it("a lost claim pathname makes the durable runner exit with failure on shutdown", { timeout: 15000 }, async (t) => {
+	let connection: Awaited<ReturnType<typeof acquireHost>> | undefined;
+	t.after(() => connection?.close());
+	const fixture = runtimeFixture(t);
+	connection = await acquireHost(fixture.metadata, {
+		env: { ...fixture.env("answer"), PI_AGENT_SESSIONS_DIR: fixture.root },
+		retryAttempts: 0,
+	});
+	trackHost(t, connection.pid);
+	const exited = connection.ownedExit;
+	assert.ok(exited, "the real runner has an owned child-exit event");
+	const paths = hostPaths(fixture.metadata);
+	unlinkSync(paths.claim);
+	process.kill(connection.pid, "SIGTERM");
+	assert.deepEqual(await exited, { code: 1, signal: null, failed: true });
+	assert.equal(existsSync(paths.claim), false, "shutdown never recreates the missing claim pathname");
+	assert.equal(existsSync(paths.socket), false, "shutdown removes its own published endpoint");
 });
 
 for (const ownedExit of [false, true]) it(`preserves the busy writer claim with ${ownedExit ? "an explicit" : "no"} process exit owner`, async (t) => {
