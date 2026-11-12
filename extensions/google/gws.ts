@@ -275,7 +275,7 @@ function authFields(value: Record<string, unknown>): Auth {
 
 export class GoogleRuntime {
 	private versionPromise: Promise<string> | undefined;
-	private versionExecutable: string | undefined;
+	private versionContext: string | undefined;
 	private authCache: { key: string; expires: number; auth: Auth } | undefined;
 	private profileKey: string | undefined;
 
@@ -290,16 +290,13 @@ export class GoogleRuntime {
 		return readSettings({ agentDir: this.agentDir, env: this.env });
 	}
 
-	private controlledEnvironment(configDir: string, stateDir: string): NodeJS.ProcessEnv {
-		return gwsEnvironment(this.env, configDir, stateDir);
-	}
-
-	private async prepare(snapshot: Snapshot) {
+	private async prepare(snapshot: Snapshot, local: boolean) {
 		const { executable, configDir } = snapshot.values;
+		const stateDir = join(configDir, "pi-extension");
+		const environment = local ? {} : gwsEnvironment(this.env, configDir, stateDir);
 		const configInfo = await lstat(configDir).catch(() => undefined);
 		if (!executable || !configInfo?.isDirectory() || configInfo.isSymbolicLink())
 			throw new GoogleError("SETUP_REQUIRED", "Google access is not set up. Run /google setup.");
-		const stateDir = join(configDir, "pi-extension");
 		const expectedAccount = snapshot.values.expectedAccount ?? (await recordedAccount(stateDir));
 		if (!expectedAccount) throw new GoogleError("SETUP_REQUIRED", "No Google account is recorded. Run /google setup.");
 		const workDir = join(stateDir, "work");
@@ -308,7 +305,7 @@ export class GoogleRuntime {
 		const lockTarget = join(stateDir, "lock-target");
 		const handle = await open(lockTarget, constants.O_WRONLY | constants.O_CREAT, 0o600);
 		await handle.close();
-		return { executable, configDir, expectedAccount, stateDir, workDir, lockTarget };
+		return { executable, configDir, expectedAccount, stateDir, workDir, lockTarget, environment };
 	}
 
 	private async version(
@@ -317,8 +314,9 @@ export class GoogleRuntime {
 		environment: NodeJS.ProcessEnv,
 		signal?: AbortSignal,
 	): Promise<string> {
-		if (this.versionExecutable !== executable) {
-			this.versionExecutable = executable;
+		const context = JSON.stringify([executable, environment]);
+		if (this.versionContext !== context) {
+			this.versionContext = context;
 			this.versionPromise = undefined;
 		}
 		this.versionPromise ??= executeProcess(executable, ["--version"], {
@@ -359,18 +357,28 @@ export class GoogleRuntime {
 				"AUTH_CONFIG_ERROR",
 				"Remove plaintext credentials.json from the dedicated personal gws config directory.",
 			);
-		return `${encrypted.mtimeMs}:${encrypted.size}`;
+		return JSON.stringify([
+			encryptedPath,
+			encrypted.dev,
+			encrypted.ino,
+			encrypted.size,
+			encrypted.mtimeMs,
+			encrypted.ctimeMs,
+		]);
 	}
 
-	private async authenticate(prepared: Prepared, signal?: AbortSignal): Promise<Auth> {
-		// The cache key includes the expected account: a changed setting must be checked
-		// against the observed identity again before the next operation uses it.
-		const credentialKey = `${await this.checkCredentialFiles(prepared.configDir)}:${prepared.expectedAccount.toLowerCase()}`;
+	private async authenticate(prepared: Prepared, signal?: AbortSignal): Promise<{ auth: Auth; key: string }> {
+		const credentialKey = JSON.stringify([
+			prepared.executable,
+			prepared.environment,
+			await this.checkCredentialFiles(prepared.configDir),
+			prepared.expectedAccount.toLowerCase(),
+		]);
 		if (this.authCache && this.authCache.key === credentialKey && this.authCache.expires > Date.now())
-			return this.authCache.auth;
+			return this.authCache;
 		const result = await executeProcess(prepared.executable, ["auth", "status"], {
 			cwd: prepared.workDir,
-			env: this.controlledEnvironment(prepared.configDir, prepared.stateDir),
+			env: prepared.environment,
 			stdoutLimit: STDOUT_LIMITS.metadata,
 			timeoutMs: 60000,
 			signal,
@@ -387,14 +395,14 @@ export class GoogleRuntime {
 			);
 		}
 		this.authCache = { key: credentialKey, expires: Date.now() + 60000, auth };
-		return auth;
+		return { auth, key: credentialKey };
 	}
 
-	private caller(prepared: Prepared, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Operation["call"] {
+	private caller(prepared: Prepared, signal?: AbortSignal): Operation["call"] {
 		return async <T>(service: string, path: string[], callOptions: CallOptions = {}): Promise<T> => {
 			const result = await executeProcess(prepared.executable, gwsArgv(service, path, callOptions), {
 				cwd: prepared.workDir,
-				env: environment,
+				env: prepared.environment,
 				stdoutLimit: callOptions.stdoutLimit ?? STDOUT_LIMITS.metadata,
 				timeoutMs: callOptions.timeoutMs ?? (callOptions.upload || callOptions.output ? 120000 : 60000),
 				signal,
@@ -404,8 +412,8 @@ export class GoogleRuntime {
 		};
 	}
 
-	private async checkProfile(auth: Auth, configDir: string, call: Operation["call"]): Promise<void> {
-		const profileKey = `${credentialProfileKey(auth)}:${configDir}`;
+	private async checkProfile(auth: Auth, credentialKey: string, call: Operation["call"]): Promise<void> {
+		const profileKey = JSON.stringify([credentialKey, credentialProfileKey(auth)]);
 		if (this.profileKey === profileKey) return;
 		await call("gmail", ["users", "getProfile"], { params: { userId: "me" } });
 		this.profileKey = profileKey;
@@ -416,9 +424,8 @@ export class GoogleRuntime {
 		options: RunOptions,
 		signal?: AbortSignal,
 	): Promise<Pick<Operation, "auth" | "call">> {
-		const environment = this.controlledEnvironment(prepared.configDir, prepared.stateDir);
-		await this.version(prepared.executable, prepared.workDir, environment, signal);
-		const auth = await this.authenticate(prepared, signal);
+		await this.version(prepared.executable, prepared.workDir, prepared.environment, signal);
+		const { auth, key } = await this.authenticate(prepared, signal);
 		if (options.scopes?.length && !options.scopes.some((scope) => auth.scopes.includes(scope))) {
 			throw new GoogleError(
 				"SCOPE_REQUIRED",
@@ -427,8 +434,8 @@ export class GoogleRuntime {
 				options.scopes,
 			);
 		}
-		const call = this.caller(prepared, environment, signal);
-		if (options.profile) await this.checkProfile(auth, prepared.configDir, call);
+		const call = this.caller(prepared, signal);
+		if (options.profile) await this.checkProfile(auth, key, call);
 		return { auth, call };
 	}
 
@@ -440,7 +447,7 @@ export class GoogleRuntime {
 		const snapshot = this.settings();
 		let prepared: Prepared;
 		try {
-			prepared = await this.prepare(snapshot);
+			prepared = await this.prepare(snapshot, options.local ?? false);
 		} catch (error) {
 			return errorResult(error);
 		}
@@ -503,13 +510,14 @@ const noCall: Operation["call"] = async () => {
 
 /** The fixed child environment: no inherited credentials, tokens, proxies or .env discovery outside the work directory. */
 export function gwsEnvironment(env: Environment, configDir: string, stateDir: string): NodeJS.ProcessEnv {
-	if (!env.HOME) throw new GoogleError("CONFIG_ERROR", "HOME is required for the gws Keychain backend.");
+	const { HOME, USER, LOGNAME } = env;
+	if (!HOME) throw new GoogleError("CONFIG_ERROR", "HOME is required for the gws Keychain backend.");
 	return {
-		HOME: env.HOME,
+		HOME,
 		PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
 		LANG: "en_US.UTF-8",
-		...(env.USER ? { USER: env.USER } : {}),
-		...(env.LOGNAME ? { LOGNAME: env.LOGNAME } : {}),
+		...(USER ? { USER } : {}),
+		...(LOGNAME ? { LOGNAME } : {}),
 		GOOGLE_WORKSPACE_CLI_CONFIG_DIR: configDir,
 		GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND: "keyring",
 		GOOGLE_APPLICATION_CREDENTIALS: join(stateDir, "no-application-default-credentials.json"),

@@ -54,9 +54,16 @@ records provenance; it does not detect or prevent prompt injection.
 The extension never starts a sign-in and never asks for more scope. Before a
 tool calls Google, it reads the granted scopes from `gws auth status`. A tool
 whose scopes are absent returns `SCOPE_REQUIRED` with the scopes that would
-satisfy it. The observed identity is cached briefly per credentials file and
-expected account; a changed `expectedAccount` is checked against the observed
-identity again before the next call that depends on it.
+satisfy it. The observed identity is cached for up to 60 seconds against the
+selected executable path, fixed child environment (including the configuration
+directory, `HOME`, `USER` and `LOGNAME`), case-insensitive expected account, and
+credential file path, device, inode, size, modification time and change time.
+File metadata is change evidence, not account authentication: only a valid
+`gws auth status` observation populates the cache. A changed context or expected
+account requires another observation before the operation handler runs; a
+mismatched account refuses the operation. An unchanged context reuses its valid
+observation without another authentication subprocess. Profile-check reuse is
+bound to that same context and the observed account and scopes.
 
 | Capability | Accepted scopes (`https://www.googleapis.com/auth/` prefix) |
 |---|---|
@@ -139,7 +146,10 @@ broader grant at Google.
 The extension runs `gws` with a fixed environment: the configured directory,
 the Keychain backend, a nonexistent `GOOGLE_APPLICATION_CREDENTIALS` path (so
 `gws` never falls back to Application Default Credentials) and a private
-working directory with an empty `.env`. It refuses a plaintext
+working directory with an empty `.env`. Each operation that calls `gws` captures
+its settings and child environment once, before asynchronous preparation. Version, account,
+profile and operation calls use that same selected context even if settings or
+the parent environment change during the operation. It refuses a plaintext
 `credentials.json` in the configuration directory. One file lock per
 configuration directory serialises tool operations across Pi sessions; `gws`
 commands run outside the extension do not take it.
