@@ -263,23 +263,20 @@ function admitExecutionInput(pi: ExtensionAPI, ctx: ExtensionContext, name: stri
 	return { admitted, admissionCaller };
 }
 
-function ordinaryThreadSources(ctx: ExtensionContext): { sources: ThreadNoticeSource<ContextEvent["messages"][number]>[]; complete: boolean } {
-	const branch = ctx.sessionManager.getBranch();
-	const selected = branch.slice(-128);
-	let complete = branch.length <= 128, epoch = complete ? "initial" : undefined, bytes = 0;
+function ordinaryThreadSources(ctx: ExtensionContext): ThreadNoticeSource<ContextEvent["messages"][number]>[] {
+	let epoch = "initial";
 	const sources: ThreadNoticeSource<ContextEvent["messages"][number]>[] = [];
-	for (const entry of selected) {
-		bytes += Buffer.byteLength(JSON.stringify(entry));
-		if (bytes > 256 * 1024) { complete = false; break; }
+	for (const entry of ctx.sessionManager.buildContextEntries()) {
 		if (entry.type === "message" && entry.message.role === "assistant") epoch = `entry:${entry.id}`;
-		if (entry.type !== "custom_message" || entry.customType !== "agent.peer" || epoch === undefined) continue;
+		if (entry.type !== "custom_message" || entry.customType !== "agent.peer") continue;
 		const details = entry.details as { sourceId?: unknown; deliveryRecipient?: unknown; communicationPassive?: unknown } | undefined;
-		if (typeof details?.sourceId !== "string" || details.deliveryRecipient !== ctx.sessionManager.getSessionId() || details.communicationPassive === undefined) continue;
+		if (typeof details?.sourceId !== "string" || details.deliveryRecipient !== ctx.sessionManager.getSessionId() ||
+			(details.communicationPassive as { value?: { kind?: unknown } } | undefined)?.value?.kind !== "notice") continue;
 		sources.push({ sourceId: `${entry.id}:${details.sourceId}`, recipient: details.deliveryRecipient, epoch, passive: details.communicationPassive,
 			message: { role: "custom", customType: entry.customType, content: entry.content, display: entry.display, details: entry.details, timestamp: new Date(entry.timestamp).getTime() },
 		});
 	}
-	return { sources, complete };
+	return sources;
 }
 
 export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypoint = defaultOriginalEntrypoint): void {
@@ -1005,8 +1002,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		getManager().updatePrimary(ctx.sessionManager.getSessionId(), { name: event.name });
 	});
 	pi.on("context", (event, ctx) => {
-		const source = ordinaryThreadSources(ctx);
-		const associations = associateThreadNotices(event.messages, source.sources, source.complete);
+		const sources = ordinaryThreadSources(ctx);
+		if (sources.length === 0 && threadNoticeSnapshots.length === 0) return;
+		const associations = associateThreadNotices(event.messages, sources);
 		const projection = projectThreadNotices({ scope: `${ctx.sessionManager.getSessionId()}:${threadNoticeLifecycle}`, messages: event.messages, associations, snapshots: threadNoticeSnapshots,
 			marker: (original, text) => original.role === "custom" ? { ...original, content: text } : original,
 		});
