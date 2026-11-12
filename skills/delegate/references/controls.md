@@ -3,7 +3,8 @@
 Each row gives the moment, the control, the decision, and the pitfall. The
 anchor is a heading in `extensions/agent/README.md`; read it when the
 decision depends on detail. The live tool definitions and the tool's own
-answers win over this table.
+answers win over this table. For messages to the operator, follow
+[Operator status reports](../SKILL.md#operator-status-reports).
 
 ## Contents
 
@@ -33,7 +34,7 @@ answers win over this table.
 | Give an agent a task | `agent_spawn` with prompt, or `agent_send` | Answer-bearing calls return `result: { sessionId, submissionId, requestId? }`; keep it | Admission is not settlement; a receipt is not acceptance | `#controls` |
 | Spawn to host a thread | `agent_spawn` without prompt | Creation-only spawn returns no result reference; send the task after the thread exists | Do not spawn an agent only to hold a thread | `#peer-threads` |
 | New work for a busy Durable agent | `agent_send` `mode: "followUp"` | Placed at the agent's next tool boundary as new work for the same run | It may share one answer with the current work; the answer names each request it covers | `#controls` |
-| Interim notice to an owner | `agent_send` `mode: "report"` | Placed at the owner's next tool boundary as an event; no answer route and no check-in | A report does not complete a native agent's declared work; that agent uses `agent_work` `complete` | `#recovery-and-delivery` |
+| Notice to another agent | `agent_send` `mode: "report"` | Placed at the owner's next tool boundary as an event; no answer route and no check-in | A report does not complete a native agent's declared work; that agent uses `agent_work` `complete` | `#recovery-and-delivery` |
 | Know where a sent input is | the send receipt, then `agent_status` with `sessionId` | The receipt returns `placement`: `"placed"`, `"unplaced"` or `"withdrawn"`; `"withdrawn"` means the input is in neither the recipient's inbox nor its transcript; status shows `unplaced: n` and `oldest: <age>` | One notice arrives after 5 minutes unplaced, with the recipient's current step; do not send the input again | `#controls` |
 | Input at a time | `agent_send` with `deliverAt` | Durable timer; cancel with `agent_abort` `timerId` | Not a wait loop; the storage host must run at the deadline | `#controls` |
 
@@ -75,7 +76,7 @@ answers win over this table.
 | Moment | Control | Decision | Pitfall | Anchor |
 |---|---|---|---|---|
 | An agent settles unanswered with `model_error` | `agent_inspect` `view: "result"` | Read the provider error text, abort if still active, configure an explicit model on the idle agent, send a continuation, keep its new reference | The host never substitutes a model; a retry notice does not prove exhaustion | `#exhausted-provider-limits` |
-| Choose a substitute | the preferences' substitution order | Substitute deliberately and report it | Name or thinking changes do not clear a provider block | `#exhausted-provider-limits` |
+| Choose a substitute | the preferences' substitution order | Substitute deliberately and retain the choice and reason | Name or thinking changes do not clear a provider block | `#exhausted-provider-limits` |
 
 ## Discovery and close-out
 

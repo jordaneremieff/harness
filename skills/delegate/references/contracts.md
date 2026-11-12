@@ -50,8 +50,8 @@ directory). When a structural check helps, check the filled copy with
   every task contract that permits tests.
 - **Output format and length:** sections and a length bound for the final
   answer. Large output goes to a file, cited by path.
-  A scheduled request for a state report names every required point and
-  permits no shortcut reply.
+  For a scheduled state report, follow
+  [Operator status reports](../SKILL.md#operator-status-reports).
 - **End condition:** when to stop and how to report a blocker. Add: make other
   tool calls and thread posts first; the last message is the complete
   deliverable.

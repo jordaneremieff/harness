@@ -110,7 +110,8 @@ billing block. The host settles the submission as unanswered with
    block.
 5. Send a continuation that names the state the failed run left, and keep
    its new result reference. The failed request stays inspectable.
-6. Report the wall and the substitution to the operator in one line.
+6. Apply [Operator status reports](../SKILL.md#operator-status-reports) to any
+   operator message about the wall or substitution.
 
 Check `agent_status` `view: "fleet"` before a large dispatch to see recent
 failures. Its windows are partial lower bounds, not remaining quota.

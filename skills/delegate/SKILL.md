@@ -102,7 +102,7 @@ These facts shape the choice:
   landing, activation, and push; that owner need not be a separate session.
 - **Model choice:** choose each agent by preset from the operator's preferences.
   Name an exact model only when a direction requires it. At a quota wall,
-  substitute in the configured order and report the substitution. Read
+  substitute in the configured order and retain the choice and reason. Read
   `references/controls.md` for spawn, handle, and placement rules.
 
 **Complete when:** each part of the work has an owner, concurrent edits do not
@@ -147,7 +147,7 @@ your full context and without restrictions it does not need.
 
 ## 4. Dispatch
 
-Tell the operator what started in one short notice:
+Keep these dispatch facts with the task evidence:
 
 - Each preset you used, its exact `provider/model`, and its thinking level.
   State `off` when creation has no configured thinking level. Do not infer
@@ -162,7 +162,8 @@ Tell the operator what started in one short notice:
 
 Use the current preferences and registry model facts to resolve names. If a
 name remains ambiguous, hold only that dispatch and ask for the missing choice.
-Check creation receipts against the notice and report any effective change.
+Check creation receipts against the selected settings and retain the
+effective settings.
 
 If you are an ordinary primary and a thread is useful, spawn an agent the work
 needs anyway without a prompt, create the thread in its storage, then send its
@@ -187,8 +188,8 @@ the check-in as a watchdog, not a result. Each check-in costs you a model turn.
 Batch independent dispatches in one codemode call when that helps. Read
 `references/codemode.md` for dispatch, thread, sweep, and digest recipes.
 
-**Complete when:** every dispatched task has a retained result reference, and
-the operator knows what started.
+**Complete when:** every dispatched task has a retained result reference and
+the evidence records its effective settings.
 
 ## 5. Share facts, decisions, and corrections
 
@@ -207,25 +208,26 @@ existing authority cannot supply.
 
 ### Operator status reports
 
-Write for an operator who does not follow agent activity and reads each message
-alone. In every message to the operator, describe each internal name or use its
+Write for an operator who reads only the newest message. Each message stands
+alone: state the current situation, not a change from an earlier message.
+Refer to no earlier message, tool call or report.
+
+In every message to the operator, describe each internal name or use its
 description instead: a name this work created or that only its participants use,
 such as an agent, a branch, a work package or a check. Say what a commit changes
 when you name it by identifier; a public release number needs no description.
-Give the reference of every relative statement, such as "unchanged", "still",
-"ahead" or "landed": unchanged since when, ahead of what, landed where.
 
-A status report tells the operator where the whole work stands: an answer to a
-question about progress, a summary of progress that you send unasked, and the
-final answer. Open it with one heading line that gives the local date and time
-of the report. In the text after that line, lead with the decision the operator
-must make, when one exists; otherwise with the answer to the question asked;
-otherwise with the change in the outcome. Then state the remaining facts in
-this order, so the reader finds each one in the same place in every report:
+Send a message only for a result, a blocker, or a decision or action that only
+the operator can supply. An agent event that changes nothing for the operator
+gets no message; a statement of no change is not a message.
 
-1. What changed in the requested outcome since a comparison point that you
-   name: your previous status report, or the start of the work. Give the time
-   of that point and its revision where one exists.
+Open a status report with one heading line for the current local date and
+time. Read the clock; use 12-hour am/pm time with its zone label.
+Lead with the decision the operator must make, when one exists; otherwise
+with the answer to the question asked; otherwise with the current result.
+Then state the relevant facts in this order:
+
+1. The current state of the requested outcome.
 2. Where finished work is and whether the system the operator uses includes
    it. Explain any gap.
 3. What is in progress or waits, including ready work that has not started,
@@ -233,15 +235,17 @@ this order, so the reader finds each one in the same place in every report:
 4. What happens next and what triggers it.
 5. What the operator must do or decide.
 
-A fact with nothing to state takes one clause. The opening line and the order
+Omit facts that have nothing useful to state. The opening line and the order
 are fixed; other headings, layout and length are not.
 
-A notice of one wait, blocker or finding is not a status report. Send one only
-for a real wait, a blocker that needs the operator's decision, or a finding
-that changes the work. Keep it brief: state the matter, what it waits for, if
-anything, and the next action. The dispatch notice (see "Dispatch"), isolated
-questions, messages between agents, and raw output the operator requested are
-not status reports either.
+Keep the complete result of extended work in one current document. Replace
+that document whenever its content changes, and name its path in chat.
+A request for the state names every required point and permits no shortcut
+reply; answer it with the whole current state.
+
+Batch contributor reports at the source. Each directing agent closes its part
+in its state file. One agent combines those reports and sends one message for
+the whole result.
 
 **Complete when:** every affected agent works from the latest operator
 direction, and operator status reports follow "Operator status reports".
@@ -363,8 +367,7 @@ Before the final answer:
 2. Update or clear your intent claim.
 3. Post a conclusion to each thread you integrate; close it when the work ends.
 4. Restore any temporary configuration you changed.
-5. Give the final answer as an operator status report (see "Operator status
-   reports"), then evidence, limits, and substitutions made.
+5. Give the final answer under "Operator status reports".
 
 **Complete when:** no owned agent is unresolved, any intent claim is current,
 and the operator has the result.
