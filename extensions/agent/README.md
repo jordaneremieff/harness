@@ -1852,7 +1852,11 @@ row keeps the class, sender and recipient of the original admission. When a
 host resumes, it gives each queued native input without a row one row, with the
 class and sender of its native input entry, and starts a missing watch. Such a
 row counts its wait from that resume, because the native record keeps no
-admission time; an operator input entry carries no sender, so that row has none. These are
+admission time. An operator input entry carries no label, so its row takes the
+requester of the retained request route as sender. When reconciliation links a
+retained intent to an input that is already queued, the row keeps the class and
+sender of that input's native label; the class derived from the intent's origin
+and busy mode applies only to an unlabelled entry. These are
 committed placement facts, not proof that the model read or acted on an input. Retained report delivery also
 states `pending`, `parked`, `terminal` or `admitted`; only an admitted
 row is eligible for placement in the recipient. A receipt never proves task

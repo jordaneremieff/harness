@@ -24,7 +24,7 @@ import { configureProviderRecovery, captureProviderRecovery, linkProviderRecover
 import { modelFailureText, type ProviderBlockFact } from "./provider-block-facts.ts";
 import { AwaitDoc, acknowledgeProviderRetry, forgetFailedAdmission, recordInputProvenance } from "./awaited-results.ts";
 import { prepareAdmittedCapture } from "./communication-retention.ts";
-import { placementOf, prepareQueuedInputs, recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
+import { placementOf, prepareQueuedInputs, type Placement } from "./unplaced-inputs.ts";
 import { createCheckIn } from "./durable-checkins.ts";
 import { cleanupRequestContexts, recordRequestContext, RequestContextDoc, type RequestContext } from "./request-context.ts";
 import { requestHasOpenWork } from "./open-work.ts";
@@ -1317,8 +1317,12 @@ export async function reconcileDeliveries(harness: Harness, context: Context, no
 		}, context);
 		// The admission that this replay completes ended before its unplaced record; a queued input still counts and is still watched.
 		// The retained intent keeps no admission time, so the wait is counted from the replay. The profile holds the recipient's external identity.
+		// The native input's label keeps its class and sender; the class derived from the intent applies only to an unlabelled entry.
 		const recipient = (await harness.snapshot(ProfileDoc, intent.conversationId, context))?.identity ?? undefined;
-		await harness.commit((tx) => recordUnplacedInput(tx, intent.conversationId, { submissionId: resolved, class: inputClass, sender: request?.requester ?? "", admittedAt: now(), ...(recipient === undefined ? {} : { recipient }) }), context);
+		await harness.commit(async (tx) => {
+			const retain = await prepareQueuedInputs(tx, intent.conversationId, recipient);
+			await retain([{ submissionId: resolved, requestId: intent.requestId, admittedAt: now(), fallback: { class: inputClass, sender: request?.requester ?? "" } }]);
+		}, context);
 	}
 	await settleDeliveries(harness, context);
 }

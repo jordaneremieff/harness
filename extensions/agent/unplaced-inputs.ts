@@ -98,6 +98,11 @@ export interface QueuedInputRow {
 	readonly requestId: string;
 	readonly admittedAt: number;
 	readonly label?: Pick<InputLabel, "class" | "sender">;
+	/**
+	 * Class and sender for a native entry without a label; the sender also names the author of an operator entry,
+	 * which carries no data. A labelled entry keeps its own class and sender.
+	 */
+	readonly fallback?: Pick<InputLabel, "class" | "sender">;
 }
 
 /** True when the inbox holds the row's input; a missing row is added once. */
@@ -105,7 +110,7 @@ function retainQueuedRow(inputs: UnplacedInput[], inbox: readonly InboxItem[], r
 	const item = inbox.find((candidate) => candidate.id === row.submissionId);
 	if (item === undefined || item.mode === "write") return false;
 	if (inputs.some((input) => input.submissionId === row.submissionId)) return true;
-	const label = row.label ?? inputLabel(item.entry ?? { kind: "pi.user" }, row.requestId);
+	const label = row.label ?? inputLabel(item.entry ?? { kind: "pi.user" }, row.requestId, row.fallback?.sender) ?? row.fallback;
 	inputs.push({ requestId: row.requestId, submissionId: row.submissionId, class: label?.class ?? "followUp", sender: label?.sender ?? "", admittedAt: row.admittedAt, noticed: false });
 	return true;
 }
@@ -154,11 +159,14 @@ export async function repairQueuedInputs(harness: Harness, context: Context, now
 
 async function repairConversation(tx: Tx, conversationId: ConversationId, ids: readonly SubmissionId[], now: number, recipient: string | undefined): Promise<void> {
 	const present = new Set((await tx.doc(UnplacedInputsDoc, conversationId)).inputs.map((input) => input.submissionId));
+	const routes = (await tx.doc(RequestContextDoc, conversationId)).requests;
 	const rows: QueuedInputRow[] = [];
 	for (const id of ids) {
 		if (present.has(id)) continue;
 		const record = await tx.submission(id);
-		if (record?.status === "queued") rows.push({ submissionId: id, requestId: record.requestId ?? "", admittedAt: now });
+		if (record?.status !== "queued") continue;
+		const requester = routes.find((route) => route.requestId === record.requestId)?.requester;
+		rows.push({ submissionId: id, requestId: record.requestId ?? "", admittedAt: now, ...(requester === undefined ? {} : { fallback: { class: "followUp", sender: requester } }) });
 	}
 	const retain = await prepareQueuedInputs(tx, conversationId, recipient);
 	const waiting = (await tx.doc(UnplacedInputsDoc, conversationId)).inputs.filter((input) => !input.noticed);

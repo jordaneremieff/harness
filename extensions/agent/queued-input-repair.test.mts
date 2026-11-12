@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { Harness, MemoryStorage, type Conversation } from "@earendil-works/pi-durable";
-import { linkDeliveryIntent, readOutcome, recordDeliveryIntent, submitConversation } from "./durable-controls.ts";
+import { linkDeliveryIntent, readOutcome, reconcileDeliveries, recordDeliveryIntent, submitConversation } from "./durable-controls.ts";
 import { migrateDeliveryStore } from "./delivery-store.ts";
 import { inputEntry } from "./input-entry.ts";
 import { readUnplacedSummary, repairQueuedInputs, UnplacedInputsDoc } from "./unplaced-inputs.ts";
@@ -71,4 +71,32 @@ it("repairs queued inputs without rows on reopening, keeping the native entry's 
 	assert.equal(state?.recipient, "storage-identity");
 	assert.deepEqual(state?.inputs.map((input) => [input.submissionId, input.class, input.sender, input.admittedAt]), [[submissionId, "steer", "sender-session", at]]);
 	assert.equal(await watchIsLive(harness, root), true);
+});
+
+it("restores an operator input's sender from its retained request route on reopening", { timeout: 30000 }, async (t) => {
+	const { harness, root } = await busyHarness(t);
+	const requestId = "operator-gap";
+	const request = { requestId, requester: "operator-requester", replyTo: "operator-recipient", origin: "operator" as const };
+	// An operator input stores no label in its native entry.
+	const submission = await root.submit({ type: "input", content: "operator correction", requestId, whenBusy: "steer", entry: inputEntry("operator", request.requester, { class: "operator", sender: request.requester, requestId }) }, context);
+	await root.commit(async (tx) => {
+		await recordDeliveryIntent(tx, root.id, { requestId, ownerId: request.replyTo, origin: request.origin, message: "operator correction", whenBusy: "steer", requestContext: request, checkInMinutes: 0 });
+		await linkDeliveryIntent(tx, root.id, requestId, submission.id);
+	}, context);
+	await repairQueuedInputs(harness, context, () => Date.now(), async () => "storage-identity");
+	const row = (await harness.snapshot(UnplacedInputsDoc, root.id, context))?.inputs.find((input) => input.submissionId === submission.id);
+	assert.deepEqual([row?.class, row?.sender], ["operator", request.requester]);
+});
+
+it("keeps the class and sender of an already queued native input when reconciliation links its intent", { timeout: 30000 }, async (t) => {
+	const { harness, root } = await busyHarness(t);
+	const requestId = "result-gap";
+	const request = { requestId, requester: "requester", replyTo: "recipient", origin: "model" as const };
+	// An interruption after the native admission and before the intent link leaves an unlinked intent and a queued input.
+	await root.commit((tx) => recordDeliveryIntent(tx, root.id, { requestId, ownerId: request.replyTo, origin: request.origin, message: "result", whenBusy: "followUp", requestContext: request, checkInMinutes: 0 }), context);
+	const submission = await root.submit({ type: "input", content: "result", requestId, whenBusy: "steer", entry: inputEntry("model", "producer", { class: "result", sender: "producer", requestId }) }, context);
+	await reconcileDeliveries(harness, context, () => Date.now());
+	await repairQueuedInputs(harness, context, () => Date.now(), async () => "storage-identity");
+	const row = (await harness.snapshot(UnplacedInputsDoc, root.id, context))?.inputs.find((input) => input.submissionId === submission.id);
+	assert.deepEqual([row?.class, row?.sender], ["result", "producer"]);
 });
