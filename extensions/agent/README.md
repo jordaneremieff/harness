@@ -2886,10 +2886,13 @@ descendants that outlive a normal transport close: Pi MCP stops escalation when
 the direct child closes, and its public API exposes only the numeric group ID.
 Guardian startup failures appear in host diagnostics.
 
-## Native context continuity
+## Context continuity
 
-These behaviours apply to conversations of a Durable host. Ordinary primaries
-do not have them.
+Native conversations of a Durable host and ordinary sessions each keep a
+continuity note and a planning-budget notice. The first four subsections
+describe the native behaviour. The last subsection describes ordinary sessions
+and names the differences. Context-use reports to a recipient and task-scoped
+host reports are native only.
 
 ### Continuity note
 
@@ -3019,6 +3022,41 @@ message 2,048 bytes. At most 32 reports wait for storage at one time; later
 ones are dropped. A close waits at most 250 ms for pending writes. One rejected
 write stops retention until the host opens again. The report is not delivered
 to an owner. Source: `task-hook-reports.ts` (`TaskHookReports`).
+
+### Ordinary sessions
+
+An ordinary session records each answer-bearing request that it sends as
+session entries of kind `agent.admitted-request`: `requested` before the host
+call, `admitted` with the submission ID, and `refused` only when the host
+answers `invalid`. Each other failure leaves the request listed as unconfirmed.
+Reports, messages to an ordinary primary, scheduled sends and rewinds are not
+recorded. A scheduled send is therefore absent from the note, and the note says
+`Scheduled inputs: none` also when one exists.
+
+A result notice that the session file retains closes each request that its
+`deliveredResults` references name, when the submission agrees. A notice
+without that field closes nothing, and its request stays listed in later notes.
+
+After a compaction, each provider request carries one note from the Agent
+extension directly after the compaction summary. The note has the same text
+form as the native note. It is fixed for its compaction entry, names the entry
+ID, and has no time. Another `context` handler can change its absolute position
+only. If a retained fact is invalid or the summary does not match the request,
+the session adds no note, and the cause appears as a failure row in the
+untargeted `agent_status` overview. A fact that the session could not save also
+appears there, because the next note can omit or misstate that request. No note
+exists before the first compaction.
+
+A turn whose context use crosses the `contextBudgetTokens` preference for the
+exact model, after a lower sample in the same context episode, retains one
+`agent.planning-budget` notice as a displayed custom message. A compaction
+starts a new episode. Unknown usage and a first sample above the budget give no
+notice. The notice enforces nothing and changes no Stash gate.
+
+Source: `ordinary-continuity.ts` (`recordAdmission`, `OrdinaryContinuity`),
+`ordinary-entry.ts` (the `context` and `turn_end` handlers), `manager.ts`
+(`admission`, `continuityNoteFailure`), and `continuity-facts.ts`
+(`ordinaryContinuityText`).
 
 ## Storage status pages
 
