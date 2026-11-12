@@ -359,25 +359,12 @@ function compactConversation(source: unknown, availability: CompactConversation[
 	if (typeof model.provider === "string" && typeof model.modelId === "string") result.model = { provider: model.provider, modelId: model.modelId };
 	if (typeof agent.thinkingLevel === "string") result.thinkingLevel = agent.thinkingLevel;
 	if ((count(run.taskId) ?? 0) > 0) result.runId = Number(run.taskId);
-	addCompactAwait(result, row.awaiting);
 	const block = record(row.providerBlock);
 	if (typeof block.blockId === "string") {
 		result.providerBlock = { blockId: block.blockId, recovery: `agent_configure({sessionId:${JSON.stringify(row.identity)},model:<explicit provider/model>}), then a new agent_send follow-up` };
 		result.omitted.push("provider evidence; use detail or result view");
 	}
 	return result;
-}
-
-function addCompactAwait(result: CompactConversation, value: unknown): void {
-	const awaiting = record(value);
-	if ((count(awaiting.runId) ?? 0) > 0 && Array.isArray(awaiting.results)) {
-		const items = awaiting.results.slice(0, 4).map(value => { const item = record(value); return { result: structuredClone(item.result), status: item.status }; });
-		const fact = { runId: awaiting.runId, results: items, queuedInputCount: awaiting.queuedInputCount,
-			omittedResults: Math.max(0, awaiting.results.length - items.length) + (count(record(awaiting.omitted).results) ?? 0) };
-		const candidate = { ...result, awaiting: fact };
-		if (matchesSchema(CompactConversationSchema, candidate)) result.awaiting = candidate.awaiting as CompactConversation["awaiting"];
-		result.omitted.push("await producer graph and held-input detail");
-	}
 }
 
 /** Accept descriptive-field reduction only when its omission metadata also fits within the original size. */

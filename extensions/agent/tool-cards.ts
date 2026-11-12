@@ -861,13 +861,6 @@ function snapshotLines(status: Record<string, unknown>, details: Record<string, 
 	return lines;
 }
 
-function compactAwaitLines(awaiting: Record<string, unknown>, theme: Theme): string[] {
-	return array(awaiting.results).map(value => {
-		const item = record(value), result = record(item.result);
-		return muted(theme, `${text(result.sessionId)} · submission ${String(result.submissionId)}${typeof result.requestId === "string" ? ` · request ${result.requestId}` : ""} · ${text(item.status)}`);
-	});
-}
-
 function compactRecoveryLines(status: Record<string, unknown>, details: Record<string, unknown>, theme: Theme): string[] {
 	const lines: string[] = [];
 	const failure = record(status.runFailure);
@@ -877,13 +870,12 @@ function compactRecoveryLines(status: Record<string, unknown>, details: Record<s
 }
 
 function compactStatusLines(status: Record<string, unknown>, details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
-	const model = record(status.model), queue = record(status.queue), awaiting = record(status.awaiting);
+	const model = record(status.model), queue = record(status.queue);
 	const lines = [theme.fg("accent", snapshotLabel(text(status.identity), text(status.name), context))];
 	const configuration = resolvedModelLine(text(model.provider), text(model.modelId), text(status.thinkingLevel));
 	if (configuration) lines.push(muted(theme, configuration));
 	lines.push(muted(theme, `Activity: ${status.busy === true ? "working" : status.busy === false ? "idle" : "unknown"} · source ${text(status.availability) || "unknown"} · ${queue.inbox === null ? "unknown" : String(queue.inbox)} queued inputs · ${status.timers === null ? "unknown" : String(status.timers)} timers`));
-	lines.push(...compactRecoveryLines(status, details, theme), ...compactAwaitLines(awaiting, theme));
-	if ((count(awaiting.omittedResults) ?? 0) > 0) lines.push(muted(theme, `Await references omitted: ${String(awaiting.omittedResults)}`));
+	lines.push(...compactRecoveryLines(status, details, theme));
 	const block = record(status.providerBlock);
 	if (text(block.blockId)) lines.push(theme.fg("warning", `Provider block ${text(block.blockId)} · ${text(block.recovery)}`));
 	if (array(status.omitted).length) lines.push(muted(theme, `Omitted: ${array(status.omitted).join(", ")}`));

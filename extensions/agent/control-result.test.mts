@@ -67,15 +67,16 @@ it("preserves ordinary admission facts and failures without inventing retention"
 	for (const failure of [{ error: "failed", sourceId: "r", acknowledged: false }, { admitted: false, reason: "unavailable" }, { outcome: "failed", reason: "uncertain" }, { queued: "unknown" }]) assert.equal(projectReportReceipt(failure), failure);
 });
 
-it("keeps exact report intervention associations and refuses malformed nested metadata", () => {
+it("omits a host intervention association of any shape and refuses a malformed result reference", () => {
 	const intervention = { producerRunId: 3, producerResults: [{ sessionId: "producer", submissionId: 7, requestId: "input" }] };
-	const source = { sourceId: "report:one", acknowledged: true, intervention };
-	assert.deepEqual((projectReportReceipt(source) as Record<string, unknown>).intervention, intervention);
-	for (const association of [{ ...intervention, message: "body" }, { producerRunId: 0, producerResults: [] }]) {
-		const value = projectReportReceipt({ ...source, intervention: association }) as Record<string, unknown>;
-		assert.equal(value.format, "refused");
-		assert.doesNotMatch(controlText(value), /message|body/u);
+	const source = { sourceId: "report:one", acknowledged: true };
+	for (const association of [intervention, { ...intervention, message: "body" }, { producerRunId: 0, producerResults: [] }, "text", null]) {
+		const value = projectReportReceipt({ ...source, intervention: association });
+		assert.deepEqual(value, { ...source, boundary: REPORT_RECEIPT_BOUNDARY });
 	}
+	const refused = projectReportReceipt({ ...source, result: { sessionId: "producer", message: "body" } }) as Record<string, unknown>;
+	assert.equal(refused.format, "refused");
+	assert.doesNotMatch(controlText(refused), /message|body/u);
 });
 
 it("renders provider evidence through its qualified recovery formatter outside result identity metadata", () => {

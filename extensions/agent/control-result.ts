@@ -1,4 +1,4 @@
-import { AnswerContinuationSchema, ReceiptContinuationSchema, ReportReceiptAssociationSchema } from "./observation-schema.ts";
+import { AnswerContinuationSchema, ReceiptContinuationSchema } from "./observation-schema.ts";
 import { ResultReferenceSchema } from "./result-schema.ts";
 import { ProviderBlockFactSchema, providerBlockText } from "./provider-block-facts.ts";
 import { matchesSchema } from "./schema-check.ts";
@@ -48,7 +48,7 @@ function readableResult(value: Record<string, unknown>): string {
 export const REPORT_RECEIPT_BYTE_LIMIT = 16 * 1024;
 export const REPORT_RECEIPT_BOUNDARY = "Retention or acknowledgement does not establish model consumption or task acceptance.";
 const REPORT_RECEIPT_KEYS = [
-	"sourceId", "requestId", "ownerId", "senderIdentity", "createdAt", "acknowledged", "passive", "replyTo", "intervention",
+	"sourceId", "requestId", "ownerId", "senderIdentity", "createdAt", "acknowledged", "passive", "replyTo",
 	"sessionId", "identity", "conversationId", "submissionId", "result", "deduped", "admitted", "queued", "boundary",
 ] as const;
 
@@ -59,9 +59,8 @@ export function projectReportReceipt(value: unknown): unknown {
 	const retained = typeof source.sourceId === "string" && typeof source.acknowledged === "boolean";
 	const admitted = source.admitted === true || typeof source.submissionId === "number";
 	if (!retained && !admitted) return value;
-	if ((source.intervention !== undefined && !matchesSchema(ReportReceiptAssociationSchema, source.intervention)) ||
-		(source.result !== undefined && !matchesSchema(ResultReferenceSchema, source.result)))
-		return { format: "refused", reason: "Report receipt association metadata is invalid; the retained delivery is unchanged.", byteLimit: REPORT_RECEIPT_BYTE_LIMIT };
+	if (source.result !== undefined && !matchesSchema(ResultReferenceSchema, source.result))
+		return { format: "refused", reason: "Report receipt result reference is invalid; the retained delivery is unchanged.", byteLimit: REPORT_RECEIPT_BYTE_LIMIT };
 	const result: Record<string, unknown> = {};
 	for (const key of REPORT_RECEIPT_KEYS) if (Object.hasOwn(source, key)) result[key] = structuredClone(source[key]);
 	if (retained) result.boundary = REPORT_RECEIPT_BOUNDARY;

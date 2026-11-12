@@ -13,7 +13,7 @@ function row(index = 1) {
 }
 const coverage = { complete: false, returned: 2, scanned: 3, next: { tool: "agent_status", view: "storage-page", storageId: "01234567-0123-4123-8123-0123456789ab", cursor: { page: 3 }, limit: 2 } };
 
-it("projects selected status without inventories or historical arrays and preserves exact awaited references", () => {
+it("projects selected status without inventories, historical arrays or a host await fact", () => {
 	const source = { conversation: row(), storageId: "storage", inventory: { contributions: ["private"] }, pid: 7 };
 	const before = structuredClone(source), value = projectSelectedStatus(source);
 	assert.equal(value.format, "compact");
@@ -22,12 +22,11 @@ it("projects selected status without inventories or historical arrays and preser
 	assert.equal(value.conversation.runId, 5);
 	assert.deepEqual(value.conversation.queue, { inbox: 2, submissions: 1 });
 	assert.equal(value.conversation.timers, 2);
-	assert.deepEqual(value.conversation.awaiting?.results.map(item => item.result), source.conversation.awaiting.results.slice(0, 4).map(item => item.result));
-	assert.equal(value.conversation.awaiting?.omittedResults, 4);
 	assert.deepEqual(value.conversation.detail, { tool: "agent_status", sessionId: "storage:1", detail: true });
 	assert.equal(value.conversation.availability, "live");
 	assert.equal(value.conversation.context, "unknown");
-	for (const key of ["instructions", "tools", "extensions", "tasks", "submissions", "usage"]) assert.equal(Object.hasOwn(value.conversation, key), false);
+	for (const key of ["instructions", "tools", "extensions", "tasks", "submissions", "usage", "awaiting"]) assert.equal(Object.hasOwn(value.conversation, key), false);
+	assert.equal(value.conversation.omitted.some(note => note.includes("await")), false);
 	assert.ok(Buffer.byteLength(JSON.stringify(value)) <= 8192);
 	assert.deepEqual(source, before);
 });
