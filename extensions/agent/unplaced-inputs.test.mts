@@ -11,6 +11,7 @@ import { deliveryState, migrateDeliveryStore } from "./delivery-store.ts";
 import type { DeliveryReport } from "./durable-controls.ts";
 import { waitForDeliveryFixture } from "./delivery-store-fixture.mts";
 import { onStoredCommit } from "./commit-observation.ts";
+import { OpenWorkDoc } from "./open-work.ts";
 import { RequestContextDoc } from "./request-context.ts";
 import { UNPLACED_NOTICE_MS, UnplacedInputsDoc, UnplacedWatchTask, currentStep, pruneUnplacedInputs, readUnplacedSummary, recordUnplacedInput, unplacedSummary, type InputClass, type UnplacedInput } from "./unplaced-inputs.ts";
 
@@ -366,4 +367,38 @@ it("sends no second notice after the storage is opened again", async (t) => {
 	advance(second, EPOCH + 3 * UNPLACED_NOTICE_MS);
 	await second.harness.waitForTask(watch, bounded());
 	assert.deepEqual((await notices(second)).map((report) => report.sourceId), [`unplaced:${second.id}:stuck`]);
+});
+
+it("notifies the reply recipient of open declared work when the current run serves no routed request", async (t) => {
+	const f = await open(t);
+	const step = await stepTask(f);
+	// A run that a result started: it has no routed input, and the conversation holds one open work item.
+	await f.harness.commit(async (tx) => {
+		const entry = await tx.appendEntry(f.id, { kind: "agent.input", model: [{ role: "user", content: "earlier request", timestamp: f.clock.now }] });
+		const answer = await tx.appendEntry(f.id, { kind: "pi.assistant", model: [] });
+		const declared = await tx.createSubmission({ conversationId: f.id, requestId: "declared", type: "input", status: "done", entry: entry.id, answer: answer.id });
+		const result = await tx.appendEntry(f.id, { kind: "agent.input", model: [{ role: "user", content: "a result", timestamp: f.clock.now }] });
+		const started = await tx.createSubmission({ conversationId: f.id, requestId: "result-delivery", type: "input", status: "placed", entry: result.id });
+		(await tx.doc(OpenWorkDoc, f.id)).items.push({ requestId: "declared", submissionId: declared.id, requester: "requester-w", replyTo: "requester-w", origin: "model", results: [], note: "own work remains", declaredAt: f.clock.now, updatedAt: f.clock.now });
+		(await tx.doc(LiveDoc, f.id) as LiveState).run = { taskId: step.id, inputs: [started.id], turns: 0 };
+	}, BACKGROUND_CONTEXT);
+	await admit(f, "stuck", "followUp", "sender-a");
+	advance(f, EPOCH + UNPLACED_NOTICE_MS);
+	const notice = await noticeFor(f, "requester-w");
+	assert.equal(notice.sourceId, `unplaced:${f.id}:run:${step.id}`);
+	assert.equal(notice.passive, undefined);
+	assert.match(notice.message, /which holds open declared work for your request, did not place 1 admitted input/u);
+	assert.deepEqual((await notices(f)).map((report) => report.ownerId).sort(), ["requester-w", "sender-a"]);
+
+	const closed = await open(t);
+	const run = await stepTask(closed);
+	await closed.harness.commit(async (tx) => {
+		(await tx.doc(OpenWorkDoc, closed.id)).items.push({ requestId: "declared", submissionId: 424_242, requester: "requester-w", replyTo: "requester-w", origin: "model", results: [], note: "done", declaredAt: EPOCH, updatedAt: EPOCH, close: { status: "done", at: EPOCH, message: "done", reportRequestId: `work-final:${closed.id}:declared` } });
+		(await tx.doc(LiveDoc, closed.id) as LiveState).run = { taskId: run.id, inputs: [], turns: 0 };
+	}, BACKGROUND_CONTEXT);
+	await admit(closed, "stuck", "followUp", "sender-a");
+	const watch = await watchTask(closed);
+	advance(closed, EPOCH + UNPLACED_NOTICE_MS);
+	await closed.harness.waitForTask(watch, bounded());
+	assert.deepEqual((await notices(closed)).map((report) => report.ownerId), ["sender-a"], "the reply recipient of closed work is not a requester");
 });

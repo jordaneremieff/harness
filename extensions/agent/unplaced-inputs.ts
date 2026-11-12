@@ -2,6 +2,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, defineTask, LiveDoc, type ConversationId, type Harness, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { retainedReport, storeDeliveryRow } from "./delivery-store.ts";
+import { openWorkItems } from "./open-work.ts";
 import { RequestContextDoc } from "./request-context.ts";
 
 export type InputClass = "operator" | "steer" | "followUp" | "report" | "result" | "check-in" | "timer" | "thread-notice";
@@ -124,18 +125,25 @@ export async function currentStep(tx: Tx, conversationId: ConversationId, maxAtt
 	return live.generation === undefined ? `between steps; run ${run}` : `model step, ${run}`;
 }
 
-/** Reply recipients of the routed requests that the current run serves. */
-async function runRequesters(tx: Tx, conversationId: ConversationId): Promise<string[]> {
+/** Why a session is a requester of the conversation: the current run serves its request, or the conversation holds open declared work for it. */
+type RequesterKind = "run" | "work";
+
+/**
+ * Reply recipients of the routed requests that the current run serves, and of the open declared work of the
+ * conversation. A run that a result, a report or a check-in started has no routed input; its requesters are
+ * the reply recipients of the open work.
+ */
+async function requestersOf(tx: Tx, conversationId: ConversationId): Promise<Map<string, RequesterKind>> {
+	const requesters = new Map<string, RequesterKind>();
 	const run = (await tx.doc(LiveDoc, conversationId)).run;
-	if (run === undefined) return [];
 	const routes = (await tx.doc(RequestContextDoc, conversationId)).requests;
-	const requesters = new Set<string>();
-	for (const id of run.inputs) {
+	for (const id of run?.inputs ?? []) {
 		const requestId = (await tx.submission(id))?.requestId;
 		const route = requestId === undefined ? undefined : routes.find((request) => request.requestId === requestId);
-		if (route !== undefined) requesters.add(route.replyTo);
+		if (route !== undefined) requesters.set(route.replyTo, "run");
 	}
-	return [...requesters];
+	for (const item of await openWorkItems(tx, conversationId)) if (!requesters.has(item.replyTo)) requesters.set(item.replyTo, "work");
+	return requesters;
 }
 
 async function writeNotice(tx: Tx, ownerId: string, senderIdentity: string, sourceId: string, message: string, passive: boolean, now: number): Promise<void> {
@@ -163,20 +171,24 @@ async function noticeSender(notice: NoticeContext, row: UnplacedInput): Promise<
 	await writeNotice(notice.tx, row.sender, recipient, `unplaced:${notice.conversationId}:${row.requestId}`, message, row.class === "thread-notice", notice.now);
 }
 
-/** One notice for each reply recipient of the current run's routed requests that is not a noticed sender. */
+const REQUESTER_RELATION: Record<RequesterKind, string> = { run: "which serves your request", work: "which holds open declared work for your request" };
+
+/** One notice for each requester of the conversation that is not a noticed sender. */
 async function noticeRequesters(notice: NoticeContext): Promise<void> {
 	const { tx, conversationId, state, recipient } = notice;
 	const run = (await tx.doc(LiveDoc, conversationId)).run;
-	const requesters = (await runRequesters(tx, conversationId)).filter((requester) => requester !== recipient && !state.inputs.some((input) => input.sender === requester && input.noticed && EXPLICIT_CLASSES.has(input.class)));
+	const requesters = [...await requestersOf(tx, conversationId)].filter(([requester]) => requester !== recipient && !state.inputs.some((input) => input.sender === requester && input.noticed && EXPLICIT_CLASSES.has(input.class)));
 	if (requesters.length === 0) return;
 	const oldest = Math.min(...state.inputs.map((input) => input.admittedAt));
-	const message = `Unplaced input notice: ${recipient}, which serves your request, did not place ${plural(state.inputs.length)} for more than 5 minutes (oldest admitted ${new Date(oldest).toISOString()}). Current step: ${notice.step}. The recipient places queued inputs at the end of its current tool round.`;
-	for (const requester of requesters) await writeNotice(tx, requester, recipient, `unplaced:${conversationId}:run:${run?.taskId ?? 0}`, message, false, notice.now);
+	for (const [requester, kind] of requesters) {
+		const message = `Unplaced input notice: ${recipient}, ${REQUESTER_RELATION[kind]}, did not place ${plural(state.inputs.length)} for more than 5 minutes (oldest admitted ${new Date(oldest).toISOString()}). Current step: ${notice.step}. The recipient places queued inputs at the end of its current tool round.`;
+		await writeNotice(tx, requester, recipient, `unplaced:${conversationId}:run:${run?.taskId ?? 0}`, message, false, notice.now);
+	}
 }
 
 /**
  * Notify once for each sender whose explicit input stayed queued for the notice period, and once for each requester of
- * the current run that is not such a sender. Every other due row is marked without a notice.
+ * the conversation that is not such a sender. Every other due row is marked without a notice.
  */
 async function noticeDue(tx: Tx, conversationId: ConversationId, state: UnplacedInputsState, now: number, maxAttempts: number): Promise<void> {
 	const due = state.inputs.filter((input) => !input.noticed && input.admittedAt + UNPLACED_NOTICE_MS <= now);
