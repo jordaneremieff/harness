@@ -19,12 +19,14 @@ const dependency = (submissionId = 90, sessionId = "storage-b:4") => ({ sessionI
 const workRoute = (requestId = "task-a", submissionId = 7): WorkRoute => ({ requestId, submissionId, requester: "requester-b", replyTo: "recipient-c", origin: "model" });
 const declared = (requestId = "task-a", submissionId = 7): OpenWorkItem => ({ ...workRoute(requestId, submissionId), results: [dependency()], note: "wait for the survey", declaredAt: 1, updatedAt: 1 });
 const declare = (items: readonly OpenWorkItem[], change: Partial<Parameters<typeof continueWork>[1]> = {}) =>
-	continueWork(items, { requestId: "task-a", route: workRoute(), placed: true, results: [dependency()], note: "wait for the survey", self: STORAGE, now: 5, ...change });
+	continueWork(items, { requestId: "task-a", route: workRoute(), results: [dependency()], note: "wait for the survey", self: STORAGE, now: 5, ...change });
 
 it("applies the action shapes at execution", () => {
 	assert.equal(parseAgentWorkInput({ action: "continue", results: [dependency()], note: "n" }).action, "continue");
 	assert.equal(parseAgentWorkInput({ action: "complete", request: "task-a", status: "done", message: "m" }).action, "complete");
-	assert.throws(() => parseAgentWorkInput({ action: "continue", results: [], status: "done" }), /omit status and message/u);
+	assert.deepEqual(parseAgentWorkInput({ action: "continue", results: [], note: "n" }), { action: "continue", results: [], note: "n" });
+	assert.throws(() => parseAgentWorkInput({ action: "continue", results: [], note: "n", status: "done" }), /omit status and message/u);
+	assert.throws(() => parseAgentWorkInput({ action: "continue", results: [dependency()] }), /requires results .* and note/u);
 	assert.throws(() => parseAgentWorkInput({ action: "complete", request: "task-a", status: "done" }), /requires request, status/u);
 	assert.throws(() => parseAgentWorkInput({ action: "wait" }), /continue or complete/u);
 });
@@ -34,25 +36,24 @@ it("declares one item from the route of a placed input", () => {
 	assert.ok(!("error" in outcome));
 	assert.equal(outcome.change, "declared");
 	assert.deepEqual(outcome.item, { ...workRoute(), results: [dependency()], note: "wait for the survey", declaredAt: 5, updatedAt: 5 });
-	assert.match((declare([], { route: undefined }) as { error: string }).error, /retained route/u);
-	assert.match((declare([], { placed: false }) as { error: string }).error, /not a placed input/u);
-	assert.match((declare([], { note: undefined }) as { error: string }).error, /requires a note/u);
+	assert.match((declare([], { route: undefined }) as { error: string }).error, /not a placed input of this conversation with a retained route/u);
 });
 
 it("replaces dependencies and keeps the declared route", () => {
-	const outcome = declare([declared()], { route: undefined, placed: false, results: [dependency(91), dependency(92)], note: "second round", now: 9 });
+	const outcome = declare([declared()], { route: undefined, results: [dependency(91), dependency(92)], note: "second round", now: 9 });
 	assert.ok(!("error" in outcome));
 	assert.equal(outcome.change, "replaced");
 	assert.deepEqual(outcome.items, [{ ...declared(), results: [dependency(91), dependency(92)], note: "second round", updatedAt: 9 }]);
 });
 
-it("withdraws with empty results only in the declaring run", () => {
-	const withdrawn = declare([declared()], { results: [] });
-	assert.ok(!("error" in withdrawn));
-	assert.equal(withdrawn.change, "withdrawn");
-	assert.deepEqual(withdrawn.items, []);
-	assert.match((declare([declared()], { results: [], placed: false }) as { error: string }).error, /ends only with agent_work complete/u);
-	assert.match((declare([], { results: [] }) as { error: string }).error, /no declared work to withdraw/u);
+it("keeps an item without a dependency open", () => {
+	const first = declare([], { results: [] });
+	assert.ok(!("error" in first));
+	assert.deepEqual([first.change, first.item.results, first.item.close], ["declared", [], undefined]);
+	const emptied = declare([declared()], { route: undefined, results: [], note: "own work remains", now: 9 });
+	assert.ok(!("error" in emptied));
+	assert.deepEqual([emptied.change, emptied.items.length, emptied.item.results, emptied.item.close], ["replaced", 1, [], undefined]);
+	assert.match(closeWork(emptied.items, { reason: "stopped", conversationId: 3, now: 40 }).closed[0].close?.message ?? "", /^The conversation was stopped.*\nNo producer was stopped\.$/u);
 });
 
 it("refuses repeated, self and excess dependencies and a full document", () => {
@@ -61,7 +62,7 @@ it("refuses repeated, self and excess dependencies and a full document", () => {
 	assert.match((declare([], { results: Array.from({ length: 17 }, (_, index) => dependency(100 + index)) }) as { error: string }).error, /at most 16/u);
 	const full = Array.from({ length: OPEN_WORK_LIMIT }, (_, index) => declared(`task-${index}`, 100 + index));
 	assert.match((declare(full) as { error: string }).error, /32 open work items/u);
-	assert.ok(!("error" in declare(full, { requestId: "task-3", route: undefined, placed: false })), "a repeat of a retained item is not a new declaration");
+	assert.ok(!("error" in declare(full, { requestId: "task-3", route: undefined })), "a repeat of a retained item is not a new declaration");
 });
 
 it("closes an item once and returns the retained close afterwards", () => {
@@ -191,10 +192,14 @@ it("selects the single routed input of the run and returns schema-valid details"
 	const first = await executeAgentWork({ action: "continue", results: [dependency()], note: "wait" }, host, context);
 	assert.ok(matchesSchema(AgentWorkOutputSchema, first.details));
 	assert.deepEqual([first.details.action, first.details.item.requestId, first.details.item.state], ["continue", "task-a", "open"]);
-	const withdrawn = await executeAgentWork({ action: "continue", results: [] }, host, context);
-	assert.equal(withdrawn.details?.item.state, "withdrawn");
-	assert.deepEqual((await harness.snapshot(OpenWorkDoc, conversation.id, context))?.items, []);
-	assert.equal((await executeAgentWork({ action: "complete", request: "task-a", status: "done", message: "m" }, host, context)).isError, true);
+	const emptied = await executeAgentWork({ action: "continue", results: [], note: "own work remains" }, host, context);
+	assert.ok(matchesSchema(AgentWorkOutputSchema, emptied.details));
+	assert.deepEqual([emptied.details.item.state, emptied.details.item.dependencies, emptied.details.item.note], ["open", [], "own work remains"]);
+	assert.equal((await harness.snapshot(OpenWorkDoc, conversation.id, context))?.items.length, 1);
+	assert.match((await harness.commit((tx) => openWorkCheckInLines(tx, STORAGE, conversation.id, "task-a"), context)).join("\n"), /No producer dependency/u);
+	assert.match(await openWorkSectionText(harness, conversation.id, context) ?? "", /has no producer dependency/u);
+	assert.equal((await executeAgentWork({ action: "complete", request: "task-b", status: "done", message: "m" }, host, context)).isError, true);
+	assert.equal((await executeAgentWork({ action: "complete", request: "task-a", status: "done", message: "m" }, host, context)).details?.item.state, "closed");
 });
 
 it("removes the item of an unanswered declaring run and closes later items with a host report", async (t) => {

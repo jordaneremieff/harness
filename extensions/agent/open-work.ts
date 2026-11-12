@@ -1,10 +1,11 @@
 /**
  * Declared background work of a request, and the explicit report that completes it.
  *
- * A run that leaves only delegated work declares it with `continue` and ends with a state note; the
- * native input settles `done` while the item stays open. Only `complete` closes an item, in the commit
- * that retains one final report for the request's reply recipient. Arrived dependencies and settled
- * inputs never close an item.
+ * A run that leaves work for later declares it with `continue` and ends with a state note; the native
+ * input settles `done` while the item stays open. An item names the results it depends on, or none.
+ * Only `complete` closes an item, in the commit that retains one final report for the request's reply
+ * recipient. Arrived dependencies and settled inputs never close an item, and nothing is scheduled
+ * for an item: it stays in status, in the route listing of later runs and in check-ins until then.
  *
  * Every function that takes a transaction reads submissions. A transaction refuses table reads after its
  * first table write, so call these before an entry, submission or task write of the same commit, or in
@@ -66,18 +67,18 @@ const requestText = str({ minLength: 1, maxLength: 1024 });
 const submissionNumber = int({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 const timestamp = int({ minimum: 0 });
 
-export const AGENT_WORK_DESCRIPTION = "Declare background work for a request, or complete it. Returns at once; it never waits. continue records the request, its reply route and the exact results the work depends on; then end the run with a short state note, which is not the final result. A repeated continue replaces the dependencies and the note; empty results in the declaring run withdraw the declaration. complete is the only act that finishes declared work: it closes the item and sends one final report (done or failed) to the request's reply recipient. Arrived results and settled inputs complete nothing. Read open items and dependency states with agent_status.";
+export const AGENT_WORK_DESCRIPTION = "Declare background work for a request, or complete it. Returns at once; it never waits. continue records the request, its reply route and the exact results the work depends on; then end the run with a short state note, which is not the final result. A repeated continue replaces the dependencies and the note. Empty results declare open work with no producer dependency: no event wakes it, so it stays open until you complete it. complete is the only act that finishes declared work: it closes the item and sends one final report (done or failed) to the request's reply recipient. Arrived results and settled inputs complete nothing. Read open items and dependency states with agent_status.";
 
 /** One object root for every provider; the action-specific shapes apply at execution. */
 export const AgentWorkParams = obj({
 	action: StringEnum(["continue", "complete"]),
 	request: opt(str({ minLength: 1, maxLength: 1024, description: "Request ID of the work. Required for complete. For continue: default the single routed input of the current run, else the single open item." })),
-	results: opt(arr(ResultReferenceSchema, { maxItems: WORK_DEPENDENCY_LIMIT, description: "continue only: exact admitted results the work depends on. Empty in the declaring run withdraws the declaration." })),
-	note: opt(str({ minLength: 1, maxLength: WORK_NOTE_CHARS, description: "continue only: what remains and what the results are for." })),
+	results: opt(arr(ResultReferenceSchema, { maxItems: WORK_DEPENDENCY_LIMIT, description: "continue only, required: exact admitted results the work depends on. Empty declares open work with no producer dependency." })),
+	note: opt(str({ minLength: 1, maxLength: WORK_NOTE_CHARS, description: "continue only, required: what remains and what the results are for." })),
 	status: opt(StringEnum(["done", "failed"], "complete only.")),
 	message: opt(str({ minLength: 1, maxLength: WORK_MESSAGE_CHARS, description: "complete only: the final result for the reply recipient." })),
 });
-const ContinueWorkParams = obj({ action: lit("continue"), request: opt(requestText), results: arr(ResultReferenceSchema, { maxItems: WORK_DEPENDENCY_LIMIT }), note: opt(str({ minLength: 1, maxLength: WORK_NOTE_CHARS })) });
+const ContinueWorkParams = obj({ action: lit("continue"), request: opt(requestText), results: arr(ResultReferenceSchema, { maxItems: WORK_DEPENDENCY_LIMIT }), note: str({ minLength: 1, maxLength: WORK_NOTE_CHARS }) });
 const CompleteWorkParams = obj({ action: lit("complete"), request: requestText, status: union([lit("done"), lit("failed")]), message: str({ minLength: 1, maxLength: WORK_MESSAGE_CHARS }) });
 export type AgentWorkInput = Static<typeof ContinueWorkParams> | Static<typeof CompleteWorkParams>;
 
@@ -85,7 +86,7 @@ export type AgentWorkInput = Static<typeof ContinueWorkParams> | Static<typeof C
 export function parseAgentWorkInput(input: unknown): AgentWorkInput {
 	if (!matchesSchema(AgentWorkParams, input)) throw new Error("agent_work requires action continue or complete and valid fields");
 	if (input.action === "continue") {
-		if (!matchesSchema(ContinueWorkParams, input)) throw new Error("continue takes results, and optionally request and note; omit status and message");
+		if (!matchesSchema(ContinueWorkParams, input)) throw new Error("continue requires results (which can be empty) and note, and takes request; omit status and message");
 		return input;
 	}
 	if (!matchesSchema(CompleteWorkParams, input)) throw new Error("complete requires request, status (done or failed) and message; omit results and note");
@@ -114,7 +115,7 @@ export const OpenWorkViewSchema = obj({
 	origin: union([lit("operator"), lit("model")]),
 	note: str(),
 	/** `work`, kept apart from the native input status. */
-	state: union([lit("open"), lit("withdrawn"), lit("closed")]),
+	state: union([lit("open"), lit("closed")]),
 	declaredAt: timestamp,
 	updatedAt: timestamp,
 	close: opt(obj({
@@ -195,15 +196,14 @@ export type ContinueWork = {
 	readonly requestId: string;
 	/** The request's retained route and input; present only while that input is placed. */
 	readonly route?: WorkRoute;
-	/** Whether the request's input is placed, which makes this the declaring run. */
-	readonly placed: boolean;
+	/** No result is open work with no producer dependency. */
 	readonly results: readonly ResultReference[];
-	readonly note?: string;
+	readonly note: string;
 	/** External identity of the declaring conversation. */
 	readonly self: string;
 	readonly now: number;
 };
-export type ContinueOutcome = { readonly items: OpenWorkItem[]; readonly item: OpenWorkItem; readonly change: "declared" | "replaced" | "withdrawn" };
+export type ContinueOutcome = { readonly items: OpenWorkItem[]; readonly item: OpenWorkItem; readonly change: "declared" | "replaced" };
 
 function copyReference(reference: ResultReference): ResultReference {
 	return { sessionId: reference.sessionId, submissionId: reference.submissionId, ...(reference.requestId === undefined ? {} : { requestId: reference.requestId }) };
@@ -217,24 +217,18 @@ function dependencyProblem(input: ContinueWork, submissionId: number | undefined
 	return undefined;
 }
 
-/** Declare, replace or withdraw one item. `items` holds no void item. */
+/** Declare one item, or replace the dependencies and note of an open one. `items` holds no void item. */
 export function continueWork(items: readonly OpenWorkItem[], input: ContinueWork): ContinueOutcome | Rejection {
 	const prior = items.find((item) => item.requestId === input.requestId);
 	if (prior?.close !== undefined) return { error: `Request ${input.requestId} has closed declared work (${prior.close.status}); closed work does not reopen` };
 	const problem = dependencyProblem(input, prior?.submissionId ?? input.route?.submissionId);
 	if (problem !== undefined) return { error: problem };
-	if (input.results.length === 0) {
-		if (prior === undefined) return { error: `Request ${input.requestId} has no declared work to withdraw` };
-		if (!input.placed) return { error: `The input of request ${input.requestId} is settled; its declared work ends only with agent_work complete` };
-		return { items: items.filter((item) => item !== prior), item: prior, change: "withdrawn" };
-	}
-	if (input.note === undefined) return { error: "continue with results requires a note" };
 	const results = input.results.map(copyReference);
 	if (prior !== undefined) {
 		const item: OpenWorkItem = { ...prior, results, note: input.note, updatedAt: input.now };
 		return { items: items.map((candidate) => candidate === prior ? item : candidate), item, change: "replaced" };
 	}
-	if (input.route === undefined || !input.placed) return { error: `Request ${input.requestId} is not a placed input of this conversation with a retained route; declared work needs the route of the request it serves` };
+	if (input.route === undefined) return { error: `Request ${input.requestId} is not a placed input of this conversation with a retained route; declared work needs the route of the request it serves` };
 	if (items.filter(isOpen).length >= OPEN_WORK_LIMIT) return { error: `The conversation already has ${OPEN_WORK_LIMIT} open work items; complete one first` };
 	const { requestId, submissionId, requester, replyTo, origin } = input.route;
 	const item: OpenWorkItem = { requestId, submissionId, requester, replyTo, origin, results, note: input.note, declaredAt: input.now, updatedAt: input.now };
@@ -432,6 +426,7 @@ export async function openWorkCheckInLines(reader: OpenWorkReader, storageId: st
 	const item = (await openWorkItems(reader, conversationId)).find((candidate) => candidate.requestId === requestId);
 	if (item === undefined) return [];
 	const lines = [`Declared background work is open (not a final result). Note: ${excerpt(item.note, CLOSE_EXCERPT_CHARS)}`];
+	if (item.results.length === 0) lines.push("No producer dependency: no event wakes this work; it stays open until agent_work complete.");
 	for (const dependency of await dependencyViews(reader, storageId, item)) {
 		const state = dependency.unavailable === undefined ? dependency.state : `${dependency.state} (${dependency.unavailable})`;
 		lines.push(`Dependency ${dependency.sessionId} submission ${dependency.submissionId}: ${state}. Read: agent_inspect view: result, sessionId ${dependency.sessionId}, submissionId ${dependency.submissionId}.`);
@@ -442,14 +437,15 @@ export async function openWorkCheckInLines(reader: OpenWorkReader, storageId: st
 /**
  * Prompt text that lists the open items with their routes, so a later run or a new context knows what the
  * conversation still owes and to whom. Undefined without an open item. The text changes only when an item
- * is declared, replaced, withdrawn or closed.
+ * is declared, replaced or closed.
  */
 export async function openWorkSectionText(harness: Harness, conversationId: ConversationId, context: Context): Promise<string | undefined> {
 	const items = await openWorkItems({ harness, context }, conversationId);
 	if (items.length === 0) return undefined;
 	const lines = items.map((item) => {
 		const { requestId, requester, replyTo, origin } = item;
-		return `- ${JSON.stringify({ requestId, requester, replyTo, origin })} depends on ${item.results.map((reference) => `${reference.sessionId} submission ${reference.submissionId}`).join(", ")}. Note: ${excerpt(item.note, SECTION_NOTE_CHARS)}`;
+		const dependencies = item.results.length === 0 ? "has no producer dependency" : `depends on ${item.results.map((reference) => `${reference.sessionId} submission ${reference.submissionId}`).join(", ")}`;
+		return `- ${JSON.stringify({ requestId, requester, replyTo, origin })} ${dependencies}. Note: ${excerpt(item.note, SECTION_NOTE_CHARS)}`;
 	});
 	return ["Open declared work of this conversation. Each item stays open until agent_work complete names its request; that call sends the final result to the item's replyTo. Arrived results complete nothing. Read dependency states with agent_status.", ...lines].join("\n");
 }
@@ -481,27 +477,26 @@ async function defaultRequest(tx: Tx, conversationId: ConversationId, routes: re
 	return { error: `Name the request. Routed inputs of the current run: ${JSON.stringify(placed)}; open items: ${JSON.stringify(open)}` };
 }
 
-export type DeclareWorkInput = { readonly request?: string; readonly results: readonly ResultReference[]; readonly note?: string };
+export type DeclareWorkInput = { readonly request?: string; readonly results: readonly ResultReference[]; readonly note: string };
 
-/** `continue`: one commit declares, replaces or withdraws the item of one request. */
+/** `continue`: one commit declares the item of one request, or replaces its dependencies and note. */
 export async function declareOpenWork(tx: Tx, storageId: string, conversationId: ConversationId, input: DeclareWorkInput, now: number): Promise<{ change: ContinueOutcome["change"]; item: OpenWorkView } | Rejection> {
 	const { state, items } = await draftItems(tx, conversationId);
 	const routes = (await tx.doc(RequestContextDoc, conversationId)).requests;
 	const requestId = input.request ?? await defaultRequest(tx, conversationId, routes, items);
 	if (typeof requestId !== "string") return requestId;
 	const record = await tx.submissionByRequest(conversationId, requestId);
-	const placed = record?.type === "input" && record.status === "placed";
 	const retained = routes.find((route) => route.requestId === requestId);
-	const route = record === undefined || !placed || retained === undefined ? undefined : { requestId, submissionId: record.id, requester: retained.requester, replyTo: retained.replyTo, origin: retained.origin };
+	const route = record?.type !== "input" || record.status !== "placed" || retained === undefined ? undefined : { requestId, submissionId: record.id, requester: retained.requester, replyTo: retained.replyTo, origin: retained.origin };
 	for (const reference of input.results) {
 		const local = localConversation(storageId, reference.sessionId);
 		const problem = local === undefined ? undefined : await localInput(tx, local, reference);
 		if (typeof problem === "string") return { error: problem };
 	}
-	const outcome = continueWork(items, { requestId, ...(route === undefined ? {} : { route }), placed, results: input.results, ...(input.note === undefined ? {} : { note: input.note }), self: canonicalIdentity(storageId, conversationId), now });
+	const outcome = continueWork(items, { requestId, ...(route === undefined ? {} : { route }), results: input.results, note: input.note, self: canonicalIdentity(storageId, conversationId), now });
 	if ("error" in outcome) return outcome;
 	state.items = outcome.items;
-	return { change: outcome.change, item: await itemView(tx, storageId, outcome.item, outcome.change === "withdrawn" ? "withdrawn" : "open") };
+	return { change: outcome.change, item: await itemView(tx, storageId, outcome.item, "open") };
 }
 
 async function finalReport(tx: Tx, storageId: string, conversationId: ConversationId, item: OpenWorkItem, message: string): Promise<DeliveryReport> {
@@ -577,8 +572,8 @@ function workResult(lead: string, details: OpenWorkDetails): ToolExecutionResult
 const CONTINUE_LEAD: Record<ContinueOutcome["change"], string> = {
 	declared: "Declared background work. This is not the answer: end the run with a short state note. Results arrive as events; call agent_work complete when the work is finished.",
 	replaced: "Replaced the dependencies and the note of the declared work. The item stays open until agent_work complete.",
-	withdrawn: "Withdrew the declared work. The answer of this run is the result of the request.",
 };
+const NO_DEPENDENCY_LEAD = " The item names no result: no event wakes it, and it stays open until agent_work complete.";
 
 /** `agent_work`: returns at once; every outcome is one commit. */
 export async function executeAgentWork(args: unknown, host: AgentWorkHost, context: Context): Promise<ToolExecutionResult<OpenWorkDetails>> {
@@ -587,9 +582,9 @@ export async function executeAgentWork(args: unknown, host: AgentWorkHost, conte
 	catch (error) { return workError(error instanceof Error ? error.message : String(error)); }
 	if (input.action === "continue") {
 		const { request, results, note } = input;
-		const declared = await host.harness.commit((tx) => declareOpenWork(tx, host.storageId, host.conversationId, { ...(request === undefined ? {} : { request }), results, ...(note === undefined ? {} : { note }) }, host.now), context);
+		const declared = await host.harness.commit((tx) => declareOpenWork(tx, host.storageId, host.conversationId, { ...(request === undefined ? {} : { request }), results, note }, host.now), context);
 		if ("error" in declared) return workError(declared.error);
-		return workResult(CONTINUE_LEAD[declared.change], { action: "continue", item: declared.item });
+		return workResult(`${CONTINUE_LEAD[declared.change]}${results.length === 0 ? NO_DEPENDENCY_LEAD : ""}`, { action: "continue", item: declared.item });
 	}
 	const { request, status, message } = input;
 	const completed = await host.harness.commit((tx) => completeOpenWork(tx, host.storageId, host.conversationId, { request, status, message }, host.now), context);
