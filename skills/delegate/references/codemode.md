@@ -124,26 +124,76 @@ return { agents, failures: results.filter((r) => r.status === "unanswered" || r.
 
 ## Thread digest
 
-Return only thread events newer than the last digest. The first run returns
-the whole latest page.
+Return the thread events after the last digest, oldest first, through the
+forward read (`after`, `next`, `coverage`). The saved position moves only
+past events that the digest returns, so a later digest continues at the
+first unread event. The first run starts at the first event.
 
 ```js
 const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
 const threadId = "<thread id>";
+const pages = 3; // forward pages per digest
+const shown = 600; // characters of an ordinary message before a cut
+const budget = 24000; // characters of event rows per digest
 
 const key = `digest:${threadId}`;
-const seen = load(key) ?? 0;
-const page = asObject(await tools.agent_collaborate({ action: "read", threadId, limit: 20 }));
-const fresh = (page.events ?? []).filter((e) => e.sequence > seen);
-store(key, Math.max(seen, ...fresh.map((e) => e.sequence)));
+const saved = load(key) ?? { after: 0 };
+let call = { action: "read", threadId, after: saved.after, limit: 20, ...(saved.frameRevision ? { knownFrameRevision: saved.frameRevision } : {}) };
+let page;
+let frame;
+let through = saved.after;
+let used = 0;
+let full = false;
+const events = [];
+for (let read = 0; read < pages && call && !full; read++) {
+  page = asObject(await tools.agent_collaborate(call));
+  frame = page.thread ?? frame;
+  for (const e of page.events) {
+    const text = String(e.message);
+    const whole = e.kind === "carried-authority" || text.length <= shown;
+    const row = {
+      seq: e.sequence, kind: e.kind, from: e.sender, rev: e.revision,
+      ...(e.replyTo ? { replyTo: e.replyTo } : {}), ...(e.source ? { source: e.source } : {}),
+      text: whole ? text : `${text.slice(0, shown).replace(/[\uD800-\uDBFF]$/, "")} [cut]`,
+      ...(whole ? {} : { cut: { shown, of: text.length, read: { action: "read", threadId, after: e.sequence - 1, limit: 1 } } }),
+    };
+    const size = JSON.stringify(row).length;
+    if (events.length > 0 && used + size > budget) { full = true; break; }
+    events.push(row);
+    used += size;
+    through = e.sequence;
+  }
+  if (full) break;
+  through = page.coverage.through;
+  const { tool, ...following } = page.next ?? {};
+  call = page.next ? following : null;
+}
+store(key, { after: through, frameRevision: page.frameRevision });
 
 return {
-  frameRevision: page.thread.revision,
-  olderUnread: fresh.length > 0 && page.nextBefore !== null && fresh[0].sequence > seen + 1,
-  events: fresh.map((e) => ({ seq: e.sequence, kind: e.kind, from: e.sender, rev: e.revision, text: String(e.message).slice(0, 300) })),
+  frameRevision: page.frameRevision,
+  closed: page.closed,
+  ...(frame ? { frame: { title: frame.title, purpose: frame.purpose, authority: frame.authority, source: frame.source, restrictions: frame.restrictions, acceptance: frame.acceptance, integrator: frame.integrator } } : {}),
+  through,
+  newest: page.sequence,
+  next: through < page.sequence ? { action: "read", threadId, after: through, knownFrameRevision: page.frameRevision, limit: 20 } : null,
+  events,
 };
 ```
 
-If `olderUnread` is true, more than one page arrived since the last digest;
-read the older page with `before` set to `nextBefore`. An event whose `rev`
-is lower than `frameRevision` was written against an older frame.
+Notes:
+
+- `next` is the exact `agent_collaborate` call for the first unread event, or
+  `null` when the digest reached the newest event. Run the digest again, or
+  make that call, until `next` is `null`; `newest - through` counts the
+  events that remain.
+- A row whose text ends in `[cut]` is an excerpt. Its `cut.read` is the exact
+  call that returns the complete event. A `carried-authority` post and every
+  `source` return whole, so a relayed operator decision or correction and its
+  source stay in the digest.
+- `frame` is present on the first run and whenever the frame changed since the
+  last digest: read it before you act on the events. An event whose `rev` is
+  lower than `frameRevision` was written against an older frame.
+- The position is stored only after every page of the digest was read. A
+  failed read stores nothing, and the next digest repeats from the old
+  position.
