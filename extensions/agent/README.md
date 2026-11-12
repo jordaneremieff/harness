@@ -72,7 +72,7 @@ An ordinary primary remains responsive and receives normal routed results.
 |---|---|
 | `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. |
 | `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries have no `agent_await` tool; they receive each answer through normal delivery. Waiting is a capability, not a staffing rule. |
-| `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
+| `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn, and releases no wait. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; an unavailable endpoint preserves the attachment error and proves no global host absence. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
@@ -86,8 +86,8 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_command` | Invoke a contributed command, reload host registrations while idle, or fork to a tree entry. |
 | `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths, none unless configured; optional `checkInMinutes` sets an interval. |
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. Reads start no host. |
-| `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. `view: "storage-page"` continues one exact storage's bounded status scan. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
-| `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. |
+| `agent_status` | Read conversation and host state, including capability limits. Inside a Durable agent, a selected read returns compact state with an exact full-detail call; `detail: true` with one explicit `sessionId` returns the full selected status and cannot be combined with `view`, `storageId`, `cursor`, or `limit`. The full status of a selected session lists its pending timers, nearest deadline first. `view: "storage-page"` continues one exact storage's bounded status scan. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
+| `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. The result view returns the answer in pages with separate continuations for answer text and for recipient references; see [result pages](#await-exact-peer-results). |
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 characters and `message` within 8,000 characters; write longer content to a file and post its path. Handler length errors include this remedy because Pi's pre-handler schema errors omit field descriptions. |
 
 ### Default exposure and discovery
@@ -280,7 +280,7 @@ it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
 Tool cards retain Pi's native padding. Peer cards supply the same inner top and
 bottom padding, while Pi supplies their outer separator.
-The manager contract is `manager/6.0.0`; a reload over an older retained manager
+The manager contract is `manager/7.0.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
 
@@ -1623,14 +1623,19 @@ Report placement depends on the admission route:
 - The ordinary `AgentManager` report control submits a follow-up without report
   provenance. The recipient classifies it as explicit input, so it releases an
   active await regardless of whether its sender is an awaited producer.
-- The same-storage background `Reporter` posts an answer notification through
-  raw native `followUp`, without release provenance. That notification does not
-  itself release the await. The covered-delivery withdrawal rules below still
-  apply.
+- A passive report (`passive: true`) is a native write, not an input. It does
+  not release the wait and starts no turn.
+- The delivery watcher sends each answer copy as an automatic `followUp`,
+  without release provenance, including the copy for a recipient in the
+  producer's own storage. That copy does not itself release the await. The
+  covered-delivery withdrawal rules below still apply. The same-storage
+  background `Reporter` task admits the input and waits for its settlement; it
+  posts no input of its own.
 
 Sources: `durable-runtime.ts` (`dispatch`), `durable-delivery.ts`
-(`reportProvenance`), `manager.ts` (`controlClient`), `durable-controls.ts`
-(`admissionProvenance`, `awaitInputMode`), and `durable-agents.ts` (`Reporter`).
+(`reportProvenance`, `startDurableDelivery`), `manager.ts` (`controlClient`),
+`durable-controls.ts` (`admissionProvenance`, `awaitInputMode`),
+`durable-host.ts` (`passive-submit`), and `durable-agents.ts` (`Reporter`).
 
 Apply the admitted input and await unresolved references again on the same
 original request. The release keeps unresolved producers running and preserves
@@ -1660,16 +1665,80 @@ later. Follow-ups that do not release an await retain normal final-boundary
 placement. The explicit-input release rule does not change the automatic-input
 handling above.
 
+When several returned references share one producer answer, the first outcome
+carries the answer body. Each later outcome carries `sameAnswerAs` with that
+first reference and omits `answer`, `truncated`, `excerpt`, and `continuation`.
+The retained outcome rows do not change.
+
 When `agent_await` returns, it withdraws only still-queued delivery inputs wholly
-covered by its returned results. It matches actual receipt and Reporter request
-IDs. Coverage includes the full receipt group, even results for other recipients.
-A grouped input that also carries other results stays queued. Original
-request replay does not release its own wait.
+covered by its returned results. A delivery qualifies only when all of these
+conditions are true:
+
+- its recipient is the awaiting conversation;
+- its receipt group for that recipient is complete;
+- each reference in the group is a returned outcome, and a request ID in the
+  group equals the returned request ID.
+
+The producer host supplies the association (`sourceId`, `requestId`,
+`producerStorageId`, `recipient`, optional `answerEntryId`, `results`,
+`complete`) from its retained receipt, for local and foreign producers alike.
+Another recipient's copy of the same answer is a separate delivery and stays
+untouched. An incomplete group, a grouped input that also carries other results,
+and a copy that left the queue stay as they are. Original request replay does
+not release its own wait.
 
 Normal delivered receipts retain a short answer excerpt and include a
 `Full answer` exact-entry continuation. Ordinary primary delivery details also
 include the structured `continuation`. Follow it with `agent_inspect`, then use
 each returned `nextOffset` until the retained answer is complete.
+
+A result notice names at most 16 references. When the recipient's receipt group
+continues, the notice text adds `Receipt references continue:` and one
+exact `agent_inspect` call with `receiptCursor`; ordinary primary details carry
+the same call as `receiptContinuation`. The communication value carries it in
+`metadata.receiptContinuation` whenever the group is incomplete.
+`omittedReferences` counts only the references cut from the supplied chunk. It
+does not count references on later pages.
+
+#### Result pages
+
+`agent_inspect` with `view: "result"` reads one retained native result in
+pages. Two continuations exist, and neither advances the other:
+
+- `answerContinuation` continues the answer text. An answer page holds at most
+  4,096 UTF-16 code units and never splits a surrogate pair. `offset` and
+  `nextOffset` count UTF-16 code units. The call repeats the selector with the
+  next `offset`.
+- `receiptGroup.next` continues the recipient's references. `receiptGroup` is
+  `{recipient, results, complete, next}` with at most 16 references for the
+  recipient of the selected receipt. A page read with `receiptCursor` returns
+  the result identity and the next reference page, without the answer body.
+
+Execute each returned call unchanged. A complete result page, including its
+identity, body and receipt metadata, fits 65,536 serialised UTF-8 bytes; a
+larger page is refused. `receiptCursor` contains 1 to 2,048 characters, selects
+only the result view, and requires a settled input with a retained receipt.
+A cursor binds the storage, the recipient, the selected submission, the answer,
+and the end of the receipt list at the first read. References appended later
+never enter an older cursor; a cursor for another selection or recipient is
+refused. A page without a reference for the recipient still returns its `next`.
+An unanswered input has one reference and no cursor. Result inspection
+acknowledges no delivery, and `view: "exact"` still returns the raw redacted
+entry.
+
+One reference page reads at most two retained page documents: the current page
+and, when it differs, the page that holds the captured end. It examines at most
+64 membership references of the current page and returns at most 16.
+
+Inside a Durable agent, `agent_inspect` accepts `receiptCursor`. The ordinary
+primary `agent_inspect` input does not accept it, so an ordinary primary cannot
+follow a receipt continuation from its own tool.
+
+Sources: `durable-observation.ts` (`readResult`, `RESULT_PAGE_UNITS`,
+`RESULT_PAGE_BYTES`), `delivery-store.ts` (`receiptReferencePage`),
+`durable-host.ts` (`selectedReceipt`), `await-execution.ts`
+(`withdrawCoveredDeliveries`), and `awaited-results.ts`
+(`projectAwaitOutcomes`).
 
 Normal delivery stays independent. A late or already-placed copy remains possible
 and costs an additional model turn. There is no recipient consumption ledger or
@@ -1723,9 +1792,11 @@ model automatically.
 
 A native submission that ends on a provider error settles as `unanswered` with
 `model_error` and keeps the original provider detail. That settlement does not
-change. The same-storage stop notice (`[agent <name> stopped without an answer:
-<reason>]`) and the `agent_inspect` result view present the retained detail in
-their reason:
+change, and the retained receipt keeps its own reason and detail. Three
+surfaces present the retained detail in their reason: the result notice
+(`No answer: <reason>`, also in ordinary primary details as `reason`), the
+`agent_await` outcome, and the `agent_inspect` result view. Each reads the exact
+selected native submission:
 
 - `model_error: <provider text>` for wording the host does not classify;
 - `content_refusal: <provider text> <recovery>` for a recognised content
@@ -1747,7 +1818,9 @@ flagged for possible cybersecurity risk`. Other refusal wording stays
 A content refusal creates no retained provider block, changes no retry or
 overflow classification, and selects no model. Source:
 `provider-block-facts.ts` (`modelFailureText`, `isProviderContentRefusal`),
-`durable-agents.ts` (`Reporter`), and `durable-observation.ts`.
+`durable-delivery.ts` (`prepareReceiptRow`, `receiptFailureText`),
+`durable-controls.ts` (`readNativeOutcome`), `durable-host.ts`
+(`resultOutcome`), and `durable-observation.ts` (`readResult`).
 
 ### Exhausted provider limits
 
@@ -2936,6 +3009,11 @@ an older base-only host. Local dispatch obtains the public native Submission
 before returning its reference. The existing background Reporter reuses that
 same request ID and a task-owned admission marker, so both paths create
 one check-in and one input even under concurrent admission or safe replay.
+The Reporter records the exact requester, reply recipient and request ID in the
+delivery intent before the native admission, then waits for settlement. It
+posts no answer input of its own; the delivery watcher delivers the answer to
+the recorded recipient. A replay of a request ID with another recipient or
+origin is refused, as is a replay with another request route.
 Base-only calls preserve
 an absent origin and refuse an explicit alternate recipient rather than ignore it.
 
@@ -2958,6 +3036,28 @@ outcomes remain available for request deduplication. Report requests deduplicate
 by owner and request ID; source IDs independently identify acknowledgements.
 Absent observation keys and unknown acknowledgement keys do not create records.
 
+Each reference page records the list that owns it. Every page read and append
+checks that identity and refuses a page that names no list or another list:
+`Delivery reference page has no current owner-list identity or belongs to
+another list`. The page document is `agent.delivery-page` version 2, with no
+migration from version 1. These consequences apply to existing data:
+
+- A storage that retains version 1 pages refuses each typed page read and
+  append with Pi's `Document <id> (agent.delivery-page) requires migration from
+  version 1`. Each operation that reads or appends such a page fails in that
+  storage. The host does not normalise, backfill or rewrite those pages.
+- A host from an earlier source release refuses a version 2 page as a newer
+  version than its own.
+- The `agent.reporter` task is version 2, with no migration from version 1.
+  Pi blocks a retained version 1 Reporter task with `migration_failed` instead
+  of running it. Let every Reporter task of the earlier release end, including
+  a task that waits to post its report, before a host with this release opens
+  the storage.
+
+No migration or compatibility path exists for either record. Decide the
+treatment of retained delivery pages for each storage, and preserve a storage
+restore point, before adoption.
+
 The host completes a retained delivery transition before request admission,
 output observers and native resume. Each bounded batch commits its copied rows
 and cursor together; final validation and archive retirement share one commit.
@@ -2969,7 +3069,8 @@ an older reader's data contract; preserve a storage restore point before adoptio
 Retained outcomes include submission and answer entry IDs. The source storage's
 durable-delivery watcher is the sole retained-output delivery owner: after every
 native commit it settles intents atomically and groups receipts by native answer
-entry. A result notice lists every submission that shares that answer. Primary
+entry and recipient. A result notice lists the recipient's submissions that
+share that answer. Primary
 notice details retain each submission's request, operation, input entry, owner,
 and admission origin.
 Each recipient outside the producing conversation receives one notice for that
@@ -2984,7 +3085,7 @@ When the owner resolves to the producing conversation, the watcher acknowledges
 that owner's receipts without a follow-up or a model turn. This applies to
 operator and model admissions, including unanswered outcomes after abort or
 failure. The conversation already retains its outcome. Other owners still
-receive the complete answer group, including its self-owned submissions. Missing
+receive their own notice for that answer, with only their own submissions. Missing
 or malformed admission origins become terminal with a retained reason, even for a self owner.
 A noncatalog owner is an ordinary primary reached
 through its registered primary channel. Only an absent or proven-dead owner
@@ -3036,9 +3137,15 @@ holds the whole fallback. The host keeps the latest routing failure in its
 status as `deliveryError`, and the status card shows it. The error names the
 failed record and recipient; it does not imply that another result failed. A
 missing catalog record does not authorize a noncanonical primary route. The
-primary does not poll receipts. Delivery is at-least-once; stable
-answer-based request and source IDs let each receiver deduplicate retries and
-host restarts. A primary process loss after display but before acknowledgement
+primary does not poll receipts. Delivery is at-least-once. A result's source ID
+binds the producer storage, the answer (or the unanswered input) and the actual
+recipient; its request ID derives from that source ID. Inputs with the same
+recipient share one body. Different recipients have independent attempts and
+acknowledgements, and a routing pass acknowledges only the recipient rows that
+it visited. An informational fallback copy has a separate source ID for each
+fallback recipient and carries no receipt association. These stable IDs let each
+receiver deduplicate retries and host restarts. An accepted or queued delivery
+does not show that the recipient read it. A primary process loss after display but before acknowledgement
 can repeat a notice if its in-memory deduplication was lost. Transmitted peer bodies have a
 text bound and an explicit truncation marker; `agent_inspect` retains access to
 the full source. A delivery receipt never proves task acceptance or that an
@@ -3212,7 +3319,8 @@ observation fields.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/6.0.0` uses the package-level Chord transport and includes
+clearance. `manager/7.0.0` uses the package-level Chord transport and includes
+recipient-scoped receipt associations, paged result inspection,
 retained primary acceptance, joined communication display and awaited primary endpoint teardown,
 preset-first creation resolution and machine
 preference snapshots, alongside exact fleet model/provider selection, caller usage for fleet observations, effective
@@ -3223,12 +3331,17 @@ use 2.0.0 for creation without parent inheritance and receipts with preset names
 and selection origins. Configure requests and responses use 1.3.0 for explicit
 provider-block recovery alongside machine preference snapshots and selection
 receipts; target retention remains unchanged. Task-submit responses use 1.2.0
-for recovery links. Submit requests use 1.2.0 for structured retry notices;
-submit responses remain at 1.1.0. Receipts responses use 1.2.0 for retained
-provider-block facts; their request identity remains at 1.1.0.
-`native-controls/2.0.0` binds the preset-first dispatch behavior to the loaded
-Durable release. `primary-delivery/3.0.0` requires verified retained primary
-acceptance and carries retry notices and blocked causes alongside exact continuations.
+for recovery links. Submit requests use 1.4.0 and submit responses use 1.2.0;
+the response names the retained recipient. Report requests use 2.0.0 and report
+responses use 1.1.0 for passive reports and exact producer associations.
+Passive-submit requests use 2.0.0. Receipts requests and responses use 2.0.0
+for recipient-scoped reference pages. Inspect requests use 1.2.0 for
+`receiptCursor`; the inspect response identity is its schema hash.
+`docs/agent-host-contract.md` lists every operation identity.
+`native-controls/3.0.0` binds the native tool inputs and dispatch behavior to
+the loaded Durable release. `primary-delivery/4.0.0` requires verified retained
+primary acceptance and carries retry notices, blocked causes, receipt
+associations and exact continuations.
 Older primary endpoints refuse delivery until their Pi process restarts. The
 retained manager contract also changes because its primary callback carries the
 transport source identity. Host operation identities are checked independently.
