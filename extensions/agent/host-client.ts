@@ -5,8 +5,8 @@
  * descriptor lease decide exclusion. Diagnostic records never prove ownership.
  * The connection uses the package-level Chord Unix transport and
  * keeps the storage host's request surface: stable request IDs, automatic
- * recovery and resend of retry-safe methods, and caller abort that reaches the
- * wire only for observational waits. Admitted Durable work is never cancelled.
+ * recovery and resend of retry-safe methods, and caller abort that stays local:
+ * no request carries it to the wire, so admitted Durable work is never cancelled.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";

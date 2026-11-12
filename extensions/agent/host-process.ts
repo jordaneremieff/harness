@@ -33,9 +33,8 @@ function hostOperationError(error: unknown): ChordError | PluginError {
 export interface HostRuntime {
 	/**
 	 * `requestId` is the durable request ID; `submit` maps it to the Durable
-	 * request ID. `signal` follows the public cancel envelope, which may arrive
-	 * for any request; the runtime decides what it cancels. Observational waits
-	 * stop on it, admitted Durable work does not.
+	 * request ID. The host process passes no `signal`: caller cancellation stays
+	 * with the client and never reaches admitted Durable work.
 	 */
 	request(method: string, params: unknown, requestId: string, signal?: AbortSignal): Promise<unknown>;
 	/** Pending native work or a failed runtime requires process death rather than an unbounded task join. */
