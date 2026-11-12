@@ -2056,6 +2056,33 @@ receive steering and a model wake. No post or notice arms a check-in. Leaving
 stops future subscription notices. Notification admission and acknowledgment
 do not prove model awareness, understanding, or acceptance.
 
+A native model request shows passive thread notices as ranges. One range covers
+one thread in one interval between two assistant messages. It states the event
+range, frame revisions, event kinds, coverage, times, and the exact
+`agent_collaborate` read call. The stored notices do not change. A range keeps
+its text in later requests while its notices remain in the request; a notice
+that arrives later forms a later range. A range is a read boundary, not
+evidence that each enclosed event was passive. An addressed thread event stays
+an active input with its bounded body.
+
+At one request the host reads at most the 128 newest entries and 256 KiB of the
+conversation, and associates at most 128 notices. A notice outside these
+bounds, a notice without typed thread data, and a notice whose message is not
+unique in the request each stay as their own message. A range frozen from an
+incomplete read states partial coverage. After a host restart, the host reads a
+history above the read bound again from its newest entries only. A range can
+then return once with other coverage text, and older notices can return as
+their own messages. Ordinary primaries receive each passive notice as its own
+message.
+
+Thread notice text above the delivery bound ends at a word boundary with
+` [cut]` and names the exact thread read once. When the event sequence is
+unknown, the text names a bounded thread read without a selected event. A
+thread notice does not add the `agent_inspect` sentence of other reports.
+Source: `thread-notice-request.ts` (`threadNoticeRequestHooks`),
+`thread-notice-projection.ts`, and `durable-delivery.ts`
+(`boundedReportText`).
+
 The event, mutation receipt, and notice intents commit together. Retries reuse
 caller-qualified mutation IDs and recipient-qualified native request IDs;
 changed content under the same mutation key refuses. Direct notices never
@@ -2858,6 +2885,132 @@ the server spawn system call and the registration write. It also does not cover
 descendants that outlive a normal transport close: Pi MCP stops escalation when
 the direct child closes, and its public API exposes only the numeric group ID.
 Guardian startup failures appear in host diagnostics.
+
+## Native context continuity
+
+These behaviours apply to conversations of a Durable host. Ordinary primaries
+do not have them.
+
+### Continuity note
+
+After a compaction or a reset, each model request of a native conversation
+carries one note from the Agent extension directly after the head message.
+After a reset without a handoff, the note follows the host's first system
+message. The first line names the context head entry and states that the note
+is not operator input and grants no authority. The note has no time. The host
+fixes its text when the head is placed, and each later request of that head
+carries the same text, also after a host restart.
+
+The note lists only requests that this conversation sent and whose answer
+routes to this conversation:
+
+- admitted requests with no delivered result here, with session, submission
+  and request ID;
+- requests whose admission is unconfirmed;
+- scheduled inputs, with their timer.
+
+Each list has at most 32 rows and states how many more it does not list. One
+line counts the requests whose answer routes to another identity. The note does
+not cover messages to an ordinary primary or requests that another session
+routed here, and it does not state that a target is alive. No status view lists
+a session's outgoing requests; this note is the record.
+
+The host records a request before its dispatch and again when the target's
+receipt arrives. A dispatch error keeps the request under "Admission
+unconfirmed", because the error does not show that the target admitted nothing.
+A local admission that fails before a submission exists closes its request. A
+prompt for an agent that the same call creates in another storage is recorded
+only after the creation. A result delivery carries each settled result
+reference; the receiving host checks the references before it admits the body
+and marks each matching request as delivered, also for a replayed body. A
+request whose answer routes to another identity never closes in the sender's
+record.
+
+The host loads the retained facts before it schedules work. A host with
+malformed retained facts does not open and sends no provider request. If the
+stored head message does not match the request, the host adds no note and
+reports one diagnostic for that head.
+
+Source: `continuity-facts.ts` (`continuityText`), `continuity-mirror.ts`,
+`continuity-request.ts` (`continuityRequestHooks`), `continuity-admission.ts`,
+and `continuity-native.ts`.
+
+### Compaction and reset guidance
+
+Native compaction gives the summariser one fixed text first, then the caller's
+instructions unchanged. This applies to compaction of another conversation and
+to self-compaction. The fixed text names the current purpose, consequential
+operator corrections and their effect, qualified evidence, and unresolved
+questions. It states that results of requests routed to the session continue to
+arrive there, and that the continuity note after the summary lists the sent
+requests without a delivered result. The `agent_compact` description carries
+the same text. The `agent_reset` guidance states the content of a handoff,
+including the newest handover or checkpoint identifier. Source:
+`control-guidance.ts` (`NATIVE_COMPACTION_SEED`) and `durable-controls.ts`.
+
+### Context-use reports
+
+A native child sends one report for each run when a completed response uses 90%
+or more of the model window. The threshold belongs to this report. It is not
+enforcement and not a Stash setting. The report does not stop or change the
+child and carries no answer text.
+
+- The report goes to each reply recipient of a model-origin request in that
+  run. A run that only operator-origin requests started sends none.
+- The report is an active report with an exact producer association. It
+  releases only a native wait that names one of the inputs it lists.
+- One run has one report for each recipient, across tool rounds and a host
+  reopen. The first input of a run identifies the run.
+- Usage first seen in the final answer of a run sends no report; the context
+  lines of that result state it.
+- When a planning budget exists for the child's exact model and is below the
+  model window, the recipient gets one active report when usage crosses the
+  budget inside one run. A run that starts above the budget sends none. The
+  budget is a planning preference, not a limit.
+
+Each result delivered to a Durable recipient states the child's newest context
+use and model window when known, and the last compaction failure when one is
+retained. An unknown window is stated as unavailable. For an unanswered result
+or an empty answer, the result adds one fixed paragraph with the remedies
+`agent_inspect`, `agent_compact` and `agent_reset`. Notices to ordinary
+primaries do not carry these lines.
+
+A native conversation gets one retained notice of kind `agent.planning-budget`
+in its own conversation when its usage crosses its own planning budget, once
+for each context episode. A compaction or reset starts a new episode. The notice
+starts no model turn. Unknown usage gives no crossing, and a model without a
+configured budget gets no notice.
+
+Limits:
+
+- A report is lost when the host stops between the response and the report. The
+  context lines still arrive with the result.
+- A failed report write stops this observer until the host opens again and
+  appears as the host's `deliveryError`.
+- The host finds an earlier usage sample at most 64 entries back; an older one
+  is unknown and gives no crossing.
+- A recipient whose input joins a run after the budget crossing gets no budget
+  report.
+- The own-budget notice is not written on an idle conversation that holds
+  queued inputs. Its once-per-episode record is in process memory, so a second
+  crossing in the same episode after a host reopen writes a second notice.
+
+Source: `capacity-reports.ts` (`ChildCapacityReports`, `childContinuityFact`,
+`continuityLines`) and `durable-delivery.ts`.
+
+### Task-scoped host reports
+
+When an extension hook, prompt section or tool output fails inside a task, the
+host keeps the failure as a transcript entry of kind `agent.host-report` with
+data format `agent.task-extension-error/1` in that task's conversation. The
+entry has no model message: the model does not see it, and it does not change
+the conversation's dashboard state. History, branch and exact views show it.
+
+Only reports that name a task are kept. The entry data fits 4,096 bytes and the
+message 2,048 bytes. At most 32 reports wait for storage at one time; later
+ones are dropped. A close waits at most 250 ms for pending writes. One rejected
+write stops retention until the host opens again. The report is not delivered
+to an owner. Source: `task-hook-reports.ts` (`TaskHookReports`).
 
 ## Storage status pages
 
