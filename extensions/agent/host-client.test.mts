@@ -239,7 +239,7 @@ it("retries a safe call only after an exact owned failed exit", { timeout: 30000
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
 	const connection = await openHost(t, root);
-	const pending = connection.request("receipts", {}, { requestId: "receipts-1" });
+	const pending = connection.request("receipts", { fixtureGate: true }, { requestId: "receipts-1" });
 	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
@@ -273,12 +273,12 @@ it("rejects an unsafe call instead of resending it", { timeout: 30000 }, async (
 	await next.close();
 });
 
-it("aborting without the wait flag leaves the host-side wait running", { timeout: 30000 }, async (t) => {
+it("aborting a private gated read leaves host work running", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
 	const connection = await openHost(t, root);
 	const controller = new AbortController();
-	const pending = connection.request("receipts", {}, { signal: controller.signal });
+	const pending = connection.request("receipts", { fixtureGate: true }, { signal: controller.signal });
 	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	controller.abort();
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
@@ -330,7 +330,7 @@ it("rebinds change subscriptions after an owned failed exit with retryable work"
 	await changes.waitForCount(1);
 	assert.equal(connection.ownerEvidence?.kind, "verified");
 	const writerId = connection.writerId;
-	const pending = connection.request("receipts", { requestId: "changes-resume" });
+	const pending = connection.request("receipts", { requestId: "changes-resume", fixtureGate: true });
 	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
@@ -732,8 +732,8 @@ function lifecycleRunner(mode: string): string {
 		const host = await runHost(() => {
 			writeFileSync(path, JSON.stringify({ starts: ++starts }));
 			return {
-				request: async method => {
-					if (method === "receipts") {
+				request: async (method, params) => {
+					if (method === "receipts" && params?.fixtureGate === true) {
 						await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "waiting");
 						return new Promise(resolve => { finish = resolve; });
 					}
@@ -836,7 +836,7 @@ it("close during held recovery never installs a late link or stops its independe
 	const connection = await acquireHost(metadata, { runner: "--input-type=module", runnerArgs: ["--eval", lifecycleRunner("recovery")], launchTimeoutMs: 10000, env: { DURABLE_TEST_NOTIFY: markers.notifyPath } });
 	track(t, connection.pid);
 	t.after(() => connection.close());
-	const pending = connection.request("receipts");
+	const pending = connection.request("receipts", { fixtureGate: true });
 	const rejected = assert.rejects(pending);
 	await markers.marker("waiting");
 	process.kill(connection.pid, "SIGKILL");

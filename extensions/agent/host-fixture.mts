@@ -189,6 +189,7 @@ export function createFixtureRuntime(statePath: string): HostRuntime {
 			}, { once: true });
 		});
 	};
+	const receipts = (params: unknown, signal?: AbortSignal) => isRecord(params) && params.fixtureGate === true ? startWait(signal) : { receipts: [], reports: [], pending: 0 };
 	return {
 		request: async (method, params, requestId, signal) => {
 			switch (method) {
@@ -206,7 +207,7 @@ export function createFixtureRuntime(statePath: string): HostRuntime {
 					return { submissionId, requestId, params };
 				}
 				case "receipts":
-					return startWait(signal);
+					return receipts(params, signal);
 				case "timer-cancel":
 					releaseWaits();
 					return { released: true };
