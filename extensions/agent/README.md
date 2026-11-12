@@ -2857,6 +2857,16 @@ with the remaining fields unchanged. The cursor continues the same unfiltered
 native scan; callers do not interpret its fields. A conversation-qualified
 identity, a string cursor, or mixed fleet/session selectors is invalid here.
 
+Inside a Durable agent, a storage page returns compact rows with the backend
+coverage and `next` unchanged. When the compact form of a page exceeds the
+output byte limit, the tool reads again from the same cursor with half the
+limit, rounded up, until the page fits or the limit is one row. A smaller page
+returns fewer rows and its own backend `next`; no identity is cut and no
+continuation is invented. A refusal at one row, a refusal for an unavailable
+source identity or coverage, and a host error return unchanged. Source:
+`durable-agents.ts` (`readStoragePage`) and `status-overview.ts`
+(`projectStorageStatus`).
+
 `agent_list` remains global discovery with its own string cursor. Its cursor is
 not interchangeable with storage-status continuation. Selected-conversation
 status and the ordinary manager overview keep their separate coverage meanings.
