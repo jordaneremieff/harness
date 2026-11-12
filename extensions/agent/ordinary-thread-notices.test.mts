@@ -12,7 +12,17 @@ function fixture(manager?: SessionManager) {
 	let sessionId = manager?.getSessionId() ?? recipient, sent = 0;
 	register({ events: { on: () => () => {}, emit() {} }, on(name: string, handler: Hook) { hooks.set(name, [...hooks.get(name) ?? [], handler]); }, getThinkingLevel: () => "off", registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, sendMessage() { sent++; } } as unknown as ExtensionAPI);
 	const ctx = { sessionManager: { getSessionId: () => sessionId, buildContextEntries: () => manager?.buildContextEntries() ?? branch } } as unknown as ExtensionContext;
-	const hook = (name: string, event: unknown) => { const handlers = hooks.get(name); assert.ok(handlers?.length); return handlers.map((handler) => handler(event, ctx)).at(-1); };
+	const hook = (name: string, event: unknown) => {
+		const handlers = hooks.get(name); assert.ok(handlers?.length);
+		if (name !== "context") return handlers.map((handler) => handler(event, ctx)).at(-1);
+		const input = event as ContextEvent;
+		let messages = input.messages;
+		for (const handler of handlers) {
+			const result = handler({ ...input, messages }, ctx) as { messages?: ContextEvent["messages"] } | undefined;
+			if (result?.messages !== undefined) messages = result.messages;
+		}
+		return messages === input.messages ? undefined : { messages };
+	};
 	return { branch, hook, sent: () => sent, session: (id: string) => { sessionId = id; }, project: (messages: ContextEvent["messages"]) => (hook("context", { type: "context", messages }) as { messages: ContextEvent["messages"] } | undefined)?.messages ?? messages };
 }
 function notice(sequence: number, passive = true, target = recipient) {

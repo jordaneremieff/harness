@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { SubmissionId } from "@earendil-works/pi-durable";
+import { startDurableDelivery, type DurableDelivery } from "./durable-delivery.ts";
+import { DurableHost } from "./durable-host.ts";
+import { fixtureRegistry, fixtureRuntime, hostOptions } from "./durable-host-fixture.mts";
 import { HostError } from "./host-protocol.ts";
 import { conversation, messageText, noteHead, noteIndexes, ordinarySession } from "./ordinary-continuity-fixture.mts";
 import { PLANNING_BUDGET_NOTICE } from "./ordinary-continuity.ts";
@@ -17,15 +21,18 @@ function assertNoteAfterSummary(messages: readonly Message[], summary: string, h
 
 it("carries a real session's open requests in the first request after a self-compaction, and closes them from delivered tuples", { timeout: 60000 }, async (t) => {
 	let refusal: Error | undefined;
-	let submissions = 0;
+	let source: DurableHost | undefined, delivery: DurableDelivery | undefined;
+	t.after(async () => { await delivery?.close(); await source?.close(); });
 	const f = await ordinarySession(t, {
 		host: (method, params) => {
 			if (method !== "task-submit") return {};
 			if (refusal !== undefined) throw refusal;
-			const submissionId = ++submissions, sessionId = String(params.sessionId);
-			return { submissionId, identity: sessionId, requestId: params.requestId, result: { sessionId, submissionId, requestId: params.requestId } };
+			assert.ok(source);
+			return source.request(method, params);
 		},
 	});
+	const metadata = f.manager.catalog.read(f.target);
+	source = await DurableHost.open({ ...hostOptions(metadata.storagePath, await fixtureRuntime("answer"), fixtureRegistry(), metadata.cwd), storageId: f.target });
 	const self = f.sessionManager.getSessionId();
 	f.script.push(
 		{ tool: ["agent_send", { sessionId: f.target, message: "Admitted task" }] },
@@ -37,12 +44,14 @@ it("carries a real session's open requests in the first request after a self-com
 	const run = await f.prompt("Send the work, then compact");
 	assert.equal(run.length, 5);
 	assert.deepEqual(f.facts().map((fact) => fact.phase), ["requested", "admitted", "requested", "refused", "requested"]);
-	const [admitted, , , refused, unconfirmed] = f.facts();
+	const [, admitted, , refused, unconfirmed] = f.facts();
+	assert.equal(admitted.phase, "admitted");
+	const submissionId = admitted.submissionId; assert.ok(submissionId);
 	assert.ok(f.facts().every((fact) => fact.sessionId === f.target && fact.replyTo === self));
 	for (const earlier of run.slice(0, 4)) assert.deepEqual(noteIndexes(earlier.messages), [], "no compaction summary means no note");
 	const [selfHead] = f.heads();
 	const first = assertNoteAfterSummary(run[4].messages, "SELF_SUMMARY", selfHead);
-	assert.ok(first.includes(JSON.stringify({ sessionId: f.target, submissionId: 1, requestId: admitted.requestId })));
+	assert.ok(first.includes(JSON.stringify({ sessionId: f.target, submissionId, requestId: admitted.requestId })));
 	assert.ok(first.includes(`Admission unconfirmed: \n${JSON.stringify({ sessionId: f.target, requestId: unconfirmed.requestId })}\nScheduled inputs: none`));
 	assert.equal(first.includes(refused.requestId), false, "a refused request is not listed");
 	assert.ok(f.sessionManager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "assistant" && JSON.stringify(entry.message.content).includes("FINAL_AFTER_COMPACTION")), "the first request after the compaction ended in a final answer");
@@ -52,12 +61,24 @@ it("carries a real session's open requests in the first request after a self-com
 	assert.deepEqual(after.slice(0, before.length), before, "the request after the compaction is an exact prefix of the next one");
 	assert.deepEqual(noteIndexes(next.messages), noteIndexes(run[4].messages));
 
-	const carrier = { deliveredResults: [{ sessionId: f.target, submissionId: 1, requestId: admitted.requestId }] };
-	await f.deliver("receipt:first", "RESULT_BODY", carrier);
+	await source.wait(submissionId as SubmissionId);
+	let resolveIdle!: () => void;
+	const idle = new Promise<void>((resolve) => { resolveIdle = resolve; });
+	delivery = startDurableDelivery({ host: source, metadata, catalog: f.manager.catalog, sessionsRoot: f.sessionsRoot,
+		signal: new AbortController().signal, onIdle: resolveIdle });
+	await idle;
 	await f.session.waitForIdle();
-	assert.equal(await f.deliver("receipt:first", "RESULT_BODY", carrier), true, "the session file retains the result body");
+	await delivery.close(); delivery = undefined;
+	const retained = f.sessionManager.getEntries().find((entry) => entry.type === "custom_message" &&
+		entry.details !== null && typeof entry.details === "object" && "deliveredResults" in entry.details);
+	assert.ok(retained?.type === "custom_message" && typeof retained.content === "string");
+	const carrier = retained.details as Record<string, unknown>;
+	assert.deepEqual(carrier.deliveredResults, [{ sessionId: f.target, submissionId, requestId: admitted.requestId }]);
+	assert.equal(typeof carrier.sourceId, "string");
+	const sourceId = String(carrier.sourceId), resultBody = retained.content;
+	assert.equal(await f.deliver(sourceId, resultBody, carrier), true, "the session file retains the real receipt body");
 	const delivered = () => f.facts().filter((fact) => fact.phase === "delivered");
-	assert.deepEqual(delivered(), [{ phase: "delivered", sessionId: f.target, requestId: admitted.requestId, replyTo: self, submissionId: 1 }]);
+	assert.deepEqual(delivered(), [{ phase: "delivered", sessionId: f.target, requestId: admitted.requestId, replyTo: self, submissionId }]);
 	await assert.rejects(f.deliver("receipt:invalid", "INVALID_CARRIER", { deliveredResults: [{ sessionId: f.target, requestId: unconfirmed.requestId }] }), /requires a submission/u);
 	assert.equal(f.sessionManager.getEntries().some((entry) => entry.type === "custom_message" && JSON.stringify(entry.content).includes("INVALID_CARRIER")), false, "an invalid carrier refuses the body");
 
@@ -69,7 +90,7 @@ it("carries a real session's open requests in the first request after a self-com
 	assert.ok(second.includes(unconfirmed.requestId));
 
 	await f.restart();
-	assert.equal(await f.deliver("receipt:first", "RESULT_BODY", carrier), true, "a replayed delivery finds its retained body");
+	assert.equal(await f.deliver(sourceId, resultBody, carrier), true, "a replayed delivery finds its retained body");
 	assert.equal(delivered().length, 1, "the replay writes no further fact");
 	const [reloaded] = await f.prompt("After the reload");
 	assert.equal(assertNoteAfterSummary(reloaded.messages, "MANUAL_SUMMARY", f.heads()[1]), second, "a reload produces the same bytes");
