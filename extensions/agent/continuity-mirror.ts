@@ -1,7 +1,8 @@
 import { withAbortSignal, type Context } from "@earendil-works/chord/context";
 import type { CommitPublication, ConversationId, Cursor, EntryRecord, Harness } from "@earendil-works/pi-durable";
 import { onStoredCommit } from "./commit-observation.ts";
-import { CONTINUITY_ENTRY, ContinuityDoc, nativeContinuityText, validateContinuityState, type ContinuityEvent } from "./continuity-facts.ts";
+import { CONTINUITY_ENTRY, nativeContinuityText, validateContinuityState, type ContinuityEvent } from "./continuity-facts.ts";
+import { ContinuityDoc } from "./continuity-native.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 
 export const CONTINUITY_LOAD_TIMEOUT_MS = 10_000;

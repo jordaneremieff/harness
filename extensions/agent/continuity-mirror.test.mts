@@ -3,7 +3,7 @@ import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context, withAbortSignal } from "@earendil-works/chord/context";
 import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
-import { ContinuityDoc, recordContinuityDelivered, recordContinuityFact } from "./continuity-facts.ts";
+import { ContinuityDoc, recordContinuityDelivered, recordContinuityFact } from "./continuity-native.ts";
 import { ContinuityMirror } from "./continuity-mirror.ts";
 
 async function fixture(t: TestContext) {
