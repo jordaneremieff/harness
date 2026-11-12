@@ -422,7 +422,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	register(
 		"agent_spawn",
-		"Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. Unanswered tasks send automatic owner check-ins, separate from voluntary reports. Assess a check-in: report progress, let work continue, steer a wrap-up, or abort a hung tool. Steering does not interrupt a running tool. checkInMinutes 0 disables.",
+		"Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. Results arrive without check-ins. Task check-ins run only when checkInMinutes or the configured agent.checkInMinutes sets a nonzero interval; the default is 0. Assess a check-in: report progress, let work continue, steer a wrap-up, or abort a hung tool. Steering does not interrupt a running tool. checkInMinutes 0 disables.",
 		spawn,
 		(input, ctx, callId, admissionCaller) => getManager().spawn({ ...input, origin: "model", requestId: `spawn:${ctx.sessionManager.getSessionId()}:${callId}` }, admissionCaller ?? caller(ctx, pi)),
 	);
@@ -558,7 +558,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_place",
-		"Use the agent bound to a directory, or create it. Longest bound directory wins. An optional prompt starts work with automatic owner check-ins. checkInMinutes sets the interval; 0 disables.",
+		"Use the agent bound to a directory, or create it. Longest bound directory wins. An optional prompt starts work. Results arrive without check-ins. Task check-ins run only when checkInMinutes or the configured agent.checkInMinutes sets a nonzero interval; the default is 0.",
 		obj(
 			{
 				area: opt(str()),
