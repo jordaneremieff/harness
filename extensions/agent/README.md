@@ -88,7 +88,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. Reads start no host. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. `view: "storage-page"` continues one exact storage's bounded status scan. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. |
-| `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `contribution` within 256 characters and `message` within 8,000 characters; write longer content to a file and post its path. Handler length errors include this remedy because Pi's pre-handler schema errors omit field descriptions. |
+| `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 characters and `message` within 8,000 characters; write longer content to a file and post its path. Handler length errors include this remedy because Pi's pre-handler schema errors omit field descriptions. |
 
 ### Default exposure and discovery
 
@@ -341,7 +341,11 @@ so the same target shows the same name and applied configuration as in ordinary
 chat. In the agent work view an `agent_collaborate` card names its thread by
 title when the view knows it; the view reads one thread frame for a title it
 does not know, at most a fixed number per view, and the exact identity stays
-until that read returns. Receipts number events as `#N`. A changed name or configuration repaints those cards; reads happen outside
+until that read returns. Receipts number events as `#N`. A forward read card
+shows its `after` and known-frame arguments, the frame revision, the open or
+closed state, the returned range, the pending notice count, `Known frame not
+repeated` when the page omits the frame, and the exact `Next events` call
+when the page has one. A changed name or configuration repaints those cards; reads happen outside
 paint, coalesce, and an answer for an earlier attachment is dropped. A card's
 retained snapshot still takes precedence for the configuration it applied.
 
@@ -1864,12 +1868,40 @@ without a live host.
 `create` needs `title`, `purpose`, `authority`, `source`, `restrictions`, and
 `acceptance`; `integrator` defaults to the caller. An ordinary primary also
 selects an existing participant with `sessionId`. Native agents default to
-their own storage. `join` records a self-chosen `contribution`; another join
-revises it. `post` accepts `message`, optional `replyTo` event sequence, `source`,
-and explicit `notify` identities. `read` returns the current frame, members,
-chronological events, pending notice count, and `nextBefore` for older pages.
-Reads do not start a host or model. Events record their sender, origin, frame
-revision, and reply reference.
+their own storage. `create` and `join` accept `participation`, the member's
+self-chosen declaration of at most 256 characters; another join revises it.
+Omission keeps the stored declaration and an empty string clears it. A join
+that changes nothing appends no event and creates no notice. `join` accepts no
+`message`; discussion belongs in a post. `post` accepts `message`, optional
+`replyTo` event sequence, `source`, and explicit `notify` identities.
+
+Each action accepts only its own fields. The registered parameters stay one
+object with every field optional, so the declaration survives provider schema
+conversion; execution then validates the selected action's closed field set.
+A field of another action refuses with `<field> is not valid for action
+<action>`, and an invalid value or selector combination refuses with `Invalid
+fields or selector combinations for action <action>`.
+
+`read` has two directions. Without `after`, it returns the current frame,
+members, the newest events in chronological order, the pending notice count,
+and `nextBefore` for older pages; follow that cursor with `before`. With
+`after`, it returns the events above that sequence, oldest first; `after: 0`
+starts at the first event. A forward page has `direction: "forward"`, the
+thread's current `frameRevision`, `sequence` and `closed` state, `coverage`
+with its `after` and `through` sequences, and `next`: the exact
+`agent_collaborate` call for the following page, or `null` when the page
+reaches the newest event. `knownFrameRevision` is valid only with `after`. When
+it equals the current revision, the page omits the unchanged frame and member
+list. `after` and `before` are exclusive. An `after` above the retained
+sequence or a `knownFrameRevision` above the retained revision refuses.
+
+Each returned event carries its epoch `at` and a derived ISO UTC `atUtc`. The
+epoch stays authoritative; `atUtc` is `null` when the epoch is outside the
+date conversion range. A returned `create` event has an empty `message` and
+`frameOmitted: "current-frame-returned-separately"`. The retained event keeps
+its original frame text. Reads do not start a host or model, and a read
+acknowledges no notice. Events record their sender, origin, frame revision,
+and reply reference.
 
 A frame is an attributed statement, not authenticated authority. A
 `carried-authority` post requires a source, but its label does not grant
@@ -1884,9 +1916,15 @@ Recovery from a full or closed thread reads its frame before creating another
 thread with all required fields. Because joining grants no permission to revise,
 a nonmember without that permission joins and posts a proposal instead.
 
-Creating or joining opts into passive notices for later events. Each notice
-contains a bounded excerpt and a thread/event reference. A native write places
-it at an existing conversation boundary without starting a model turn. An idle
+Creating or joining opts into passive notices for later events. A passive
+notice is an event fact without message text: the thread, event sequence,
+frame revision, event kind, sender, epoch time with its derived UTC time, and
+the exact `agent_collaborate` read call for the retained event. A notice for a
+named `notify` recipient states that attention was requested and adds an
+excerpt of at most 512 UTF-16 code units. The excerpt ends at a word boundary
+where one exists, a cut excerpt ends with `[cut]`, and the same read call
+returns the full event. A native write places a passive notice
+at an existing conversation boundary without starting a model turn. An idle
 peer learns it on later work, not immediately. If a run ends with only writes
 queued, the host places those writes at an idle boundary without starting a run.
 Only named `notify` recipients
@@ -1908,7 +1946,9 @@ state. A primary process restart can repeat a displayed notice after loss of
 its in-memory deduplication.
 
 Each call bounds visits, records, and bytes. A thread frame and membership fit
-within 24 KiB, each event within 20 KiB, and a read page within 48 KiB. Global
+within 24 KiB, each event within 20 KiB, and a read page within 48 KiB. A page
+stops before an event that exceeds that bound. A page that cannot hold its
+metadata and one event refuses and claims no progress. Global
 hints are not an exhaustive search of retained history. Explicit coverage and
 scoped continuation are part of the result, not a claim that absent matches
 do not exist.

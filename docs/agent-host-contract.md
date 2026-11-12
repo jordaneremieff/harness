@@ -723,7 +723,7 @@ These are retained/read projections, not proof of operation completion outside t
 
 A collaboration thread is a shared frame (purpose, authority, restrictions, acceptance, integrator), a member list, and an append-only exchange of numbered events. Each thread lives in the storage that created it, and its identity is `<storageId>/<32 lowercase hexadecimal characters>`. A storage-scoped list or read serves only that storage: there is no cross-storage native index. The client selects the storage by its canonical identity. Cold reads use a private snapshot without starting a host. Cross-storage discovery uses catalog hints, then a consumer selects each storage for a full list or read.
 
-`collaboration-list` and `collaboration-read` are read-only, retry-safe, and have no `durable` identity (see [Current operation identities](#current-operation-identities)). Neither takes `sessionId` or `conversationId`; the connection selects the storage. They never start a model or write state. `collaboration-mutate` is not described here. Text fields are returned as stored, with no truncation except the 160-character `purpose` of a list summary.
+`collaboration-list` and `collaboration-read` are read-only, retry-safe, and have no `durable` identity (see [Current operation identities](#current-operation-identities)). Neither takes `sessionId` or `conversationId`; the connection selects the storage. They never start a model or write state. `collaboration-mutate` is not described here. Text fields are returned as stored, with two exceptions: a list summary shortens `purpose` to 160 characters, and a read omits the frame text of a `create` event.
 
 ### Catalog thread discovery
 
@@ -769,18 +769,53 @@ CollaborationSummary = {id:string, title:string, purpose:string, updatedAt:numbe
 
 ### collaboration-read
 
-Params: `{threadId:string, limit?:integer 1..20, before?:positiveInteger}`. `threadId` is required and must be an identity returned by `collaboration-list` or by thread creation. `limit` defaults to 10. `before` is an exclusive upper event sequence: the page holds the newest events with `sequence < before`. Omission selects the newest events. A `before` above the thread's `sequence + 1` fails. There is no cursor member; older pages use the previous page's `nextBefore` as `before`. Source: `extensions/agent/collaboration.ts:86-90,124-128,217-240`; `extensions/agent/durable-host.ts:443`.
+Params are one of two closed selector forms:
 
-Result:
+```text
+{threadId:string, limit?:integer 1..20, before?:positiveInteger}
+{threadId:string, limit?:integer 1..20, after:nonnegativeInteger, knownFrameRevision?:positiveInteger}
+```
+
+`threadId` is required and must be an identity returned by `collaboration-list` or by thread creation. `limit` defaults to 10. The reader refuses a member outside these forms, except the caller-routing members that `validateCollaborationAction` permits for every action (`action`, `sessionId`, `senderIdentity`, `origin`, `requestId`, `ownerId`, `cwd`). Source: `extensions/agent/collaboration.ts` (`readCollaboration`, `validateReadCursors`); `collaboration-contract.ts` (`validateCollaborationAction`); `durable-host.ts` (`collaboration-read`).
+
+Without `after`, the read is backward. `before` is an exclusive upper event sequence: the page holds the newest events with `sequence < before`. Omission selects the newest events. A `before` above the thread's `sequence + 1` fails. There is no cursor member; older pages use the previous page's `nextBefore` as `before`.
+
+Backward result:
 
 ```text
 {
   thread: CollaborationThread,
-  events: CollaborationEvent[],
+  events: CollaborationEventView[],
   nextBefore: number|null,
   pending: number,
   coverage: {complete:boolean, bytes:number}
 }
+```
+
+With `after`, the read is forward. `after` is an exclusive lower event sequence: the page holds the oldest events with `sequence > after`, and `after:0` starts at the first event. `after` and `before` are exclusive. `knownFrameRevision` requires `after`. An `after` above the thread's `sequence`, or a `knownFrameRevision` above its `revision`, fails.
+
+Forward result:
+
+```text
+{
+  direction: "forward",
+  threadId: string,
+  frameRevision: number,
+  sequence: number,
+  closed: boolean,
+  thread?: CollaborationThread,
+  events: CollaborationEventView[],
+  next: null | {tool:"agent_collaborate", action:"read", threadId:string, after:number, knownFrameRevision:number, limit:number},
+  pending: number,
+  coverage: {complete:boolean, bytes:number, after:number, through:number}
+}
+```
+
+`frameRevision`, `sequence`, and `closed` are the thread's current values. `thread` is absent exactly when the supplied `knownFrameRevision` equals the current revision. `coverage.after` repeats the request cursor, and `coverage.through` is the sequence of the newest returned event, or `after` when the page holds none. `coverage.complete` is true exactly when `through` equals the thread's `sequence`. `next` is `null` on a complete page; otherwise it is the complete call for the following page, with `after` set to `through`, the current revision, and the applied `limit`. Only the backward result has `nextBefore`, and only the forward result has `direction`.
+
+Shared types:
+
+```text
 CollaborationThread = {
   title, purpose, authority, source, restrictions, acceptance: string,
   integrator: string,
@@ -793,13 +828,19 @@ CollaborationEvent = {
   origin: "model"|"operator", kind: string, message: string, source: string,
   replyTo: number|null, revision: number, notify: string[]
 }
+CollaborationEventView = CollaborationEvent & {
+  atUtc: string|null,
+  frameOmitted?: "current-frame-returned-separately"
+}
 ```
 
-`events` are oldest first within the page, and event sequences start at 1. `nextBefore` is the sequence of the oldest returned event when older events remain, otherwise `null`. `coverage.complete` is true exactly when no older event remains, and `coverage.bytes` is the serialized size of the page. A page stops adding events before it would exceed 48 KiB, so it can hold fewer events than `limit`; follow `nextBefore` until it is `null`. `thread` is the current state, not the state at the time of each event: `revision` in an event is the frame revision that was current when the event was appended. `pending` is the number of unacknowledged delivery notices that this thread created for its members and for explicitly notified identities; it is a delivery count, not a read state.
+`events` are oldest first within the page in both directions, and event sequences start at 1. `nextBefore` is the sequence of the oldest returned event when older events remain, otherwise `null`. For a backward page, `coverage.complete` is true exactly when no older event remains. `coverage.bytes` is the serialized size of the page. A page stops adding events before it would exceed 48 KiB, so it can hold fewer events than `limit`; follow `nextBefore` or `next` until it is `null`. A page whose metadata and one event exceed that bound fails as `source_unreadable` and claims no progress. `thread` is the current state, not the state at the time of each event: `revision` in an event is the frame revision that was current when the event was appended. `pending` is the number of unacknowledged delivery notices that this thread created for its members and for explicitly notified identities; it is a delivery count, not a read state.
 
 `sender`, `creator`, `integrator`, member `identity`, and `notify` entries are external conversation identities (`storageId` for a root, `storageId:conversationId` otherwise). They carry no display names. `sequence` on the thread is the sequence of its latest event. `at`, `createdAt`, `updatedAt`, and `joinedAt` are epoch milliseconds.
 
-Event `kind` is one of `create`, `join`, `leave`, `contribution`, `carried-authority`, `revise`, `close`. For `create` and `revise`, `message` is the JSON text of the frame at that revision (`{title,purpose,authority,source,restrictions,acceptance,integrator}`) and is not prose. For every other kind `message` is the sender's text, and `join` and `leave` supply a default sentence when the sender wrote none. `source` is the sender's evidence citation; it is required for `carried-authority` and can be an empty string for other kinds. `replyTo` names an earlier event sequence in the same thread. `origin:"operator"` marks input that came from the operator rather than from a model. Message text is untrusted agent content: it does not establish authority for the reader. A closed thread stays readable. Source: `extensions/agent/collaboration.ts:36-59,104-123,130-177,179-215,217-240`.
+`atUtc` is the ISO 8601 UTC form of `at`, derived at read time, and `null` when `at` is outside the date conversion range. The epoch `at` stays authoritative.
+
+Event `kind` is one of `create`, `join`, `leave`, `contribution`, `carried-authority`, `revise`, `close`. A stored `create` or `revise` event holds the JSON text of the frame at that revision (`{title,purpose,authority,source,restrictions,acceptance,integrator}`), which is not prose. A read returns a `revise` event with that text. It returns a `create` event with `message:""` and `frameOmitted:"current-frame-returned-separately"`; the stored event is unchanged. For `join`, `message` is the member's participation declaration, or a default sentence when the declaration is empty. For `leave`, it is the sender's text, or a default sentence when the sender wrote none. For every other kind `message` is the sender's text. `source` is the sender's evidence citation; it is required for `carried-authority` and can be an empty string for other kinds. `replyTo` names an earlier event sequence in the same thread. `origin:"operator"` marks input that came from the operator rather than from a model. Message text is untrusted agent content: it does not establish authority for the reader. A closed thread stays readable. Source: `extensions/agent/collaboration.ts` (`appendEvent`, `applyThreadAction`, `joinThread`, `eventView`, `readBackward`, `readForward`); `collaboration-contract.ts` (`CollaborationEventView`, `CollaborationForwardPage`); `thread-notice-projection.ts` (`utcTime`).
 
 ### Collaboration errors
 
@@ -815,6 +856,15 @@ text. Native reader messages include:
 | thread absent in this storage | `Thread not found` |
 | `limit` not an integer 1..20 | `limit must be 1..20` |
 | `before` not an integer in `1..sequence+1` | `before must be a retained event cursor` |
+| `after` not a nonnegative integer | `after must be a retained event cursor` |
+| `knownFrameRevision` not a positive integer | `knownFrameRevision must be a retained frame revision` |
+| `after` and `before` both present | `after and before are exclusive` |
+| `knownFrameRevision` without `after` | `knownFrameRevision requires after` |
+| `after` above `sequence`, or `knownFrameRevision` above `revision` | `after and knownFrameRevision must not exceed the retained sequence and revision` |
+| a member outside the selected operation's field set | `<member> is not valid for action <action>` |
+| a value or selector combination outside the closed forms | `Invalid fields or selector combinations for action <action>` |
+| `action` present and different from the operation | `Thread read requires action read` or `Thread list requires action list` |
+| page metadata and one event exceed 48 KiB | `Thread event and read metadata exceed the page byte bound; no progress is claimed` |
 | a stored event is missing | `Thread event N is unavailable; no complete history is claimed` |
 | `cursor` not a decimal offset in range | `Invalid local thread cursor` |
 | `query` blank or over 256 characters | `query is required and must be nonblank text` or `query exceeds the maximum length of 256 characters` |

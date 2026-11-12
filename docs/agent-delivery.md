@@ -181,9 +181,9 @@ peer thread for the real overlap. Record the governing frame and the order of
 shared mutations there. Ordinary primaries alone have no thread storage; use
 direct agreement rather than start an unnecessary agent just to hold a thread.
 A contact-thread claim links the effort to that retained exchange. Use the shared
-frame for the governing purpose and each member's `contribution` for its current
-hold, release, or continuing condition. Rejoin to replace your contribution and
-cite the source exchange. Threads and Related efforts display these declarations;
+frame for the governing purpose and each member's `participation` declaration
+for its current hold, release, or continuing condition. Rejoin with a new
+`participation` to replace your declaration and cite the source exchange. Threads and Related efforts display these declarations;
 a member's release is not consensus, permission, or proof of machine availability.
 
 A full suite needs no claim and no prior status read. A session that needs a
