@@ -128,7 +128,7 @@ export function continuityWorkText(ownerId: string, items: readonly ContinuityOp
 		dependsOn: item.results.map((result) => ({ sessionId: result.sessionId, submissionId: result.submissionId, ...(result.requestId === undefined ? {} : { requestId: result.requestId }) })),
 	}));
 	const list = listed("Declared open work of this session at the first request after this context head; each item owes one final report to its replyTo", rows);
-	return rows.length === 0 ? list : `${list}\nOnly agent_work complete closes an item. Read current items, notes and dependency states with ${status}.`;
+	return rows.length === 0 ? list : `${list}\nAn arrived result closes no item: agent_work complete closes it, and a host abort or reset closes it with a final report. Read current items, notes and dependency states with ${status}.`;
 }
 /** `work` counts only when it was read for this head; open work of another head never enters the note. */
 export function nativeContinuityText(ownerId: string, headId: number, events: readonly ContinuityEvent[], work?: ContinuityWork): string {

@@ -82,11 +82,11 @@ it("lists declared open work by identifiers only and names a head whose work was
 		"Declared open work of this session at the first request after this context head; each item owes one final report to its replyTo: ",
 		'{"requestId":"request-a","replyTo":"owner","dependsOn":[{"sessionId":"worker:2","submissionId":7,"requestId":"task-a"},{"sessionId":"worker:3","submissionId":9}]}',
 		'{"requestId":"request-b","replyTo":"other","dependsOn":[]}',
-		'Only agent_work complete closes an item. Read current items, notes and dependency states with agent_status({"sessionId":"owner:3"}).',
+		'An arrived result closes no item: agent_work complete closes it, and a host abort or reset closes it with a final report. Read current items, notes and dependency states with agent_status({"sessionId":"owner:3"}).',
 	].join("\n"));
 	assert.equal(continuityWorkText("owner", []), "Declared open work of this session at the first request after this context head; each item owes one final report to its replyTo: none");
 	assert.equal(continuityWorkText("owner", undefined), 'Declared open work of this session: not read for this context head. Read it with agent_status({"sessionId":"owner"}).');
-	assert.match(continuityWorkText("owner", Array.from({ length: 34 }, (_, index) => ({ requestId: `request-${index}`, replyTo: "owner", results: [] }))), /\n2 more not listed\nOnly agent_work complete/u);
+	assert.match(continuityWorkText("owner", Array.from({ length: 34 }, (_, index) => ({ requestId: `request-${index}`, replyTo: "owner", results: [] }))), /\n2 more not listed\nAn arrived result closes no item/u);
 
 	const text = nativeContinuityText("owner", 10, [], { headId: 10, items });
 	assert.ok(text.startsWith("Host-held continuity facts from the Agent extension for context head entry 10."));

@@ -84,7 +84,7 @@ it("reads declared open work once for a head, retains it, and keeps the note thr
 	await mirror.prepare(conversation.id, context);
 	const frozen = mirror.current(conversation.id);
 	assert.ok(frozen);
-	assert.match(frozen.text, /first request after this context head; each item owes one final report to its replyTo: \n\{"requestId":"request-a","replyTo":"owner","dependsOn":\[\{"sessionId":"worker:2","submissionId":7,"requestId":"task-a"\}\]\}\n\{"requestId":"request-b","replyTo":"owner","dependsOn":\[\]\}\nOnly agent_work complete/u);
+	assert.match(frozen.text, /first request after this context head; each item owes one final report to its replyTo: \n\{"requestId":"request-a","replyTo":"owner","dependsOn":\[\{"sessionId":"worker:2","submissionId":7,"requestId":"task-a"\}\]\}\n\{"requestId":"request-b","replyTo":"owner","dependsOn":\[\]\}\nAn arrived result closes no item/u);
 	assert.doesNotMatch(frozen.text, /request-closed|state note that stays out/u);
 	assert.deepEqual((await harness.snapshot(ContinuityDoc, conversation.id, context))?.work, { headId: head.id, items: [
 		{ requestId: "request-a", replyTo: "owner", results: [{ sessionId: "worker:2", submissionId: 7, requestId: "task-a" }] },
@@ -117,7 +117,7 @@ it("reads declared open work once for a head, retains it, and keeps the note thr
 	await reopened.prepare(conversation.id, context);
 	const next = reopened.current(conversation.id);
 	assert.equal(next?.head.id, second.id);
-	assert.match(next?.text ?? "", /replyTo: \n\{"requestId":"request-b","replyTo":"owner","dependsOn":\[\]\}\n\{"requestId":"request-c","replyTo":"owner","dependsOn":\[\]\}\nOnly/u, "a new head reads the open items of its own first request");
+	assert.match(next?.text ?? "", /replyTo: \n\{"requestId":"request-b","replyTo":"owner","dependsOn":\[\]\}\n\{"requestId":"request-c","replyTo":"owner","dependsOn":\[\]\}\nAn arrived result/u, "a new head reads the open items of its own first request");
 });
 
 it("states a failed open-work read in the note of that head and does not repeat the read", async (t) => {
