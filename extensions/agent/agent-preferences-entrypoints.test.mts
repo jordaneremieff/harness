@@ -313,10 +313,10 @@ for (const operation of ["creation", "configure"] as const) it(`native ${operati
 it("advertises selection-aware manager controls without changing message admission", () => {
 	assert.equal(MANAGER_CONTRACT, "manager/7.0.0");
 	assert.match(CONTROL_BINDING_CONTRACT, /^native-controls\/3\.0\.0;durable=/u);
-	for (const method of ["spawn", "resolve-agent"]) assert.deepEqual(HOST_CONTRACT.operations[method], { request: `${method}/2.0.0`, response: `${method}/2.1.0` });
-	assert.deepEqual(HOST_CONTRACT.operations.place, { request: "place/2.1.0", response: "place/2.2.0" });
+	for (const method of ["spawn", "resolve-agent"]) assert.deepEqual(HOST_CONTRACT.operations[method], { request: `${method}/2.0.0`, response: `${method}/2.2.0` });
+	assert.deepEqual(HOST_CONTRACT.operations.place, { request: "place/2.1.0", response: "place/2.3.0" });
 	assert.deepEqual(HOST_CONTRACT.operations.configure, { request: "configure/1.3.0", response: "configure/1.3.0" });
-	assert.deepEqual(HOST_CONTRACT.operations["task-submit"], { request: "task-submit/1.1.0", response: "task-submit/1.3.0" });
-	assert.deepEqual(HOST_CONTRACT.operations.submit, { request: "submit/1.7.0", response: "submit/1.3.0" });
+	assert.deepEqual(HOST_CONTRACT.operations["task-submit"], { request: "task-submit/1.1.0", response: "task-submit/1.4.0" });
+	assert.deepEqual(HOST_CONTRACT.operations.submit, { request: "submit/1.7.0", response: "submit/1.4.0" });
 	assert.deepEqual(HOST_CONTRACT.operations.receipts, { request: "receipts/3.0.0", response: "receipts/3.0.0", durable: HOST_CONTRACT.upstream.durable });
 });

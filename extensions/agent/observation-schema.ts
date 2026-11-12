@@ -448,7 +448,7 @@ export const RetainedReportReceiptSchema = obj({
 	sourceId: string, requestId: string, ownerId: string, senderIdentity: string, createdAt: number, acknowledged: boolean,
 	replyTo: nullableText, passive: opt(boolean), boundary: string,
 	/** `pending`, `parked` or `terminal` until the recipient admits the row; an unadmitted row is unplaced. */
-	delivery: opt(union([lit("pending"), lit("parked"), lit("terminal"), lit("admitted")])), placement: opt(union([lit("placed"), lit("unplaced")])),
+	delivery: opt(union([lit("pending"), lit("parked"), lit("terminal"), lit("admitted")])), placement: opt(union([lit("placed"), lit("unplaced"), lit("withdrawn")])),
 });
 const compactEnvelope = {
 	format: lit("compact"), storageId: opt(string), live: opt(boolean), omitted: arr(string),
