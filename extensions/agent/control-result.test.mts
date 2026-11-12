@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { controlText, readableControlText, projectReportReceipt, REPORT_RECEIPT_BOUNDARY, resultContinuationLines } from "./control-result.ts";
+import { controlText, readableControlText, projectReportReceipt, REPORT_RECEIPT_BOUNDARY, receiptContinuationLine, resultContinuationLines } from "./control-result.ts";
 import { AnswerContinuationSchema, ReceiptContinuationSchema, ResultToolOutputSchema } from "./observation-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
 
@@ -32,6 +32,10 @@ it("keeps answer and receipt cursor schemas exclusive and bounded", () => {
 	assert.equal(matchesSchema(ReceiptContinuationSchema, { ...receiptContinuation, offset: 4 }), false);
 	assert.equal(matchesSchema(ReceiptContinuationSchema, { ...receiptContinuation, receiptCursor: "a".repeat(2049) }), false);
 	assert.deepEqual(resultContinuationLines({ answerContinuation: { ...answerContinuation, extra: true } }), []);
+	assert.deepEqual(resultContinuationLines({ answerContinuation: receiptContinuation, receiptGroup: { next: answerContinuation } }), []);
+	assert.equal(receiptContinuationLine(answerContinuation), undefined);
+	assert.equal(receiptContinuationLine({ ...receiptContinuation, offset: 0 }), undefined);
+	assert.equal(receiptContinuationLine(receiptContinuation), `Receipt continuation: agent_inspect(${JSON.stringify(Object.fromEntries(Object.entries(receiptContinuation).filter(([key]) => key !== "tool")))})`);
 	assert.equal(matchesSchema(ResultToolOutputSchema, { ...result, receiptGroup: { ...result.receiptGroup, results: Array(17).fill(result.receiptGroup.results[0]) } }), false);
 });
 

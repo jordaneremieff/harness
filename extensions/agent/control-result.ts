@@ -14,13 +14,20 @@ function inspectCall(value: unknown): string | undefined {
 	return `agent_inspect(${JSON.stringify(args)})`;
 }
 
+/** Receipt references advance only through their typed cursor, never through an answer offset. */
+export function receiptContinuationLine(value: unknown): string | undefined {
+	if (!matchesSchema(ReceiptContinuationSchema, value)) return undefined;
+	const call = inspectCall(value);
+	return call === undefined ? undefined : `Receipt continuation: ${call}`;
+}
+
 /** Body pages and recipient-reference pages have independent selectors and progress. */
 export function resultContinuationLines(value: unknown): string[] {
 	const row = record(value);
 	if (!row) return [];
-	const answer = inspectCall(row.answerContinuation);
-	const receipt = inspectCall(record(row.receiptGroup)?.next);
-	return [...(answer ? [`Answer continuation: ${answer}`] : []), ...(receipt ? [`Receipt continuation: ${receipt}`] : [])];
+	const answer = matchesSchema(AnswerContinuationSchema, row.answerContinuation) ? inspectCall(row.answerContinuation) : undefined;
+	const receipt = receiptContinuationLine(record(row.receiptGroup)?.next);
+	return [...(answer ? [`Answer continuation: ${answer}`] : []), ...(receipt ? [receipt] : [])];
 }
 
 function readableResult(value: Record<string, unknown>): string {

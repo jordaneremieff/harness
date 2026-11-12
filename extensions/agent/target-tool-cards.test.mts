@@ -8,14 +8,15 @@ import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult, Theme } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
-import { createAgentToolCards, operatorNoticeBody, type AgentCardContext } from "./tool-cards.ts";
+import type { Communication } from "./communication.ts";
+import { createAgentToolCards, compactCommunicationRenderer, operatorNoticeBody, renderCommunicationCard, renderPeerNoticeCard, type AgentCardContext } from "./tool-cards.ts";
 import { projectSelectedStatus, projectStorageStatus } from "./status-overview.ts";
 import { controlText, readableControlText, projectReportReceipt } from "./control-result.ts";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 
 initTheme("dark", false);
 const nativeTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
-const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
+const theme = { fg: (_color: string, value: string) => value, bg: (_color: string, value: string) => value, getBgAnsi: () => "", bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): string[] }) => component.render(240).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
 const context = (overrides: Partial<AgentCardContext> = {}): AgentCardContext => ({ ...cardKeys, args: {}, expanded: false, argsComplete: true, isError: false, ...overrides });
 const id = "12345678-1234-1234-1234-123456789abc";
@@ -86,6 +87,47 @@ describe("compact observation cards", () => {
 		assert.match(output, /Receipt continuation: agent_inspect/u);
 		assert.ok(screen(cards.agent_inspect.renderResult(result, { expanded: true, isPartial: false }, theme, context({ expanded: true }))).includes("Readable answer"));
 		assert.match(screen(cards.agent_inspect.renderCall({ sessionId: id, view: "result", receiptCursor: "next" }, theme, context())), /receipt references page/u);
+	});
+
+	it("renders exact communication receipt calls even when this chunk clips no references", () => {
+		const receiptContinuation = { tool: "agent_inspect", view: "result", sessionId: id, submissionId: 7, requestId: "input", receiptCursor: "cGFnZTI" };
+		const receiptCall = `agent_inspect(${JSON.stringify({ view: "result", sessionId: id, submissionId: 7, requestId: "input", receiptCursor: "cGFnZTI" })})`;
+		const answerCall = `agent_inspect(${JSON.stringify({ view: "result", sessionId: id, submissionId: 7, requestId: "input", offset: 4096 })})`;
+		for (const omittedReferences of [0, 2]) {
+			const metadata = { status: "done" as const, references: [{ submissionId: 7, requestId: "input" }], omittedReferences, receiptContinuation };
+			const value: Communication = { format: "agent.communication/1", kind: "result", sender: { identity: id }, recordedAt: 1, body: { text: `Answer excerpt\n\nAnswer continuation: ${answerCall}`, complete: false, redacted: false }, metadata };
+			const before = structuredClone(value);
+			const full = screen(renderCommunicationCard(value, theme, { expanded: true, ...cardKeys }));
+			assert.ok(full.includes(`Receipt continuation: ${receiptCall}`));
+			assert.ok(full.includes(`Answer continuation: ${answerCall}`));
+			assert.match(full, /references? in this delivery chunk · more reference pages/u);
+			assert.match(full, /further group pages have unknown size/u);
+			const renderer = compactCommunicationRenderer();
+			const component = renderer({ role: "custom", customType: "agent.communication", content: value.body.text, details: value, timestamp: 1, display: true }, { expanded: true, outputPad: 0, ...cardKeys }, theme);
+			assert.ok(component);
+			const compact = screen(component);
+			assert.ok(compact.includes(`Receipt continuation: ${receiptCall}`));
+			assert.ok(compact.includes(`Answer continuation: ${answerCall}`));
+			assert.match(compact, /more receipt references/u);
+			assert.deepEqual(value, before);
+		}
+	});
+
+	it("uses ordinary receipt metadata without parsing body prose or requiring a receipt association", () => {
+		const receiptContinuation = { tool: "agent_inspect", view: "result", sessionId: id, submissionId: 7, requestId: "input", receiptCursor: "cGFnZTI" };
+		const receiptCall = `agent_inspect(${JSON.stringify({ view: "result", sessionId: id, submissionId: 7, requestId: "input", receiptCursor: "cGFnZTI" })})`;
+		const content = "Answer excerpt with no receipt call in its prose.";
+		const details = { kind: "receipt", identity: id, status: "done", receiptContinuation };
+		const component = renderPeerNoticeCard({ content, details, timestamp: 1 }, theme, true, cardKeys);
+		assert.ok(component);
+		const output = screen(component);
+		assert.ok(output.includes(`Receipt continuation: ${receiptCall}`));
+		assert.ok(output.includes(content));
+		assert.match(output, /more receipt references/u);
+		const invalid = renderPeerNoticeCard({ content, details: { ...details, receiptContinuation: { ...receiptContinuation, offset: 0 } }, timestamp: 1 }, theme, true, cardKeys);
+		assert.ok(invalid);
+		assert.match(screen(invalid), /Receipt continuation unavailable: invalid source metadata/u);
+		assert.doesNotMatch(screen(invalid), /Receipt continuation: agent_inspect/u);
 	});
 
 	it("shows retained report acknowledgement without a sender body or a consumption claim", () => {

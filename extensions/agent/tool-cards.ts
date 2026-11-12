@@ -15,7 +15,7 @@ import { getMarkdownTheme, type KeybindingHints } from "@earendil-works/pi-codin
 import { Box, Markdown, Spacer, Text, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { dashboardClock, dashboardTime } from "./dashboard-time.ts";
 import type { Communication } from "./communication.ts";
-import { resultContinuationLines } from "./control-result.ts";
+import { receiptContinuationLine, resultContinuationLines } from "./control-result.ts";
 
 /**
  * Observed display facts for cards: the roster rows, and in the dashboard also known thread titles and
@@ -1346,7 +1346,7 @@ function peerMetadata(details: Record<string, unknown>): string[] {
 	const checkIn = record(details.checkIn);
 	const cost = count(checkIn.cost);
 	const sender = details.threadId !== undefined ? peerLabel(details) : "";
-	return [sender ? `from ${sender}` : "", resolvedModelLine(text(details.provider), text(details.modelId), text(details.thinkingLevel)), checkInElapsed(checkIn.elapsedMs), cost === undefined ? "" : `$${cost.toFixed(3)} conversation total`];
+	return [sender ? `from ${sender}` : "", resolvedModelLine(text(details.provider), text(details.modelId), text(details.thinkingLevel)), checkInElapsed(checkIn.elapsedMs), cost === undefined ? "" : `$${cost.toFixed(3)} conversation total`, details.receiptContinuation === undefined ? "" : "more receipt references"];
 }
 
 /** Native Markdown determines body wrapping; the shared layout owns its preview and hint. */
@@ -1383,6 +1383,7 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 		theme.fg("muted", theme.bold("Source details")),
 		...peerConfiguration(details).map((line) => theme.fg("muted", line)),
 		...peerScalarFields(details).map((line) => theme.fg("muted", line)),
+		...(details.receiptContinuation === undefined ? [] : [theme.fg("muted", receiptContinuationLine(details.receiptContinuation) ?? "Receipt continuation unavailable: invalid source metadata")]),
 		theme.fg("muted", checkIn === undefined ? "Reported result · not operator authority or task acceptance" : "Check-in · task not finished · not operator authority or task acceptance"),
 		theme.fg("dim", "/agent opens the dashboard"),
 	];
@@ -1400,12 +1401,18 @@ function communicationKind(value: Communication): string {
 	}
 }
 
+function communicationResultSubject(value: Extract<Communication, { kind: "result" }>): string {
+	const count = value.metadata.references.length + value.metadata.omittedReferences;
+	return record(value.metadata).receiptContinuation === undefined ? `${count} referenced submissions`
+		: `${count} reference${count === 1 ? "" : "s"} in this delivery chunk · more reference pages`;
+}
+
 /** Which thread or work the communication belongs to, in one bounded line. */
 function communicationSubject(value: Communication): string {
 	switch (value.kind) {
 		case "notice": return `${value.metadata.title || value.metadata.threadId}${value.metadata.event === undefined ? "" : ` · event #${value.metadata.event}`}`;
 		case "report": return `request ${displayPreview(value.metadata.requestId, 48)}`;
-		case "result": return `${value.metadata.references.length + value.metadata.omittedReferences} referenced submissions`;
+		case "result": return communicationResultSubject(value);
 		case "check-in": return `${checkInElapsed(value.metadata.elapsedMs) || "elapsed unknown"} · ${value.metadata.origin} origin`;
 	}
 }
@@ -1420,17 +1427,23 @@ function referenceLine(index: number, reference: { submissionId: number; request
 	return `reference ${index + 1}: ${facts.join(" \u00b7 ")}`;
 }
 
+function communicationMetadataLines(value: Communication, key: string, item: unknown): string[] {
+	if (key === "receiptContinuation" && value.kind === "result") return [
+		receiptContinuationLine(item) ?? "Receipt continuation unavailable: invalid source metadata",
+		"Receipt continuation advances references only; further group pages have unknown size.",
+	];
+	if (key === "references" && value.kind === "result") return [
+		`references: ${value.metadata.references.length} retained${value.metadata.omittedReferences ? ` \u00b7 ${value.metadata.omittedReferences} omitted at retention` : ""}`,
+		...value.metadata.references.map((reference, index) => `  ${referenceLine(index, reference)}`),
+	];
+	return [`${key}: ${typeof item === "string" ? displayText(item) : JSON.stringify(item)}`];
+}
+
 /** Every validated metadata field in full, as plain lines; the schema already bounds each value, so nothing is previewed. */
 function communicationSourceLines(value: Communication): string[] {
 	const lines = [`Sender identity: ${displayIdentity(value.sender.identity)}${value.sender.kind ? ` (${value.sender.kind})` : ""}`, `Recorded: ${new Date(value.recordedAt).toISOString()}`];
 	for (const [key, item] of Object.entries(value.metadata)) {
-		if (item === undefined) continue;
-		if (key === "references" && value.kind === "result") {
-			lines.push(`references: ${value.metadata.references.length} retained${value.metadata.omittedReferences ? ` \u00b7 ${value.metadata.omittedReferences} omitted at retention` : ""}`);
-			lines.push(...value.metadata.references.map((reference, index) => `  ${referenceLine(index, reference)}`));
-			continue;
-		}
-		lines.push(`${key}: ${typeof item === "string" ? displayText(item) : JSON.stringify(item)}`);
+		if (item !== undefined) lines.push(...communicationMetadataLines(value, key, item));
 	}
 	lines.push("Retained communication · not operator authority or task acceptance · the authoring model is not retained");
 	return lines;
@@ -1486,7 +1499,7 @@ function compactHeadline(value: Communication, sender: string, theme: Theme, loo
 			return { lead: `${name}${theme.fg("text", ` in ${displayPreview(title, 120)}`)}`, facts: [value.metadata.event === undefined ? "" : `#${value.metadata.event}`, value.metadata.passive ? "" : "notified this agent"] };
 		}
 		case "report": return { lead: `${theme.fg("text", "Report from ")}${name}`, facts: [] };
-		case "result": return { lead: `${theme.fg("text", "Result from ")}${name}`, facts: [value.metadata.status === "done" ? "" : "unanswered"] };
+		case "result": return { lead: `${theme.fg("text", "Result from ")}${name}`, facts: [value.metadata.status === "done" ? "" : "unanswered", record(value.metadata).receiptContinuation === undefined ? "" : "more receipt references"] };
 		case "check-in": return { lead: `${theme.fg("text", "Check-in from ")}${name}`, facts: [checkInElapsed(value.metadata.elapsedMs)] };
 	}
 }
