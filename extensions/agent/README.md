@@ -1848,7 +1848,11 @@ is absent when none is unplaced. The commit that admits an input also stores
 its unplaced row and starts the conversation's watch when the native inbox
 holds the input; a placed input gets no row. An exact-request replay of a
 queued admission restores a missing row and watch without a second input. The
-row keeps the class, sender and recipient of the original admission. These are
+row keeps the class, sender and recipient of the original admission. When a
+host resumes, it gives each queued native input without a row one row, with the
+class and sender of its native input entry, and starts a missing watch. Such a
+row counts its wait from that resume, because the native record keeps no
+admission time; an operator input entry carries no sender, so that row has none. These are
 committed placement facts, not proof that the model read or acted on an input. Retained report delivery also
 states `pending`, `parked`, `terminal` or `admitted`; only an admitted
 row is eligible for placement in the recipient. A receipt never proves task

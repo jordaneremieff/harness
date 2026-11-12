@@ -56,7 +56,7 @@ import { LiveObservationService, type ObservationScope } from "./live-observatio
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
 import { resetConversation } from "./durable-reset.ts";
 import { closeOpenWork, parseDependencyMarks, recordDependencyMarks } from "./open-work.ts";
-import { UnplacedWatchEnd } from "./unplaced-inputs.ts";
+import { repairQueuedInputs, UnplacedWatchEnd } from "./unplaced-inputs.ts";
 import { TIMER_TASK_NAME, cancelTimer, listTimers, scheduleTimer, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
 
@@ -480,6 +480,7 @@ export class DurableHost {
 			catch { this.communicationDiagnostic = "retention-unavailable"; }
 			this.harness.resume();
 			await reconcileDeliveries(this.harness, context);
+			await repairQueuedInputs(this.harness, context, this.now, async (conversationId) => this.identity(conversationId));
 			await this.recovery.open(context);
 		})();
 		return this.resumeWork;

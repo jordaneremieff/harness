@@ -5,7 +5,7 @@ import { Harness, MemoryStorage, type Conversation } from "@earendil-works/pi-du
 import { linkDeliveryIntent, readOutcome, recordDeliveryIntent, submitConversation } from "./durable-controls.ts";
 import { migrateDeliveryStore } from "./delivery-store.ts";
 import { inputEntry } from "./input-entry.ts";
-import { readUnplacedSummary, UnplacedInputsDoc } from "./unplaced-inputs.ts";
+import { readUnplacedSummary, repairQueuedInputs, UnplacedInputsDoc } from "./unplaced-inputs.ts";
 import { answerMessage, fixtureProvider, fixtureModelId, fixtureRegistry, gateTool, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 
 async function busyHarness(t: { after(fn: () => unknown): void }): Promise<{ harness: Harness; root: Conversation; release: () => void }> {
@@ -58,5 +58,17 @@ it("repairs a linked admission without its unplaced row on exact-request replay,
 	const rows = (await harness.snapshot(UnplacedInputsDoc, root.id, context))?.inputs ?? [];
 	assert.deepEqual(rows.map((input) => [input.submissionId, input.class, input.sender, input.requestId]), [[submissionId, "steer", "sender-session", "gap"]]);
 	assert.equal((await readUnplacedSummary(harness, root.id, context)).unplaced, 1);
+	assert.equal(await watchIsLive(harness, root), true);
+});
+
+it("repairs queued inputs without rows on reopening, keeping the native entry's class and sender", { timeout: 30000 }, async (t) => {
+	const { harness, root } = await busyHarness(t);
+	const submissionId = await linkedWithoutRow(root, "gap");
+	const at = Date.now();
+	await repairQueuedInputs(harness, context, () => at, async () => "storage-identity");
+	await repairQueuedInputs(harness, context, () => at + 1000, async () => "storage-identity");
+	const state = await harness.snapshot(UnplacedInputsDoc, root.id, context);
+	assert.equal(state?.recipient, "storage-identity");
+	assert.deepEqual(state?.inputs.map((input) => [input.submissionId, input.class, input.sender, input.admittedAt]), [[submissionId, "steer", "sender-session", at]]);
 	assert.equal(await watchIsLive(harness, root), true);
 });

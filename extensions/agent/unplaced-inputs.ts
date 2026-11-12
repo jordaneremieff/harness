@@ -135,6 +135,37 @@ export async function prepareQueuedInputs(tx: Tx, conversationId: ConversationId
 	};
 }
 
+/**
+ * Restore the rows and the watch of queued inputs that have none, for example after an interruption between an
+ * earlier admission and its bookkeeping. Each conversation with a queued input gets one commit; a row's wait counts
+ * from this repair because the native record keeps no admission time.
+ */
+export async function repairQueuedInputs(harness: Harness, context: Context, now: () => number = Date.now, recipient?: (conversationId: ConversationId) => Promise<string | undefined>): Promise<void> {
+	const queuedIds = new Map<ConversationId, SubmissionId[]>();
+	for (const submission of (await harness.inspect(context)).submissions) {
+		if (submission.status !== "queued" || submission.type !== "input") continue;
+		queuedIds.set(submission.conversationId, [...queuedIds.get(submission.conversationId) ?? [], submission.id]);
+	}
+	for (const [conversationId, ids] of queuedIds) {
+		const identity = await recipient?.(conversationId);
+		await harness.commit((tx) => repairConversation(tx, conversationId, ids, now(), identity), context);
+	}
+}
+
+async function repairConversation(tx: Tx, conversationId: ConversationId, ids: readonly SubmissionId[], now: number, recipient: string | undefined): Promise<void> {
+	const present = new Set((await tx.doc(UnplacedInputsDoc, conversationId)).inputs.map((input) => input.submissionId));
+	const rows: QueuedInputRow[] = [];
+	for (const id of ids) {
+		if (present.has(id)) continue;
+		const record = await tx.submission(id);
+		if (record?.status === "queued") rows.push({ submissionId: id, requestId: record.requestId ?? "", admittedAt: now });
+	}
+	const retain = await prepareQueuedInputs(tx, conversationId, recipient);
+	const waiting = (await tx.doc(UnplacedInputsDoc, conversationId)).inputs.filter((input) => !input.noticed);
+	if (rows.length === 0 && waiting.length === 0) return;
+	await retain([...rows, ...waiting.map((input) => ({ submissionId: input.submissionId, requestId: input.requestId, admittedAt: input.admittedAt }))]);
+}
+
 function summary(inputs: readonly UnplacedInput[]): UnplacedSummary {
 	return inputs.length === 0 ? { unplaced: 0 } : { unplaced: inputs.length, oldestAdmittedAt: Math.min(...inputs.map((input) => input.admittedAt)) };
 }
