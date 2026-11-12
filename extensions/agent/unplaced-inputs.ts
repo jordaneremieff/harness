@@ -171,8 +171,22 @@ function plural(count: number): string {
 }
 
 /**
+ * The rows that stayed queued for the whole notice period, oldest first, and the count of the newer rows. Only the first
+ * group is said to wait "for more than 5 minutes".
+ */
+function stuck(rows: readonly UnplacedInput[], now: number): { due: UnplacedInput[]; newer: number } {
+	const due = rows.filter((row) => row.admittedAt + UNPLACED_NOTICE_MS <= now).sort((left, right) => left.admittedAt - right.admittedAt);
+	return { due, newer: rows.length - due.length };
+}
+
+function newerText(newer: number, owner: string): string {
+	return newer === 0 ? "" : `; ${newer} newer input${newer === 1 ? "" : "s"}${owner} ${newer === 1 ? "waits" : "wait"} there too`;
+}
+
+/**
  * Mark every queued explicit row of the sender; write the notice unless an earlier explicit row of that sender already
- * produced it. An event row that was marked without a notice does not count as a notice to its sender.
+ * produced it. An event row that was marked without a notice does not count as a notice to its sender. The one notice
+ * stands for every marked row, so it is passive only when each of them is a thread notice.
  */
 async function noticeSender(notice: NoticeContext, row: UnplacedInput): Promise<void> {
 	const { state, recipient } = notice;
@@ -180,8 +194,10 @@ async function noticeSender(notice: NoticeContext, row: UnplacedInput): Promise<
 	const repeat = own.some((input) => input.noticed);
 	for (const input of own) input.noticed = true;
 	if (repeat || row.sender === "" || row.sender === recipient) return;
-	const message = `Unplaced input notice: ${recipient} did not place ${plural(own.length)} from you for more than 5 minutes (oldest admitted ${new Date(row.admittedAt).toISOString()}, request ${row.requestId}). Current step: ${notice.step}. The recipient places queued inputs at the end of its current tool round; nothing was withdrawn.`;
-	await writeNotice(notice.tx, row.sender, recipient, `unplaced:${notice.conversationId}:${row.requestId}`, message, row.class === "thread-notice", notice.now);
+	const { due, newer } = stuck(own, notice.now);
+	const oldest = due[0] ?? row;
+	const message = `Unplaced input notice: ${recipient} did not place ${plural(due.length)} from you for more than 5 minutes (oldest admitted ${new Date(oldest.admittedAt).toISOString()}, request ${oldest.requestId})${newerText(newer, " from you")}. Current step: ${notice.step}. The recipient places queued inputs at the end of its current tool round; nothing was withdrawn.`;
+	await writeNotice(notice.tx, row.sender, recipient, `unplaced:${notice.conversationId}:${row.requestId}`, message, own.every((input) => input.class === "thread-notice"), notice.now);
 }
 
 const REQUESTER_RELATION: Record<RequesterKind, string> = { run: "which serves your request", work: "which holds open declared work for your request" };
@@ -192,9 +208,10 @@ async function noticeRequesters(notice: NoticeContext): Promise<void> {
 	const run = (await tx.doc(LiveDoc, conversationId)).run;
 	const requesters = [...await requestersOf(tx, conversationId)].filter(([requester]) => requester !== recipient && !state.inputs.some((input) => input.sender === requester && input.noticed && EXPLICIT_CLASSES.has(input.class)));
 	if (requesters.length === 0) return;
-	const oldest = Math.min(...state.inputs.map((input) => input.admittedAt));
+	const { due, newer } = stuck(state.inputs, notice.now);
+	if (due.length === 0) return;
 	for (const [requester, kind] of requesters) {
-		const message = `Unplaced input notice: ${recipient}, ${REQUESTER_RELATION[kind]}, did not place ${plural(state.inputs.length)} for more than 5 minutes (oldest admitted ${new Date(oldest).toISOString()}). Current step: ${notice.step}. The recipient places queued inputs at the end of its current tool round.`;
+		const message = `Unplaced input notice: ${recipient}, ${REQUESTER_RELATION[kind]}, did not place ${plural(due.length)} for more than 5 minutes (oldest admitted ${new Date(due[0].admittedAt).toISOString()})${newerText(newer, "")}. Current step: ${notice.step}. The recipient places queued inputs at the end of its current tool round.`;
 		await writeNotice(tx, requester, recipient, `unplaced:${conversationId}:run:${run?.taskId ?? 0}`, message, false, notice.now);
 	}
 }

@@ -244,7 +244,7 @@ it("sends one notice for each explicit sender with several queued inputs, and no
 	advance(f, EPOCH + UNPLACED_NOTICE_MS);
 	const first = await noticeFor(f, "sender-a");
 	assert.equal(first.sourceId, `unplaced:${f.id}:a-1`);
-	assert.match(first.message, /did not place 3 admitted inputs from you/u, "the one notice counts every queued input of the sender");
+	assert.match(first.message, /did not place 1 admitted input from you for more than 5 minutes \(oldest admitted [^)]*, request a-1\); 2 newer inputs from you wait there too\./u, "only the input that is five minutes old is said to wait that long; the one notice names the newer ones apart");
 	assert.equal((await notices(f)).length, 1, "the other sender's input is not due yet");
 
 	advance(f, EPOCH + 1000 + UNPLACED_NOTICE_MS);
@@ -432,4 +432,33 @@ it("states withdrawn, not placed, for a submission that is absent or left the in
 	assert.equal(placementOf(undefined), "withdrawn");
 	assert.equal(placementOf(await record(ids.placed), (f.id + 1) as ConversationId), "withdrawn", "a submission of another conversation is not this conversation's input");
 	assert.deepEqual((await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs ?? [], [], "no call recorded a row");
+});
+
+it("counts only inputs older than the notice period and sends an active notice when a stuck input is not a thread notice", async (t) => {
+	const f = await open(t);
+	const step = await stepTask(f);
+	await routedRun(f, step.id, "served", "requester-r");
+	await admit(f, "thread-1", "thread-notice", "sender-a");
+	f.clock.now = EPOCH + 1000;
+	await admit(f, "follow-1", "followUp", "sender-a");
+	f.clock.now = EPOCH + 2000;
+	await admit(f, "result-1", "result", "producer-p");
+
+	advance(f, EPOCH + UNPLACED_NOTICE_MS);
+	const sender = await noticeFor(f, "sender-a");
+	assert.equal(sender.sourceId, `unplaced:${f.id}:thread-1`);
+	assert.equal(sender.passive, undefined, "the notice also stands for the sender's follow-up, so it is not passive");
+	assert.ok(sender.message.includes(`did not place 1 admitted input from you for more than 5 minutes (oldest admitted ${new Date(EPOCH).toISOString()}, request thread-1); 1 newer input from you waits there too.`), sender.message);
+	const requester = await noticeFor(f, "requester-r");
+	assert.ok(requester.message.includes(`did not place 1 admitted input for more than 5 minutes (oldest admitted ${new Date(EPOCH).toISOString()}); 2 newer inputs wait there too.`), requester.message);
+	assert.equal(requester.passive, undefined);
+
+	const only = await open(t);
+	await admit(only, "thread-1", "thread-notice", "poster-a");
+	only.clock.now = EPOCH + 1000;
+	await admit(only, "thread-2", "thread-notice", "poster-a");
+	advance(only, EPOCH + 1000 + UNPLACED_NOTICE_MS);
+	const passive = await noticeFor(only, "poster-a");
+	assert.equal(passive.passive, true, "a notice that stands only for thread notices stays passive");
+	assert.match(passive.message, /did not place 2 admitted inputs from you for more than 5 minutes \(oldest admitted [^)]*, request thread-1\)\. Current step/u);
 });
