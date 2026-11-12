@@ -75,7 +75,7 @@ it("closes an item once and returns the retained close afterwards", () => {
 	assert.ok(!("error" in second));
 	assert.equal(second.deduped, true);
 	assert.deepEqual(second.item, first.item);
-	assert.match((completeWork([], { requestId: "task-a", status: "done", message: "m", conversationId: 3, now: 1 }) as { error: string }).error, /no declared work/u);
+	assert.match((completeWork([], { requestId: "task-a", status: "done", message: "m", conversationId: 3, now: 1 }) as { error: string }).error, /no work was declared for this request/u);
 	assert.match((declare(first.items) as { error: string }).error, /does not reopen/u);
 });
 
@@ -341,4 +341,25 @@ it("never leaves a final report to the declaring conversation itself pending", a
 	assert.deepEqual((await harness.commit((tx) => closeOpenWork(tx, STORAGE, conversation.id, "stopped", 50), context)).map((item) => item.close?.delivery), ["active"]);
 	assert.equal(await pending(), 1);
 	assert.equal((await row("task-d", "recipient-c"))?.acknowledged, false);
+});
+
+it("names both causes when a repeated complete finds no retained item", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	const host = (now: number) => ({ harness, storageId: STORAGE, conversationId: conversation.id, now });
+	for (let index = 0; index <= CLOSED_WORK_LIMIT; index++) {
+		const id = await harness.commit((tx) => placed(tx, conversation.id, route(`task-${index}`)), context);
+		await harness.commit((tx) => declareOpenWork(tx, STORAGE, conversation.id, { results: [], note: "own work remains" }, 10 + index), context);
+		await harness.commit((tx) => answered(tx, conversation.id, id), context);
+		assert.equal((await executeAgentWork({ action: "complete", request: `task-${index}`, status: "done", message: `result ${index}` }, host(100 + index), context)).isError, undefined);
+	}
+	const text = (result: Awaited<ReturnType<typeof executeAgentWork>>) => result.output?.[0]?.type === "text" ? result.output[0].text : "";
+	const kept = await executeAgentWork({ action: "complete", request: "task-1", status: "done", message: "again" }, host(200), context);
+	assert.equal(kept.details?.deduped, true);
+	const dropped = await executeAgentWork({ action: "complete", request: "task-0", status: "done", message: "again" }, host(201), context);
+	assert.equal(dropped.isError, true);
+	assert.match(text(dropped), /no work was declared for this request/u);
+	assert.match(text(dropped), new RegExp(`closed earlier than the last ${CLOSED_WORK_LIMIT} closed items that the conversation keeps`, "u"));
+	assert.match(text(dropped), /changed nothing and sent no report/u);
+	assert.equal((await harness.commit((tx) => retainedReportRequest(tx, "recipient-c", `work-final:${conversation.id}:task-0`), context))?.message, "Final work result (done) for request task-0\n\nresult 0", "the first report stays the only one");
+	assert.equal(text(await executeAgentWork({ action: "complete", request: "never-declared", status: "done", message: "m" }, host(202), context)), text(dropped).replace("task-0", "never-declared"));
 });

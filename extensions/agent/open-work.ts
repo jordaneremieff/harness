@@ -293,7 +293,7 @@ function closedItem(item: OpenWorkItem, status: WorkCloseStatus, message: string
 /** Close one item. A closed item returns its retained close unchanged, whatever the new status says. */
 export function completeWork(items: readonly OpenWorkItem[], input: CompleteWork): CompleteOutcome | Rejection {
 	const prior = items.find((item) => item.requestId === input.requestId);
-	if (prior === undefined) return { error: `Request ${input.requestId} has no declared work. A request without declared work completes with the answer of its run` };
+	if (prior === undefined) return { error: `Request ${input.requestId} has no retained work item, for one of two reasons. Either no work was declared for this request: such a request completes with the answer of its run. Or its item closed earlier than the last ${CLOSED_WORK_LIMIT} closed items that the conversation keeps: its final report was sent then. This call changed nothing and sent no report` };
 	if (prior.close !== undefined) return { items: [...items], item: prior, deduped: true };
 	const item = closedItem(prior, input.status, input.message, input.conversationId, input.now);
 	return { items: boundClosedItems(items.map((candidate) => candidate === prior ? item : candidate)), item, deduped: false };
