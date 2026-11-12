@@ -36,7 +36,7 @@ async function fixture(t: TestContext, refuseReopen = false) {
 	}, subscribe: (kind, _token, _peer, publish) => {
 		const listeners = kind === "changes" ? changes : observations;
 		listeners.add(publish);
-		return { value: kind === "changes" ? { revision } : frame(), close: () => { listeners.delete(publish); } };
+		return { value: kind === "changes" ? { revision, writerId } : frame(), close: () => { listeners.delete(publish); } };
 	} });
 	await server.start();
 	const sockets = new Set<Socket>();
@@ -60,7 +60,7 @@ async function fixture(t: TestContext, refuseReopen = false) {
 		rmSync(root, { recursive: true, force: true });
 	});
 	return { calls, client, observationOpens, observationCloses,
-		publish: () => { revision += 1; for (const publish of changes) publish({ revision }); for (const publish of observations) publish(frame()); },
+		publish: () => { revision += 1; for (const publish of changes) publish({ revision, writerId }); for (const publish of observations) publish(frame()); },
 		disconnect: () => { for (const socket of sockets) socket.destroy(); } };
 }
 
