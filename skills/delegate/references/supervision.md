@@ -3,8 +3,11 @@
 Supervise from delivered events: results, check-ins, thread notices, and
 operator input. Never poll, sleep, or loop on status or inspection, and never
 hold a run open for agent output. Continue your own part of the work while
-agents run; when none remains, declare the open result references with
-`agent_work` `continue` and end the run with a state note.
+agents run. When none remains, a native agent declares the open result
+references with `agent_work` `continue` and ends the run with a state note.
+An ordinary session ends its turn with a short state note instead. Results
+arrive as events at its next tool boundary or start its next turn; it never
+polls.
 
 ## Contents
 
@@ -34,23 +37,28 @@ before you rely on dependent work.
 
 ## State notes
 
-An agent that sent work and has none left declares the open work with
-`agent_work` `continue` and ends its run with a state note. The note says in
-its first words that it is not the result, and it names the open work. Read
-it as open work, not as completion:
+A native agent that sent work and has none left declares the open work with
+`agent_work` `continue` and ends its run with a state note. An ordinary
+session ends its turn with a short state note without a tool declaration.
+Both notes say in their first words that they are not the result, and name
+the open work. Read them as open work, not as completion. Do not accept,
+integrate, or re-dispatch on a state note.
 
-- Do not accept, integrate, or re-dispatch on a state note.
+For declared work in a native agent:
 - Read the open work in `agent_status` with the agent's `sessionId` when you
   need its current state: each open item, its note, and its dependencies. Do
   not poll it.
-- The final report arrives when the agent calls `agent_work` `complete`. It
-  names the request and the status, `done` or `failed`. Act on that.
+- The final report arrives when the native agent calls `agent_work`
+  `complete`. It names the request and the status, `done` or `failed`. Act on
+  that.
 - Declared work that never completes stays visible in the status. Steer the
   agent to complete it or to name the blocker.
 - A record without a dependency gets no later run by itself. Send the agent
-  the input that it needs; only `agent_work` `complete` closes the item.
-- An answer that is neither a result nor a marked state note falls under "The
-  displaced-answer pitfall".
+  the input that it needs; only that native agent's `agent_work` `complete`
+  closes the item.
+
+An answer that is neither a result nor a marked state note falls under "The
+displaced-answer pitfall".
 
 ## Stalls
 

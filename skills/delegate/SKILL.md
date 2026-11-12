@@ -253,14 +253,18 @@ agent output. No call waits for a result; do not poll status, sleep, or repeat
 inspections as a wait. After you send work:
 
 - **Do the work that remains for you.** Do ready independent work before the
-  run ends. When none remains, declare the open work with `agent_work`
-  `continue`: the request, the exact result references, and a note. A task
-  that stays blocked or deferred and depends on no producer takes an empty
-  `results`: that records open work and withdraws nothing. Then end the run
-  with a short state note: what is open, and what you do when each result
-  arrives. A result, a report, or a message starts your next run. A record
-  without a dependency gets no later run by itself; it stays open in the
-  status until `agent_work` `complete`, which alone closes an item.
+  run ends. When none remains, a native agent declares the open work with
+  `agent_work` `continue`: the request, the exact result references, and a
+  note. A task that stays blocked or deferred and depends on no producer
+  takes an empty `results`: that records open work and withdraws nothing.
+  The native agent then ends the run with a short state note: what is open,
+  and what it does when each result arrives. A result, a report, or a message
+  starts its next run. A record without a dependency gets no later run by
+  itself; it stays open in the status until the native agent calls
+  `agent_work` `complete`, which alone closes an item.
+  An ordinary session has no `agent_work` tool. When only delegated work
+  remains, it ends its turn with a short state note. Results arrive as events
+  at its next tool boundary or start its next turn; it never polls.
 - **Stay reachable.** An input reaches a running agent at its next tool
   boundary, the end of its current round of tool calls. With parallel calls
   nothing is placed between two tool completions of one round. The reach of
@@ -275,9 +279,9 @@ inspections as a wait. After you send work:
   notice are events: read them and continue. An answer names each request that
   it covers.
 - **Keep a state note apart from a result.** Open the note with words that say
-  it is a state note and not the result. `agent_work` `complete` is the only
-  act that completes declared work; it sends the final report to the reply
-  recipient of the original request. A run that completes its request without
+  it is a state note and not the result. A native agent uses `agent_work`
+  `complete` as the only act that completes declared work; it sends the final
+  report to the reply recipient of the original request. A run that completes its request without
   declared work answers with the result itself.
 - **Know where your input is.** The send receipt returns `placement`:
   `"placed"` or `"unplaced"`. `agent_status` shows `unplaced: n` and
@@ -352,8 +356,8 @@ Before the final answer:
 
 1. Resolve every live agent you own: accept its result, redirect changed work,
    or abort work that is no longer needed. Leave unrelated and standing work
-   alone. Close each open work item that you declared with `agent_work`
-   `complete`.
+   alone. If you are a native agent, close each open work item that you
+   declared with `agent_work` `complete`.
 2. Update or clear your intent claim.
 3. Post a conclusion to each thread you integrate; close it when the work ends.
 4. Restore any temporary configuration you changed.

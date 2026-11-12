@@ -65,9 +65,11 @@ directory). When a structural check helps, check the filled copy with
 - **Lead-only slots:** division of work (the parts you can see and any
   suggested helpers; the lead can do the work itself, revise the split, or use
   helpers selectively), result references (keep exact references for delegated
-  parts and declare the open ones with `agent_work` `continue`; hold no run
-  open for them), and composed answer (one answer for the whole result, gaps
-  named; declared work ends with `agent_work` `complete`).
+  parts; a native lead declares the open ones with `agent_work` `continue`,
+  while an ordinary lead ends its turn with a short state note; neither holds
+  a run open for results), and composed answer (one answer for the whole
+  result, gaps named; a native lead ends declared work with `agent_work`
+  `complete`).
 - **Review-only slots:** the claim under review, the evidence each verdict must
   reach, and independence. Challenge contracts, omitted cases and evidence from
   defining sources rather than adopt the author's conclusion. Repeating the
@@ -107,14 +109,17 @@ and a thread notice are events: read them and continue. Send a busy agent a
 
 A terminal answer from a contributor carries the result or the exact blocker.
 One case differs: a run that ends while work the contributor sent is open.
-The contributor does its ready independent work first, declares the open work
-with `agent_work` `continue`, and ends the run with a state note. An empty
-`results` is valid: it records a blocked or deferred task that depends on no
-producer, and no later run starts by itself for it. Its first words say that it is a state note and not the
-result; it names the open work and what the contributor does when each result
-arrives. A state note is not a result. `agent_work` `complete`, with `status`
-`done` or `failed` and the result or exact blocker as `message`, sends the
-final report to the reply recipient of the original request.
+The contributor does its ready independent work first. A native contributor
+then declares the open work with `agent_work` `continue` and ends the run
+with a state note. An empty `results` is valid: it records a blocked or
+deferred task that depends on no producer, and no later run starts by itself
+for it. An ordinary contributor ends its turn with a short state note
+instead; results arrive as events at its next tool boundary or start its
+next turn, and it never polls. Both notes say first that they are state notes
+and not results; they name the open work and what the contributor does when
+each result arrives. A native contributor uses `agent_work` `complete`, with
+`status` `done` or `failed` and the result or exact blocker as `message`, to
+send the final report to the reply recipient of the original request.
 
 ## Check-in intervals
 
