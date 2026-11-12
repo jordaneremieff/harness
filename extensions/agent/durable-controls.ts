@@ -24,7 +24,7 @@ import { configureProviderRecovery, captureProviderRecovery, linkProviderRecover
 import { modelFailureText, type ProviderBlockFact } from "./provider-block-facts.ts";
 import { AwaitDoc, acknowledgeProviderRetry, forgetFailedAdmission, recordInputProvenance } from "./awaited-results.ts";
 import { prepareAdmittedCapture } from "./communication-retention.ts";
-import { recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
+import { placementOf, recordUnplacedInput, type Placement } from "./unplaced-inputs.ts";
 import { createCheckIn } from "./durable-checkins.ts";
 import { cleanupRequestContexts, recordRequestContext, RequestContextDoc, type RequestContext } from "./request-context.ts";
 import { requestHasOpenWork } from "./open-work.ts";
@@ -319,7 +319,7 @@ export interface DurableSubmitResult {
 
 /** Committed placement of one input that an earlier admission already recorded. */
 async function inputPlacement(tx: Tx, submissionId: SubmissionId): Promise<Placement> {
-	return (await tx.submission(submissionId))?.status === "queued" ? "unplaced" : "placed";
+	return placementOf(await tx.submission(submissionId));
 }
 
 /** One admission's delivery identity, written before the submission it describes. */
@@ -528,7 +528,7 @@ async function originalAdmission(tx: Tx, conversationId: ConversationId, params:
 	if (intent.ownerId !== ownerId || intent.origin !== params.origin) throw new Error("The request ID already identifies another delivery recipient or origin");
 	const route = (await tx.doc(RequestContextDoc, conversationId)).requests.find((item) => item.requestId === params.requestId);
 	validateReplayRequest(params.requestContext, params.requestId, intent, route);
-	return { submissionId: input.id, conversationId, deduped: true, recipient: intent.ownerId, placement: input.status === "queued" ? "unplaced" : "placed" };
+	return { submissionId: input.id, conversationId, deduped: true, recipient: intent.ownerId, placement: placementOf(input) };
 }
 
 async function ownedAdmissionIntent(tx: Tx, conversationId: ConversationId, params: DurableSubmitParams, ownerId: string, now: () => number): Promise<DeliveryIntentState> {

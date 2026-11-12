@@ -836,7 +836,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	/** An unplaced input waits in the recipient's inbox until its current tool round ends. */
 	const placementText = (placement: Placement): string => placement === "unplaced"
 		? "\nPlacement: unplaced. The recipient is busy; the input is placed when its current tool round ends."
-		: "\nPlacement: placed.";
+		: placement === "withdrawn"
+			? "\nPlacement: withdrawn. The input is not in the recipient's inbox and not in its transcript: it left the inbox before placement. Send it again if it is still needed."
+			: "\nPlacement: placed.";
 
 	const LocalAdmission = durable.defineDoc<{ armed: boolean }>({ kind: "agent.local-admission", version: 1, scope: "task", checkpointWhen: () => false, initial: () => ({ armed: false }) });
 
