@@ -149,10 +149,13 @@ function plural(count: number): string {
 	return `${count} admitted input${count === 1 ? "" : "s"}`;
 }
 
-/** Mark every queued row of the sender; write the notice unless an earlier row of that sender already produced it. */
+/**
+ * Mark every queued explicit row of the sender; write the notice unless an earlier explicit row of that sender already
+ * produced it. An event row that was marked without a notice does not count as a notice to its sender.
+ */
 async function noticeSender(notice: NoticeContext, row: UnplacedInput): Promise<void> {
 	const { state, recipient } = notice;
-	const own = state.inputs.filter((input) => input.sender === row.sender);
+	const own = state.inputs.filter((input) => input.sender === row.sender && EXPLICIT_CLASSES.has(input.class));
 	const repeat = own.some((input) => input.noticed);
 	for (const input of own) input.noticed = true;
 	if (repeat || row.sender === "" || row.sender === recipient) return;
@@ -164,7 +167,7 @@ async function noticeSender(notice: NoticeContext, row: UnplacedInput): Promise<
 async function noticeRequesters(notice: NoticeContext): Promise<void> {
 	const { tx, conversationId, state, recipient } = notice;
 	const run = (await tx.doc(LiveDoc, conversationId)).run;
-	const requesters = (await runRequesters(tx, conversationId)).filter((requester) => requester !== recipient && !state.inputs.some((input) => input.sender === requester && input.noticed));
+	const requesters = (await runRequesters(tx, conversationId)).filter((requester) => requester !== recipient && !state.inputs.some((input) => input.sender === requester && input.noticed && EXPLICIT_CLASSES.has(input.class)));
 	if (requesters.length === 0) return;
 	const oldest = Math.min(...state.inputs.map((input) => input.admittedAt));
 	const message = `Unplaced input notice: ${recipient}, which serves your request, did not place ${plural(state.inputs.length)} for more than 5 minutes (oldest admitted ${new Date(oldest).toISOString()}). Current step: ${notice.step}. The recipient places queued inputs at the end of its current tool round.`;
