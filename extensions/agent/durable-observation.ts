@@ -2337,7 +2337,6 @@ export class DurableObservation {
 	}
 
 	private async requestReceipts(params: RequestParams | undefined, context: Context): Promise<unknown> {
-		if (requestBoolean(params, "wait") === true) throw new TypeError("a cold snapshot cannot wait for receipts");
 		const ownerId = requestRequiredString(params, "ownerId");
 		const state = await snapshotDeliveryState(this.harness, context);
 		const deliveries = {

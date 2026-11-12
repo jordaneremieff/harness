@@ -237,7 +237,7 @@ it("reads a cold snapshot with the live request surface and no writer", async (t
 		assert.notEqual(snapshot.revision, "empty");
 
 		await assert.rejects(observation.request("submit", { message: "no", requestId: "no" }), /does not support/u);
-		await assert.rejects(observation.request("receipts", { ownerId: "x", wait: true }), /cannot wait/u);
+		assert.deepEqual(await observation.request("receipts", { ownerId: "x", wait: true }), { receipts: [], reports: [], pending: 0 }, "a receipts read returns at once and ignores a wait member");
 	} finally {
 		await observation.close();
 	}

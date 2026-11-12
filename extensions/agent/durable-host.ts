@@ -658,8 +658,8 @@ export class DurableHost {
 		const delivered = params?.deliveredResults;
 		if (delivered !== undefined) validateContinuityDelivered(delivered);
 		const marks = params?.dependencyMarks === undefined ? [] : parseDependencyMarks(params.dependencyMarks);
-		// A replayed body admission is deduplicated, and a body that an active wait already returned is
-		// suppressed; in both cases the result reached this conversation, so its delivered facts complete.
+		// A replayed body admission is deduplicated, and a provider retry notice that the current inputs already
+		// showed is suppressed; in both cases the result reached this conversation, so its delivered facts complete.
 		const complete = async (): Promise<void> => {
 			if (delivered !== undefined) await this.harness.commit((tx) => recordContinuityDelivered(tx, conversation.id, delivered), context);
 			if (marks.length > 0) await this.harness.commit((tx) => recordDependencyMarks(tx, conversation.id, marks), context);
@@ -909,15 +909,14 @@ export class DurableHost {
 			},
 			context,
 		);
-		const base = {
+		// The correction is admitted, not answered: its result is read through inspection or its receipt.
+		return {
 			conversationId: result.conversation.id,
 			identity: this.identity(result.conversation.id),
 			predecessorEntryId: result.predecessorEntryId,
 			submissionId: result.submissionId,
 			deduped: result.deduped,
 		};
-		if (requestBoolean(params, "wait") !== true) return base;
-		return { ...base, outcome: await readOutcome(this.harness, result.submissionId, context) };
 	}
 
 	private async abortRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
