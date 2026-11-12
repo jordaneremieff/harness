@@ -195,6 +195,9 @@ export const ConversationStatusSchema = obj({
 	/** Admitted inputs that are still queued, and the age in milliseconds of the oldest one. */
 	unplaced: opt(count),
 	oldest: opt(count),
+	/** Declared work that owes a final report, and the age in milliseconds of its oldest declaration. */
+	openWorkCount: opt(count),
+	openWorkOldest: opt(count),
 	usage: opt(UsageStateSchema),
 	agent: obj({
 		model: opt(obj({ provider: string, modelId: string })),
@@ -262,6 +265,9 @@ export const AgentConversationSummaryProperties = {
 	/** Admitted inputs that are still queued, and the age in milliseconds of the oldest one. */
 	unplaced: opt(count),
 	oldest: opt(count),
+	/** Declared work that owes a final report, and the age in milliseconds of its oldest declaration. */
+	openWorkCount: opt(count),
+	openWorkOldest: opt(count),
 };
 export const AgentConversationSummarySchema = obj(AgentConversationSummaryProperties);
 
@@ -438,7 +444,7 @@ export const CompactConversationSchema = obj({
 	availability: union([lit("live"), lit("retained"), lit("unknown")]),
 	name: opt(string), model: opt(obj({ provider: string, modelId: string })), thinkingLevel: opt(string),
 	runId: opt(id), queue: obj({ inbox: nullableCount, submissions: nullableCount }), timers: nullableCount,
-	unplaced: opt(count), oldest: opt(count),
+	unplaced: opt(count), oldest: opt(count), openWorkCount: opt(count), openWorkOldest: opt(count),
 	providerBlock: opt(obj({ blockId: string, recovery: string })),
 	runFailure: opt(obj({ reason: str({ maxLength: 128 }), detail: opt(str({ maxLength: 512 })), reasonTruncated: opt(lit(true)), detailTruncated: opt(lit(true)) })),
 	context: lit("unknown"), omitted: arr(string), detail: StatusDetailCallSchema,

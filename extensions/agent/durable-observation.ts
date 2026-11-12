@@ -28,7 +28,7 @@ import { snapshotDeliveryState, deliveryState, latestReceipt, migrateDeliverySto
 import type { AnswerContinuation, ReceiptGroup } from "./observation-schema.ts";
 import { timerStatusRows } from "./durable-timers.ts";
 import { readUnplacedSummary } from "./unplaced-inputs.ts";
-import { openWorkStatus, type OpenWorkView } from "./open-work.ts";
+import { openWorkItems, openWorkStatus, type OpenWorkView } from "./open-work.ts";
 import { snapshotProviderBlock, snapshotInputProviderBlock, snapshotInputRecovery, readProviderBlock, readInputProviderBlock, readInputRecovery } from "./provider-block.ts";
 import { modelFailureText, PROVIDER_BLOCK_ERROR, type ProviderBlockFact } from "./provider-block-facts.ts";
 import type { CommunicationView } from "./communication.ts";
@@ -136,6 +136,9 @@ export interface ConversationStatus extends ConversationSummary {
 	/** Admitted inputs still queued in the inbox, and the age in milliseconds of the oldest one. */
 	readonly unplaced?: number;
 	readonly oldest?: number;
+	/** Declared work that owes a final report, and the age in milliseconds of its oldest declaration. */
+	readonly openWorkCount?: number;
+	readonly openWorkOldest?: number;
 	readonly usage?: UsageState;
 	readonly agent: {
 		readonly model?: { readonly provider: string; readonly modelId: string };
@@ -743,7 +746,7 @@ export async function readConversationStatus(
 		harness.inspect(context),
 	]);
 	const liveTaskIds = new Set(inspection.tasks.map((task) => Number(task.record.id)));
-	const unplaced = await readUnplacedSummary(harness, conversationId, context);
+	const backlog = await backlogFacts(harness, conversationId, options.now ?? Date.now(), context);
 	const providerBlock = frozenObservations.has(harness) ? await snapshotProviderBlock(harness, conversationId, context) : await harness.commit((tx) => readProviderBlock(tx, conversationId), context);
 	const openWork = frozenObservations.has(harness) ? await openWorkStatus({ harness, context }, storageId, conversationId) : await harness.commit((tx) => openWorkStatus(tx, storageId, conversationId), context);
 	return {
@@ -755,8 +758,7 @@ export async function readConversationStatus(
 		...(textRoleOf(newest.items[0]) === undefined ? {} : { lastTextRole: textRoleOf(newest.items[0]) }),
 		live: publicLiveState(live),
 		inbox: inbox ?? null,
-		unplaced: unplaced.unplaced,
-		...(unplaced.oldestAdmittedAt === undefined ? {} : { oldest: Math.max(0, Math.round((options.now ?? Date.now()) - unplaced.oldestAdmittedAt)) }),
+		...backlog,
 		...(usage === undefined ? {} : { usage: publicUsageState(usage) }),
 		agent: {
 			...(agent.model === undefined ? {} : { model: { provider: agent.model.provider, modelId: agent.model.modelId } }),
@@ -1048,6 +1050,31 @@ async function dashboardError(harness: Harness, conversationId: ConversationId, 
 }
 
 /** Live-only dashboard fields: recovery health, current tool, and turn duration. */
+interface BacklogFacts {
+	readonly unplaced: number;
+	readonly oldest?: number;
+	readonly openWorkCount: number;
+	readonly openWorkOldest?: number;
+}
+
+/**
+ * What a conversation still owes: admitted inputs that are queued, and declared work without a final report, each
+ * with the age in milliseconds of its oldest member at `now`.
+ */
+async function backlogFacts(harness: Harness, conversationId: ConversationId, now: number, context: Context): Promise<BacklogFacts> {
+	const age = (since: number): number => Math.max(0, Math.round(now - since));
+	const unplaced = await readUnplacedSummary(harness, conversationId, context);
+	// A commit's items are drafts that end with it, so the times are copied inside the read.
+	const declared = (items: readonly { readonly declaredAt: number }[]): number[] => items.map((item) => item.declaredAt);
+	const open = frozenObservations.has(harness) ? declared(await openWorkItems({ harness, context }, conversationId)) : await harness.commit(async (tx) => declared(await openWorkItems(tx, conversationId)), context);
+	return {
+		unplaced: unplaced.unplaced,
+		...(unplaced.oldestAdmittedAt === undefined ? {} : { oldest: age(unplaced.oldestAdmittedAt) }),
+		openWorkCount: open.length,
+		...(open.length === 0 ? {} : { openWorkOldest: age(Math.min(...open)) }),
+	};
+}
+
 async function dashboardLiveExtras(
 	harness: Harness,
 	record: ConversationRecord,
@@ -1087,7 +1114,7 @@ async function dashboardSummary(
 	const replyText = latestReplyOf(entries);
 	const liveExtras = await dashboardLiveExtras(harness, record, live, entries, options, context);
 	const error = await dashboardError(harness, record.id, state, receipt, entries, options.storage, context, live?.runFailure);
-	const unplaced = await readUnplacedSummary(harness, record.id, context);
+	const backlog = await backlogFacts(harness, record.id, options.now ?? Date.now(), context);
 	const row: AgentConversationSummary = {
 		id: durableIdentity(storageId, record.id === 1 ? undefined : record.id),
 		storageId,
@@ -1104,8 +1131,7 @@ async function dashboardSummary(
 		...(replyText === undefined ? {} : { latestReply: replyText }),
 		...(error === undefined ? {} : { error }),
 		...liveExtras,
-		unplaced: unplaced.unplaced,
-		...(unplaced.oldestAdmittedAt === undefined ? {} : { oldest: Math.max(0, Math.round((options.now ?? Date.now()) - unplaced.oldestAdmittedAt)) }),
+		...backlog,
 		toolCalls: countToolCalls(entries),
 	};
 	options.modelEvidence?.observe(record.id, row, usage, entries);

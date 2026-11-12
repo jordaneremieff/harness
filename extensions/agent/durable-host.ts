@@ -620,6 +620,7 @@ export class DurableHost {
 			storage: this.storage,
 			owner: "here",
 			live: true,
+			now: this.now(),
 			...(this.retryMaxAttempts === undefined ? {} : { retryMaxAttempts: this.retryMaxAttempts }),
 			...(this.defaultCwd === undefined ? {} : { cwd: this.defaultCwd }),
 			...(cwd === undefined ? {} : { cwd }),
