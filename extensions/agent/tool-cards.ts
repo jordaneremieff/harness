@@ -606,10 +606,11 @@ function muted(theme: Theme, value: string): string {
 }
 
 /** A receipt states placement only when its source does: whether the input is in the recipient's context. */
-function receiptPlacement(details: Record<string, unknown>): "placed" | "unplaced" | undefined {
-	return details.placement === "placed" || details.placement === "unplaced" ? details.placement : undefined;
+function receiptPlacement(details: Record<string, unknown>): "placed" | "unplaced" | "withdrawn" | undefined {
+	return details.placement === "placed" || details.placement === "unplaced" || details.placement === "withdrawn" ? details.placement : undefined;
 }
 const UNPLACED_INPUT_LINE = "The input is placed at the recipient's next tool boundary";
+const WITHDRAWN_INPUT_LINE = "The input is not in the recipient's inbox or transcript";
 
 function controlReceiptLines(details: Record<string, unknown>, theme: Theme, subject: string, context: AgentCardContext): string[] | undefined {
 	const identity = text(details.identity);
@@ -622,6 +623,7 @@ function controlReceiptLines(details: Record<string, unknown>, theme: Theme, sub
 	if (placement !== undefined) lines[0] += muted(theme, ` · ${placement}`);
 	if (details.deduped === true) lines.push(muted(theme, "Already admitted"));
 	if (placement === "unplaced") lines.push(muted(theme, UNPLACED_INPUT_LINE));
+	if (placement === "withdrawn") lines.push(muted(theme, WITHDRAWN_INPUT_LINE));
 	return lines;
 }
 
@@ -942,18 +944,25 @@ export function renderAgentResult(result: AgentToolResult<unknown>, options: Too
 function primaryMessageLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	if (details.admitted !== true || !text(details.sessionId)) return undefined;
 	const kind = record(context.args).mode === "report" ? "Report" : "Message";
+	if (receiptPlacement(details) === "withdrawn") return [theme.fg("toolOutput", `${kind} withdrawn for ${targetLabel(text(details.sessionId), context)}`), muted(theme, WITHDRAWN_INPUT_LINE)];
 	return [theme.fg("toolOutput", `${kind} ${kind === "Report" ? "queued for" : "delivered to"} ${targetLabel(text(details.sessionId), context)}`),
 		...(kind === "Report" && text(details.boundary) ? [muted(theme, text(details.boundary))] : [])];
+}
+
+function reportPlacementLines(details: Record<string, unknown>, theme: Theme): string[] {
+	const placement = receiptPlacement(details);
+	if (placement === "withdrawn") return [muted(theme, WITHDRAWN_INPUT_LINE)];
+	// A parked or terminal delivery does not reach the recipient's next tool boundary.
+	if (details.delivery === "parked" || details.delivery === "terminal") return [theme.fg("warning", `Delivery ${details.delivery}; the report is not placed`)];
+	return placement === "unplaced" ? [muted(theme, UNPLACED_INPUT_LINE)] : [];
 }
 
 function reportReceiptLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	if (!text(details.sourceId) || typeof details.acknowledged !== "boolean") return undefined;
 	const placement = receiptPlacement(details);
-	// A parked or terminal delivery does not reach the recipient's next tool boundary.
-	const stopped = details.delivery === "parked" || details.delivery === "terminal" ? details.delivery : undefined;
 	return [theme.fg("toolOutput", `Report retained${text(details.ownerId) ? targetSuffix(text(details.ownerId), context) : ""}`),
 		muted(theme, `${details.acknowledged ? "Acknowledged" : "Acknowledgement pending"}${details.passive === true ? " · passive" : ""}${placement === undefined ? "" : ` · ${placement}`}`),
-		...(stopped !== undefined ? [theme.fg("warning", `Delivery ${stopped}; the report is not placed`)] : placement === "unplaced" ? [muted(theme, UNPLACED_INPUT_LINE)] : []),
+		...reportPlacementLines(details, theme),
 		muted(theme, text(details.boundary) || "Retention or acknowledgement does not establish model consumption or task acceptance.")];
 }
 

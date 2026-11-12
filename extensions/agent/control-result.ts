@@ -52,7 +52,7 @@ const REPORT_RECEIPT_KEYS = [
 	"sessionId", "identity", "conversationId", "submissionId", "result", "deduped", "admitted", "queued", "boundary",
 ] as const;
 /** Whether the input is in the recipient's context; an unplaced input enters it at the recipient's next tool boundary. */
-const REPORT_PLACEMENTS: readonly unknown[] = ["placed", "unplaced"];
+const REPORT_PLACEMENTS: readonly unknown[] = ["placed", "unplaced", "withdrawn"];
 /** The state of the retained row at its recipient; only an admitted row can be placed. */
 const REPORT_DELIVERIES: readonly unknown[] = ["pending", "parked", "terminal", "admitted"];
 
@@ -64,7 +64,7 @@ function reportReceiptFields(source: Record<string, unknown>, retained: boolean)
 	if (retained) {
 		result.boundary = REPORT_RECEIPT_BOUNDARY;
 		// Without a stated delivery, an unacknowledged retained report is not delivered, so it cannot be in the recipient's context.
-		if (source.acknowledged === false && result.delivery === undefined) Object.assign(result, { placement: "unplaced", delivery: "pending" });
+		if (source.acknowledged === false && result.delivery === undefined && result.placement !== "withdrawn") Object.assign(result, { placement: "unplaced", delivery: "pending" });
 	}
 	return result;
 }

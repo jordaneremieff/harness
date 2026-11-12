@@ -7,6 +7,7 @@ import { after, describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { OpenWorkDependencyView, OpenWorkDetails, OpenWorkView } from "./open-work.ts";
+import { projectReportReceipt } from "./control-result.ts";
 import { CustomMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, TUI_KEYBINDINGS, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import {
@@ -327,6 +328,27 @@ describe("agent result cards", () => {
 		const parked = screen(renderSendResult(result({ sourceId: "report:one", ownerId: "storage-a", acknowledged: false, placement: "unplaced", delivery: "parked" }), options, theme, context({ args: { mode: "report" } })), 180);
 		assert.match(parked, /Delivery parked; the report is not placed/u);
 		assert.doesNotMatch(parked, line);
+	});
+
+	it("preserves withdrawn receipt placement without a context-placement or future-delivery claim", () => {
+		const options = { ...cardKeys, expanded: false, isPartial: false };
+		const native = { identity: "storage-a", conversationId: 1, submissionId: 9, placement: "withdrawn" };
+		for (const source of [native, { sessionId: "storage-a", admitted: true, placement: "withdrawn" },
+			{ sourceId: "report:one", acknowledged: false, placement: "withdrawn" },
+			{ sourceId: "report:two", acknowledged: true, delivery: "admitted", placement: "withdrawn" }]) {
+			const receipt = projectReportReceipt(source) as Record<string, unknown>;
+			assert.equal(receipt.placement, "withdrawn");
+			for (const render of [renderSendResult, renderSteerResult]) {
+				const output = screen(render(result(receipt), options, theme, context()), 180);
+				assert.match(output, /withdrawn/u);
+				assert.match(output, /not in the recipient's inbox or transcript/u);
+				assert.doesNotMatch(output, / · placed\b|next tool boundary|delivered to|queued for/u);
+			}
+		}
+		const spawned = screen(renderAgentResult(result({ sessionId: "storage-a", admission: native }), options, theme, context()), 180);
+		assert.match(spawned, /withdrawn/u);
+		assert.match(spawned, /not in the recipient's inbox or transcript/u);
+		assert.doesNotMatch(spawned, / · placed\b|next tool boundary/u);
 	});
 
 	it("shows a declared work item with its dependencies and a closed item with its final report row", () => {
