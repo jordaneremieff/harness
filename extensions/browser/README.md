@@ -217,10 +217,21 @@ changes, the tab closes, the browser process exits, or the caller cancels.
 | `threw` | The expression threw synchronously; `error` keeps name, message, and stack. |
 | `rejected` | The promise rejected; a non-`Error` reason is in `error.thrown`. |
 | `timeout`, `cancelled` | The tool stopped waiting. Page-side work can continue; the tool forgets the pending result so a late settlement stores nothing. |
-| `document-replaced`, `target-closed` | The page changed, the tab closed, or the browser process exited before the result was read; the outcome is unknown. |
+| `document-replaced`, `target-closed` | The page document changed (its document token differs), the tab closed, or the browser process exited before the result was read; the outcome is unknown. |
 | `observation-failed` | A page read could not answer during the wait (lost permission, changed JavaScript settings, or no readable reply); the outcome is unknown. |
-| `unknown` | The start reply held no readable result after the expression was delivered; the expression may have run. |
+| `unknown` | The start reply held no readable result after the expression was delivered, or the unchanged document holds no record of the run; the expression may have run. |
 | `syntax-error` | The expression did not parse; nothing was sent. |
+
+An awaited outcome stays in a record in the page until the tool acknowledges it,
+so a poll reply lost in transport does not lose the result: the next poll reads
+the same record, and the expression never runs again to recover it. After the
+tool reads an outcome, times out, or is cancelled, it sends one removal request.
+If that request is lost too, the record expires: each new evaluation in the
+document first removes records older than five minutes (a record serves only
+the one tool call that created it, which waits at most two minutes) and keeps
+at most eight records, oldest removed first. One record holds at most
+`maxBytes` of encoded value plus a bounded error. A replaced document starts
+with no records.
 
 Chromium runs Apple Events JavaScript in an isolated world of the main frame.
 The expression shares the DOM, storage, cookies, and network identity with the

@@ -950,6 +950,9 @@ export function syntaxError(expression: string): string | null {
 	}
 }
 
+/** Statuses after which the page holds no record of the run to acknowledge. */
+const RECORD_GONE = new Set(["document-replaced", "target-closed", "unknown"]);
+
 interface Settlement {
 	status: string;
 	outcome: Facts | null;
@@ -1001,11 +1004,18 @@ async function evaluationStep(
 		const outcome = record(poll.outcome);
 		return { status: String(outcome?.state), outcome };
 	}
-	if (poll.kind === "missing" || record(poll.page)?.doc !== startDoc) {
+	if (record(poll.page)?.doc !== startDoc) {
 		return {
 			status: "document-replaced",
 			outcome: null,
 			note: "The page document changed before the result was read; the outcome is unknown.",
+		};
+	}
+	if (poll.kind === "missing") {
+		return {
+			status: "unknown",
+			outcome: null,
+			note: "The document is unchanged but holds no record of this run; the outcome is unknown and the tool does not rerun the expression.",
 		};
 	}
 	return { step: "pending" };
@@ -1155,7 +1165,8 @@ export async function browserEvaluate(
 				data.kind === "settled"
 					? { status: String(record(data.outcome)?.state), outcome: record(data.outcome) }
 					: await awaitEvaluation(deps, resolved, runId, record(data.page)?.doc, startedAt + timeoutMs, signal);
-			if (settlement.status === "timeout" || settlement.status === "cancelled") {
+			if (data.kind === "pending" && !RECORD_GONE.has(settlement.status)) {
+				// Acknowledges a read outcome, or abandons a run the tool stopped waiting for.
 				const forget = {
 					op: "execute",
 					bundleId: spec.bundleId,

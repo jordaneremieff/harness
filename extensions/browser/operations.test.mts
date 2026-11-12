@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
+import { type Context, createContext, runInContext } from "node:vm";
 import { type AccessMap, BROWSERS } from "./browsers.ts";
 import {
 	type BrowserDeps,
@@ -12,6 +13,7 @@ import {
 	type CaptureDeps,
 } from "./operations.ts";
 import { type OsaReply, type OsaRequest, TransportError } from "./osa.ts";
+import { RUN_LIMIT, RUN_TTL_MS } from "./page.ts";
 import { decodeRect } from "./session.ts";
 
 type RunOptions = { signal?: AbortSignal; timeoutMs: number };
@@ -948,15 +950,165 @@ it("times out a pending evaluation and forgets exactly one run", async () => {
 	assert.equal(requests.filter((request) => scriptKind(request) === "forget").length, 1);
 });
 
-it("reports a missing run as a replaced document", async () => {
+it("reports a missing run in an unchanged document as unknown, not as a replaced document", async () => {
 	const run = evaluateRunner(
 		() => executed({ kind: "pending", page: PAGE }),
 		() => executed({ kind: "missing", page: PAGE }),
+	);
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserEvaluate({ ...EVALUATE_PARAMS, timeoutMs: 400 }, undefined, deps);
+	assert.equal(result.details.status, "unknown");
+	assert.equal(result.isError, true);
+	assert.equal(requests.filter((request) => scriptKind(request) === "start").length, 1);
+});
+
+it("reports a missing run in a changed document as a replaced document", async () => {
+	const run = evaluateRunner(
+		() => executed({ kind: "pending", page: PAGE }),
+		() => executed({ kind: "missing", page: { ...PAGE, doc: "d2" } }),
 	);
 	const { deps } = fakes(run, { access: { chrome: "interact" } });
 	const result = await browserEvaluate({ ...EVALUATE_PARAMS, timeoutMs: 400 }, undefined, deps);
 	assert.equal(result.details.status, "document-replaced");
 	assert.equal(result.isError, true);
+});
+
+/* ------------------------------------------- evaluation records in a page world */
+
+/**
+ * One tab whose page scripts really run: every `execute` request runs its generated
+ * script in a persistent isolated-world stand-in, as Chromium does for one document.
+ * `drop` decides per request whether the reply is lost after the script ran, or the
+ * request is lost before it reached the page.
+ */
+interface PageWorld {
+	run: Run;
+	/** Times the expression's side effect ran in any document. */
+	effects: () => number;
+	records: () => number;
+	/** Replaces the document: a new world with a new document token. */
+	replace: () => void;
+	advanceClock: (ms: number) => void;
+}
+
+type Drop = (kind: string, request: OsaRequest) => "none" | "after-run" | "before-run";
+
+function pageWorld(drop: Drop = () => "none"): PageWorld {
+	const shared = { effects: 0, clock: 1_000_000 };
+	const fresh = (): Context => {
+		const context = createContext({
+			location: { href: `${PAGE.origin}/page`, origin: PAGE.origin },
+			document: { title: "Example", readyState: "complete", visibilityState: "visible" },
+			performance: { timeOrigin: 1000, now: () => 5 },
+			TextEncoder,
+			TextDecoder,
+			shared,
+		});
+		runInContext("Date.now = () => shared.clock;", context);
+		return context;
+	};
+	let context = fresh();
+	const run: Run = async (request) => {
+		if (request.op !== "execute") throw new Error(`unexpected op ${request.op}`);
+		const kind = scriptKind(request);
+		const mode = drop(kind, request);
+		if (mode === "before-run") throw new TransportError("timeout", "unknown", "No reply.");
+		const output = runInContext(String(request.script), context) as string;
+		await Promise.resolve();
+		if (mode === "after-run") throw new TransportError("timeout", "unknown", "No reply.");
+		return ok({ window: "1", url: `${PAGE.origin}/page`, title: "Example", result: output });
+	};
+	return {
+		run,
+		effects: () => shared.effects,
+		records: () => runInContext("globalThis.__piBrowser ? globalThis.__piBrowser.runs.size : 0", context) as number,
+		replace: () => {
+			context = fresh();
+		},
+		advanceClock: (ms) => {
+			shared.clock += ms;
+		},
+	};
+}
+
+const AWAITED = { ...EVALUATE_PARAMS, expression: "(shared.effects += 1, Promise.resolve(42))", timeoutMs: 2_000 };
+
+function count(requests: OsaRequest[], kind: string): number {
+	return requests.filter((request) => scriptKind(request) === kind).length;
+}
+
+it("recovers a settled result after a lost poll reply, with one run and no replacement", async () => {
+	let polls = 0;
+	const world = pageWorld((kind) => (kind === "evaluation-poll" && ++polls === 1 ? "after-run" : "none"));
+	const { deps, requests } = fakes(world.run, { access: { chrome: "interact" } });
+	const result = await browserEvaluate(AWAITED, undefined, deps);
+	const execution = obj(reportOf(result).execution);
+	assert.equal(result.details.status, "fulfilled");
+	assert.equal(execution.value, 42);
+	assert.equal("settledAt" in execution, false);
+	assert.equal(world.effects(), 1);
+	assert.equal(count(requests, "start"), 1);
+	assert.equal(count(requests, "evaluation-poll"), 2);
+	assert.equal(count(requests, "forget"), 1);
+	assert.equal(world.records(), 0, "the acknowledgement removes the record");
+});
+
+it("reports a genuine document replacement during the wait", async () => {
+	const world: PageWorld = pageWorld((kind) => {
+		if (kind === "evaluation-poll") world.replace();
+		return "none";
+	});
+	const { deps, requests } = fakes(world.run, { access: { chrome: "interact" } });
+	const params = { ...AWAITED, expression: "(shared.effects += 1, new Promise(() => {}))" };
+	const result = await browserEvaluate(params, undefined, deps);
+	assert.equal(result.details.status, "document-replaced");
+	assert.equal(count(requests, "start"), 1);
+	assert.equal(world.effects(), 1);
+});
+
+it("removes the record of a run the tool stopped waiting for", async () => {
+	const world = pageWorld();
+	const { deps, requests } = fakes(world.run, { access: { chrome: "interact" } });
+	const params = { ...AWAITED, expression: "(shared.effects += 1, new Promise(() => {}))", timeoutMs: 150 };
+	const result = await browserEvaluate(params, undefined, deps);
+	assert.equal(result.details.status, "timeout");
+	assert.equal(count(requests, "forget"), 1);
+	assert.equal(world.records(), 0);
+	assert.equal(world.effects(), 1);
+});
+
+it("expires an unacknowledged record and never keeps more than the record limit", async () => {
+	const world = pageWorld((kind) => (kind === "forget" ? "before-run" : "none"));
+	const { deps } = fakes(world.run, { access: { chrome: "interact" } });
+	const first = await browserEvaluate(AWAITED, undefined, deps);
+	assert.equal(first.details.status, "fulfilled");
+	assert.equal(world.records(), 1, "a lost acknowledgement leaves the record");
+	world.advanceClock(RUN_TTL_MS + 1);
+	await browserEvaluate(AWAITED, undefined, deps);
+	assert.equal(world.records(), 1, "the expired record is gone; only the newest remains");
+	for (let index = 0; index < RUN_LIMIT + 4; index++) {
+		await browserEvaluate(AWAITED, undefined, deps);
+		assert.ok(world.records() <= RUN_LIMIT);
+	}
+	assert.equal(world.records(), RUN_LIMIT);
+	assert.equal(world.effects(), RUN_LIMIT + 6);
+});
+
+it("keeps an outcome unknown when no record or read settles it, and never reruns the expression", async () => {
+	const world = pageWorld((kind) => (kind === "evaluation-poll" ? "before-run" : "none"));
+	const { deps, requests } = fakes(world.run, { access: { chrome: "interact" } });
+	const unanswered = await browserEvaluate({ ...AWAITED, timeoutMs: 300 }, undefined, deps);
+	assert.equal(unanswered.details.status, "observation-failed");
+	assert.equal(count(requests, "start"), 1);
+	assert.equal(world.effects(), 1);
+
+	const cleared = pageWorld();
+	const clearedDeps = fakes(cleared.run, { access: { chrome: "interact" } });
+	const params = { ...AWAITED, expression: "(shared.effects += 1, globalThis.__piBrowser.runs.clear(), Promise.resolve(1))" };
+	const missing = await browserEvaluate(params, undefined, clearedDeps.deps);
+	assert.equal(missing.details.status, "unknown");
+	assert.equal(count(clearedDeps.requests, "start"), 1);
+	assert.equal(cleared.effects(), 1);
 });
 
 it("reports an unreadable evaluation start as an unknown execution, not a refusal", async () => {

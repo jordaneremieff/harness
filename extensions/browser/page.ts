@@ -397,6 +397,18 @@ const encodeError = (error, maxBytes) => {
 `;
 
 /**
+ * Evaluation records kept in the page world. A record holds a pending run or its
+ * settled outcome until the tool acknowledges it with `evaluationForgetScript`, so
+ * a poll reply lost in transport leaves the outcome readable by the next poll. A
+ * record is needed only within the one tool call that created it, which never
+ * waits longer than two minutes, so a record older than `RUN_TTL_MS` is abandoned.
+ * At most `RUN_LIMIT` records are kept; the oldest goes first. One settled record
+ * holds at most `maxBytes` of encoded value (262144 at most) plus a bounded error.
+ */
+export const RUN_LIMIT = 8;
+export const RUN_TTL_MS = 300_000;
+
+/**
  * Starts an evaluation. The expression is spliced into the script after a syntax
  * check by the caller. A synchronous exception reports `threw`; a thenable is
  * awaited in the page and its settlement is stored for `evaluationPollScript`.
@@ -412,10 +424,12 @@ ${prelude(expectOrigin)}
 ${ENCODER}
 const __pbRun = ${literal(runId)};
 const __pbMax = ${literal(maxBytes)};
-for (const [key, value] of S.runs) if (value.state !== "pending" && S.runs.size > 32) S.runs.delete(key);
-const __pbEntry = { state: "pending" };
+const __pbNow = Date.now();
+for (const [key, value] of S.runs) if (!(__pbNow - (value.settledAt ?? value.at ?? 0) <= ${RUN_TTL_MS})) S.runs.delete(key);
+while (S.runs.size >= ${RUN_LIMIT}) S.runs.delete(S.runs.keys().next().value);
+const __pbEntry = { state: "pending", at: __pbNow };
 S.runs.set(__pbRun, __pbEntry);
-const __pbSettle = (patch) => { if (S.runs.get(__pbRun) === __pbEntry) Object.assign(__pbEntry, patch); };
+const __pbSettle = (patch) => { if (S.runs.get(__pbRun) === __pbEntry) Object.assign(__pbEntry, patch, { settledAt: Date.now() }); };
 let __pbValue;
 try {
   __pbValue = (
@@ -447,13 +461,13 @@ export function evaluationPollScript(runId: string): string {
 const entry = S.runs.get(id);
 if (!entry) return JSON.stringify({ kind: "missing", page: page() });
 if (entry.state === "pending") return JSON.stringify({ kind: "pending", page: page() });
-S.runs.delete(id);
-return JSON.stringify({ kind: "settled", page: page(), outcome: entry });`,
+const { at, settledAt, ...outcome } = entry;
+return JSON.stringify({ kind: "settled", page: page(), outcome });`,
 		false,
 	);
 }
 
-/** Forgets a run, so a late settlement stores nothing. */
+/** Acknowledges or abandons a run: removes its record, so a late settlement stores nothing. */
 export function evaluationForgetScript(runId: string): string {
 	return script(null, `S.runs.delete(${literal(runId)});\nreturn JSON.stringify({ kind: "ok", page: page() });`, false);
 }
