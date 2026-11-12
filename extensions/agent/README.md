@@ -283,6 +283,9 @@ bottom padding, while Pi supplies their outer separator.
 The manager contract is `manager/7.0.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
+A result card shows `Answer continuation:` and `Receipt continuation:` as
+separate exact calls when the result carries them. An expanded result notice
+shows its receipt continuation call in its source details.
 
 A collapsed card has at most one expansion hint across its call and result.
 Before execution, the call owns the hint; after execution starts, the result
