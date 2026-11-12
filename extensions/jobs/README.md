@@ -72,7 +72,10 @@ excluded from ordinary idle waits, and survives a plain conversation abort;
 When the job succeeds, fails, or times out, the task admits one input to the
 owning conversation with the completion text above, placed as a
 `jobs.completion` entry whose data is `{ job, command, tail }`, and keyed by a
-request ID derived from the launching call, so a retry never admits it twice.
+request ID derived from the persistent launching tool task ID, so a retry never
+admits it twice. Distinct tool tasks retain distinct completion identities even
+when their provider call IDs match; the input keeps the provider call ID as
+metadata.
 A busy conversation receives it as a follow-up after its current run; an idle
 conversation starts a run from it. Cancellation settles the task `aborted` and
 admits nothing.

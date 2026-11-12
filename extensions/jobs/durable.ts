@@ -49,6 +49,7 @@ export type JobInput = {
 	timeoutSeconds?: number;
 	createdAt: number;
 	requestId: string;
+	callId: string;
 };
 /** `startedAt` is committed before the process spawns, so a rerun can tell a spawned job from one that never ran. */
 export type JobState = { phase: "run"; startedAt?: number };
@@ -390,7 +391,7 @@ export function createJobsContribution(options: { source: string }): DurableCont
 				if (live.runningCount() >= JOB_LIMITS.active) throw new Error("Active job limit reached");
 				const createdAt = api.now();
 				const timeout = args.timeout === undefined ? {} : { timeoutSeconds: args.timeout };
-				const input: JobInput = { conversationId: api.conversationId, command: args.command, preview: commandPreview(args.command), ...(api.env === undefined ? {} : { cwd: api.env.cwd }), owner: `${host.storageId}:${api.conversationId}`, createdAt, requestId: `${JOB_COMPLETION_MESSAGE}:${api.conversationId}:${api.callId}`, ...timeout };
+				const input: JobInput = { conversationId: api.conversationId, command: args.command, preview: commandPreview(args.command), ...(api.env === undefined ? {} : { cwd: api.env.cwd }), owner: `${host.storageId}:${api.conversationId}`, createdAt, requestId: `${JOB_COMPLETION_MESSAGE}:${api.conversationId}:${api.taskId}`, callId: api.callId, ...timeout };
 				const launchTaskId = Number(api.taskId);
 				live.reserveAdmission(launchTaskId, api.conversationId);
 				let jobTaskId: number | undefined;

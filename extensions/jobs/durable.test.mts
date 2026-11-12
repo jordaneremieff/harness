@@ -178,6 +178,39 @@ function waitingEnvironment(target: Durable.EnvTarget): NodeExecutionEnv {
 	};
 	return env;
 }
+test("distinct launching tasks with one provider call ID retain distinct completions and deduplicate delivery retries", { timeout: 30_000 }, async () => {
+	const instance = await openHarness(new Durable.MemoryStorage(), admissionScript, { env: (target) => {
+		const env = new NodeExecutionEnv({ cwd: target.cwd ?? root });
+		env.exec = async (_command, options, executionContext) => {
+			options?.onOutput?.("retained output\n", executionContext, { stream: "stdout" });
+			return { ok: true, value: { exitCode: 0 } };
+		};
+		return env;
+	} });
+	try {
+		const conversation = await instance.harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } });
+		const ids: string[] = [];
+		const requests: string[] = [];
+		for (const label of ["first", "second"]) {
+			const id = await launch(conversation, label); assert.ok(id); ids.push(id);
+			await instance.harness.waitForTask(Number(id) as Durable.TaskId, context);
+			const record = await taskRecord(instance.harness, id);
+			const input = record.input as JobInput;
+			requests.push(input.requestId);
+		}
+		await instance.harness.waitForIdle(context);
+		const completions = await completionEntries(conversation);
+		assert.deepEqual(completions.map((entry) => entry.job.id).sort(), [...ids].sort());
+		assert.equal(new Set(requests).size, 2);
+		const original = await instance.harness.commit((tx) => tx.submissionByRequest(conversation.id, requests[0]), context);
+		assert.ok(original);
+		const retry = await conversation.submit({ type: "input", content: "Retry", requestId: requests[0], entry: { kind: JOB_COMPLETION_MESSAGE, data: completions[0] } }, context);
+		assert.equal(retry.id, original.id);
+		await instance.harness.waitForIdle(context);
+		assert.equal((await completionEntries(conversation)).length, 2);
+	} finally { await instance.close(); }
+});
+
 const admissionScript: Script = (user, result) => user.startsWith("LAUNCH") && result === undefined
 	? fauxAssistantMessage(fauxToolCall("bash", { command: "synthetic", background: true }, { id: "shared-provider-id" }), { stopReason: "toolUse" })
 	: fauxAssistantMessage("Done.");
@@ -468,7 +501,9 @@ for (const timing of ["before", "during"] as const) test(`a completion admitted 
 		assert.equal(job.kind, JOB_TASK_NAME);
 		const input = job.input as JobInput;
 		const requestId = input.requestId;
-		assert.equal(requestId, `${JOB_COMPLETION_MESSAGE}:${conversation.id}:completion-${timing}`);
+		const launchTask = (await instance.harness.commit((tx) => tx.scanTasks({ conversationId: conversation.id, kind: "pi.tool" }, 20), bounded)).items.find((task) => (task.input as { callId?: string }).callId === `completion-${timing}`);
+		assert.ok(launchTask);
+		assert.equal(requestId, `${JOB_COMPLETION_MESSAGE}:${conversation.id}:${launchTask.id}`);
 		assert.equal(input.owner, `jobs-durable-test:${conversation.id}`);
 		assert.deepEqual(await completionEntries(conversation), []);
 		const owner = await conversation.submit({ type: "input", content: "OWNER BARRIER" }, bounded);
