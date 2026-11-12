@@ -89,7 +89,12 @@ function defer(): { promise: Promise<void>; resolve: () => void } {
 	return { promise, resolve };
 }
 
-const wait = (host: DurableHost, submissionId: SubmissionId) => host.wait(submissionId, BACKGROUND_CONTEXT);
+async function wait(host: DurableHost, submissionId: SubmissionId) {
+	const submission = await host.harness.submission(submissionId, BACKGROUND_CONTEXT);
+	assert.ok(submission, "the admitted submission exists");
+	await submission.wait(BACKGROUND_CONTEXT);
+	return host.wait(submissionId, BACKGROUND_CONTEXT);
+}
 
 it("requests retirement after abort and reports its blockers", async (t) => {
 	const root = fixtureRoot(t);
@@ -138,14 +143,14 @@ it("clears a native retry after the next attempt settles the same exact input", 
 		const stop = onStoredCommit(host.harness, () => { void host.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT).then((live) => { if (live?.generation?.retry) ready(); }); });
 		const submitted = await host.submit({ message: "task", requestId: "native-retry" });
 		await retryReady; stop();
-		const results = [{ sessionId: host.storageId, submissionId: submitted.submissionId, requestId: "native-retry" }];
-		options.settings.retry.maxRetries = 8;
-		const before = await host.request("await-state", { results }) as { execution?: { attempt: number; nextRetryAt: number; maxAttempts?: number } };
-		assert.equal(before.execution?.attempt, 1); assert.equal(before.execution.maxAttempts, 9, "the ceiling uses current native settings, not the cached dashboard hint");
-		now = before.execution.nextRetryAt + 1;
+		const before = await host.harness.snapshot(LiveDoc, host.root().id, BACKGROUND_CONTEXT);
+		assert.equal(before?.generation?.attempt, 1);
+		assert.ok(before?.generation?.retry);
+		assert.ok(before.run?.inputs.includes(submitted.submissionId), "the retry belongs to the original input");
+		now = before.generation.retry.at + 1;
 		await host.close(); host = await DurableHost.open(options, BACKGROUND_CONTEXT);
-		assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
-		assert.deepEqual(await host.request("await-state", { results }), {});
+		assert.equal((await wait(host, submitted.submissionId)).status, "done");
+		assert.equal((await host.harness.snapshot(LiveDoc, host.root().id, BACKGROUND_CONTEXT))?.generation?.retry, undefined);
 	} finally { await host.close(); }
 });
 
@@ -160,13 +165,13 @@ it("recovers through explicit abort, idle configuration, and a new exact input w
 		await retryReady; stop();
 		await assert.rejects(host.request("configure", { thinkingLevel: "high" }), /busy/u);
 		await host.request("abort", {});
-		assert.equal((await host.wait(original.submissionId, BACKGROUND_CONTEXT)).status, "unanswered");
+		assert.equal((await wait(host, original.submissionId)).status, "unanswered");
 		await host.request("configure", { model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "high" });
 		const continued = await host.submit({ message: "Continue the original task with the retained brief.", requestId: "continued-task" });
 		assert.notEqual(continued.submissionId, original.submissionId);
-		assert.equal((await host.wait(continued.submissionId, BACKGROUND_CONTEXT)).status, "done");
-		assert.equal((await host.wait(original.submissionId, BACKGROUND_CONTEXT)).status, "unanswered");
-		assert.deepEqual(await host.request("await-state", { results: [{ sessionId: host.storageId, submissionId: continued.submissionId, requestId: "continued-task" }] }), {});
+		assert.equal((await wait(host, continued.submissionId)).status, "done");
+		assert.equal((await wait(host, original.submissionId)).status, "unanswered");
+		assert.equal((await host.harness.snapshot(LiveDoc, host.root().id, BACKGROUND_CONTEXT))?.generation?.retry, undefined);
 	} finally { await host.close(); }
 });
 
@@ -291,7 +296,8 @@ it("serves submit, receipts, and acknowledge through request dispatch", async (t
 	try {
 		const submitted = (await host.request("submit", { message: "report me", requestId: "receipt-1", ownerId: "owner-a", operationId: "op-9", origin: "operator" })) as { submissionId: SubmissionId; identity: string };
 		assert.equal(submitted.identity, fixtureStorageId);
-		const waiting = (await host.request("receipts", { ownerId: "owner-a", wait: true })) as { receipts: readonly { submissionId: SubmissionId; status: string; answerEntryId: number | null; operationId: string | null; identity: string }[]; reports: readonly unknown[]; pending: number };
+		await wait(host, submitted.submissionId);
+		const waiting = (await host.request("receipts", { ownerId: "owner-a" })) as { receipts: readonly { submissionId: SubmissionId; status: string; answerEntryId: number | null; operationId: string | null; identity: string }[]; reports: readonly unknown[]; pending: number };
 		assert.equal(waiting.receipts.length, 1);
 		const receipt = waiting.receipts[0];
 		assert.ok(receipt);
@@ -498,8 +504,8 @@ it("compacts without aborting active work or withdrawing queued input", { timeou
 		assert.equal(inspection.submissions.find(item => item.id === queued.submissionId)?.status, "queued");
 		assert.equal(inspection.tasks.some(item => item.record.abortRequested), false);
 		release.resolve();
-		assert.equal((await host.wait(submitted.submissionId)).status, "done");
-		assert.equal((await host.wait(queued.submissionId)).status, "done");
+		assert.equal((await wait(host, submitted.submissionId)).status, "done");
+		assert.equal((await wait(host, queued.submissionId)).status, "done");
 		assert.equal((await host.harness.waitForTask(compacted.taskId as import("@earendil-works/pi-durable").TaskId, BACKGROUND_CONTEXT)).state.outcome.status, "completed");
 	} finally {
 		release.resolve();
@@ -514,7 +520,7 @@ it("returns observed compaction configuration and the retained summary text size
 	try {
 		await host.request("configure", { name: "Other parser" });
 		const submitted = await host.submit({ message: "Retain the original task", requestId: "context" });
-		await host.wait(submitted.submissionId);
+		await wait(host, submitted.submissionId);
 		const outcome = await host.request("compact", { wait: true }) as { status: string; summaryChars?: number; compaction: { identity: string; name: string; provider: string; modelId: string; thinkingLevel: string; before: { contextWindow: number; tokens?: number }; summaryChars?: number } };
 		assert.equal(outcome.status, "completed");
 		assert.equal(outcome.compaction.identity, host.storageId);
@@ -539,7 +545,7 @@ it("keeps compaction operational when optional name metadata is unreadable", asy
 	const host = await DurableHost.open({ ...options, settings: { ...options.settings, compaction: { keepRecentTokens: 0, reserveTokens: 128 } } }, BACKGROUND_CONTEXT);
 	try {
 		const submitted = await host.submit({ message: "Retain the task", requestId: "source" });
-		await host.wait(submitted.submissionId);
+		await wait(host, submitted.submissionId);
 		const snapshot = host.harness.snapshot.bind(host.harness);
 		t.mock.method(host.harness, "snapshot", async (...args: Parameters<typeof snapshot>) => {
 			if ((args[0] as unknown) === AgentMetaDoc) throw new Error("name metadata read failed");
@@ -632,7 +638,7 @@ it("retains an outbound report and acknowledges it by source ID", async (t) => {
 		assert.ok(report.createdAt >= started);
 		const again = (await host.request("report", { ownerId: "owner-z", senderIdentity: "agent-x", requestId: "rep-1", message: "progress note" })) as { sourceId: string };
 		assert.equal(again.sourceId, report.sourceId, "a repeated request ID returns the retained report");
-		const waiting = (await host.request("receipts", { ownerId: "owner-z", wait: true })) as { receipts: readonly unknown[]; reports: readonly { sourceId: string; senderIdentity: string; message: string; replyTo: string | null }[] };
+		const waiting = (await host.request("receipts", { ownerId: "owner-z" })) as { receipts: readonly unknown[]; reports: readonly { sourceId: string; senderIdentity: string; message: string; replyTo: string | null }[] };
 		assert.equal(waiting.reports.length, 1);
 		const received = waiting.reports[0];
 		assert.ok(received);
@@ -677,19 +683,30 @@ it("classifies idle work without excluding waiting tasks", () => {
 	assert.equal(sessionIsIdle(graph(node(1, 1, { status: "waiting", phase: "hold", on: [], policy: "allSettled" }, [7])), inspection(1)), false, "an unsettled submission is work");
 });
 
-it("cancels an abandoned receipts wait and reports shutdown separately", async (t) => {
+it("reads receipts and selected input state without waiting for a held run", { timeout: 15000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const started = defer();
+	const release = defer();
+	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("done")]), fixtureRegistry([gateTool(release.promise, started.resolve)])), BACKGROUND_CONTEXT);
 	try {
-		const controller = new AbortController();
-		const abandoned = host.request("receipts", { ownerId: "ghost", wait: true }, controller.signal);
-		controller.abort(new Error("client gone"));
-		await assert.rejects(abandoned, /client gone/u);
-		const closing = host.request("receipts", { ownerId: "ghost-2", wait: true });
-		const shutdown = host.close();
-		await assert.rejects(closing, /durable host is closed/u);
-		await shutdown;
+		const submitted = await host.submit({ message: "hold", requestId: "immediate-receipt", ownerId: "owner", origin: "operator" });
+		await started.promise;
+		const empty = await host.request("receipts", { ownerId: "owner", wait: true }) as { receipts: unknown[]; reports: unknown[]; pending: number };
+		assert.deepEqual(empty.receipts, []);
+		assert.deepEqual(empty.reports, []);
+		assert.equal(empty.pending, 1);
+		const selected = await host.request("receipts", { ownerId: "owner", wait: true, result: { sessionId: host.storageId, submissionId: submitted.submissionId, requestId: "immediate-receipt" } }) as { outcome: { status: string; answer?: string }; delivery?: unknown };
+		assert.equal(selected.outcome.status, "placed");
+		assert.equal(selected.outcome.answer, undefined);
+		assert.equal(selected.delivery, undefined);
+		release.resolve();
+		assert.equal((await wait(host, submitted.submissionId)).status, "done");
+		const settled = await host.request("receipts", { ownerId: "owner" }) as { receipts: { status: string }[] };
+		assert.equal(settled.receipts[0]?.status, "done");
+		await host.close();
+		await assert.rejects(host.request("receipts", { ownerId: "owner" }), /durable host is closed/u);
 	} finally {
+		release.resolve();
 		await host.close().catch(() => {});
 	}
 });
@@ -793,7 +810,7 @@ it("reports a freshly opened host as idle without waiting for a commit", async (
 		assert.equal(busy.isIdle(), false, "a live run is not idle");
 		assert.equal(await busy.refreshIdle(), false);
 		release.resolve();
-		await busy.wait(submitted.submissionId, BACKGROUND_CONTEXT);
+		await wait(busy, submitted.submissionId);
 		assert.equal(await busy.refreshIdle(), true, "the settled run returns the host to idle");
 	} finally {
 		release.resolve();
@@ -825,7 +842,7 @@ async function crashAndResume(mode: "request" | "effect"): Promise<void> {
 		const outcome = await wait(host, admitted.submissionId);
 		if (outcome.status !== "done") assert.fail(`expected a completed run, received ${outcome.reason}`);
 		assert.equal(outcome.answer, "durable answer");
-		const receipts = (await host.request("receipts", { ownerId: "fixture-owner", wait: true })) as { receipts: readonly { status: string; answerEntryId: number | null }[] };
+		const receipts = (await host.request("receipts", { ownerId: "fixture-owner" })) as { receipts: readonly { status: string; answerEntryId: number | null }[] };
 		const receipt = receipts.receipts[0];
 		assert.ok(receipt);
 		assert.equal(receipt.status, "done", "the owner receipt survives the kill");
