@@ -26,6 +26,7 @@ import { CommunicationViewSchema } from "./communication.ts";
 import { STORAGE_STATUS_ID_PATTERN } from "./storage-status.ts";
 import { ProviderBlockFactSchema } from "./provider-block-facts.ts";
 import { ResultReferenceSchema } from "./result-schema.ts";
+import { OpenWorkViewSchema } from "./open-work.ts";
 
 const string = str();
 const boolean = bool();
@@ -228,6 +229,8 @@ export const ConversationStatusSchema = obj({
 	),
 	/** Bounded pending scheduled inputs, nearest deadline first. */
 	timers: opt(arr(timerStatusRow)),
+	/** Declared background work of the conversation; absent when it has none. */
+	openWork: opt(arr(OpenWorkViewSchema)),
 	forkSource: opt(obj({ conversationId: id, at: id })),
 	ownerTaskId: opt(id),
 });

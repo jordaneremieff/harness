@@ -54,6 +54,7 @@ import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseI
 import { LiveObservationService, type ObservationScope } from "./live-observation.ts";
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
 import { resetConversation } from "./durable-reset.ts";
+import { closeOpenWork } from "./open-work.ts";
 import { TIMER_TASK_NAME, cancelTimer, listTimers, scheduleTimer, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
 
@@ -921,6 +922,7 @@ export class DurableHost {
 		const conversation = await this.target(params, context);
 		const background = requestBoolean(params, "background") ?? false;
 		await abortConversation(conversation, background, context);
+		await this.harness.commit((tx) => closeOpenWork(tx, this.storageId, conversation.id, "stopped", this.now()), context);
 		return { conversationId: conversation.id, identity: this.identity(conversation.id), background };
 	}
 
@@ -1004,6 +1006,7 @@ export class DurableHost {
 		const handoff = requestString(params, "handoff");
 		const requestId = requestString(params, "requestId") ?? randomUUID();
 		const result = await resetConversation(conversation, { ...(handoff === undefined ? {} : { handoff }), requestId }, context);
+		await this.harness.commit((tx) => closeOpenWork(tx, this.storageId, conversation.id, "reset", this.now()), context);
 		return { ...result, identity: this.identity(conversation.id) };
 	}
 

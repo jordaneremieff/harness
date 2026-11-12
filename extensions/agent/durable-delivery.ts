@@ -33,6 +33,7 @@ import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { threadExcerpt, threadRecoveryText } from "./thread-notice-projection.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { receiptWork, requestHasOpenWork } from "./open-work.ts";
 import type { ConversationId, Harness, Tx } from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
 import {
@@ -389,6 +390,13 @@ function receiptContinuationText(metadata: HostMetadata, receipt: DeliveryReceip
 }
 
 /** Catalog follow-up text; the peer body is bounded. */
+/** A check-in stays current while its input is unsettled, or settled with declared open work that owes a final report. */
+async function checkInCurrent(tx: Tx, conversationId: ConversationId, requestId: string): Promise<boolean> {
+	const submission = await tx.submissionByRequest(conversationId, requestId);
+	if (submission?.status !== "done" && submission?.status !== "unanswered") return true;
+	return requestHasOpenWork(tx, conversationId, requestId);
+}
+
 function receiptFailureText(receipt: DeliveryReceipt, displayReason = receipt.reason): string {
 	return `No answer: ${displayReason ?? "the submission settled unanswered"}${receipt.providerBlock === undefined ? "" : `\n${providerBlockText(receipt.providerBlock)}`}`;
 }
@@ -396,16 +404,17 @@ function receiptFailureText(receipt: DeliveryReceipt, displayReason = receipt.re
 function deliveredResults(metadata: HostMetadata, row: ReceiptRow): ResultReference[] {
 	return row.receipts.map((receipt) => ({ sessionId: canonicalIdentity(metadata.storageId, receipt.conversationId), submissionId: receipt.submissionId, requestId: receipt.requestId }));
 }
+type ReceiptWork = NonNullable<Awaited<ReturnType<typeof receiptWork>>>;
 function receiptUnusable(receipt: DeliveryReceipt): boolean {
 	return receipt.status !== "done" || (receipt.answer ?? "").trim() === "";
 }
-function receiptFollowText(metadata: HostMetadata, row: ReceiptRow, continuity: readonly string[]): string {
+function receiptFollowText(metadata: HostMetadata, row: ReceiptRow, continuity: readonly string[], work?: ReceiptWork): string {
 	const receipt = row.receipt;
 	const result =
 		receipt.status === "done"
 			? (receipt.answer ?? "No assistant text.")
 			: receiptFailureText(receipt, row.displayReason);
-	return `Agent result from ${metadata.storageId}:${receipt.conversationId} (${submissionLabel(row)}). Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, receipt)}${receiptGroupContinuationText(row, metadata.storageId)}${continuity.length === 0 ? "" : `\n\n${continuity.join("\n")}`}`;
+	return `Agent result from ${metadata.storageId}:${receipt.conversationId} (${submissionLabel(row)}).${work === undefined ? "" : ` ${work.label}.`} Results do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, receipt)}${receiptGroupContinuationText(row, metadata.storageId)}${continuity.length === 0 ? "" : `\n\n${continuity.join("\n")}`}`;
 }
 
 function reportOptionalDetails(report: DeliveryReport) {
@@ -736,9 +745,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 				await storeDeliveryRow(tx, "report", { ...current, acknowledged: true });
 				return false;
 			}
-			if (current.checkIn === undefined) return true;
-			const submission = await tx.submissionByRequest(current.checkIn.conversationId as ConversationId, current.checkIn.requestId);
-			if (submission?.status !== "done" && submission?.status !== "unanswered") return true;
+			if (current.checkIn === undefined || await checkInCurrent(tx, current.checkIn.conversationId as ConversationId, current.checkIn.requestId)) return true;
 			await storeDeliveryRow(tx, "report", { ...current, acknowledged: true });
 			return false;
 		}, BACKGROUND_CONTEXT);
@@ -750,7 +757,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			const requestId = receiptRequestId(metadata, row.receipt);
 			const communicationParams = deliveryCommunicationParams(row, host);
 			const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
-			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row, continuity), requestId, provenance: { classification: "automatic" }, ...communicationParams, deliveredResults: deliveredResults(metadata, row), whenBusy: "followUp" });
+			const work = await host.harness.commit((tx) => receiptWork(tx, row.receipt.conversationId, row.receipt.requestId), BACKGROUND_CONTEXT);
+			await host.request("submit", { sessionId: owner, message: receiptFollowText(metadata, row, continuity, work), requestId, provenance: { classification: "automatic" }, ...communicationParams, deliveredResults: deliveredResults(metadata, row), whenBusy: "followUp" });
 			return;
 		}
 		if (!await reportCurrent(row)) return;
@@ -845,8 +853,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const shared = sharedRowDetails(row, identity, originalOwnerId, deliveryRecipient, liveOwner, fallback, status, body);
 		if (row.kind === "receipt") {
 			const receipt = row.receipt;
+			const work = await host.harness.commit((tx) => receiptWork(tx, receipt.conversationId, receipt.requestId), BACKGROUND_CONTEXT);
 			return {
 				...shared,
+				...(work === undefined ? {} : { work: work.work, workLabel: work.label }),
 				submissions: row.receipts.map((member) => ({
 					submissionId: member.submissionId,
 					requestId: member.requestId,
@@ -1070,13 +1080,14 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			const requestId = receiptRequestId(metadata, row.receipt);
 			const communicationParams = deliveryCommunicationParams(row, host);
 			const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
+			const work = await host.harness.commit((tx) => receiptWork(tx, row.receipt.conversationId, row.receipt.requestId), BACKGROUND_CONTEXT);
 			await connection.request(
 				"submit",
 				{
 					sessionId: owner,
 					provenance: { classification: "automatic" },
 					...communicationParams,
-					message: receiptFollowText(metadata, row, continuity),
+					message: receiptFollowText(metadata, row, continuity, work),
 					deliveredResults: deliveredResults(metadata, row),
 					requestId,
 					whenBusy: "followUp",

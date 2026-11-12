@@ -28,6 +28,7 @@ import { snapshotDeliveryState, deliveryState, latestReceipt, migrateDeliverySto
 import type { AnswerContinuation, ReceiptGroup } from "./observation-schema.ts";
 import { timerStatusRows } from "./durable-timers.ts";
 import { readUnplacedSummary } from "./unplaced-inputs.ts";
+import { openWorkStatus, type OpenWorkView } from "./open-work.ts";
 import { snapshotProviderBlock, snapshotInputProviderBlock, snapshotInputRecovery, readProviderBlock, readInputProviderBlock, readInputRecovery } from "./provider-block.ts";
 import { modelFailureText, PROVIDER_BLOCK_ERROR, type ProviderBlockFact } from "./provider-block-facts.ts";
 import type { CommunicationView } from "./communication.ts";
@@ -123,6 +124,8 @@ export interface ConversationSummary {
 export type DurableTextRole = "user" | "assistant" | "toolResult" | "system";
 
 export interface ConversationStatus extends ConversationSummary {
+	/** Declared background work: `work` state, apart from the native input status. */
+	readonly openWork?: OpenWorkView[];
 	readonly providerBlock?: ProviderBlockFact;
 	readonly cwd?: string;
 	readonly lastText: string | null;
@@ -742,7 +745,9 @@ export async function readConversationStatus(
 	const liveTaskIds = new Set(inspection.tasks.map((task) => Number(task.record.id)));
 	const unplaced = await readUnplacedSummary(harness, conversationId, context);
 	const providerBlock = frozenObservations.has(harness) ? await snapshotProviderBlock(harness, conversationId, context) : await harness.commit((tx) => readProviderBlock(tx, conversationId), context);
+	const openWork = frozenObservations.has(harness) ? await openWorkStatus({ harness, context }, storageId, conversationId) : await harness.commit((tx) => openWorkStatus(tx, storageId, conversationId), context);
 	return {
+		...(openWork.length === 0 ? {} : { openWork }),
 		...(providerBlock === undefined ? {} : { providerBlock }),
 		...summary,
 		...optionalParam("cwd", agent.cwd ?? options.cwd),
