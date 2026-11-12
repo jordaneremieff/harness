@@ -21,7 +21,7 @@ function click(f: Fixture, x: number, y: number): void {
 }
 
 const thread = (id: string) => ({ id, title: `Thread ${id}`, purpose: `Purpose of ${id}`, updatedAt: 1000, closed: false, members: 2 });
-const event = (sequence: number) => ({ threadId: "t1", sequence, at: sequence * 1000, sender: "one", origin: "model" as const, kind: "contribution", message: `Message ${sequence}`, source: "", replyTo: null, revision: 1, notify: [] });
+const event = (sequence: number) => ({ threadId: "t1", sequence, at: sequence * 1000, atUtc: new Date(sequence * 1000).toISOString(), sender: "one", origin: "model" as const, kind: "contribution", message: `Message ${sequence}`, source: "", replyTo: null, revision: 1, notify: [] });
 const threadPage = (id: string) => ({
 	thread: {
 		id, title: `Thread ${id}`, purpose: `Purpose of ${id}`, authority: "Operator direction", source: "Brief", restrictions: "None", acceptance: "Works",
@@ -71,9 +71,10 @@ it("the Threads message field offers the More chord at 60 columns and keeps x as
 		f.ui.openNamedAction("threads");
 		await settle();
 		f.ui.handleInput("\r");
-		await settle();
+		for (let attempt = 0; attempt < 20 && !shown(f).includes("Message 1"); attempt++) await turn();
+		assert.match(shown(f), /Message 1/u, "the selected exchange is loaded before its write action");
 		assert.deepEqual(f.ui.focus, { region: "list", surface: "threads" }, "the thread's message field has focus");
-		assert.match(footer(f), /ctrl\+n more/u, "the thread field shows the chord");
+		assert.match(footer(f), /ctrl\+n more/u, shown(f));
 		assert.doesNotMatch(footer(f), /x more/u);
 		f.ui.handleInput("x");
 		assert.equal(f.state.threads?.drafts.get("t1")?.text, "x", "x reaches the thread draft");

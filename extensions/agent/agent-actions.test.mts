@@ -1,8 +1,4 @@
-/**
- * The `/agent send` and `/agent steer` actions share one submit call shape
- * except for the busy disposition: send waits for the current answer, steer
- * redirects the running work.
- */
+/** The commands preserve each operator input's class at admission. */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,7 +17,7 @@ it("admits /agent send as a follow-up and /agent steer as steering", async (t) =
 	const originalStatus = AgentManager.prototype.status;
 	AgentManager.prototype.control = async (method: string, input: Record<string, unknown>) => {
 		calls.push({ method, input });
-		return method === "await-release" ? { released: true } : {};
+		return {};
 	};
 	AgentManager.prototype.status = async () => ({ conversation: { name: "poem task" } });
 	t.after(() => {
@@ -53,7 +49,6 @@ it("admits /agent send as a follow-up and /agent steer as steering", async (t) =
 	assert.ok(command);
 	await command.handler("send target-session keep going", ctx);
 	await command.handler("steer target-session change course", ctx);
-	await command.handler("await-release target-session 42", ctx);
 	assert.deepEqual(calls, [
 		{
 			method: "submit",
@@ -63,7 +58,6 @@ it("admits /agent send as a follow-up and /agent steer as steering", async (t) =
 			method: "submit",
 			input: { sessionId: "target-session", message: "change course", whenBusy: "steer", origin: "operator" },
 		},
-		{ method: "await-release", input: { sessionId: "target-session", expectedRunId: 42 } },
 	]);
-	assert.equal(notices.length, 3);
+	assert.equal(notices.length, 2);
 });

@@ -366,7 +366,7 @@ for (const [width, height] of [
 				type(f, "source draft");
 				f.ui.handleInput("\x1b");
 				f.ui.openNamedAction(action);
-				await until(f, action === "rewind" ? /Correction/u : /Latest committed entry/u);
+				await until(f, action === "rewind" ? /before a mistaken message/u : /Latest committed entry/u);
 				if (action === "rewind") {
 					press(f, "\r");
 					type(f, "Use the other parser");
