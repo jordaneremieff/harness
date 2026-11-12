@@ -71,6 +71,8 @@ Codemode output. Dispatch stays in the background; admission is not settlement.
 A native admission also states its committed `placement`. `placed` means that
 the input is in the recipient's transcript. `unplaced` means that the input
 waits in the inbox of a busy recipient until its current tool round ends.
+`withdrawn` means that it is in neither the inbox nor the transcript, including
+when its submission is absent; it does not mean that the recipient read it.
 Inside a Durable agent, the send and spawn results carry `placement` in their
 details and as one text line. The recipient's host keeps each unplaced input in
 the conversation document `agent.unplaced-inputs`, with its request, class,
@@ -1681,8 +1683,8 @@ settled input never invoke completion. Closed items do not reopen. The work
 record does not cancel its producers.
 
 The work document retains every open item and the newest 16 closed items.
-For an older close or a request that never declared work, completion fails
-with one answer that names both possible causes. It changes nothing and sends
+For an older close or a request that never declared work, completion returns
+an error that names both possible causes. It changes nothing and sends
 no report. This bound does not itself remove the separately retained final
 report.
 
@@ -1701,7 +1703,11 @@ Without a matching admitted mark, that remote dependency remains `open` with
 A result delivered to another conversation marks nothing here. Deliveries
 admitted before this contract carry no mark; result inspection creates none.
 A closed item carries its final-report identity and, when available, delivery state.
-Compact status omits this full list.
+Compact and untargeted status retain `openWorkCount` and `openWorkOldest`,
+while compact status omits the full item list. The count covers work that still
+owes a final report; the oldest age is in milliseconds and is absent when the
+count is zero. The dashboard roster and selected conversation show that count
+and age even when the native input has settled.
 
 Delivered receipts for a declared item label its native answer as a state note,
 not a final result. Ordinary-primary details also carry `work` (`open` or
@@ -1709,6 +1715,9 @@ not a final result. Ordinary-primary details also carry `work` (`open` or
 settles while declared work stays open; their note and dependency facts do not
 complete it. A host abort or context reset closes open items with `stopped` or
 `reset` and retains the fixed final report for each original reply recipient.
+An abort closes work for every conversation in its stopped ownership scope,
+with background boundaries honoured unless `background: true`. A final report
+to a recipient stopped by the same abort remains terminal and starts no run.
 Closure itself stops no producer. Stopping one input group does not invoke
 this declared-work closure.
 
@@ -1740,7 +1749,7 @@ no turn and enters context at its normal write boundary. The same-storage
 background `Reporter` admits delegated work and follows its settlement; the
 delivery watcher supplies the answer copy.
 
-Admissions and report receipts distinguish `placed` from `unplaced`.
+Admissions and report receipts distinguish `placed`, `unplaced` and `withdrawn`.
 Status and cards show `unplaced`, the count still in the native inbox, and
 `oldest`, the age in milliseconds of the oldest such input. The oldest age
 is absent when none is unplaced. These are committed placement facts, not
@@ -1751,10 +1760,13 @@ acceptance.
 
 After an explicit input stays unplaced for five minutes, the host retains one
 notice for that sender and stuck recipient, not one notice per queued input.
-The host also notifies the reply recipients of the recipient's current routed
-requests, without a duplicate for a sender already notified. Automatic results,
+The host also notifies reply recipients of the stuck recipient's current
+routed requests and open declared work, without a duplicate for a sender
+already notified. Automatic results,
 check-ins and timers produce no notice to their producer. Active thread-notice
-senders receive a passive notice. Inputs stay queued; the notice withdraws or
+senders receive a passive notice when all their covered inputs are thread
+notices. The notice counts inputs older than the five-minute threshold
+separately from newer queued inputs. Inputs stay queued; the notice withdraws or
 cancels nothing. Once the queued rows leave, a later stuck input is a new case.
 
 The notice names the current step: running tools, a blocking compaction, a
@@ -3544,16 +3556,20 @@ the fail-closed consumer rule) is documented at package level in
 describes current behavior; this extension may change the protocol, and consumers
 refuse operations whose identities they do not recognize.
 
-The `rewind/1.1.0` and `timer-schedule/1.1.0` request contracts accept optional
+The `rewind/2.0.0` and `timer-schedule/1.1.0` request contracts accept optional
 `selfOwned: true`. A rewind correction then uses the new fork as its delivery
 owner without changing the fork's creating owner. A scheduled input uses its
 target conversation as owner and reply recipient while retaining the caller as
 requester. Without the option, both operations retain caller-owned results.
-The rewind response identity is `rewind/1.0.0`. The timer response identity is
+The rewind response identity is `rewind/2.0.0`. It returns the correction's
+admission without waiting for its answer. Its request contract has no `wait`
+member and its response carries no `outcome`. Read the admitted result through
+inspection or its normal receipt. The timer response identity is
 `timer-schedule/2.0.0`: it distinguishes a new `scheduled` timer from a `retained`
 task and exposes native `status` and optional terminal `outcome`. Place uses
 `place/2.1.0` requests for empty-prompt resolution and exact prompted admission;
-its `place/2.2.0` response includes the placement of a prompted input.
+its `place/2.3.0` response includes the placement of a prompted input,
+including `withdrawn`.
 These operations refuse mismatched process contracts; restart the caller and host
 to use them together. The manager passes the option through its existing control
 interface, so its retained identity does not change.
@@ -3575,13 +3591,13 @@ preference snapshots, alongside exact fleet model/provider selection, caller usa
 thinking from catalog validation, ordinary retained observation, first-input
 origin, independent command admission, exact result references, and
 parked-delivery recovery. Spawn and resolve-agent requests use 2.0.0 for creation without parent
-inheritance. Their responses use 2.1.0 and include prompted-input placement
+inheritance. Their responses use 2.2.0 and include prompted-input placement
 beside preset names and selection origins. Configure requests and responses use 1.3.0 for explicit
 provider-block recovery alongside machine preference snapshots and selection
 receipts; target retention remains unchanged. Task-submit requests use 1.1.0,
 and submit requests use 1.7.0, for explicit input labels and dependency marks
-alongside retained routes and delivered-result references. Both responses use 1.3.0 for committed
-placement beside recovery links and the retained recipient. Timer-cancel responses use 1.1.0 for the resolved
+alongside retained routes and delivered-result references. Both responses use 1.4.0 for committed
+placement, including `withdrawn`, beside recovery links and the retained recipient. Timer-cancel responses use 1.1.0 for the resolved
 conversation identity; the request identity remains at 1.0.0. Report requests
 use 2.0.0 for passive reports and exact producer associations, and report
 responses use 1.2.0 for the `delivery` and `placement` facts.
