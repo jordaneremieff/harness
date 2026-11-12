@@ -1757,9 +1757,9 @@ in the turn that gives the operator the result, the blocker or the question;
 the chat message follows it. When the state changed but still needs nothing
 from the operator, a new `continue` replaces the note.
 
-The session entry `agent.state-note` keeps the note: a reload restores the
-note and the widget from the newest entry of the branch. The card of the call
-is the note on one line.
+The session entry `agent.state-note` keeps the note: a reload and `/tree`
+navigation restore the note and the widget from the newest entry of the
+current branch. The card of the call is the note on one line.
 
 Sources: `ordinary-work.ts` (`registerOrdinaryWork`, `ordinaryWorkWidget`),
 `tool-cards.ts` (`ordinaryWorkCard`), and `control-guidance.ts` (the ordinary

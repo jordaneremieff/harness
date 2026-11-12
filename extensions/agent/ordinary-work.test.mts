@@ -13,14 +13,14 @@ const theme = { fg: (_color: string, value: string) => value, bold: (value: stri
 function fixture() {
 	const entries: { type: "custom"; customType: string; data: unknown }[] = [];
 	const widgets: [string, WidgetContent][] = [];
-	const starts: ((event: unknown, ctx: ExtensionContext) => void)[] = [];
+	const handlers = new Map<string, ((event: unknown, ctx: ExtensionContext) => void)[]>();
 	let tool: ToolDefinition | undefined;
 	let now = Date.UTC(2026, 10, 12, 3, 4);
 	const card = ordinaryWorkCard();
 	registerOrdinaryWork({
 		registerTool: (definition: ToolDefinition) => { tool = definition; },
 		appendEntry: (customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); },
-		on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => { if (name === "session_start") starts.push(handler); },
+		on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
 	} as unknown as ExtensionAPI, card, () => now);
 	assert.ok(tool);
 	const registered = tool;
@@ -31,7 +31,8 @@ function fixture() {
 	return {
 		entries, widgets, tool: registered, context, lines,
 		at: (value: number) => { now = value; },
-		start: (ctx: ExtensionContext) => { for (const handler of starts) handler({}, ctx); },
+		start: (ctx: ExtensionContext) => { for (const handler of handlers.get("session_start") ?? []) handler({}, ctx); },
+		tree: (ctx: ExtensionContext) => { for (const handler of handlers.get("session_tree") ?? []) handler({}, ctx); },
 		run: (input: unknown, ctx: ExtensionContext) => registered.execute("call", input as never, undefined, undefined, ctx as never),
 	};
 }
@@ -94,4 +95,23 @@ it("ends the turn in continue with the note in one widget, keeps the note across
 	assert.deepEqual([headless.entries.length, headless.widgets.length], [1, 0]);
 	await assert.rejects(headless.run({ action: "continue" }, headless.context(false)), /continue requires note/u);
 	await assert.rejects(headless.run({ action: "complete", note: "x" }, headless.context(false)), /complete takes only action/u);
+});
+
+it("shows the note of the branch that tree navigation selects", async () => {
+	const f = fixture();
+	const ui = f.context(true);
+	await f.run({ action: "continue", note: "The first branch waits for one worker." }, ui);
+
+	// Navigation to a point before the note leaves a branch that has none.
+	f.entries.length = 0;
+	f.tree(ui);
+	assert.deepEqual(f.widgets.at(-1), [ORDINARY_WORK_WIDGET, undefined], "a branch without a note clears the widget");
+	assert.deepEqual((await f.run({ action: "complete" }, ui)).details, { action: "complete", cleared: false }, "the note of the branch that was left is gone");
+
+	// Navigation to a branch with its own note shows that note.
+	f.entries.push({ type: "custom", customType: ORDINARY_WORK_ENTRY, data: { note: "The second branch has its result.", at: Date.UTC(2026, 10, 12, 3, 20) } });
+	f.tree(ui);
+	assert.deepEqual(plain(f.widgets.at(-2)?.[1])?.slice(1), ["The second branch has its result."]);
+	assert.deepEqual(f.lines(f.widgets.at(-1)?.[1])?.slice(1), ["The second branch has its result."]);
+	assert.deepEqual((await f.run({ action: "complete" }, ui)).details, { action: "complete", cleared: true });
 });

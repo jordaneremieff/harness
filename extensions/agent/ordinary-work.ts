@@ -87,15 +87,18 @@ function retainedNote(ctx: Pick<ExtensionContext, "sessionManager">): OrdinaryWo
 }
 
 /**
- * Register the ordinary `agent_work` and restore its note and widget when a session starts. The caller owns
+ * Register the ordinary `agent_work` and restore its note and widget when a session starts or tree navigation
+ * selects another branch. The caller owns
  * `card`, so the registered renderers are the same references that it publishes for display.
  */
 export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool" | "appendEntry" | "on">, card: AgentToolCard, now: () => number = Date.now): void {
 	let current: OrdinaryWorkNote | undefined;
-	pi.on("session_start", (_event, ctx) => {
+	const restore = (ctx: WorkUi & Pick<ExtensionContext, "sessionManager">): void => {
 		current = retainedNote(ctx);
 		show(ctx, current);
-	});
+	};
+	pi.on("session_start", (_event, ctx) => restore(ctx));
+	pi.on("session_tree", (_event, ctx) => restore(ctx));
 	pi.registerTool({
 		name: "agent_work",
 		label: "Agent work",
