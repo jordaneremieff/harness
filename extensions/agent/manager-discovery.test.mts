@@ -196,9 +196,16 @@ it("lists a first page from a live host without undefined wire fields", { timeou
 		isIdle: () => true,
 		close: async () => {},
 	}), { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
-	t.after(() => host.close());
-	const result = await f.manager.list({ limit: 1 }) as ListResult;
-	assert.deepEqual(result.coverage.unavailable, []);
-	assert.deepEqual(result.rows, [{ conversationId: 1, identity: record.storageId, busy: false, sessionId: record.storageId, storageId: record.storageId, cwd: f.root, handle: null, role: null, profile: null, profileCoverage: "unknown" }]);
-	assert.equal(requests, 1);
+	try {
+		const result = await f.manager.list({ limit: 1 }) as ListResult;
+		assert.deepEqual(result.coverage.unavailable, []);
+		assert.deepEqual(result.rows, [{ conversationId: 1, identity: record.storageId, busy: false, sessionId: record.storageId, storageId: record.storageId, cwd: f.root, handle: null, role: null, profile: null, profileCoverage: "unknown" }]);
+		assert.equal(requests, 1);
+	} finally {
+		try {
+			await f.manager.close();
+		} finally {
+			await host.close();
+		}
+	}
 });
