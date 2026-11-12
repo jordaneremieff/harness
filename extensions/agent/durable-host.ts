@@ -1135,7 +1135,10 @@ export class DurableHost {
 		return { ...submitted, identity: this.identity(conversation.id) };
 	}
 
-	/** Wait for settlement and read the retained answer, source IDs, and usage. */
+	/**
+	 * Wait for settlement and read the retained answer, source IDs, and usage. This is an in-process read for a caller
+	 * that holds the host object; the host protocol exposes no operation that waits for a submission.
+	 */
 	async wait(submissionId: SubmissionId, context: Context = BACKGROUND_CONTEXT): Promise<DurableRunOutcome> {
 		return readOutcome(this.harness, submissionId, context);
 	}
