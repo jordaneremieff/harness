@@ -53,6 +53,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createProjectTrustResolver, type ProjectTrustDecision } from "./trust-support.ts";
 import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
+import { UnplacedWatchTask } from "./unplaced-inputs.ts";
 import { AGENT_ENTRY_CHANNEL, type AgentEntryRequest } from "./entry-binding.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
 import { createNativeAgentEntry } from "./native-entry.ts";
@@ -438,7 +439,7 @@ function durableReadTool(pi: PiRuntime, cwd: string, hostSignal: AbortSignal) {
 function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: DurableInventory, signal: AbortSignal): Durable.Extension {
 	return Durable.defineExtension({
 		name: "pi.host",
-		tasks: [CheckInTask, CheckInDeadlineTask],
+		tasks: [CheckInTask, CheckInDeadlineTask, UnplacedWatchTask],
 		tools: [
 			durableReadTool(pi, services.cwd, signal),
 			{ ...createWriteTool(), replay: "unsafe" },
