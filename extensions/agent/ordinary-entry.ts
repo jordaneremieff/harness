@@ -64,6 +64,8 @@ import {
 	structuredObservation,
 } from "./observation-schema.ts";
 import type { PrimaryIntentClaim } from "./primary-channel.ts";
+import { ORDINARY_CONTINUITY_ENTRY } from "./continuity-facts.ts";
+import { OrdinaryContinuity, deliveredResults } from "./ordinary-continuity.ts";
 import { formatPrimaryObservation } from "./primary-observation.ts";
 import { PrimaryRetention } from "./primary-retention.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
@@ -310,9 +312,16 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		(query as { provide: (launch: IndependentCommandLaunch) => void }).provide((input) => getManager().launchIndependent(input));
 	});
 	let registrationPreferences = readAgentPreferences();
+	let currentPreferences = registrationPreferences;
+	const continuity = new OrdinaryContinuity({
+		append: (fact) => pi.appendEntry(ORDINARY_CONTINUITY_ENTRY, fact),
+		budget: (provider, modelId) => currentPreferences.document?.preferences?.contextBudgetTokens?.[`${provider}/${modelId}`],
+		diagnose: (sessionId, text) => getManager().continuityNoteFailure(sessionId, text),
+	});
 	const refreshRegistrations = new Map<string, (snapshot: PreferenceSnapshot) => void>();
 	const refreshPreferences = (ctx?: ExtensionContext): PreferenceSnapshot => {
 		const snapshot = readAgentPreferences(undefined, ctx ? caller(ctx, pi).preferenceCatalog : undefined);
+		currentPreferences = snapshot;
 		if (presetInventory(snapshot) !== presetInventory(registrationPreferences)) {
 			registrationPreferences = snapshot;
 			for (const refresh of refreshRegistrations.values()) refresh(snapshot);
@@ -931,9 +940,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			pi.sendMessage({ customType: "agent.peer", content: text, details, display: true }, wake ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false });
 		});
 		primaryRetentions.set(sessionId, retention);
+		const retained = ctx.sessionManager.getEntries();
+		continuity.start(sessionId, retained);
 		await getManager().registerPrimary(sessionId, {
-			sentWork: retainedSentWork(ctx.sessionManager.getEntries()),
+			sentWork: retainedSentWork(retained),
 			retainSentWork: (sessionId) => pi.appendEntry(SENT_WORK_ENTRY, { sessionId }),
+			retainContinuity: (fact) => continuity.record(sessionId, fact),
 			signal: abort.signal,
 			cwd: ctx.cwd,
 			sessionFile: ctx.sessionManager.getSessionFile(),
@@ -943,7 +955,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			observedInputCanCapture: purpose.canCapture,
 			model: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined,
 			thinkingLevel: pi.getThinkingLevel(),
-			send: (text, details, sourceId, requireRetained) => retention.deliver(sourceId, text, details, requireRetained),
+			send: (text, details, sourceId, requireRetained) => {
+				// Only a result that the session file retains settles the requests that its tuples name.
+				const results = requireRetained ? deliveredResults(details) : [];
+				retention.deliver(sourceId, text, details, requireRetained);
+				continuity.delivered(sessionId, results);
+			},
 			status: (text) => ctx.ui.setStatus("agent", text),
 			promptTrust: (cwd) =>
 				ctx.hasUI
@@ -976,6 +993,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			offerSessionName(pi, ctx, { source: "interactive", text: event.text });
 		}
 	});
+	pi.on("context", (event, ctx) => continuity.context(event, ctx));
+	pi.on("turn_end", (event, ctx) => continuity.turnEnd(event, ctx, selfCompaction.requested));
 	pi.on("tool_execution_end", (_event, ctx) => {
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
@@ -990,6 +1009,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const id = ctx.sessionManager.getSessionId();
 		primaryRetentions.get(id)?.clear();
 		primaryRetentions.delete(id);
+		continuity.end(id);
 		const abort = primaries.get(id);
 		if (!abort) return;
 		abort.abort();

@@ -19,6 +19,7 @@ import { runHost } from "./host-process.ts";
 import { HostError, hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { HOST_CONTRACT, contractRefusal, type RuntimeContract } from "./version-contract.ts";
 import { eventLog, waitForConnectionClose } from "./host-fixture.mts";
+import type { ContinuityFact } from "./continuity-facts.ts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
 import { PLACE_FILE_MAX_BYTES } from "./places.ts";
 import type { ExecutionSelection } from "./agent-preferences.ts";
@@ -2194,4 +2195,70 @@ it("refreshes the registered primary identity after model, thinking, and name ch
 		const status = await manager.status() as { primaries: Array<{ sessionId: string; name?: string; model?: { provider: string; modelId: string }; thinkingLevel?: string }> };
 		assert.deepEqual(status.primaries, [{ sessionId: "owner-1", cwd: process.cwd(), name: "primary review", model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "xhigh" }]);
 	} finally { manager.close(); }
+});
+
+it("retains a primary's admission phases for both spawn forms, a send and a steer", async (t) => {
+	const root = fixtureRoot(t);
+	const facts: ContinuityFact[] = [];
+	let submissions = 0;
+	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory, validateModel: () => {}, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
+		if (method === "profile-read") return { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel };
+		if (method !== "task-submit") return {};
+		const { requestId, requester } = params as { requestId: string; requester: string };
+		if (requester === "primary") assert.deepEqual([facts.at(-1)?.phase, facts.at(-1)?.requestId], ["requested", requestId], "the request is retained before the host call");
+		return nativeAdmission(params, ++submissions);
+	}) }));
+	t.after(() => manager.close());
+	await manager.registerPrimary("primary", { signal: new AbortController().signal, send() {}, retainContinuity: (fact) => { facts.push(fact); } });
+	const caller = { id: "primary", cwd: root, model: { provider: "acme", modelId: "model-x" } };
+	const plain = await manager.spawn({ prompt: "Task", requestId: "spawn:plain" }, caller) as { sessionId: string };
+	const handled = await manager.spawn({ handle: "reviewer", prompt: "Task", requestId: "spawn:handle" }, caller) as { sessionId: string };
+	await manager.control("submit", { sessionId: plain.sessionId, message: "Send", requestId: "send", whenBusy: "followUp", replyTo: `${handled.sessionId}:1` }, caller);
+	await manager.control("submit", { sessionId: `${plain.sessionId}:2`, message: "Steer", requestId: "steer", whenBusy: "steer" }, caller);
+	const route = (sessionId: string, requestId: string, replyTo = "primary") => ({ sessionId, requestId, replyTo });
+	const pair = (sessionId: string, requestId: string, submissionId: number, replyTo?: string) => [{ phase: "requested", ...route(sessionId, requestId, replyTo) }, { phase: "admitted", ...route(sessionId, requestId, replyTo), submissionId }];
+	assert.deepEqual(facts, [
+		...pair(plain.sessionId, "spawn:plain", 1), ...pair(handled.sessionId, "spawn:handle", 2),
+		...pair(plain.sessionId, "send", 3, handled.sessionId), ...pair(`${plain.sessionId}:2`, "steer", 4),
+	]);
+	await manager.spawn({ requestId: "spawn:idle" }, caller);
+	await manager.control("report", { sessionId: plain.sessionId, message: "Note", requestId: "report" }, caller);
+	await manager.control("submit", { sessionId: plain.sessionId, message: "Other caller", requestId: "unregistered" }, { id: "terminal", cwd: root });
+	assert.equal(facts.length, 8, "a spawn without a prompt, a report and an unregistered caller retain no fact");
+});
+
+it("closes a refused request, keeps an unconfirmed one, and keeps an admission whose receipt fails its check", async (t) => {
+	const root = fixtureRoot(t);
+	const facts: ContinuityFact[] = [];
+	const answers = new Map<string, () => unknown>([
+		["refused", () => { throw new HostError("Unknown conversation", "invalid"); }],
+		["unavailable", () => { throw new HostError("Host observation deadline reached", "unavailable"); }],
+		["claim", () => { throw new HostError("Storage claim is held", "claim"); }],
+		["internal", () => { throw new HostError("Host failed"); }],
+		["transport", () => { throw new Error("Host connection closed"); }],
+		["disagrees", () => ({ submissionId: 6, identity: "another-producer", requestId: "disagrees" })],
+	]);
+	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
+		assert.equal(method, "task-submit");
+		return answers.get((params as { requestId: string }).requestId)?.() ?? nativeAdmission(params);
+	}) }));
+	t.after(() => manager.close());
+	let failWrite = false;
+	await manager.registerPrimary("primary", { signal: new AbortController().signal, send() {}, retainContinuity: (fact) => { if (failWrite) throw new Error("entry write failed"); facts.push(fact); } });
+	const target = createRecord(manager, root, "primary").storageId;
+	const send = (requestId: string) => manager.control("submit", { sessionId: target, message: "Task", requestId }, { id: "primary", cwd: root });
+	for (const [requestId, error] of [["refused", /Unknown conversation/u], ["unavailable", /deadline/u], ["claim", /claim is held/u], ["internal", /Host failed/u], ["transport", /connection closed/u], ["disagrees", /Admission identity disagrees/u]] as const) await assert.rejects(send(requestId), error);
+	const phases = (requestId: string) => facts.filter((fact) => fact.requestId === requestId).map((fact) => fact.phase);
+	assert.deepEqual(phases("refused"), ["requested", "refused"]);
+	for (const requestId of ["unavailable", "claim", "internal", "transport"]) assert.deepEqual(phases(requestId), ["requested"], requestId);
+	assert.deepEqual(phases("disagrees"), ["requested", "admitted"], "a failure after admission keeps the request listed");
+	failWrite = true;
+	const outcome = await send("unsaved") as { submissionId: number };
+	assert.equal(outcome.submissionId, 9, "a fact that is not saved does not change the admission");
+	const failures = async () => (await manager.status() as { failures: Array<{ storageId: string; error: string }> }).failures;
+	assert.ok((await failures()).some((failure) => failure.storageId === "continuity:primary" && failure.error.includes("entry write failed")));
+	manager.continuityNoteFailure("primary", "The continuity note for context head abc was not inserted: head-message");
+	assert.ok((await failures()).some((failure) => failure.storageId === "continuity-note:primary" && failure.error.includes("head-message")));
+	manager.continuityNoteFailure("primary", undefined);
+	assert.equal((await failures()).some((failure) => failure.storageId === "continuity-note:primary"), false);
 });

@@ -19,6 +19,8 @@ import type { NativeOwnerEvidence } from "./host-changes.ts";
 import { subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
 import { sessionFigures } from "./footer.ts";
 import { sentWorkIdentity } from "./session-work.ts";
+import type { ContinuityFact } from "./continuity-facts.ts";
+import { recordAdmission } from "./ordinary-continuity.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { firstInteractivePurpose, purposeExcerpt } from "./effort-purpose.ts";
 import { readEffortAwareness, type EffortAwareness } from "./effort-awareness.ts";
@@ -104,7 +106,7 @@ export interface AgentManagerOptions {
 	/** Largest recorded-failure memory; the oldest failure evicts first. */
 	failureLimit?: number;
 }
-interface PrimaryClient { sentWork?: Set<string>; retainSentWork?(sessionId: string): void; send(text: string, details: unknown, sourceId: string, requireRetained: boolean): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; sessionFile?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; observedInputCanCapture?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
+interface PrimaryClient { sentWork?: Set<string>; retainSentWork?(sessionId: string): void; retainContinuity?(fact: ContinuityFact): void; send(text: string, details: unknown, sourceId: string, requireRetained: boolean): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; sessionFile?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; observedInputCanCapture?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
 type RecoveryOwner = { signal: AbortSignal };
 interface ConversationPage { items: Array<{ identity: string; name?: string; busy?: boolean; parent?: string }>; next?: unknown }
 interface ListCursor { storage?: string; catalog?: string; native?: unknown; query: string; cwd: string }
@@ -521,7 +523,8 @@ export class AgentManager {
 		const profile = await client.request("profile-read", { sessionId: id }) as AgentProfile;
 		if (profile.handle !== `@${handle}`) throw new Error("Handle address belongs to a different retained agent");
 		const requestId = input.requestId ?? randomUUID();
-		const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: id, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) });
+		const prompt = input.prompt;
+		const admission = prompt === undefined ? undefined : await this.admission(caller.id, id, requestId, undefined, () => client.request("task-submit", { sessionId: id, message: prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) }));
 		const result = admission === undefined ? undefined : await this.sentWorkResult(caller.id, id, admission, requestId);
 		this.rosterChanged();
 		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, selection: input.selection, ...(created ? this.spawnThinking(input, retained) : {}), ...(admission === undefined ? {} : { admission, result }) };
@@ -605,7 +608,8 @@ export class AgentManager {
 			if (versionError) throw versionError;
 			const requestId = input.requestId ?? randomUUID();
 			await this.saveSpawnRole(client, record.storageId, created, input.role, requestId, caller.id);
-			const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: record.storageId, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) });
+			const prompt = input.prompt;
+			const admission = prompt === undefined ? undefined : await this.admission(caller.id, record.storageId, requestId, undefined, () => client.request("task-submit", { sessionId: record.storageId, message: prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) }));
 			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...this.spawnThinking(input, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: await this.sentWorkResult(caller.id, record.storageId, admission, requestId) }) };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
 			this.launchRows.set(record.storageId, { ...row, owner: "here" });
@@ -667,9 +671,25 @@ export class AgentManager {
 		return method;
 	}
 
+	/** A primary keeps the admission phases of its answer-bearing request; a fact that is not saved never changes the host call. */
+	private admission<T>(ownerId: string, sessionId: string, requestId: string, replyTo: unknown, call: () => Promise<T>): Promise<T> {
+		const primary = this.primaries.get(ownerId);
+		const record = primary?.retainContinuity === undefined ? undefined : (fact: ContinuityFact): void => {
+			try { primary.retainContinuity?.(fact); }
+			catch (error) { this.failures.set(`continuity:${ownerId}`, `An admission fact was not saved; the continuity note after a compaction can omit or misstate this request. ${errorText(error)}`); }
+		};
+		return recordAdmission(record, { ownerId, sessionId, requestId, replyTo }, call);
+	}
+
+	/** Report or clear the state of a primary's continuity note in the status overview. */
+	continuityNoteFailure(ownerId: string, text: string | undefined): void {
+		if (text === undefined) this.failures.delete(`continuity-note:${ownerId}`);
+		else this.failures.set(`continuity-note:${ownerId}`, text);
+	}
+
 	/** Only the plain forwarded request carries the caller's withdrawal; task submission keeps its own admission path. */
 	private forwardControl(client: HostConnection, method: string, requested: string, params: Record<string, unknown>, caller: AgentCaller, signal: AbortSignal | undefined): Promise<unknown> {
-		if (requested === "task-submit") return client.request(requested, { ...params, requester: caller.id, origin: params.origin ?? "operator" });
+		if (requested === "task-submit") return this.admission(caller.id, String(params.sessionId), String(params.requestId), params.replyTo, () => client.request(requested, { ...params, requester: caller.id, origin: params.origin ?? "operator" }));
 		return client.request(method, params, signal ? { signal } : undefined);
 	}
 

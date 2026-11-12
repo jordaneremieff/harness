@@ -22,6 +22,9 @@ export class SelfCompaction {
 		catch (error) { this.clear(); throw error; }
 	}
 
+	/** Whether a request waits for the end of its tool batch. */
+	get requested(): boolean { return this.pending !== undefined; }
+
 	clear(): void {
 		this.pending = undefined;
 		const unsubscribe = this.unsubscribe;
