@@ -318,6 +318,7 @@ it("an admission that a replay completes records its queued input", { timeout: 6
 	const waiting = await f.unplaced(ROOT_CONVERSATION_ID, "replayed");
 	assert.deepEqual({ class: waiting?.class, sender: waiting?.sender, admittedAt: waiting?.admittedAt, noticed: waiting?.noticed }, { class: "followUp", sender: f.requester, admittedAt: f.now(), noticed: false });
 	assert.deepEqual(await readUnplacedSummary(f.harness, ROOT_CONVERSATION_ID, context), { unplaced: 1, oldestAdmittedAt: f.now() });
+	assert.equal((await f.harness.snapshot(UnplacedInputsDoc, ROOT_CONVERSATION_ID, context))?.recipient, f.storageId, "the record names the recipient by its external identity");
 	assert.ok(waiting);
 	const submissionId = waiting.submissionId as SubmissionId;
 	assert.equal((await f.status(submissionId))?.status, "queued");

@@ -28,7 +28,7 @@ import { placementOf, recordUnplacedInput, type Placement } from "./unplaced-inp
 import { createCheckIn } from "./durable-checkins.ts";
 import { cleanupRequestContexts, recordRequestContext, RequestContextDoc, type RequestContext } from "./request-context.ts";
 import { requestHasOpenWork } from "./open-work.ts";
-import { refreshManagedInstructions } from "./profile.ts";
+import { ProfileDoc, refreshManagedInstructions } from "./profile.ts";
 import { existsSync } from "node:fs";
 import type { PrimaryIntentClaim } from "./effort-presence.ts";
 import type { PrimaryRepositoryState } from "./primary-channel.ts";
@@ -1300,7 +1300,9 @@ export async function reconcileDeliveries(harness: Harness, context: Context, no
 			if (found !== undefined && found.submissionId === null) await storeDeliveryRow(tx, "intent", { ...found, submissionId: resolved });
 		}, context);
 		// The admission that this replay completes ended before its unplaced record; a queued input still counts and is still watched.
-		await harness.commit((tx) => recordUnplacedInput(tx, intent.conversationId, { submissionId: resolved, class: inputClass, sender: request?.requester ?? "", admittedAt: now() }), context);
+		// The retained intent keeps no admission time, so the wait is counted from the replay. The profile holds the recipient's external identity.
+		const recipient = (await harness.snapshot(ProfileDoc, intent.conversationId, context))?.identity ?? undefined;
+		await harness.commit((tx) => recordUnplacedInput(tx, intent.conversationId, { submissionId: resolved, class: inputClass, sender: request?.requester ?? "", admittedAt: now(), ...(recipient === undefined ? {} : { recipient }) }), context);
 	}
 	await settleDeliveries(harness, context);
 }
