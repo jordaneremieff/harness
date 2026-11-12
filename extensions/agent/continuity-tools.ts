@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { communicationIdentity } from "./communication.ts";
+import { WORK_MESSAGE_CHARS } from "./open-work-schema.ts";
 
 type Input = Record<string, unknown>;
 
@@ -51,15 +52,30 @@ function acceptsReport(input: unknown): boolean {
 		&& optional(input, "passive", (value) => typeof value === "boolean");
 }
 
-export function declareContinuityTools(pi: ExtensionAPI): void {
+/** Native `agent_work complete`: closes one declared item and sends its final report. */
+function acceptsNativeCompletion(input: unknown): boolean {
+	return closed(input, ["action", "request", "status", "message"])
+		&& input.action === "complete"
+		&& typeof input.request === "string" && input.request.length >= 1 && input.request.length <= 1024
+		&& (input.status === "done" || input.status === "failed")
+		&& typeof input.message === "string" && input.message.length >= 1 && input.message.length <= WORK_MESSAGE_CHARS;
+}
+
+/** Ordinary `agent_work complete`: clears the state note before the answer. */
+function acceptsOrdinaryCompletion(input: unknown): boolean {
+	return closed(input, ["action"]) && input.action === "complete";
+}
+
+export function declareContinuityTools(pi: ExtensionAPI, runtime: "native" | "ordinary"): void {
 	pi.events.on("harness:continuity-tools", (data) => {
 		if (data === null || typeof data !== "object") return;
 		const request = data as { version?: unknown; declare?: unknown };
 		if (request.version !== 1 || typeof request.declare !== "function") return;
-		const declare = request.declare as (tool: { name: string; act: "compaction" | "worker-resolution"; accepts?: (input: unknown) => boolean }) => void;
+		const declare = request.declare as (tool: { name: string; act: "compaction" | "worker-resolution" | "work-completion"; accepts?: (input: unknown) => boolean }) => void;
 		declare({ name: "agent_compact", act: "compaction" });
 		declare({ name: "agent_abort", act: "worker-resolution", accepts: acceptsAbort });
 		declare({ name: "agent_steer", act: "worker-resolution", accepts: acceptsSteer });
 		declare({ name: "agent_send", act: "worker-resolution", accepts: acceptsReport });
+		declare({ name: "agent_work", act: "work-completion", accepts: runtime === "native" ? acceptsNativeCompletion : acceptsOrdinaryCompletion });
 	});
 }

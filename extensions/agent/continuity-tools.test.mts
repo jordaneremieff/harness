@@ -13,7 +13,7 @@ import register from "./index.ts";
 
 interface Declaration {
 	name: string;
-	act: "compaction" | "worker-resolution";
+	act: "compaction" | "worker-resolution" | "work-completion";
 	accepts?: (input: unknown) => boolean;
 }
 
@@ -37,14 +37,17 @@ function fixture() {
 	return { pi, events, tools };
 }
 
-it("declares whole-tool compaction and only the owned worker-resolution tools synchronously", () => {
+const DECLARED = ["agent_compact", "agent_abort", "agent_steer", "agent_send", "agent_work"];
+
+it("declares whole-tool compaction, the owned worker-resolution tools and work completion synchronously", () => {
 	const { pi, events } = fixture();
-	declareContinuityTools(pi);
+	declareContinuityTools(pi, "native");
 	assert.deepEqual(declarations(events).map(({ name, act }) => ({ name, act })), [
 		{ name: "agent_compact", act: "compaction" },
 		{ name: "agent_abort", act: "worker-resolution" },
 		{ name: "agent_steer", act: "worker-resolution" },
 		{ name: "agent_send", act: "worker-resolution" },
+		{ name: "agent_work", act: "work-completion" },
 	]);
 	assert.equal(Object.hasOwn(declarations(events)[0], "accepts"), false);
 	assert.notEqual(declarations(events)[1], declarations(events)[1], "each request gets fresh declarations");
@@ -53,7 +56,7 @@ it("declares whole-tool compaction and only the owned worker-resolution tools sy
 it("ignores malformed protocol requests and unknown versions", () => {
 	let calls = 0;
 	const { pi, events } = fixture();
-	declareContinuityTools(pi);
+	declareContinuityTools(pi, "native");
 	for (const input of [undefined, null, 1, "x", [], {}, { version: 2, declare: () => calls++ }, { version: "1", declare: () => calls++ }, { version: 1 }, { version: 1, declare: 1 }]) {
 		assert.doesNotThrow(() => events.emit("harness:continuity-tools", input));
 	}
@@ -63,7 +66,7 @@ it("ignores malformed protocol requests and unknown versions", () => {
 const targetId = "10000000-0000-4000-8000-000000000001";
 it("accepts canonical bounded abort, steer and active or passive report shapes", () => {
 	const { pi, events } = fixture();
-	declareContinuityTools(pi);
+	declareContinuityTools(pi, "native");
 	const accept = predicates(events);
 	for (const input of [
 		{ sessionId: targetId }, { sessionId: `${targetId}:2`, background: true },
@@ -79,7 +82,7 @@ it("accepts canonical bounded abort, steer and active or passive report shapes",
 
 it("refuses unknown, future, scheduling, spawn, follow-up and malformed argument forms", () => {
 	const { pi, events } = fixture();
-	declareContinuityTools(pi);
+	declareContinuityTools(pi, "native");
 	const accept = predicates(events);
 	for (const name of ["agent_abort", "agent_steer", "agent_send"]) {
 		const valid = name === "agent_abort" ? { sessionId: targetId } : name === "agent_steer" ? { sessionId: targetId, message: "x" } : { sessionId: targetId, message: "x", mode: "report" };
@@ -93,9 +96,43 @@ it("refuses unknown, future, scheduling, spawn, follow-up and malformed argument
 	}
 });
 
+it("accepts only the complete form of native agent_work with its required fields", () => {
+	const { pi, events } = fixture();
+	declareContinuityTools(pi, "native");
+	const accept = predicates(events).get("agent_work");
+	assert.ok(accept);
+	const valid = { action: "complete", request: "spawn:owner:call/1", status: "done", message: "The result." };
+	for (const input of [valid, { ...valid, status: "failed" }, { ...valid, request: "r".repeat(1024), message: "m".repeat(100_000) }]) assert.equal(accept(input), true);
+	for (const patch of [
+		{ action: "continue" }, { action: undefined }, { request: undefined }, { request: "" }, { request: "r".repeat(1025) }, { request: 1 },
+		{ status: undefined }, { status: "stopped" }, { status: "reset" }, { message: undefined }, { message: "" }, { message: "m".repeat(100_001) },
+		{ results: [] }, { note: "waiting" }, { prompt: "x" },
+	]) assert.equal(accept({ ...valid, ...patch }), false, JSON.stringify(patch));
+	for (const field of ["request", "status", "message"]) {
+		const missing: Record<string, unknown> = { ...valid };
+		delete missing[field];
+		assert.equal(accept(missing), false, field);
+	}
+	assert.equal(accept({ action: "continue", results: [], note: "waiting" }), false);
+	for (const input of [undefined, null, "complete", [], Object.create(valid)]) assert.equal(accept(input), false);
+	assert.equal(accept(Object.defineProperty({ ...valid }, "message", { enumerable: true, get() { throw new Error("getter must not run"); } })), false);
+});
+
+it("accepts only the bare complete form of ordinary agent_work", () => {
+	const { pi, events } = fixture();
+	declareContinuityTools(pi, "ordinary");
+	assert.deepEqual(declarations(events).map((tool) => tool.name), DECLARED);
+	const accept = predicates(events).get("agent_work");
+	assert.ok(accept);
+	assert.equal(accept({ action: "complete" }), true);
+	for (const input of [{ action: "continue", note: "waiting" }, { action: "continue" }, { action: "complete", note: "x" }, { action: "complete", request: "r", status: "done", message: "m" }, {}, null]) {
+		assert.equal(accept(input), false, JSON.stringify(input));
+	}
+});
+
 it("refuses invalid abort flags and combinations", () => {
 	const { pi, events } = fixture();
-	declareContinuityTools(pi);
+	declareContinuityTools(pi, "native");
 	const accept = predicates(events);
 	for (const patch of [
 		{ trust: true }, { background: 1 }, { release: "true" },
@@ -107,7 +144,7 @@ it("refuses invalid abort flags and combinations", () => {
 
 it("refuses invalid messages, modes and reply targets", () => {
 	const { pi, events } = fixture();
-	declareContinuityTools(pi);
+	declareContinuityTools(pi, "native");
 	const accept = predicates(events);
 	for (const name of ["agent_steer", "agent_send"]) {
 		const valid = { sessionId: targetId, message: "x", ...(name === "agent_send" ? { mode: "report" } : {}) };
@@ -122,7 +159,8 @@ it("refuses invalid messages, modes and reply targets", () => {
 it("declares only after successful ordinary registration", { timeout: 20000 }, async () => {
 	const { pi, events, tools } = fixture();
 	await register(pi);
-	assert.deepEqual(declarations(events).map((tool) => tool.name), ["agent_compact", "agent_abort", "agent_steer", "agent_send"]);
+	assert.deepEqual(declarations(events).map((tool) => tool.name), DECLARED);
+	assert.equal(predicates(events).get("agent_work")?.({ action: "complete" }), true, "the ordinary form");
 	for (const tool of declarations(events)) assert.ok(tools.includes(tool.name));
 	const failed = fixture();
 	failed.pi.registerTool = () => { throw new Error("registration failed"); };
@@ -167,7 +205,7 @@ it("advertises only registered tools through the public ordinary resource loader
 	assert.deepEqual(resourceLoader.getExtensions().errors, []);
 	assert.ok(events);
 	const declared = declarations(events);
-	assert.deepEqual(declared.map((tool) => tool.name), ["agent_compact", "agent_abort", "agent_steer", "agent_send"]);
+	assert.deepEqual(declared.map((tool) => tool.name), DECLARED);
 	const sessionManager = SessionManager.create(cwd, sessionsRoot);
 	const socketDirectory = join(sessionsRoot, ".primaries");
 	assert.ok(Buffer.byteLength(join(socketDirectory, `${sessionManager.getSessionId()}.sock`)) <= 100, "reject shared socket fallback before bind");
@@ -198,7 +236,8 @@ it("declares only after successful native registration, not rejection or failure
 		if (outcome === "success") {
 			await register(pi);
 			assert.equal(registered, true);
-			assert.equal(declarations(events).length, 4);
+			assert.equal(declarations(events).length, 5);
+			assert.equal(predicates(events).get("agent_work")?.({ action: "complete" }), false, "the native form");
 		} else {
 			await assert.rejects(register(pi), outcome === "rejected" ? /unselected/ : /native failed/);
 			assert.equal(registered, false);

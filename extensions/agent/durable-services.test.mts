@@ -154,6 +154,7 @@ it("advertises registered Agent continuity tools on the public native service-lo
 		assert.deepEqual(declarations.map(({ name, act }) => ({ name, act })), [
 			{ name: "agent_compact", act: "compaction" }, { name: "agent_abort", act: "worker-resolution" },
 			{ name: "agent_steer", act: "worker-resolution" }, { name: "agent_send", act: "worker-resolution" },
+			{ name: "agent_work", act: "work-completion" },
 		]);
 		const registered = services.registry.snapshot().tools().map(({ tool }) => tool.name);
 		for (const declaration of declarations) assert.ok(registered.includes(declaration.name), declaration.name);
@@ -163,6 +164,9 @@ it("advertises registered Agent continuity tools on the public native service-lo
 		assert.equal(declarations[3].accepts?.({ sessionId: recipient, message: "done", mode: "report", passive: true }), true);
 		assert.equal(declarations[3].accepts?.({ sessionId: "existing", message: "done", mode: "report" }), false);
 		assert.equal(declarations[3].accepts?.({ sessionId: recipient, message: "done", mode: "report", passive: "true" }), false);
+		assert.equal(declarations[4].accepts?.({ action: "complete", request: "spawn:owner:call/1", status: "done", message: "result" }), true);
+		assert.equal(declarations[4].accepts?.({ action: "complete" }), false);
+		assert.equal(declarations[4].accepts?.({ action: "continue", results: [], note: "waiting" }), false);
 		const conversation = await installed.harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
 		const result = await (await conversation.submit({ type: "input", content: "Check native registration" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
 		assert.equal(result.status, "done");

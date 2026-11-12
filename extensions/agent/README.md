@@ -451,8 +451,10 @@ Text without a retained author role uses `Latest message` or `Working on the tas
 
 After successful ordinary or native registration, Agent answers the package's
 [continuity-tool request](../../docs/conventions/continuity-tools.md). It declares
-`agent_compact` for whole-tool compaction and bounded forms of `agent_abort`,
-`agent_steer` and `agent_send` for worker resolution.
+`agent_compact` for whole-tool compaction, bounded forms of `agent_abort`,
+`agent_steer` and `agent_send` for worker resolution, and the closing form of
+`agent_work` for work completion. A finished result can therefore close its
+declared work and send its final report at the capacity stop.
 
 The worker-resolution declarations accept only closed argument shapes. Targets
 and optional steer reply targets use 1–256 UTF-16 code units; messages use
@@ -462,6 +464,13 @@ shared by both runtimes, not ordinary-only `trust`. Steer accepts `sessionId`,
 `message` and optional `replyTo`. Send accepts only `sessionId`, `message` and
 `mode: "report"`. It refuses `passive`, `deliverAt`, `replyTo`, `checkInMinutes`
 and other modes. Unknown fields are refused.
+
+The work-completion declaration follows the runtime. In a native conversation it
+accepts only `action: "complete"` with `request` (1–1024), `status` (`done` or
+`failed`) and `message` (1–100000). In an ordinary session it accepts only
+`{ action: "complete" }`, which clears the state note before the answer. Both
+refuse `continue`: it keeps work open in a full context and can declare new
+dependencies. After compaction, `continue` runs normally again.
 
 A declaration checks argument shape, not authority, ownership or target state.
 It does not prove that continuity succeeded or prevent an idle target from

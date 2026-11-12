@@ -22,7 +22,7 @@ export default async function registerAgentExtension(pi: ExtensionAPI): Promise<
 	pi.events.emit(AGENT_ENTRY_CHANNEL, request);
 	if (request.result?.kind === "native") {
 		await request.result.register(pi);
-		declareContinuityTools(pi);
+		declareContinuityTools(pi, "native");
 		return;
 	}
 	if (request.result?.kind === "rejected") {
@@ -30,5 +30,5 @@ export default async function registerAgentExtension(pi: ExtensionAPI): Promise<
 	}
 	const { registerOrdinaryAgentExtension } = await loadOrdinaryEntry();
 	registerOrdinaryAgentExtension(pi, source);
-	declareContinuityTools(pi);
+	declareContinuityTools(pi, "ordinary");
 }
