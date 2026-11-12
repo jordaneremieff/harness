@@ -64,7 +64,9 @@ it("preserves every storage-page identity and exact backend coverage without cha
 it("drops optional descriptions or refuses boundedly without clipping mandatory identities", () => {
 	const source = { conversation: { ...row(), name: "😀".repeat(10000), agent: { ...row().agent, model: { provider: "p".repeat(10000), modelId: "m".repeat(10000) } } } };
 	const value = projectSelectedStatus(source);
-	assert.equal(value.format, "refused");
+	assert.ok(value.format === "refused");
+	assert.equal(value.cause, "byte-limit");
+	structuredObservation(StatusToolOutputSchema, value);
 	assert.ok(Buffer.byteLength(JSON.stringify(value)) <= 8192);
 	const storage = projectStorageStatus({ storageId: "storage", conversations: [source.conversation], coverage: { complete: true, returned: 1, scanned: 1, next: null } });
 	assert.equal(storage.format, "compact");
@@ -75,10 +77,31 @@ it("drops optional descriptions or refuses boundedly without clipping mandatory 
 		assert.equal(storage.conversations[0]?.omitted.includes("model omitted for byte limit"), false);
 	}
 	const refusal = projectStorageStatus({ storageId: "storage", conversations: Array.from({ length: 40 }, (_, index) => ({ ...row(index + 1), identity: `${index}-${"a".repeat(600)}` })), coverage: { complete: true, returned: 40, scanned: 40, next: null } });
-	assert.equal(refusal.format, "refused");
+	assert.ok(refusal.format === "refused");
+	assert.equal(refusal.cause, "byte-limit");
 	assert.ok(Buffer.byteLength(JSON.stringify(refusal)) <= 16384);
 	structuredObservation(StatusToolOutputSchema, refusal);
 	assert.equal(Object.hasOwn(refusal, "coverage"), false);
+});
+
+it("distinguishes missing selected sources, storage coverage and row identity from byte overflow", () => {
+	for (const source of [{}, { conversation: { conversationId: 1 } }, { kind: "ordinary-primary", presence: {} }]) {
+		const value = projectSelectedStatus(source);
+		assert.deepEqual(value, { format: "refused", cause: "source", reason: "Selected status source identity is unavailable.", byteLimit: 8192 });
+		structuredObservation(StatusToolOutputSchema, value);
+	}
+	for (const source of [{}, { conversations: [], coverage }, { storageId: "storage", conversations: [] }, { storageId: "storage", conversations: [], coverage: {} }]) {
+		const value = projectStorageStatus(source);
+		assert.deepEqual(value, { format: "refused", cause: "source", reason: "Storage status source identity or coverage is unavailable.", byteLimit: 16384 });
+		structuredObservation(StatusToolOutputSchema, value);
+	}
+	const value = projectStorageStatus({ storageId: "storage", conversations: [{ conversationId: 1 }], coverage });
+	assert.deepEqual(value, { format: "refused", cause: "source", reason: "A storage status row has no complete source identity.", byteLimit: 16384 });
+	structuredObservation(StatusToolOutputSchema, value);
+	assert.equal(matchesSchema(StatusToolOutputSchema, { ...value, cause: "other" }), false);
+	assert.ok(value.format === "refused");
+	const { cause: _cause, ...withoutCause } = value;
+	assert.equal(matchesSchema(StatusToolOutputSchema, withoutCause), false);
 });
 
 const storageId = "01234567-0123-4123-8123-0123456789ab";
@@ -102,7 +125,10 @@ function shortStoragePage(size: number, cold = false) {
 
 it("reduces short-name storage rows with one page omission instead of larger per-row notes", () => {
 	for (const cold of [false, true]) {
-		const { projected } = shortStoragePage(50, cold), before = structuredClone(projected);
+		const { source, projected } = shortStoragePage(50, cold), before = structuredClone(projected);
+		const refusal = projectStorageStatus(source);
+		assert.ok(refusal.format === "refused");
+		assert.equal(refusal.cause, "byte-limit");
 		const reduced = reduceCompactStatus(projected);
 		assert.ok(bytes(reduced) < bytes(projected));
 		assert.deepEqual(projected, before);
@@ -151,7 +177,7 @@ it("measures the exact fitting row count for connected and cold short-name pages
 			assert.ok(bytes(reduced) <= bytes(projected));
 			const value = projectStorageStatus(source);
 			if (bytes(reduced) <= 16384) { fit = size; assert.equal(value.format, "compact"); }
-			else assert.equal(value.format, "refused");
+			else { assert.ok(value.format === "refused"); assert.equal(value.cause, "byte-limit"); }
 		}
 		assert.equal(fit, cold ? 39 : 40);
 		t.diagnostic(`${cold ? "cold" : "connected"}: ${fit} rows fit; ${fit + 1} rows exceed 16384 bytes`);

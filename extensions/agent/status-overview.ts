@@ -321,8 +321,8 @@ export const SELECTED_STATUS_BYTE_LIMIT = 8 * 1024;
 type CompactConversation = Static<typeof CompactConversationSchema>;
 type CompactSelected = Static<typeof CompactSelectedStatusSchema>;
 type CompactStorage = Static<typeof CompactStorageStatusSchema>;
-export interface PresentationRefusal { format: "refused"; reason: string; byteLimit: number }
-function refusal(byteLimit: number, reason: string): PresentationRefusal { return { format: "refused", reason, byteLimit }; }
+export interface PresentationRefusal { format: "refused"; cause: "byte-limit" | "source"; reason: string; byteLimit: number }
+function refusal(cause: PresentationRefusal["cause"], byteLimit: number, reason: string): PresentationRefusal { return { format: "refused", cause, reason, byteLimit }; }
 function record(value: unknown): Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -418,29 +418,29 @@ function sourceAvailability(source: Record<string, unknown>): CompactConversatio
 export function projectSelectedStatus(value: unknown): CompactSelected | PresentationRefusal {
 	const source = record(value);
 	const conversation = source.kind === "ordinary-primary" ? compactPrimary(source) : compactConversation(source.conversation, sourceAvailability(source));
-	if (!conversation) return refusal(SELECTED_STATUS_BYTE_LIMIT, "Selected status source identity is unavailable.");
+	if (!conversation) return refusal("source", SELECTED_STATUS_BYTE_LIMIT, "Selected status source identity is unavailable.");
 	let result: CompactSelected = { format: "compact", conversation, omitted: ["host inventory", "effort awareness"] };
 	if (typeof source.storageId === "string") result.storageId = source.storageId;
 	if (typeof source.live === "boolean") result.live = source.live;
 	if (measure(result) > SELECTED_STATUS_BYTE_LIMIT) result = reduceCompactStatus(result);
-	return measure(result) <= SELECTED_STATUS_BYTE_LIMIT ? result : refusal(SELECTED_STATUS_BYTE_LIMIT, "Mandatory selected identity, state, or recovery metadata exceeds the output byte limit; request detail:true.");
+	return measure(result) <= SELECTED_STATUS_BYTE_LIMIT ? result : refusal("byte-limit", SELECTED_STATUS_BYTE_LIMIT, "Mandatory selected identity, state, or recovery metadata exceeds the output byte limit; request detail:true.");
 }
 
 /** Preserve every source-page identity and the backend continuation without another discovery pass. */
 export function projectStorageStatus(value: unknown): CompactStorage | PresentationRefusal {
 	const source = record(value);
 	if (typeof source.storageId !== "string" || !Array.isArray(source.conversations) || !matchesSchema(StorageStatusCoverageSchema, source.coverage))
-		return refusal(STATUS_OVERVIEW_BYTE_LIMIT, "Storage status source identity or coverage is unavailable.");
+		return refusal("source", STATUS_OVERVIEW_BYTE_LIMIT, "Storage status source identity or coverage is unavailable.");
 	const availability = sourceAvailability(source);
 	const conversations: CompactConversation[] = [];
 	for (const row of source.conversations) {
 		const compact = compactConversation(row, availability);
-		if (!compact) return refusal(STATUS_OVERVIEW_BYTE_LIMIT, "A storage status row has no complete source identity.");
+		if (!compact) return refusal("source", STATUS_OVERVIEW_BYTE_LIMIT, "A storage status row has no complete source identity.");
 		conversations.push(compact);
 	}
 	let result: CompactStorage = { format: "compact", storageId: source.storageId, conversations, coverage: structuredClone(source.coverage),
 		omitted: ["host inventory", "effort awareness", "created-agent detail"] };
 	if (typeof source.live === "boolean") result.live = source.live;
 	if (measure(result) > STATUS_OVERVIEW_BYTE_LIMIT) result = reduceCompactStatus(result);
-	return measure(result) <= STATUS_OVERVIEW_BYTE_LIMIT ? result : refusal(STATUS_OVERVIEW_BYTE_LIMIT, "Mandatory storage identities, state, or coverage exceed the output byte limit; no identities were cut and no continuation was invented.");
+	return measure(result) <= STATUS_OVERVIEW_BYTE_LIMIT ? result : refusal("byte-limit", STATUS_OVERVIEW_BYTE_LIMIT, "Mandatory storage identities, state, or coverage exceed the output byte limit; no identities were cut and no continuation was invented.");
 }

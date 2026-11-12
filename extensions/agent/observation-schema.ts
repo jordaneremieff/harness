@@ -443,7 +443,7 @@ export const CompactConversationSchema = obj({
 	providerBlock: opt(obj({ blockId: string, recovery: string })),
 	context: lit("unknown"), omitted: arr(string), detail: StatusDetailCallSchema,
 });
-export const PresentationRefusalSchema = obj({ format: lit("refused"), reason: string, byteLimit: count });
+export const PresentationRefusalSchema = obj({ format: lit("refused"), cause: union([lit("byte-limit"), lit("source")]), reason: string, byteLimit: count });
 export const ReportReceiptAssociationSchema = obj({ producerRunId: id, producerResults: arr(ResultReferenceSchema, { minItems: 1 }) });
 export const RetainedReportReceiptSchema = obj({
 	sourceId: string, requestId: string, ownerId: string, senderIdentity: string, createdAt: number, acknowledged: boolean,
