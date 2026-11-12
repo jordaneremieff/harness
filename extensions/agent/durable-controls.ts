@@ -16,6 +16,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { parseReportIntervention, type ReportIntervention } from "./report-intervention.ts";
+import { CONTINUITY_SEED } from "./control-guidance.ts";
 import { validateReportIntervention } from "./native-report-intervention.ts";
 import { DeliveryRowDoc, automaticDeliveryPage, deliveryState, migrateDeliveryStore, operationReceipts, readDeliveryDraft, receiptKey, reportKey, retainedIntent, retainedReceipt, retainedReport, retainedReportRequest, storeDeliveryRow, writeDeliveryDraft } from "./delivery-store.ts";
 import { inputEntry } from "./input-entry.ts";
@@ -842,7 +843,8 @@ export async function compactConversation(
 	readonly submissionId?: SubmissionId;
 	readonly error?: string;
 }> {
-	const taskId = await conversation.compact(instructions, context);
+	// The summarizer receives the seed first; the caller's instructions follow byte for byte.
+	const taskId = await conversation.compact(instructions === undefined ? CONTINUITY_SEED : `${CONTINUITY_SEED}\n\n${instructions}`, context);
 	if (!wait) return { taskId, status: "task" };
 	const settled = await harness.waitForTask(taskId, context);
 	const outcome = settled.state.outcome;

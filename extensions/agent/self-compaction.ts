@@ -1,4 +1,5 @@
 import type { ExtensionContext, TurnEndEvent, TurnEndEventResult } from "@earendil-works/pi-coding-agent";
+import { CONTINUITY_SEED } from "./control-guidance.ts";
 
 export const MAX_CONTINUITY_SUMMARY = 32_000;
 type BoundaryHandler = (event: TurnEndEvent, ctx: Pick<ExtensionContext, "sessionManager" | "signal">) => TurnEndEventResult | undefined;
@@ -14,7 +15,7 @@ export class SelfCompaction {
 
 	request(sessionId: string, toolCallId: string, summary: string | undefined): void {
 		if (!summary?.trim() || summary.length > MAX_CONTINUITY_SUMMARY) {
-			throw new Error(`Self-compaction requires a nonblank summary of at most ${MAX_CONTINUITY_SUMMARY} characters. Preserve the objective, authority, explicit exclusions, source and brief pointers, source qualifications, acceptance, owners, and next action.`);
+			throw new Error(`Self-compaction requires a nonblank summary of at most ${MAX_CONTINUITY_SUMMARY} characters. ${CONTINUITY_SEED} Also preserve authority, explicit exclusions, source and brief pointers, acceptance, owners, and the next action.`);
 		}
 		if (this.pending) throw new Error("Self-compaction is already requested for this tool batch.");
 		this.pending = { sessionId, toolCallId, summary };
