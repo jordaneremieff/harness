@@ -524,7 +524,7 @@ Overrides and remaining members:
 Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema, not a hash of a response instance. The current schema-derived identities are:
 
 ```text
-H-inspect       d280dcf690f5ca9cb17f31852ca7352eefe7fe363fcadd811ccd689434f62976
+H-inspect       fda259edeae325c7625547e95c55e22cf0bbe1b6b912b51bc3d8d209b396dc67
 H-status        a00753e0770f9cf315e673140269e8ac0ad515a335d8aca765fd2319b71a3f24
 H-list          1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6
 H-dashboard     9708e679163a10e256a4854a0d6b5347f8533d28d35efb707647fda100032b04

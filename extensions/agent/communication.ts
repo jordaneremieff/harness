@@ -1,5 +1,6 @@
 import { str, int, bool, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 import { matchesSchema } from "./schema-check.ts";
+import { ReceiptContinuationSchema } from "./result-schema.ts";
 
 export const COMMUNICATION_BODY_BYTES = 16_384;
 export const COMMUNICATION_VALUE_BYTES = 24_576;
@@ -22,8 +23,8 @@ export const CommunicationReferenceSchema = obj({ submissionId: positive, reques
 const common = { format: lit("agent.communication/1"), sender: CommunicationSenderSchema, body: CommunicationBodySchema, recordedAt: count };
 export const CommunicationSchema = union([
 	obj({ ...common, kind: lit("notice"), metadata: obj({ threadId: bounded(256), event: opt(positive), frameRevision: opt(positive), eventKind: opt(bounded(64, 0)), title: opt(bounded(160, 0)), passive: opt(bool()) }) }),
-	obj({ ...common, kind: lit("report"), metadata: obj({ sourceId, requestId: sourceId, replyTo: opt(identity) }) }),
-	obj({ ...common, kind: lit("result"), metadata: obj({ status: union([lit("done"), lit("unanswered")]), references: arr(CommunicationReferenceSchema, { minItems: 1, maxItems: 16 }), omittedReferences: count, reason: opt(bounded(1_024, 0)) }) }),
+	obj({ ...common, kind: lit("report"), metadata: obj({ sourceId, requestId: sourceId, replyTo: opt(identity), passive: opt(bool()) }) }),
+	obj({ ...common, kind: lit("result"), metadata: obj({ status: union([lit("done"), lit("unanswered")]), references: arr(CommunicationReferenceSchema, { minItems: 1, maxItems: 16 }), omittedReferences: count, reason: opt(bounded(1_024, 0)), receiptContinuation: opt(ReceiptContinuationSchema) }) }),
 	obj({ ...common, kind: lit("check-in"), metadata: obj({ sourceId, producerRequestId: sourceId, elapsedMs: count, origin: union([lit("operator"), lit("model")]) }) }),
 ]);
 export type Communication = Static<typeof CommunicationSchema>;
@@ -96,13 +97,13 @@ export function parseCommunicationLink(value: unknown): CommunicationLink | unde
 }
 export function parseCommunicationCompanion(value: unknown): CommunicationCompanion | undefined {
 	try {
-		if (!matchesSchema(CommunicationCompanionSchema, value) || !validLink(value.target) || !parseCommunication(value.value) || (value.value.kind === "notice" && value.value.metadata.passive === true)) return undefined;
+		if (!matchesSchema(CommunicationCompanionSchema, value) || !validLink(value.target) || !parseCommunication(value.value) || ((value.value.kind === "notice" || value.value.kind === "report") && value.value.metadata.passive === true)) return undefined;
 		return JSON.parse(JSON.stringify(value)) as CommunicationCompanion;
 	} catch { return undefined; }
 }
 export function parseCommunicationPassive(value: unknown): CommunicationPassive | undefined {
 	try {
-		if (!matchesSchema(CommunicationPassiveSchema, value) || !textFits(value.requestId, 1_024) || !parseCommunication(value.value) || value.value.kind !== "notice" || value.value.metadata.passive !== true) return undefined;
+		if (!matchesSchema(CommunicationPassiveSchema, value) || !textFits(value.requestId, 1_024) || !parseCommunication(value.value) || (value.value.kind !== "notice" && value.value.kind !== "report") || value.value.metadata.passive !== true) return undefined;
 		return JSON.parse(JSON.stringify(value)) as CommunicationPassive;
 	} catch { return undefined; }
 }

@@ -1,4 +1,7 @@
 /** Native keyed delivery records and bounded reference pages. Payloads have one retained owner. */
+import { createHash } from "node:crypto";
+import { canonicalIdentity } from "./native-identity.ts";
+import type { ReceiptReferencePage } from "./result-schema.ts";
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, defineDocFamily, type Harness, type Session, type Tx } from "@earendil-works/pi-durable";
 import type { AgentDeliveryState, DeliveryIntent, DeliveryReceipt, DeliveryReport } from "./durable-controls.ts";
@@ -8,7 +11,7 @@ type Kind = "intent" | "receipt" | "report";
 type Row = DeliveryIntent | DeliveryReceipt | DeliveryReport;
 type StoredRow = { kind: Kind; value: Row | null; pendingPage: string | null; kindPage: string | null; terminalPage: string | null; terminalKindPage: string | null; automaticPage: string | null };
 type List = { head: string | null; tail: string | null; count: number };
-type Page = { refs: string[]; previous: string | null; next: string | null };
+type Page = { ownerList: string; refs: string[]; previous: string | null; next: string | null };
 type StoreState = { ready: boolean; nextPage: number; migrationKind: number; migrationOffset: number };
 
 /** Retained only until a completed representation transition retires it. */
@@ -18,7 +21,10 @@ export const DeliveryRowDoc = defineDocFamily<StoredRow, Kind>({ kind: "agent.de
 const DeliveryPointerDoc = defineDocFamily<{ key: string | null }, null>({ kind: "agent.delivery-pointer", version: 1, scope: "session", family: true, initial: () => ({ key: null }), checkpointWhen: () => true });
 const CheckInFallbackDoc = defineDocFamily<{ accepted: boolean }, null>({ kind: "agent.check-in-fallback", version: 1, scope: "session", family: true, initial: () => ({ accepted: false }), checkpointWhen: () => true });
 const DeliveryListDoc = defineDocFamily<List, null>({ kind: "agent.delivery-list", version: 1, scope: "session", family: true, initial: () => ({ head: null, tail: null, count: 0 }), checkpointWhen: () => true });
-const DeliveryPageDoc = defineDocFamily<Page, null>({ kind: "agent.delivery-page", version: 1, scope: "session", family: true, initial: () => ({ refs: [], previous: null, next: null }), checkpointWhen: () => true });
+const DeliveryPageDoc = defineDocFamily<Page, null>({ kind: "agent.delivery-page", version: 2, scope: "session", family: true, initial: () => ({ ownerList: "", refs: [], previous: null, next: null }), checkpointWhen: () => true });
+function requirePageOwner(page: Page, name: string): void {
+	if (page.ownerList !== name) throw new Error("Delivery reference page has no current owner-list identity or belongs to another list");
+}
 
 export function intentKey(conversationId: number, requestId: string): string { return JSON.stringify(["intent", conversationId, requestId]); }
 export function receiptKey(submissionId: number): string { return JSON.stringify(["receipt", submissionId]); }
@@ -33,11 +39,13 @@ function copy<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
 async function appendReference(tx: Tx, name: string, key: string): Promise<string> {
 	const list = await tx.doc(DeliveryListDoc, name, null);
 	let page = list.tail === null ? undefined : await tx.doc(DeliveryPageDoc, list.tail, null);
+	if (page) requirePageOwner(page, name);
 	if (!page || page.refs.length === DELIVERY_PAGE_SIZE) {
 		const root = await tx.doc(DeliveryStoreDoc);
 		if (!Number.isSafeInteger(root.nextPage + 1)) throw new Error("Delivery page identity exhausted");
 		const id = String(++root.nextPage);
 		const next = await tx.doc(DeliveryPageDoc, id, null);
+		next.ownerList = name;
 		next.previous = list.tail;
 		if (page) page.next = id;
 		else list.head = id;
@@ -54,6 +62,7 @@ async function appendReference(tx: Tx, name: string, key: string): Promise<strin
 async function removePending(tx: Tx, key: string, pageId: string, name = "pending"): Promise<void> {
 	const list = await tx.doc(DeliveryListDoc, name, null);
 	const page = await tx.doc(DeliveryPageDoc, pageId, null);
+	requirePageOwner(page, name);
 	const index = page.refs.indexOf(key);
 	if (index < 0) throw new Error("Delivery pending reference is inconsistent");
 	page.refs.splice(index, 1);
@@ -167,6 +176,7 @@ async function listReferences(tx: Tx, name: string): Promise<string[]> {
 	let id = list.head;
 	while (id !== null) {
 		const page = await tx.doc(DeliveryPageDoc, id, null);
+		requirePageOwner(page, name);
 		refs.push(...page.refs);
 		id = page.next;
 	}
@@ -233,6 +243,7 @@ async function snapshotListRows(session: Pick<Session, "snapshot">, state: Agent
 	while (id !== null) {
 		const page = await session.snapshot(DeliveryPageDoc, id, context);
 		if (!page) throw new Error("Delivery reference has no retained page");
+		requirePageOwner(page, name);
 		for (const key of page.refs) {
 			const row = await session.snapshot(DeliveryRowDoc, key, context);
 			if (!row?.value) throw new Error("Delivery reference has no retained row");
@@ -270,6 +281,7 @@ export async function terminalDeliveryState(harness: Harness, context: Context):
 		if (list?.head == null) continue;
 		const page = await harness.snapshot(DeliveryPageDoc, list.head, context);
 		if (!page?.refs.length) continue;
+		requirePageOwner(page, `terminal:${kind}`);
 		const row = await harness.snapshot(DeliveryRowDoc, page.refs[0], context);
 		if (row?.value == null) continue;
 		if (kind === "intent") result.intents.push(copy(row.value as DeliveryIntent));
@@ -286,18 +298,13 @@ async function pendingReferencePage(harness: Harness, context: Context, cursor: 
 		id = list?.head ?? null;
 		page = id === null ? undefined : await harness.snapshot(DeliveryPageDoc, id, context);
 	}
+	if (page) requirePageOwner(page, kind ? `pending:${kind}` : "pending");
 	return { id, page };
 }
 
 async function includePendingRow(harness: Harness, context: Context, state: AgentDeliveryState, key: string, id: string, kind: Kind | undefined): Promise<void> {
 	const stored = await harness.snapshot(DeliveryRowDoc, key, context);
 	if (!stored?.value || (kind ? stored.kindPage : stored.pendingPage) !== id) return;
-	if (stored.kind === "receipt") {
-		const receipt = stored.value as DeliveryReceipt;
-		const group = await harness.commit((tx) => answerReceipts(tx, receipt), context);
-		for (const member of group) state.receipts[String(member.submissionId)] = member;
-		return;
-	}
 	includeDeliveryRow(state, stored.kind, copy(stored.value));
 }
 
@@ -321,6 +328,7 @@ export async function automaticDeliveryPage(harness: Harness, context: Context, 
 	}
 	const reports: DeliveryReport[] = [];
 	if (!page || id === null) return { reports, next: null };
+	requirePageOwner(page, "automatic");
 	for (const key of page.refs) {
 		const row = await harness.snapshot(DeliveryRowDoc, key, context);
 		if (row?.value != null && row.automaticPage === id) reports.push(copy(row.value as DeliveryReport));
@@ -373,6 +381,99 @@ export async function reloadDeliveryRows(harness: Harness, state: AgentDeliveryS
 	}
 	return result;
 }
+export function receiptSourceIdentity(storageId: string, receipt: Pick<DeliveryReceipt, "answerEntryId" | "submissionId" | "ownerId">): string {
+	const answer = receipt.answerEntryId === null ? ["unanswered", receipt.submissionId] : ["answer", receipt.answerEntryId];
+	return `${storageId}:result:${createHash("sha256").update(JSON.stringify([storageId, answer, receipt.ownerId])).digest("hex")}`;
+}
+export function receiptDeliveryRequestId(storageId: string, receipt: Pick<DeliveryReceipt, "answerEntryId" | "submissionId" | "ownerId">): string {
+	return `deliver:${receiptSourceIdentity(storageId, receipt)}`;
+}
+
+type ReceiptCursorValue = { storageId: string; recipient: string; selectedSubmissionId: number; answerEntryId: number; pageId: string; offset: number; endPageId: string; endOffset: number };
+const cursorFields = ["storageId", "recipient", "selectedSubmissionId", "answerEntryId", "pageId", "offset", "endPageId", "endOffset"];
+function decodeReceiptCursor(cursor: string): ReceiptCursorValue {
+	if (cursor.length > 2048 || !/^[A-Za-z0-9_-]+$/u.test(cursor)) throw new Error("Invalid receipt cursor");
+	try {
+		const bytes = Buffer.from(cursor, "base64url");
+		if (bytes.toString("base64url") !== cursor) throw new Error();
+		const value = JSON.parse(bytes.toString("utf8")) as ReceiptCursorValue;
+		if (value === null || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== cursorFields.length || !cursorFields.every((key) => Object.hasOwn(value, key))) throw new Error();
+		if (typeof value.storageId !== "string" || typeof value.recipient !== "string" || typeof value.pageId !== "string" || typeof value.endPageId !== "string" || !/^[1-9][0-9]*$/u.test(value.pageId) || !/^[1-9][0-9]*$/u.test(value.endPageId)) throw new Error();
+		if (![value.selectedSubmissionId, value.answerEntryId, Number(value.pageId), Number(value.endPageId)].every((number) => Number.isSafeInteger(number) && number > 0) || ![value.offset, value.endOffset].every((number) => Number.isSafeInteger(number) && number >= 0 && number <= DELIVERY_PAGE_SIZE)) throw new Error();
+		return value;
+	} catch { throw new Error("Invalid receipt cursor"); }
+}
+function encodeReceiptCursor(value: ReceiptCursorValue): string {
+	const cursor = Buffer.from(JSON.stringify(value)).toString("base64url");
+	if (cursor.length > 2048) throw new Error("Receipt cursor exceeds its bound");
+	return cursor;
+}
+function validateAnswerPage(page: Page, answerEntryId: number): void {
+	requirePageOwner(page, `answer:${answerEntryId}`);
+	if (page.refs.length < 1 || page.refs.length > DELIVERY_PAGE_SIZE) throw new Error("Receipt cursor page is absent or invalid");
+}
+
+/** One answer-list page, filtered to the selected recipient, with a frozen append-only tail. */
+function receiptReference(storageId: string, receipt: DeliveryReceipt) { return { sessionId: canonicalIdentity(storageId, receipt.conversationId), submissionId: receipt.submissionId, requestId: receipt.requestId }; }
+type ReceiptRange = { position: ReceiptCursorValue; page: Page; limit: number };
+function selectedCursor(cursor: string | undefined, storageId: string, selected: DeliveryReceipt): ReceiptCursorValue | undefined {
+	if (cursor === undefined) return undefined;
+	const value = decodeReceiptCursor(cursor);
+	if (value.storageId !== storageId || value.recipient !== selected.ownerId || value.selectedSubmissionId !== selected.submissionId || value.answerEntryId !== selected.answerEntryId) throw new Error("Receipt cursor disagrees with the selected result or recipient");
+	return value;
+}
+async function receiptEnd(tx: Tx, tail: string, answerEntryId: number, captured?: ReceiptCursorValue) {
+	const endPageId = captured?.endPageId ?? tail;
+	const end = await tx.doc(DeliveryPageDoc, endPageId, null);
+	validateAnswerPage(end, answerEntryId);
+	const endOffset = captured?.endOffset ?? end.refs.length;
+	if (endOffset < 1 || endOffset > end.refs.length) throw new Error("Receipt cursor terminal boundary changed or is invalid");
+	return { endPageId, endOffset, end };
+}
+async function receiptRange(tx: Tx, storageId: string, selected: DeliveryReceipt, answerEntryId: number, cursor?: string): Promise<ReceiptRange> {
+	const list = await tx.doc(DeliveryListDoc, `answer:${answerEntryId}`, null);
+	if (list.head === null || list.tail === null) throw new Error("Selected answer has no receipt list");
+	const captured = selectedCursor(cursor, storageId, selected);
+	const { endPageId, endOffset, end } = await receiptEnd(tx, list.tail, answerEntryId, captured);
+	const pageId = captured?.pageId ?? list.head;
+	const page = pageId === endPageId ? end : await tx.doc(DeliveryPageDoc, pageId, null);
+	if (pageId !== endPageId) validateAnswerPage(page, answerEntryId);
+	const offset = captured?.offset ?? 0;
+	const limit = pageId === endPageId ? endOffset : page.refs.length;
+	if (Number(pageId) > Number(endPageId) || offset >= limit || (pageId !== endPageId && page.next === null)) throw new Error("Receipt cursor offset or page is outside its captured range");
+	return { page, limit, position: { storageId, recipient: selected.ownerId, selectedSubmissionId: selected.submissionId, answerEntryId, pageId, offset, endPageId, endOffset } };
+}
+async function readReceiptRange(tx: Tx, range: ReceiptRange) {
+	const results: ReceiptReferencePage["results"] = [];
+	const { position, page, limit } = range;
+	let offset = position.offset;
+	while (offset < limit && results.length < 16) {
+		const key = page.refs[offset++];
+		const stored = await tx.doc(DeliveryRowDoc, key, "receipt");
+		const receipt = stored.value as DeliveryReceipt | null;
+		if (stored.kind !== "receipt" || receipt === null || receipt.answerEntryId !== position.answerEntryId || keyOf("receipt", receipt) !== key) throw new Error("Receipt group reference is invalid");
+		if (receipt.ownerId === position.recipient) results.push(receiptReference(position.storageId, receipt));
+	}
+	return { results, offset };
+}
+function receiptNext(range: ReceiptRange, offset: number): string | null {
+	const { position, page } = range;
+	if (position.pageId === position.endPageId && offset === position.endOffset) return null;
+	const nextPage = offset === page.refs.length ? page.next : position.pageId;
+	if (nextPage === null) throw new Error("Receipt group ended before its captured tail");
+	return encodeReceiptCursor({ ...position, pageId: nextPage, offset: nextPage === position.pageId ? offset : 0 });
+}
+export async function receiptReferencePage(tx: Tx, storageId: string, selected: DeliveryReceipt, cursor?: string): Promise<ReceiptReferencePage> {
+	if (selected.answerEntryId === null) {
+		if (cursor !== undefined) throw new Error("An unanswered input has no receipt cursor");
+		return { recipient: selected.ownerId, results: [receiptReference(storageId, selected)], complete: true, next: null };
+	}
+	const range = await receiptRange(tx, storageId, selected, selected.answerEntryId, cursor);
+	const { results, offset } = await readReceiptRange(tx, range);
+	const next = receiptNext(range, offset);
+	return { recipient: selected.ownerId, results, complete: next === null, next };
+}
+
 export async function answerReceipts(tx: Tx, receipt: DeliveryReceipt): Promise<DeliveryReceipt[]> {
 	if (receipt.answerEntryId === null) return [receipt];
 	const rows: DeliveryReceipt[] = [];

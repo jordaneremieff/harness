@@ -51,7 +51,7 @@ it("exposes queued arrivals and prunes native terminal routes", async (t) => {
 	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), [{ ...b, status: "queued" }]);
 });
 
-it("derives default routes for already placed base submissions but not settled inputs", async (t) => {
+it("does not invent a requester from a base submission's delivery recipient", async (t) => {
 	const { harness, conversation } = await fixture(t);
 	const request = { requestId: "base-retained", requester: "old-owner", replyTo: "old-owner", origin: "operator" as const };
 	const id = await harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
@@ -59,7 +59,7 @@ it("derives default routes for already placed base submissions but not settled i
 		(deliveryFixtureState).intents.push({ requestId: request.requestId, ownerId: request.replyTo, origin: request.origin, conversationId: conversation.id, message: "Task", whenBusy: null, operationId: null, submissionId });
 		return submissionId;
 	}), context);
-	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), [{ ...request, status: "placed" }]);
+	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), []);
 	assert.deepEqual((await harness.snapshot(RequestContextDoc, conversation.id, context))?.requests, []);
 	await harness.commit((tx) => tx.settleSubmission(id, { status: "unanswered", reason: "aborted" }), context);
 	await harness.commit((tx) => cleanupRequestContexts(tx, conversation.id), context);
@@ -110,7 +110,7 @@ it("refuses route changes and bounds new admissions without silent loss", async 
 	assert.equal((await readRequestContexts(harness, conversation.id, context)).length, REQUEST_CONTEXT_LIMIT);
 });
 
-it("derives oversized base queues without route writes and retains inputs beyond the profile page", async (t) => {
+it("preserves oversized base queues without fabricating request-route evidence", async (t) => {
 	const { harness, conversation } = await fixture(t);
 	const count = REQUEST_CONTEXT_LIMIT + 1;
 	await harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
@@ -123,17 +123,18 @@ it("derives oversized base queues without route writes and retains inputs beyond
 		}
 	}), context);
 	const page = await readRequestContextPage(harness, conversation.id, context);
-	assert.equal(page.requests.length, REQUEST_CONTEXT_LIMIT);
-	assert.equal(page.omitted, 1);
+	assert.equal(page.requests.length, 0);
+	assert.equal(page.omitted, 0);
 	assert.deepEqual((await harness.snapshot(RequestContextDoc, conversation.id, context))?.requests, [], "base evidence is not materialized into admission-limited metadata");
 	assert.equal((await readRetainedDelivery(harness, context, true))?.intents.length, count);
-	assert.equal((await readRequestContexts(harness, conversation.id, context)).at(-1)?.requestId, `base-${count - 1}`);
+	assert.equal((await readRequestContexts(harness, conversation.id, context)).length, 0);
 });
 
 it("omits oversized retained route fields from projections without changing native evidence", async (t) => {
 	const { harness, conversation } = await fixture(t);
 	const request = { requestId: "r".repeat(1025), requester: "owner", replyTo: "owner", origin: "operator" as const };
 	await harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		await recordRequestContext(tx, conversation.id, request, "retained");
 		const delivery = deliveryFixtureState;
 		const live = await tx.doc(LiveDoc, conversation.id);
 		const submissionId = await placed(tx, conversation.id, request);

@@ -50,3 +50,12 @@ it("declares native result, exact-entry, and cursor inspection inputs on the pri
 	assert.equal(matchesSchema(schema, { sessionId: "storage", cursor: 5 }), false);
 	assert.equal(matchesSchema(schema, { sessionId: "storage", continuation: "retired" }), false);
 });
+
+it("keeps receipt cursors separate from entry cursors and rejects non-result selectors", () => {
+	const selected = { view: "result", submissionId: 7, receiptCursor: "recipient-page" };
+	assert.equal(parseInspectParams(selected).receiptCursor, selected.receiptCursor);
+	assert.equal(parseInspectParams({ ...selected, offset: 4095 }).offset, 4095);
+	for (const view of [undefined, "activity", "history", "branch", "search", "exact"]) assert.throws(() => parseInspectParams({ ...selected, view }), /receiptCursor.*only the result view/u);
+	for (const receiptCursor of [null, 1, {}, [], "", "x".repeat(2049)]) assert.throws(() => parseInspectParams({ ...selected, receiptCursor }), /receiptCursor/u);
+	for (const offset of [-1, 0.25, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => parseInspectParams({ view: "result", submissionId: 7, offset }), /offset|integer/u);
+});

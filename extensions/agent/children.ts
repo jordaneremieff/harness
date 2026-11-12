@@ -11,7 +11,7 @@ export type AgentChild = {
 	readonly result?: ResultReference;
 	readonly thinking?: { requested: string; effective: string };
 	readonly createdBy: Durable.TaskId;
-	reported: Durable.EntryId[];
+	readonly reported?: Durable.EntryId[];
 };
 export type AgentChildrenState = { children: AgentChild[]; reporters: Record<string, number> };
 

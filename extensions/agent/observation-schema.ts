@@ -594,6 +594,8 @@ const retainedResultProperties = {
 	answerEntryId: opt(id),
 	reason: opt(string),
 	answer: opt(string),
+	offset: opt(count), nextOffset: opt(nullableCount), truncated: opt(boolean),
+	answerContinuation: opt(AnswerContinuationSchema), receiptGroup: opt(ReceiptGroupSchema),
 	usage: UsageStateSchema,
 };
 const RetainedResultOutputSchema = obj(retainedResultProperties);
@@ -609,18 +611,14 @@ const UnavailableResultOutputSchema = obj({
 	usage: UsageStateSchema,
 });
 export const ResultOutputSchema = union([RetainedResultOutputSchema, UnavailableResultOutputSchema]);
-/** Readable answer pages are a public tool projection; the host response contract stays complete. */
-export const ResultToolOutputSchema = union([obj({
-	...retainedResultProperties,
-	offset: opt(count), nextOffset: opt(nullableCount), truncated: opt(boolean),
-	answerContinuation: opt(AnswerContinuationSchema), receiptGroup: opt(ReceiptGroupSchema),
-}), UnavailableResultOutputSchema]);
+/** Native host and public tools share the retained-result page contract. */
+export const ResultToolOutputSchema = ResultOutputSchema;
 
 /** `agent_inspect` output: one shape per view, selected by the `view` property. */
 export const InspectOutputSchema = union([HistoryOutputSchema, SearchOutputSchema, ExactOutputSchema, ActivityOutputSchema, ResultOutputSchema]);
 export type InspectOutput = Static<typeof InspectOutputSchema>;
 /** Tool routing also accepts ordinary retained evidence; the native host contract stays separate. */
-export const InspectToolOutputSchema = union([InspectOutputSchema, ResultToolOutputSchema, OrdinaryPrimaryObservationSchema]);
+export const InspectToolOutputSchema = union([InspectOutputSchema, OrdinaryPrimaryObservationSchema]);
 
 /** The schema for one observation method, shared by ordinary and native tool declarations. */
 export function observationSchema(method: "list" | "status" | "inspect"): Schema {

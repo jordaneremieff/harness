@@ -3,7 +3,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { inputEntry } from "./input-entry.ts";
 import { withCancel } from "@earendil-works/chord/context";
 import { InboxDoc, type ToolExecutionApi, type TaskId, type DocumentWatch } from "@earendil-works/pi-durable";
-import { AwaitDoc, boundedAwaitAnswer, declareAwait, commitAwaitOutcome, localProducer, referenceKey, type AwaitDeclaration, type AwaitOutcome, type AwaitInput, type AwaitDelivery } from "./awaited-results.ts";
+import { AwaitDoc, boundedAwaitAnswer, declareAwait, commitAwaitOutcome, projectAwaitOutcomes, referenceKey, type AwaitDeclaration, type AwaitOutcome, type AwaitInput, type AwaitDelivery } from "./awaited-results.ts";
 import type { ResultReference } from "./result-schema.ts";
 import type { ProducerAwaitFact } from "./await-facts.ts";
 import { safeFactText } from "./primary-observation.ts";
@@ -31,19 +31,14 @@ function outcomeOf(reference: ResultReference, value: unknown): AwaitOutcome {
 	const answer = typeof row.answer === "string" ? row.answer : undefined;
 	return { result: observedReference(reference, row), status: row.status, ...(answer === undefined ? {} : boundedAwaitAnswer(reference, answer, typeof row.answerEntryId === "number" ? row.answerEntryId : undefined)), ...(typeof row.answerEntryId === "number" ? { answerEntryId: row.answerEntryId } : {}), ...(typeof row.entryId === "number" ? { entryId: row.entryId } : {}), ...(typeof row.reason === "string" ? { reason: row.reason } : {}), ...providerBlockOutcome(row) };
 }
-async function observeNativeResult(dispatch: AgentControlDispatch, storageId: string, owner: string, reference: ResultReference, context: Context): Promise<{ outcome: AwaitOutcome; delivery?: AwaitDelivery }> {
-	if (localProducer(storageId, reference) !== undefined) {
-		const outcome = outcomeOf(reference, await dispatch("await-native", { sessionId: reference.sessionId, result: reference }, context));
-		const reporter = /^agent-deliver:([1-9][0-9]*)$/u.exec(outcome.result.requestId ?? "");
-		return { outcome, ...(reporter === null ? {} : { delivery: { requestId: `agent-report:${reporter[1]}`, results: [outcome.result], complete: true } }) };
-	}
+async function observeNativeResult(dispatch: AgentControlDispatch, owner: string, reference: ResultReference, context: Context): Promise<{ outcome: AwaitOutcome; delivery?: AwaitDelivery }> {
 	const response = await dispatch("receipts", { sessionId: reference.sessionId, ownerId: owner, wait: true, result: reference }, context) as { outcome?: unknown; delivery?: AwaitDelivery };
 	if (response.outcome === undefined) throw new Error("The foreign result is not routed to this recipient; exact third-party observation is required");
 	return { outcome: outcomeOf(reference, response.outcome), ...(response.delivery === undefined ? {} : { delivery: response.delivery }) };
 }
 async function observeOutcome(api: ToolExecutionApi, storageId: string, dispatch: AgentControlDispatch, reference: ResultReference, context: Context): Promise<void> {
 	let outcome: AwaitOutcome; let delivery: AwaitDelivery | undefined;
-	try { ({ outcome, delivery } = await observeNativeResult(dispatch, storageId, `${storageId}${api.conversationId === 1 ? "" : `:${api.conversationId}`}`, reference, context)); }
+	try { ({ outcome, delivery } = await observeNativeResult(dispatch, `${storageId}${api.conversationId === 1 ? "" : `:${api.conversationId}`}`, reference, context)); }
 	catch (error) {
 		if (context.abortSignal?.aborted) return;
 		outcome = { result: reference, status: "unavailable", reason: error instanceof Error ? error.message : String(error) };
@@ -67,9 +62,9 @@ async function withdrawNamedCheckIns(api: ToolExecutionApi, context: Context): P
 	}
 }
 
-async function withdrawCoveredDeliveries(api: ToolExecutionApi, current: AwaitDeclaration, context: Context): Promise<void> {
-	const returned = new Set(current.outcomes.filter((outcome) => outcome.status !== "unavailable").map((outcome) => referenceKey(outcome.result)));
-	const candidates = (current.deliveries ?? []).filter((delivery) => delivery.complete && delivery.results.length > 0 && delivery.results.every((result) => returned.has(referenceKey(result))));
+async function withdrawCoveredDeliveries(api: ToolExecutionApi, owner: string, current: AwaitDeclaration, context: Context): Promise<void> {
+	const returned = current.outcomes.filter((outcome) => outcome.status !== "unavailable").map((outcome) => outcome.result);
+	const candidates = (current.deliveries ?? []).filter((delivery) => delivery.complete && delivery.recipient === owner && delivery.results.length > 0 && delivery.results.every((result) => returned.some((observed) => referenceKey(observed) === referenceKey(result) && (result.requestId === undefined || result.requestId === observed.requestId))));
 	const queued = await api.commit(async (tx) => {
 		const ids: string[] = [];
 		for (const delivery of candidates) if ((await tx.submissionByRequest(api.conversationId, delivery.requestId))?.status === "queued") ids.push(delivery.requestId);
@@ -119,7 +114,7 @@ export async function executeAwait(args: AwaitInput, api: ToolExecutionApi, cont
 		await Promise.allSettled(jobs);
 		const completed = declaration(await api.snapshot(AwaitDoc, context), api.taskId);
 		if (completed === undefined) throw new Error("The original await round ended");
-		await withdrawCoveredDeliveries(api, completed, context);
+		await withdrawCoveredDeliveries(api, `${storageId}${api.conversationId === 1 ? "" : `:${api.conversationId}`}`, completed, context);
 		const snapshot = await api.commit(async (tx) => {
 			const current = declaration(await tx.doc(AwaitDoc), api.taskId);
 			if (current === undefined) throw new Error("The original await round ended");
@@ -127,7 +122,7 @@ export async function executeAwait(args: AwaitInput, api: ToolExecutionApi, cont
 			return { current: JSON.parse(JSON.stringify(current)) as AwaitDeclaration, queue };
 		}, context);
 		const { current, queue } = snapshot;
-		return { decision: current.decision, results: current.outcomes.map((item) => ({ ...item })), unresolved: current.results.filter((reference) => !current.outcomes.some((outcome) => referenceKey(outcome.result) === referenceKey(reference))), originalInputs: [...current.inputs], queuedInputCount: queue, queueSnapshot: { source: "committed InboxDoc", conversationId: api.conversationId, runId: current.runId }, ...(current.releaseReason === undefined ? {} : { releaseReason: current.releaseReason }), ...(current.producerRetries === undefined ? {} : { producerRetries: current.producerRetries }) };
+		return { decision: current.decision, results: projectAwaitOutcomes(current.outcomes), unresolved: current.results.filter((reference) => !current.outcomes.some((outcome) => referenceKey(outcome.result) === referenceKey(reference))), originalInputs: [...current.inputs], queuedInputCount: queue, queueSnapshot: { source: "committed InboxDoc", conversationId: api.conversationId, runId: current.runId }, ...(current.releaseReason === undefined ? {} : { releaseReason: current.releaseReason }), ...(current.producerRetries === undefined ? {} : { producerRetries: current.producerRetries }) };
 	} finally {
 		owned.cancel();
 		await watch?.stop();

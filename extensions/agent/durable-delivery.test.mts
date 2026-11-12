@@ -1,5 +1,6 @@
 import { onStoredCommit } from "./commit-observation.ts";
-import { deliveryState as readRetainedDelivery, deliveryPendingCount, pendingDeliveryPage } from "./delivery-store.ts";
+import { parseCommunication } from "./communication.ts";
+import { receiptSourceIdentity, deliveryState as readRetainedDelivery, deliveryPendingCount, pendingDeliveryPage } from "./delivery-store.ts";
 import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import { DELIVERY_PAGE_SIZE, DeliveryRowDoc, storeDeliveryRow } from "./delivery-store.ts";
 import { DELIVERY_WAKE_RECIPIENT_LIMIT, nativeRecipientAvailability } from "./delivery-wake.ts";
@@ -190,11 +191,13 @@ function writeIncompatibleEndpoint(sessionsRoot: string, id: string, pid = proce
 	);
 }
 
-async function receiptSourceId(host: DurableHost, submissionId: SubmissionId): Promise<string> {
+function informationalSource(sourceId: string, recipient: string): string { return `${sourceId}:informational:${createHash("sha256").update(recipient).digest("hex")}`; }
+async function receiptSourceId(host: DurableHost, submissionId: SubmissionId, informationalRecipient?: string): Promise<string> {
 	await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
 	const receipt = (await deliveryState(host))?.receipts[String(submissionId)];
 	assert.ok(receipt);
-	return `${host.storageId}:answer:${receipt.answerEntryId}`;
+	const sourceId = receiptSourceIdentity(host.storageId, receipt);
+	return informationalRecipient === undefined ? sourceId : informationalSource(sourceId, informationalRecipient);
 }
 
 /** Recheck delivery state only after native commit publications. */
@@ -289,6 +292,11 @@ it("does not broadcast an unresolved native delivery to ordinary primaries", { t
 	} finally { await delivery.close(); }
 });
 
+function expectedRecipientGroup(recipients: string, original: number, steer: number) {
+	return recipients === "same"
+		? { ids: [original, steer], requests: ["original", "steer"], operations: ["first-operation", "steer-operation"], origins: ["operator", "model"] }
+		: { ids: [original], requests: ["original"], operations: ["first-operation"], origins: ["operator"] };
+}
 for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live steer with its answer for ${recipients} recipients`, { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const sessionsRoot = join(root, "sessions");
@@ -350,17 +358,19 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	assert.ok(ids.every((id) => pending?.receipts[String(id)]?.acknowledged === false));
 	assert.equal(pending?.receipts[String(original.submissionId)]?.answerEntryId, pending?.receipts[String(steer.submissionId)]?.answerEntryId);
 	const details = received[0]?.details as { deliveryRecipient: string; submissions: { submissionId: SubmissionId; requestId: string; operationId: string; ownerId: string; origin?: string }[]; wake?: unknown };
-	assert.deepEqual(details.submissions.map((member) => member.submissionId), ids);
-	assert.deepEqual(details.submissions.map((member) => member.requestId), ["original", "steer"]);
-	assert.deepEqual(details.submissions.map((member) => member.operationId), ["first-operation", "steer-operation"]);
-	assert.deepEqual(details.submissions.map((member) => member.origin), ["operator", "model"]);
+	const expected = expectedRecipientGroup(recipients, original.submissionId, steer.submissionId);
+	assert.deepEqual(details.submissions.map((member) => member.submissionId), expected.ids);
+	assert.deepEqual(details.submissions.map((member) => member.requestId), expected.requests);
+	assert.deepEqual(details.submissions.map((member) => member.operationId), expected.operations);
+	assert.deepEqual(details.submissions.map((member) => member.origin), expected.origins);
 	const own = details.submissions.filter((member) => member.ownerId === details.deliveryRecipient);
 	assert.equal(details.wake, own.some((member) => member.origin === "model"), "wake follows the recipient's own admissions");
 	assert.match(received[0]?.text ?? "", /^Agent “11111111-1111-4111-8111-111111111111” finished\./u);
 	assert.doesNotMatch(received[0]?.text ?? "", /submissions/u);
 	releaseDelivery();
+	if (recipients === "overlap") await received.waitForCount(2);
 	await waitForDelivery(source, async () => ids.every((id) => revisions.at(-1)?.receipts[String(id)]?.acknowledged === (recipients !== "overlap" || id === original.submissionId)));
-	assert.equal(received.length, recipients === "distinct" ? 2 : 1, "one answer reaches each recipient once, including overlapping owner routes");
+	assert.equal(received.length, recipients === "same" ? 1 : 2, "each recipient has an independent normal source; an informational source does not consume it");
 	for (const delivery of received) {
 		const messageDetails = delivery.details as { deliveryRecipient: string; submissions: Array<{ ownerId: string; origin?: string }>; wake?: unknown };
 		const recipientOwn = messageDetails.submissions.filter((member) => member.ownerId === messageDetails.deliveryRecipient);
@@ -369,11 +379,11 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	for (const revision of revisions) {
 		const members = ids.flatMap((id) => revision.receipts[String(id)] ?? []);
 		assert.ok(members.length === 0 || members.length === 2, "receipt materialization is atomic");
-		if (recipients !== "overlap") assert.ok(members.every((member) => member.acknowledged) || members.every((member) => !member.acknowledged), "live answer acknowledgement is atomic");
+		if (recipients === "same") assert.ok(members.every((member) => member.acknowledged) || members.every((member) => !member.acknowledged), "one recipient's visited rows share their acknowledgement commit");
 	}
 	const later = await addReceipt(source, owner, "later-answer");
 	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(later)]?.acknowledged === true);
-	assert.equal(received.length, recipients === "distinct" ? 3 : 2, "equal text from a distinct answer entry remains a separate notice");
+	assert.equal(received.length, recipients === "same" ? 2 : 3, "equal text from a distinct answer entry remains a separate notice");
 	assert.notEqual(received[0]?.sourceId, received.at(-1)?.sourceId);
 	if (recipients !== "overlap") assert.deepEqual(errors, []);
 });
@@ -410,7 +420,7 @@ for (const route of ["operator", "model", "fallback"] as const) it(`delivers a $
 	release();
 	await waitForDelivery(source, async () => route === "fallback" ? (await deliveryState(source))?.reports[0]?.checkIn?.fallbackBroadcast === true : (await deliveryState(source))?.reports[0]?.acknowledged === true);
 	const message = received[0];
-	assert.equal(message.sourceId, "11111111-1111-4111-8111-111111111111:checkin:task:1");
+	assert.equal(message.sourceId, route === "fallback" ? informationalSource("11111111-1111-4111-8111-111111111111:checkin:task:1", primary) : "11111111-1111-4111-8111-111111111111:checkin:task:1");
 	const details = message.details as Record<string, unknown>;
 	assert.equal(details.kind, "report");
 	assert.equal(details.reportSourceId, "checkin:task:1");
@@ -793,7 +803,7 @@ it("routes a receipt and a report only after the target admits them", { timeout:
 	await completion;
 	assert.equal(calls.length, 2, "one submission per delivered row");
 	const receiptCall = calls.find(
-		(call) => typeof call.params.requestId === "string" && (call.params.requestId as string).includes(":answer:"),
+		(call) => typeof call.params.requestId === "string" && (call.params.requestId as string).includes(":result:"),
 	) as SubmitRecord;
 	const reportCall = calls.find(
 		(call) => typeof call.params.requestId === "string" && (call.params.requestId as string).includes(":report:"),
@@ -1126,7 +1136,7 @@ it("acknowledges an aborted self-owned receipt without follow-up input", { timeo
 	} finally { await watcher.close(); }
 });
 
-it("delivers every submission in an answer group to another owner without self follow-up", { timeout: 10000 }, async (t) => {
+it("delivers only the recipient's submissions from a shared answer without self follow-up", { timeout: 10000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const path = join(root, "source.sqlite");
 	const sessionsRoot = join(root, "sessions");
@@ -1160,7 +1170,7 @@ it("delivers every submission in an answer group to another owner without self f
 		assert.equal(state?.receipts[String(original.submissionId)]?.answerEntryId, state?.receipts[String(steer.submissionId)]?.answerEntryId);
 		assert.equal(received.length, 1);
 		const details = received[0]?.details as { submissions: Array<{ submissionId: number }>; wake: boolean };
-		assert.deepEqual(details.submissions.map((member) => member.submissionId), ids);
+		assert.deepEqual(details.submissions.map((member) => member.submissionId), [steer.submissionId]);
 		assert.equal(details.wake, true);
 		assert.equal(calls.mock.calls.filter((call) => call.arguments[0] === "submit").length, 0);
 	} finally { await watcher.close(); }
@@ -2067,7 +2077,7 @@ it("broadcasts a fallback to every registered live primary exactly once", { time
 			[second, secondReceived],
 		] as const) {
 			const details = received[0]?.details as Record<string, unknown>;
-			assert.equal(received[0]?.sourceId, await receiptSourceId(source, submissionId));
+			assert.equal(received[0]?.sourceId, await receiptSourceId(source, submissionId, id));
 			assert.equal(details.fallback, true);
 			assert.equal(details.fallbackLabel, "no live owning session");
 			assert.equal(details.wake, false, "a fallback broadcast never wakes a primary model");
@@ -2143,11 +2153,12 @@ it("retries a failed broadcast without duplicating a successful receiver", { tim
 		15000,
 	);
 	assert.ok(failingAttempts >= 2, `the failed candidate was retried, attempts ${failingAttempts}`);
-	const expected = await receiptSourceId(source, submissionId);
+	const expected = await receiptSourceId(source, submissionId, stable);
+	const failingExpected = await receiptSourceId(source, submissionId, failing);
 	assert.equal(stableKeys.length, 1, "retained state suppresses retry copies to the stable receiver");
 	assert.equal(new Set(stableKeys).size, 1, "the retry preserves one source key for receiver dedup");
 	for (const key of stableKeys) assert.equal(key, expected);
-	assert.deepEqual(new Set(failingKeys), new Set([expected]));
+	assert.deepEqual(new Set(failingKeys), new Set([failingExpected]));
 	assert.ok(errors.length >= 1, "the failed candidate was reported");
 	await watcher.close();
 });
@@ -2249,7 +2260,7 @@ it("leaves the broadcast pending when a registered live candidate is unreachable
 		onError: (error) => errors.push(error),
 	});
 	await Promise.all([received.waitForCount(1, 15000), errors.waitForCount(1, 15000)]);
-	const expected = await receiptSourceId(source, submissionId);
+	const expected = await receiptSourceId(source, submissionId, reachable);
 	assert.equal(received[0]?.sourceId, expected);
 	const details = received[0]?.details as Record<string, unknown>;
 	assert.equal(details.fallback, true);
@@ -2376,7 +2387,7 @@ it("bounds long peer bodies without mutating the retained originals", { timeout:
 	await watcher.close();
 });
 
-it("delivers opted-in thread notices as passive native writes without a reply loop", { timeout: 10000 }, async (t) => {
+it("delivers explicit passive reports as native writes without fabricated thread metadata", { timeout: 10000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const catalog = new AgentCatalog(root);
 	const record = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off" });
@@ -2399,7 +2410,7 @@ it("delivers opted-in thread notices as passive native writes without a reply lo
 	assert.ok(requests.includes("passive-submit"));
 	assert.equal(requests.includes("submit"), false);
 	const observation = await target.request("inspect", { view: "history" }) as { entries?: unknown[]; rows?: unknown[] };
-	assert.match(JSON.stringify(observation), /agent.thread-notice/u);
+	assert.match(JSON.stringify(observation), /agent.passive-report/u);
 	assert.equal((await target.harness.inspect(BACKGROUND_CONTEXT)).tasks.length, 0);
 	assert.equal((await readRetainedDelivery(target.harness, BACKGROUND_CONTEXT, true))?.intents.length ?? 0, 0);
 	assert.deepEqual(errors, []);
@@ -2739,4 +2750,58 @@ it("delivers a reused agent's report and final answer to its explicit recipient,
 	assert.equal(creatorMessages.length, 0);
 	assert.deepEqual(recipientMessages.map((message) => (message.details as Record<string, unknown>).kind).sort(), ["receipt", "report"]);
 	assert.deepEqual(errors, []);
+});
+
+function assertRefusalNotice(text: string, reason: unknown): void {
+	assert.match(text, /content_refusal:/u);
+	assert.match(text, /The provider refused this content\./u);
+	assert.match(text, /No automatic substitution or host retry\./u);
+	assert.doesNotMatch(text, /abcdefghijklmnopqrstuv/u);
+	assert.equal(typeof reason, "string");
+	assert.ok(Buffer.byteLength(String(reason)) <= 1024);
+	assert.match(String(reason), /\[credential redacted\]/u);
+	assert.match(String(reason), /\[truncated\]/u);
+}
+for (const route of ["primary", "catalog"] as const) it(`delivers exact bounded refusal evidence through the ${route} receipt route`, { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t), sessionsRoot = join(root, "sessions"), catalog = new AgentCatalog(root);
+	const received = eventLog<PrimaryDelivery>(), calls: SubmitRecord[] = [];
+	let target: DurableHost | undefined;
+	let ownerId: string = randomUUID();
+	if (route === "primary") {
+		const channel = await createPrimaryChannel({ id: ownerId, cwd: root, sessionsRoot, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+		t.after(() => channel.close());
+	} else {
+		const record = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off" });
+		ownerId = record.storageId;
+		target = await openHost(record.storagePath, record.storageId, root);
+		t.after(() => target?.close());
+	}
+	const raw = `This content was flagged for possible cybersecurity risk; api_key=sk-abcdefghijklmnopqrstuv; ${"界".repeat(2500)}`;
+	const models = await scriptedRuntime([{ ...answerMessage(""), stopReason: "error", errorMessage: raw }]);
+	const provider = t.mock.method(models, "streamSimple");
+	const path = join(root, "source.sqlite"), source = await DurableHost.open({ ...hostOptions(path, models, fixtureRegistry()), storageId: randomUUID(), cwd: root, settings: { retry: { enabled: true, maxRetries: 3 } } }, BACKGROUND_CONTEXT);
+	t.after(() => source.close());
+	const admitted = await source.request("submit", { message: "refused work", requestId: "refused-work", ownerId, origin: "model" }, BACKGROUND_CONTEXT) as { submissionId: SubmissionId };
+	const input = await source.harness.submission(admitted.submissionId, BACKGROUND_CONTEXT);
+	assert.ok(input);
+	const original = await input.wait(BACKGROUND_CONTEXT);
+	assert.equal(original.status, "unanswered");
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog, sessionsRoot, signal: new AbortController().signal, acquire: async () => {
+		if (target === undefined) throw new Error("No native target belongs to this fixture");
+		return fakeTarget(target, calls);
+	} });
+	t.after(() => watcher.close());
+	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(admitted.submissionId)]?.acknowledged === true);
+	if (route === "primary") assertRefusalNotice(received[0].text, (received[0].details as Record<string, unknown>).reason);
+	else {
+		const communication = parseCommunication(calls[0].params.communication);
+		assert.ok(communication?.kind === "result");
+		assertRefusalNotice(String(calls[0].params.message), communication.metadata.reason);
+	}
+	const retained = await input.status(BACKGROUND_CONTEXT);
+	assert.ok(retained.type === "input" && retained.status === "unanswered");
+	assert.equal(retained.reason, "model_error");
+	assert.equal(retained.detail, raw);
+	assert.equal((await deliveryState(source))?.receipts[String(admitted.submissionId)]?.reason, "model_error");
+	assert.equal(provider.mock.callCount(), 1);
 });

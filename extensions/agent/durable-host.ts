@@ -21,7 +21,7 @@ import { cancelRequest, readRunScope, stopRun, type ForeignStop } from "./run-co
 import { ProviderModels } from "./provider-models.ts";
 import { ProviderRetryNotices, ProviderRetryNoticeSchema } from "./provider-notices.ts";
 import type { ProviderRetryNotice } from "./provider-block.ts";
-import { initializeProviderControl, reconcileProviderControls } from "./provider-block.ts";
+import { readInputProviderBlock, initializeProviderControl, reconcileProviderControls } from "./provider-block.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 import { storageStatusCoverage, storageStatusScanInput } from "./storage-status.ts";
 import { matchesSchema } from "./schema-check.ts";
@@ -32,7 +32,9 @@ import type { InputProvenance } from "./awaited-results.ts";
 import { ownAwaitFact, producerRetryFact, releaseAwait } from "./await-observation.ts";
 import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
 import { AwaitInputSuppressed, richSubmitConversation } from "./durable-controls.ts";
-import { answerReceipts, migrateDeliveryStore, snapshotIntent, snapshotReceipt } from "./delivery-store.ts";
+import { modelFailureText } from "./provider-block-facts.ts";
+import { parseReportIntervention } from "./report-intervention.ts";
+import { receiptSourceIdentity, receiptDeliveryRequestId, receiptReferencePage, migrateDeliveryStore, snapshotIntent, snapshotReceipt } from "./delivery-store.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -40,7 +42,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { ModelEvidenceCollector } from "./model-evidence.ts";
 import { isInputKind } from "./input-entry.ts";
-import { Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
+import { Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type Submission, type SubmissionRecord, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { acknowledgeDeliveries, acknowledgeReports, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
 import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseInspectParams, readConversationList, readConversationSnapshotPage, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
@@ -626,7 +628,8 @@ export class DurableHost {
 		const communication = params?.communication === undefined ? undefined : parseCommunication(params.communication) ?? null;
 		const conversation = await this.target(params, context);
 		const message = requestRequiredString(params, "message");
-		if (Buffer.byteLength(message) > 16 * 1024) throw new Error("Passive thread notice exceeds its byte bound");
+		if (Buffer.byteLength(message) > 16 * 1024) throw new Error("Passive report exceeds its byte bound");
+		if (params?.provenance !== undefined && (params.provenance as { intervention?: unknown }).intervention !== undefined) throw new Error("An intervention report must remain active");
 		const requestId = requestRequiredString(params, "requestId");
 		let data: ReturnType<typeof parseCommunicationPassive> | { format: "agent.communication-invalid/1"; reason: "invalid" };
 		if (communication !== undefined) {
@@ -637,7 +640,7 @@ export class DurableHost {
 				data = { format: "agent.communication-invalid/1", reason: "invalid" };
 			}
 		}
-		const submission = await conversation.submit({ type: "write", requestId, entry: { kind: "agent.thread-notice", model: [{ role: "user", content: message, timestamp: Date.now() }], ...(data === undefined ? {} : { data }) } }, context);
+		const submission = await conversation.submit({ type: "write", requestId, entry: { kind: communication?.kind === "report" ? "agent.passive-report" : "agent.thread-notice", model: [{ role: "user", content: message, timestamp: Date.now() }], ...(data === undefined ? {} : { data }) } }, context);
 		return { submissionId: submission.id, conversationId: conversation.id, passive: true };
 	}
 
@@ -656,27 +659,46 @@ export class DurableHost {
 		throw new TypeError("origin must be operator or model");
 	}
 
-	private async selectedReceipt(reference: ResultReference, ownerId: string, context: Context): Promise<unknown> {
+	private async resultSubmission(reference: ResultReference, context: Context) {
+		if (!matchesSchema(ResultReferenceSchema, reference)) throw new Error("Invalid exact result reference");
 		const submission = await this.harness.submission(reference.submissionId as SubmissionId, context);
 		const status = await submission?.status(context);
-		if (status?.type !== "input" || this.identity(status.conversationId) !== reference.sessionId || (reference.requestId !== undefined && status.requestId !== reference.requestId)) throw new Error("The exact receipt does not identify the selected native input");
-		const routed = (await snapshotReceipt(this.harness, status.id, context))?.ownerId === ownerId ||
-			(status.requestId !== undefined && (await snapshotIntent(this.harness, status.conversationId, status.requestId, context))?.ownerId === ownerId);
-		if (!routed) throw new Error("The selected result is not addressed to this recipient");
-		const { usage: _storageUsage, ...outcome } = await readOutcome(this.harness, status.id, context);
+		if (submission === undefined || status?.type !== "input" || this.identity(status.conversationId) !== reference.sessionId || (reference.requestId !== undefined && status.requestId !== reference.requestId)) throw new Error("The exact receipt does not identify the selected native input");
+		return { submission, status };
+	}
+	private async requireResultRecipient(status: Extract<SubmissionRecord, { type: "input" }>, ownerId: string, context: Context): Promise<void> {
+		const receipt = await snapshotReceipt(this.harness, status.id, context);
+		if (receipt?.ownerId === ownerId) return;
+		const intent = status.requestId === undefined ? undefined : await snapshotIntent(this.harness, status.conversationId, status.requestId, context);
+		if (intent?.ownerId !== ownerId) throw new Error("The selected result is not addressed to this recipient");
+	}
+	private async resultOutcome(submission: Submission, metadataOnly: boolean, context: Context): Promise<Omit<DurableRunOutcome, "usage">> {
+		if (!metadataOnly) {
+			const { usage: _storageUsage, ...outcome } = await readOutcome(this.harness, submission.id, context);
+			return outcome;
+		}
+		const settled = await submission.wait(context);
+		if (settled.type !== "input") throw new Error("The selected result is not an input");
+		const common = { submissionId: settled.id, conversationId: settled.conversationId, ...(settled.requestId === undefined ? {} : { requestId: settled.requestId }), ...(settled.entry === undefined ? {} : { entryId: settled.entry }) };
+		if (settled.status === "done") return { ...common, status: "done", answerEntryId: settled.answer };
+		const providerBlock = await this.harness.commit((tx) => readInputProviderBlock(tx, settled.id), context);
+		return { ...common, status: "unanswered", reason: modelFailureText(settled.reason, settled.detail, providerBlock), ...(providerBlock === undefined ? {} : { providerBlock }) };
+	}
+	private async selectedReceipt(reference: ResultReference, ownerId: string, context: Context, receiptCursor?: string, metadataOnly = false): Promise<unknown> {
+		const { submission, status } = await this.resultSubmission(reference, context);
+		await this.requireResultRecipient(status, ownerId, context);
+		const outcome = await this.resultOutcome(submission, metadataOnly, context);
 		await reconcileDeliveries(this.harness, context);
 		const selected = await snapshotReceipt(this.harness, status.id, context);
-		const delivery = selected === undefined || selected.ownerId !== ownerId ? undefined : await this.harness.commit(async (tx) => {
-			const group = await answerReceipts(tx, selected);
-			const key = selected.answerEntryId === null ? `submission:${selected.submissionId}` : `answer:${selected.answerEntryId}`;
-			return { requestId: `deliver:${this.storageId}:${key}`, results: group.slice(0, 16).map((receipt) => ({ sessionId: this.identity(receipt.conversationId), submissionId: receipt.submissionId, requestId: receipt.requestId })), complete: group.length <= 16 };
-		}, context);
-		return { outcome, ...(delivery === undefined ? {} : { delivery }) };
+		if (selected === undefined || selected.ownerId !== ownerId) return { outcome };
+		const receiptGroup = await this.harness.commit((tx) => receiptReferencePage(tx, this.storageId, selected, receiptCursor), context);
+		const delivery = { requestId: receiptDeliveryRequestId(this.storageId, selected), sourceId: receiptSourceIdentity(this.storageId, selected), producerStorageId: this.storageId, recipient: ownerId, ...(selected.answerEntryId === null ? {} : { answerEntryId: selected.answerEntryId }), results: receiptGroup.results, complete: receiptGroup.complete };
+		return { outcome, delivery, receiptGroup };
 	}
 
 	private async receiptsRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const ownerId = requestRequiredString(params, "ownerId");
-		if (params?.result !== undefined) return this.selectedReceipt(params.result as ResultReference, ownerId, context);
+		if (params?.result !== undefined) return this.selectedReceipt(params.result as ResultReference, ownerId, context, requestString(params, "receiptCursor"), requestBoolean(params, "metadataOnly") ?? false);
 		const wait = requestBoolean(params, "wait") ?? false;
 		const deliveries = wait ? await waitForReceipts(this.harness, ownerId, context, this.lifecycle.signal) : await undeliveredForOwner(this.harness, ownerId, context);
 		const pending = await pendingDeliveries(this.harness, ownerId, context);
@@ -695,9 +717,10 @@ export class DurableHost {
 		const requestId = requestRequiredString(params, "requestId");
 		const message = requestRequiredString(params, "message");
 		const replyTo = requestString(params, "replyTo");
+		const passive = requestBoolean(params, "passive");
 		const report = await recordReport(
 			this.harness,
-			{ ownerId, senderIdentity, requestId, message, ...(replyTo === undefined ? {} : { replyTo }) },
+			{ ownerId, senderIdentity, requestId, message, ...(replyTo === undefined ? {} : { replyTo }), ...(passive === undefined ? {} : { passive }), ...(params?.intervention === undefined ? {} : { intervention: parseReportIntervention(params.intervention), storageId: this.storageId }) },
 			context,
 		);
 		return { ...report };

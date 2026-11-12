@@ -1,6 +1,8 @@
 import { str, int, bool, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 /** Native await ownership, exact outcomes, and control-provenance release. */
-import { createHash } from "node:crypto";
+import { referenceKey, providerRetryRevision, sameRetryResult, olderProviderRetry } from "./await-retry-policy.ts";
+export { referenceKey, providerRetryRevision, sameRetryResult, olderProviderRetry } from "./await-retry-policy.ts";
+import { interventionMatches, type ReportIntervention } from "./report-intervention.ts";
 import { defineDoc, LiveDoc, InboxDoc, ROOT_CONVERSATION_ID, type ConversationId, type TaskId, type SubmissionId, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
 import { canonicalIdentity } from "./native-identity.ts";
 import { prepareCommunication } from "./communication-retention.ts";
@@ -19,6 +21,7 @@ export const AwaitOutcomeSchema = obj({
 	status: union([lit("done"), lit("unanswered"), lit("unavailable")]),
 	answer: opt(str({ maxLength: 16000 })),
 	answerEntryId: opt(int({ minimum: 1 })),
+	sameAnswerAs: opt(ResultReferenceSchema),
 	entryId: opt(int({ minimum: 1 })),
 	reason: opt(str()),
 	providerBlock: opt(ProviderBlockFactSchema),
@@ -36,11 +39,11 @@ export const AwaitOutputSchema = obj({
 	releaseReason: opt(str()),
 	producerRetries: opt(arr(ProducerAwaitFactSchema, { maxItems: 16 })),
 });
-export type AwaitOutcome = { result: ResultReference; status: "done" | "unanswered" | "unavailable"; answer?: string; answerEntryId?: number; entryId?: number; reason?: string; providerBlock?: ProviderBlockFact; truncated?: boolean; excerpt?: boolean; continuation?: { tool: "agent_inspect"; sessionId: string; view: "exact"; entryId: number; offset: 0 } };
+export type AwaitOutcome = { result: ResultReference; status: "done" | "unanswered" | "unavailable"; answer?: string; answerEntryId?: number; sameAnswerAs?: ResultReference; entryId?: number; reason?: string; providerBlock?: ProviderBlockFact; truncated?: boolean; excerpt?: boolean; continuation?: { tool: "agent_inspect"; sessionId: string; view: "exact"; entryId: number; offset: 0 } };
 export type AwaitDecision = "awaiting" | "settled" | "released" | "failed";
 export type AwaitDeclaration = { taskId: number; callId: string; conversationId: number; runId: number; cohort: number[]; inputs: number[]; results: ResultReference[]; outcomes: AwaitOutcome[]; decision: AwaitDecision; releaseReason?: string; deliveries?: AwaitDelivery[]; producers?: ProducerAwaitFact[]; releaseOnProviderRetry?: AwaitInput["releaseOnProviderRetry"]; producerRetries?: ProducerAwaitFact[] };
-export type InputProvenance = { conversationId: number; requestId: string; classification: "explicit" | "automatic" | "report"; sender?: string; submissionId?: number; automaticKind?: "checkIn" | "timer"; producerRequestId?: string; runId?: number; communicationIntent?: import("./communication-retention.ts").RetainedCommunicationIntent };
-export type AwaitDelivery = { requestId: string; results: ResultReference[]; complete: boolean };
+export type InputProvenance = { conversationId: number; requestId: string; classification: "explicit" | "automatic" | "report"; sender?: string; submissionId?: number; automaticKind?: "checkIn" | "timer"; producerRequestId?: string; runId?: number; intervention?: ReportIntervention; communicationIntent?: import("./communication-retention.ts").RetainedCommunicationIntent };
+export type AwaitDelivery = { requestId: string; recipient: string; results: ResultReference[]; complete: boolean };
 type RetryVisibility = { conversationId: number; input: number; result: ResultReference; runId: number; attempt: number; nextRetryAt: number; revision: string };
 export type AwaitState = { declarations: AwaitDeclaration[]; provenance: InputProvenance[]; retryVisibility?: RetryVisibility[]; communicationDiagnostic?: "invalid" | "unavailable" };
 export const AwaitDoc = defineDoc<AwaitState>({ kind: "agent.awaited-results", version: 1, scope: "session", checkpointWhen: () => false, initial: () => ({ declarations: [], provenance: [] }) });
@@ -56,17 +59,21 @@ export function boundedAwaitAnswer(result: ResultReference, answer: string, answ
 	return { answer: answer.slice(0, end), ...(truncated && answerEntryId !== undefined ? { truncated: true, continuation: { tool: "agent_inspect", sessionId: result.sessionId, view: "exact", entryId: answerEntryId, offset: 0 } as const } : {}), ...(excerpt ? { excerpt: true } : {}) };
 }
 
-export function referenceKey(reference: ResultReference): string { return `${reference.sessionId}/${reference.submissionId}`; }
-
-/** Observation time and requester generation tasks do not identify provider retry evidence. */
-export function providerRetryRevision(retry: ProducerRetry): string {
-	return createHash("sha256").update(JSON.stringify([retry.runId, retry.attempt, retry.nextRetryAt, retry.error])).digest("hex");
+/** Retained outcomes remain unchanged; one returned body represents each producer answer. */
+export function projectAwaitOutcomes(outcomes: readonly AwaitOutcome[]): AwaitOutcome[] {
+	const answers = new Map<string, ResultReference>();
+	return outcomes.map((outcome) => {
+		if (outcome.status !== "done" || outcome.answerEntryId === undefined) return { ...outcome };
+		const storageId = outcome.result.sessionId.split(":")[0];
+		const key = `${storageId}/${outcome.answerEntryId}`;
+		const first = answers.get(key);
+		if (first === undefined) { answers.set(key, outcome.result); return { ...outcome }; }
+		const { answer: _answer, truncated: _truncated, excerpt: _excerpt, continuation: _continuation, ...rest } = outcome;
+		return { ...rest, sameAnswerAs: { ...first } };
+	});
 }
-export function sameRetryResult(left: ResultReference, right: ResultReference): boolean {
-	return referenceKey(left) === referenceKey(right) && (left.requestId === undefined || right.requestId === undefined || left.requestId === right.requestId);
-}
-export function olderProviderRetry(incoming: Pick<ProducerRetry, "runId" | "attempt" | "nextRetryAt">, prior: Pick<ProducerRetry, "runId" | "attempt" | "nextRetryAt">): boolean {
-	return incoming.runId < prior.runId || (incoming.runId === prior.runId && (incoming.attempt < prior.attempt || (incoming.attempt === prior.attempt && incoming.nextRetryAt < prior.nextRetryAt)));
+function reportMatches(provenance: InputProvenance, declaration: AwaitDeclaration): boolean {
+	return provenance.intervention === undefined ? declaration.results.some((reference) => reference.sessionId === provenance.sender) : interventionMatches(provenance.intervention, declaration.results);
 }
 
 function retryVisibilityAdditions(claims: RetryVisibility[], conversationId: ConversationId, inputs: readonly number[], retry: ProducerRetry): RetryVisibility[] {
@@ -233,7 +240,7 @@ async function inboxRelease(tx: Tx, state: AwaitState, declaration: AwaitDeclara
 			if (submission?.type === "input") pending.submissionId = submission.id;
 		}
 		const provenance = state.provenance.find((entry) => entry.conversationId === declaration.conversationId && entry.submissionId === item.id);
-		if (provenance?.classification === "explicit" || (provenance?.classification === "report" && declaration.results.some((reference) => reference.sessionId === provenance.sender))) {
+		if (provenance?.classification === "explicit" || (provenance?.classification === "report" && reportMatches(provenance, declaration))) {
 			item.mode = "steer";
 			releaseCohort(state, declaration, "admitted input");
 		}
@@ -305,7 +312,7 @@ export async function recordInputProvenance(tx: Tx, provenance: InputProvenance)
 	const state = await tx.doc(AwaitDoc);
 	const prior = state.provenance.find((item) => item.conversationId === provenance.conversationId && item.requestId === provenance.requestId);
 	if (prior !== undefined) {
-		if (prior.classification !== provenance.classification || prior.sender !== provenance.sender) throw new Error("Input requestId already has different release provenance");
+		if (prior.classification !== provenance.classification || prior.sender !== provenance.sender || JSON.stringify(prior.intervention) !== JSON.stringify(provenance.intervention)) throw new Error("Input requestId already has different release provenance");
 		return;
 	}
 	if (state.provenance.length >= AWAIT_PROVENANCE_LIMIT) await pruneInputProvenance(tx, state);
@@ -319,7 +326,7 @@ export async function classifyAwaitInput(tx: Tx, provenance: InputProvenance): P
 	const automatic = provenance.classification === "automatic";
 	const suppress = automatic && provenance.automaticKind === "checkIn" && active.some((declaration) => declaration.results.some((reference) => reference.sessionId === provenance.sender && (reference.requestId === undefined || reference.requestId === provenance.producerRequestId)));
 	if (!suppress) await recordInputProvenance(tx, provenance);
-	const release = provenance.classification === "explicit" || (provenance.classification === "report" && active.some((item) => item.results.some((reference) => reference.sessionId === provenance.sender)));
+	const release = provenance.classification === "explicit" || (provenance.classification === "report" && active.some((item) => reportMatches(provenance, item)));
 	return { suppress, defer: automatic && active.length > 0, release: release && active.length > 0 };
 }
 export async function reconcileInputRelease(tx: Tx, conversationId: ConversationId, requestId: string): Promise<void> {
@@ -333,7 +340,7 @@ export async function reconcileInputRelease(tx: Tx, conversationId: Conversation
 	const live = await tx.doc(LiveDoc, conversationId);
 	if (!inbox.items.some((item) => item.mode !== "write" && item.id === input.id) && !live.run?.inputs.includes(input.id)) return;
 	for (const declaration of state.declarations.filter((item) => item.conversationId === conversationId && item.runId === live.run?.taskId && input.status === "queued" && !item.inputs.includes(input.id))) {
-		if (provenance.classification === "explicit" || (provenance.classification === "report" && declaration.results.some((reference) => reference.sessionId === provenance.sender))) {
+		if (provenance.classification === "explicit" || (provenance.classification === "report" && reportMatches(provenance, declaration))) {
 			const queued = inbox.items.find((item) => item.id === input.id);
 			if (queued !== undefined && queued.mode !== "write") queued.mode = "steer";
 			releaseCohort(state, declaration, "admitted input");

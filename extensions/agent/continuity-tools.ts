@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { communicationIdentity } from "./communication.ts";
 
 type Input = Record<string, unknown>;
 
@@ -18,7 +19,7 @@ function closed(input: unknown, fields: readonly string[]): input is Input {
 }
 
 function target(input: unknown): input is string {
-	return typeof input === "string" && input.length >= 1 && input.length <= 256;
+	return typeof input === "string" && communicationIdentity(input);
 }
 
 function message(input: unknown): input is string {
@@ -45,8 +46,9 @@ function acceptsSteer(input: unknown): boolean {
 }
 
 function acceptsReport(input: unknown): boolean {
-	return closed(input, ["sessionId", "message", "mode"])
-		&& input.mode === "report" && target(input.sessionId) && message(input.message);
+	return closed(input, ["sessionId", "message", "mode", "passive"])
+		&& input.mode === "report" && target(input.sessionId) && message(input.message)
+		&& optional(input, "passive", (value) => typeof value === "boolean");
 }
 
 export function declareContinuityTools(pi: ExtensionAPI): void {

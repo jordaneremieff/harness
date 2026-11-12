@@ -15,10 +15,12 @@
  * defining a second copy.
  */
 import { randomUUID } from "node:crypto";
+import { parseReportIntervention, type ReportIntervention } from "./report-intervention.ts";
+import { validateReportIntervention } from "./native-report-intervention.ts";
 import { DeliveryRowDoc, automaticDeliveryPage, deliveryState, migrateDeliveryStore, operationReceipts, readDeliveryDraft, receiptKey, reportKey, retainedIntent, retainedReceipt, retainedReport, retainedReportRequest, storeDeliveryRow, writeDeliveryDraft } from "./delivery-store.ts";
 import { inputEntry } from "./input-entry.ts";
 import { configureProviderRecovery, captureProviderRecovery, linkProviderRecovery, readInputRecovery, readInputProviderBlock, readProviderBlock, type ProviderRetryNotice } from "./provider-block.ts";
-import type { ProviderBlockFact } from "./provider-block-facts.ts";
+import { modelFailureText, type ProviderBlockFact } from "./provider-block-facts.ts";
 import { AwaitDoc, acknowledgeProviderRetry, classifyAwaitInput, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { prepareAdmittedCapture } from "./communication-retention.ts";
 import { createCheckIn } from "./durable-checkins.ts";
@@ -218,6 +220,7 @@ export type DeliveryReport = {
 	readonly acknowledged: boolean;
 	readonly createdAt: number;
 	readonly providerRetry?: ProviderRetryNotice;
+	readonly intervention?: ReportIntervention;
 	readonly checkIn?: { readonly origin: DeliveryOrigin; readonly elapsedMs: number; readonly cost: number | null; readonly conversationId: number; readonly requestId: string; readonly fallbackBroadcast?: boolean };
 };
 
@@ -301,6 +304,7 @@ export interface DurableSubmitResult {
 	readonly conversationId: ConversationId;
 	/** True when an earlier submission with this request ID already existed. */
 	readonly deduped: boolean;
+	readonly recipient?: string;
 }
 
 /** One admission's delivery identity, written before the submission it describes. */
@@ -337,23 +341,19 @@ export async function recordAdmissionMeta(tx: Tx, conversationId: ConversationId
  */
 export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission, admittedAt = Date.now(), admissionKind: "new" | "retained" = "new"): Promise<DeliveryIntentState> {
 	const prior = await retainedIntent(tx, conversationId, admission.requestId);
+	if (prior !== undefined && (prior.ownerId !== admission.ownerId || prior.origin !== admission.origin)) throw new Error("The request ID already identifies another delivery recipient or origin");
 	if (admission.requestContext !== undefined) {
 		if (admissionKind === "new" && (admission.requestContext.requestId !== admission.requestId || admission.requestContext.replyTo !== admission.ownerId || admission.requestContext.origin !== admission.origin))
 			throw new Error("The request context does not match its delivery admission");
 		await recordRequestContext(tx, conversationId, admission.requestContext, admissionKind);
 	}
-	await recordAdmissionMeta(tx, conversationId, admission.message);
 	if (prior !== undefined) {
 		if (prior.submissionId !== null) return { kind: "linked", submissionId: prior.submissionId };
 		return { kind: "unlinked" };
 	}
+	await recordAdmissionMeta(tx, conversationId, admission.message);
 	const message = admission.message;
-	await createCheckIn(tx, {
-		conversationId, requestId: admission.requestId, ownerId: admission.ownerId,
-		senderIdentity: admission.senderIdentity ?? String(conversationId), message: storedMessage(message),
-		whenBusy: admission.whenBusy ?? "steer", origin: admission.origin, admittedAt,
-		...(admission.requestContext === undefined ? {} : { requester: admission.requestContext.requester }),
-	}, admission.checkInMinutes ?? 0);
+	await createDeliveryCheckIn(tx, conversationId, admission, admittedAt);
 	await storeDeliveryRow(tx, "intent", {
 		requestId: admission.requestId,
 		ownerId: admission.ownerId,
@@ -365,6 +365,15 @@ export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationI
 		origin: admission.origin,
 	}, true);
 	return { kind: "new" };
+}
+
+async function createDeliveryCheckIn(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission, admittedAt: number): Promise<void> {
+	await createCheckIn(tx, {
+		conversationId, requestId: admission.requestId, ownerId: admission.ownerId,
+		senderIdentity: admission.senderIdentity ?? String(conversationId), message: storedMessage(admission.message),
+		whenBusy: admission.whenBusy ?? "steer", origin: admission.origin, admittedAt,
+		...(admission.requestContext === undefined ? {} : { requester: admission.requestContext.requester }),
+	}, admission.checkInMinutes ?? 0);
 }
 
 /** Link one retained intent to its submission; true when a different submission was already linked. */
@@ -412,6 +421,10 @@ function writeFirstMessage(meta: AgentMeta, message: UserInput | DeliveryMessage
 function admissionProvenance(conversationId: ConversationId, params: DurableSubmitParams): import("./awaited-results.ts").InputProvenance {
 	const provenance: import("./awaited-results.ts").InputProvenance = { conversationId, requestId: params.requestId, ...(params.provenance ?? { classification: "explicit", ...(params.requestContext === undefined ? {} : { sender: params.requestContext.requester }) }) };
 	delete provenance.communicationIntent;
+	if (provenance.intervention !== undefined) {
+		provenance.intervention = parseReportIntervention(provenance.intervention);
+		if (provenance.classification !== "report" || !provenance.intervention.producerResults.every((result) => result.sessionId === provenance.sender)) throw new Error("Intervention provenance must be an active report from its exact producer");
+	}
 	return provenance;
 }
 function awaitInputMode(classification: { defer: boolean; release: boolean }, mode: DurableSubmitParams["whenBusy"]): "steer" | "followUp" | "reject" | undefined {
@@ -470,25 +483,53 @@ function inputAuthor(params: DurableSubmitParams): string | undefined {
 	return params.requestContext?.requester ?? params.communication?.taskSender?.identity ?? params.provenance?.sender;
 }
 
+function validateReplayRequest(request: RequestContext | undefined, requestId: string, intent: DeliveryIntent, route: RequestContext | undefined): void {
+	if (request === undefined) return;
+	if (request.requestId !== requestId || request.replyTo !== intent.ownerId || request.origin !== intent.origin || (route !== undefined && route.requester !== request.requester))
+		throw new Error("The request ID already identifies a different request route");
+}
+
+async function originalAdmission(tx: Tx, conversationId: ConversationId, params: DurableSubmitParams, ownerId: string): Promise<DurableSubmitResult | undefined> {
+	const input = await tx.submissionByRequest(conversationId, params.requestId);
+	if (input === undefined) return undefined;
+	const intent = await retainedIntent(tx, conversationId, params.requestId);
+	if (input.type !== "input" || intent === undefined) throw new Error("The existing request has no retained answer route");
+	if (intent.ownerId !== ownerId || intent.origin !== params.origin) throw new Error("The request ID already identifies another delivery recipient or origin");
+	const route = (await tx.doc(RequestContextDoc, conversationId)).requests.find((item) => item.requestId === params.requestId);
+	validateReplayRequest(params.requestContext, params.requestId, intent, route);
+	return { submissionId: input.id, conversationId, deduped: true, recipient: intent.ownerId };
+}
+
+async function ownedAdmissionIntent(tx: Tx, conversationId: ConversationId, params: DurableSubmitParams, ownerId: string, now: () => number): Promise<DeliveryIntentState> {
+	const { message, requestId, whenBusy, operationId, origin } = params;
+	if (origin === undefined) throw new Error("This request carries no admission origin, so the calling Pi runs older agent code. Restart that Pi window, then retry.");
+	return recordDeliveryIntent(tx, conversationId, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), origin, ...(params.checkInMinutes === undefined ? {} : { checkInMinutes: params.checkInMinutes }), ...(params.senderIdentity === undefined ? {} : { senderIdentity: params.senderIdentity }), ...(params.requestContext === undefined ? {} : { requestContext: params.requestContext }) }, now());
+}
+
+async function providerNoticeReplay(conversation: Conversation, params: DurableSubmitParams, context: Context): Promise<DurableSubmitResult | undefined> {
+	const notice = params.providerRetry;
+	if (notice === undefined) return undefined;
+	const decision = await conversation.commit((tx) => authorizeProviderNotice(tx, conversation.id, params.requestId, notice), context);
+	if (decision.suppressed) throw new AwaitInputSuppressed();
+	if (decision.existing !== undefined) return { submissionId: decision.existing, conversationId: conversation.id, deduped: true };
+	return undefined;
+}
+
 async function admitConversation(conversation: Conversation, params: DurableSubmitParams, context: Context, now: () => number): Promise<DurableSubmitResult> {
-	const { message, requestId, ownerId, whenBusy, operationId, origin } = params;
-	if (params.providerRetry !== undefined) {
-		const decision = await conversation.commit((tx) => authorizeProviderNotice(tx, conversation.id, requestId, params.providerRetry as ProviderRetryNotice), context);
-		if (decision.suppressed) throw new AwaitInputSuppressed();
-		if (decision.existing !== undefined) return { submissionId: decision.existing, conversationId: conversation.id, deduped: true };
+	const { message, requestId, ownerId, whenBusy, origin } = params;
+	if (ownerId !== undefined) {
+		const original = await conversation.commit((tx) => originalAdmission(tx, conversation.id, params, ownerId), context);
+		if (original !== undefined) return original;
 	}
+	const providerNotice = await providerNoticeReplay(conversation, params, context);
+	if (providerNotice !== undefined) return providerNotice;
 	await conversation.commit((tx) => refreshManagedInstructions(tx, conversation.id), context);
 	const provenance = admissionProvenance(conversation.id, params);
 	const classification = await conversation.commit((tx) => classifyAwaitInput(tx, provenance), context);
 	if (classification.suppress) throw new AwaitInputSuppressed();
 	let deduped = (await conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context)) !== undefined;
 	if (ownerId !== undefined) {
-		// An owned admission requires an explicit origin before its delivery intent is recorded.
-		if (origin === undefined) throw new Error("This request carries no admission origin, so the calling Pi runs older agent code. Restart that Pi window, then retry.");
-		const state = await conversation.commit(
-			(tx) => recordDeliveryIntent(tx, conversation.id, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), origin, ...(params.checkInMinutes === undefined ? {} : { checkInMinutes: params.checkInMinutes }), ...(params.senderIdentity === undefined ? {} : { senderIdentity: params.senderIdentity }), ...(params.requestContext === undefined ? {} : { requestContext: params.requestContext }) }, now()),
-			context,
-		);
+		const state = await conversation.commit((tx) => ownedAdmissionIntent(tx, conversation.id, params, ownerId, now), context);
 		if (state.kind === "linked") deduped = true;
 	} else {
 		await conversation.commit(async (tx) => {
@@ -516,7 +557,7 @@ async function admitConversation(conversation: Conversation, params: DurableSubm
 		const relinked = await conversation.commit((tx) => linkDeliveryIntent(tx, conversation.id, requestId, submission.id), context);
 		if (relinked) deduped = true;
 	}
-	return { submissionId: submission.id, conversationId: conversation.id, deduped };
+	return { submissionId: submission.id, conversationId: conversation.id, deduped, ...(ownerId === undefined ? {} : { recipient: ownerId }) };
 }
 
 function assistantTextOf(messages: readonly Message[] | undefined): string {
@@ -569,7 +610,7 @@ async function readNativeOutcome(harness: Harness, submissionId: SubmissionId, c
 			status: "unanswered",
 			...(settled.requestId === undefined ? {} : { requestId: settled.requestId }),
 			...(settled.entry === undefined ? {} : { entryId: settled.entry }),
-			reason: settled.reason,
+			reason: modelFailureText(settled.reason, settled.detail, providerBlock),
 			...(providerBlock === undefined ? {} : { providerBlock }),
 			usage,
 		};
@@ -1022,16 +1063,26 @@ export async function undeliveredForOwner(harness: Harness, ownerId: string, con
  * repeated request ID returns the retained report unchanged, including its
  * acknowledgement, so a retry never reopens a delivered report.
  */
-export async function recordReport(
-	harness: Harness,
-	params: { readonly ownerId: string; readonly senderIdentity: string; readonly message: string; readonly requestId: string; readonly replyTo?: string },
-	context: Context,
-): Promise<DeliveryReport> {
-	const { ownerId, senderIdentity, message, requestId, replyTo } = params;
+export type RecordReportParams = { readonly ownerId: string; readonly senderIdentity: string; readonly message: string; readonly requestId: string; readonly replyTo?: string; readonly passive?: boolean; readonly intervention?: ReportIntervention; readonly storageId?: string };
+export async function recordReport(harness: Harness, params: RecordReportParams, context: Context): Promise<DeliveryReport> {
 	await migrateDeliveryStore(harness, context);
-	return harness.commit(async (tx) => {
+	return harness.commit((tx) => recordReportInTransaction(tx, params), context);
+}
+
+/** Capacity capture and source validation share one commit with their retained report. */
+export async function recordReportInTransaction(tx: Tx, params: RecordReportParams): Promise<DeliveryReport> {
+	const { ownerId, senderIdentity, message, requestId, replyTo, passive } = params;
+	const intervention = params.intervention === undefined ? undefined : parseReportIntervention(params.intervention);
+	if (intervention !== undefined && passive === true) throw new Error("An intervention report must remain active");
 		const found = await retainedReportRequest(tx, ownerId, requestId);
-		if (found !== undefined) return found;
+		if (found !== undefined) {
+			if ((intervention !== undefined || found.intervention !== undefined) && (found.senderIdentity !== senderIdentity || JSON.stringify(found.intervention) !== JSON.stringify(intervention) || found.passive === true)) throw new Error("Report requestId already has another intervention association");
+			return found;
+		}
+		if (intervention !== undefined) {
+			if (params.storageId === undefined) throw new Error("A fresh intervention requires its source storage identity");
+			await validateReportIntervention(tx, params.storageId, senderIdentity, ownerId, intervention);
+		}
 		const report: DeliveryReport = {
 			sourceId: `report:${requestId}`,
 			requestId,
@@ -1039,11 +1090,12 @@ export async function recordReport(
 			senderIdentity,
 			message,
 			replyTo: replyTo ?? null,
+			...(passive === undefined ? {} : { passive }),
+			...(intervention === undefined ? {} : { intervention }),
 			acknowledged: false,
 			createdAt: Date.now(),
 		};
 		return storeDeliveryRow(tx, "report", report, true);
-	}, context);
 }
 
 /** Number of known delivery intents that have no settled receipt yet. */

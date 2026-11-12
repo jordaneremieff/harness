@@ -40,21 +40,22 @@ for (const method of ["spawn", "resolve-agent", "place"]) operations[method] = {
 operations.configure = { request: "configure/1.3.0", response: "configure/1.3.0" };
 operations.compact = { request: "compact/2.0.0", response: "compact/2.0.0" };
 for (const method of ["run-scope", "run-stop", "request-cancel"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
-operations.submit = { request: "submit/1.3.0", response: "submit/1.1.0" };
-operations["passive-submit"] = { request: "passive-submit/1.1.0", response: "passive-submit/1.0.0" };
+operations.submit = { request: "submit/1.4.0", response: "submit/1.2.0" };
+operations.report = { request: "report/2.0.0", response: "report/1.1.0" };
+operations["passive-submit"] = { request: "passive-submit/2.0.0", response: "passive-submit/1.0.0" };
 for (const method of ["snapshot", "observe-open", "observe-frame"]) operations[method] = { ...operations[method], response: `${method}/2.0.0` };
 operations.command = { request: "command/1.2.0", response: "command/1.1.0" };
 for (const method of ["rewind", "timer-schedule"]) operations[method] = { ...operations[method], request: `${method}/1.1.0` };
 operations["timer-schedule"] = { ...operations["timer-schedule"], response: "timer-schedule/2.0.0" };
 operations.place = { request: "place/2.1.0", response: "place/2.1.0" };
-operations.receipts = { request: "receipts/1.1.0", response: "receipts/1.2.0" };
+operations.receipts = { request: "receipts/2.0.0", response: "receipts/2.0.0" };
 for (const method of ["await-state", "await-release"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 operations["await-state"] = { request: "await-state/1.1.0", response: "await-state/1.1.0" };
 operations["profile-list"] = { ...operations["profile-list"], response: schemaId(ProfiledListOutputSchema) };
 operations["profile-read"] = { ...operations["profile-read"], response: schemaId(AgentProfileSchema) };
 operations["profile-update"] = { ...operations["profile-update"], response: schemaId(ProfileUpdateSchema) };
 operations.status = { ...operations.status, request: "status/1.1.0", response: schemaId(StatusOutputSchema), durable: durableVersion };
-operations.inspect = { ...operations.inspect, request: "inspect/1.1.0", response: schemaId(InspectOutputSchema), durable: durableVersion };
+operations.inspect = { ...operations.inspect, request: "inspect/1.2.0", response: schemaId(InspectOutputSchema), durable: durableVersion };
 operations.list = { ...operations.list, response: schemaId(ListRowSchema) };
 operations.dashboard = { ...operations.dashboard, response: schemaId(AgentConversationSummarySchema) };
 for (const method of ["snapshot", "observe-open", "observe-frame", "receipts", "fork", "rewind", "compact", "command"]) operations[method] = { ...operations[method], durable: durableVersion };
@@ -73,9 +74,9 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 });
 
 /** Separate interfaces refuse reload only when their own current contract changes. */
-export const MANAGER_CONTRACT = "manager/6.0.0";
-export const CONTROL_BINDING_CONTRACT = `native-controls/2.0.0;durable=${durableVersion}`;
-export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/3.0.0";
+export const MANAGER_CONTRACT = "manager/7.0.0";
+export const CONTROL_BINDING_CONTRACT = `native-controls/3.0.0;durable=${durableVersion}`;
+export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/4.0.0";
 
 function record(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);

@@ -1,0 +1,57 @@
+import assert from "node:assert/strict";
+import { it } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { DurableHost } from "./durable-host.ts";
+import { ReceiptAssociationSchema, type ReceiptAssociation, type ReceiptReferencePage, type ResultReference } from "./result-schema.ts";
+import { matchesSchema } from "./schema-check.ts";
+import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, gateTool, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
+const storageId = "10000000-0000-4000-8000-000000000001";
+const owner = "20000000-0000-4000-8000-000000000002";
+const other = "30000000-0000-4000-8000-000000000003";
+type Selected = { outcome: Record<string, unknown>; delivery: ReceiptAssociation; receiptGroup: ReceiptReferencePage };
+it("returns exact source and recipient pages without another actionable body", { timeout: 30000 }, async () => {
+	const root = mkdtempSync(join(tmpdir(), "selected-receipts-"));
+	let release!: () => void, entered!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const started = new Promise<void>((resolve) => { entered = resolve; });
+	let host: DurableHost | undefined;
+	try {
+		host = await DurableHost.open({ storageId, storagePath: join(root, "source.sqlite"), cwd: root, settings: { steeringMode: "all" }, models: await scriptedRuntime([toolCallMessage("gate"), answerMessage("shared answer")]), registry: fixtureRegistry([gateTool(gate, entered)]), agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, context);
+		const references: ResultReference[] = [];
+		for (let index = 0; index < 18; index++) {
+			const requestId = `work-${index}`;
+			const admitted = await host.request("submit", { requestId, ownerId: index === 17 ? other : owner, origin: "model", message: requestId, whenBusy: "steer" }, context) as { submissionId: number };
+			references.push({ sessionId: storageId, submissionId: admitted.submissionId, requestId });
+			if (index === 0) await started;
+		}
+		release();
+		const selected = references[16];
+		const first = await host.request("receipts", { ownerId: owner, result: selected, wait: true, metadataOnly: true }, context) as Selected;
+		assert.equal(first.outcome.answer, undefined);
+		assert.equal(first.outcome.status, "done");
+		assert.equal(matchesSchema(ReceiptAssociationSchema, first.delivery), true);
+		assert.equal(first.delivery.producerStorageId, storageId);
+		assert.equal(first.delivery.recipient, owner);
+		assert.equal(first.receiptGroup.results.length, 16);
+		assert.equal(first.receiptGroup.complete, false);
+		const continuation = first.receiptGroup.next;
+		assert.ok(continuation);
+		const last = await host.request("receipts", { ownerId: owner, result: selected, wait: true, metadataOnly: true, receiptCursor: continuation }, context) as Selected;
+		assert.deepEqual(last.receiptGroup.results, [selected]);
+		assert.equal(last.receiptGroup.complete, true);
+		assert.equal(last.receiptGroup.next, null);
+		assert.equal(last.delivery.sourceId, first.delivery.sourceId);
+		assert.equal(last.delivery.requestId, first.delivery.requestId);
+		assert.equal(last.delivery.answerEntryId, first.delivery.answerEntryId);
+		assert.equal(last.outcome.answer, undefined);
+		const otherResult = await host.request("receipts", { ownerId: other, result: references[17], metadataOnly: true }, context) as Selected;
+		assert.deepEqual(otherResult.receiptGroup.results, [references[17]]);
+		assert.notEqual(otherResult.delivery.sourceId, first.delivery.sourceId);
+		assert.notEqual(otherResult.delivery.requestId, first.delivery.requestId);
+		await assert.rejects(host.request("receipts", { ownerId: other, result: selected, metadataOnly: true }, context), /not addressed/);
+		await assert.rejects(host.request("receipts", { ownerId: owner, result: { ...selected, requestId: "wrong" }, metadataOnly: true }, context), /exact receipt/);
+	} finally { release(); await host?.close(); rmSync(root, { recursive: true, force: true }); }
+});

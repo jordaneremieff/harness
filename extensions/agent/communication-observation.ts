@@ -80,7 +80,7 @@ export async function captureCommunicationReader(harness: Harness, storageId: st
 	}
 	async function resolve(entry: EntryRecord): Promise<CommunicationView> {
 		if (tail === undefined || entry.id > tail) return unresolved;
-		if (entry.kind === "agent.thread-notice") return passiveView(entry);
+		if (entry.kind === "agent.thread-notice" || entry.kind === "agent.passive-report") return passiveView(entry);
 		return isInputKind(entry.kind) ? inputView(entry) : unresolved;
 	}
 	function taskSenderRecordView(record: EntryRecord, target: CommunicationInputLink, visible: EntryRecord): TaskInputSender | undefined {

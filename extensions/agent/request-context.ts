@@ -3,7 +3,6 @@ import { createHash, createHmac, randomBytes } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import { isInputKind } from "./input-entry.ts";
-import { readDeliveryDraft } from "./delivery-store.ts";
 import { RequestRouteState, type RouteNote, type UserPrefix } from "./request-route-state.ts";
 import { defineDoc, LiveDoc, section, type ConversationId, type GenerationHooks, type Harness, type HookApi, type PromptSection, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 
@@ -56,15 +55,6 @@ async function activeRequests(tx: Tx, conversationId: ConversationId): Promise<R
 		active.push(evidence);
 	}
 	if (retained.length !== state.requests.length) state.requests.splice(0, state.requests.length, ...retained);
-	const known = new Set(active.map(({ route }) => route.requestId));
-	const delivery = await readDeliveryDraft(tx, false, "intent");
-	for (const intent of delivery.intents) {
-		if (intent.conversationId !== conversationId || known.has(intent.requestId)) continue;
-		const evidence = await unfinishedRequest(tx, conversationId, { requestId: intent.requestId, requester: intent.ownerId, replyTo: intent.ownerId, origin: intent.origin });
-		if (evidence === undefined) continue;
-		known.add(intent.requestId);
-		active.push(evidence);
-	}
 	return active;
 }
 
@@ -73,7 +63,7 @@ export async function recordRequestContext(tx: Tx, conversationId: ConversationI
 	if (admission === "new") validateRequestContext(request);
 	const state = await tx.doc(RequestContextDoc, conversationId);
 	const prior = state.requests.find((candidate) => candidate.requestId === request.requestId);
-	if (admission === "new" && prior !== undefined && (prior.requester !== request.requester || prior.replyTo !== request.replyTo || prior.origin !== request.origin))
+	if (prior !== undefined && (prior.requester !== request.requester || prior.replyTo !== request.replyTo || prior.origin !== request.origin))
 		throw new Error("The request ID already identifies a different request route");
 	await activeRequests(tx, conversationId);
 	if (prior !== undefined) return;

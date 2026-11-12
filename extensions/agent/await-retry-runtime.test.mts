@@ -12,7 +12,8 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import * as Durable from "@earendil-works/pi-durable";
 import { matchesSchema } from "./schema-check.ts";
 import { createAgentContribution, type AgentControlDispatch } from "./durable-agents.ts";
-import { readOutcome } from "./durable-controls.ts";
+import { readOutcome, submitConversation, reconcileDeliveries } from "./durable-controls.ts";
+import { snapshotReceipt, receiptReferencePage, receiptDeliveryRequestId } from "./delivery-store.ts";
 import { observeProducerAwait } from "./await-producer-observer.ts";
 import { ownAwaitFact, producerRetryFact, releaseAwait, recordProducerAwait } from "./await-observation.ts";
 import { AwaitDoc, AwaitOutputSchema, type AwaitInput, type AwaitState } from "./awaited-results.ts";
@@ -27,7 +28,7 @@ delete process.env.PI_HARNESS_FILE;
 after(() => { if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride; });
 
 const context = BACKGROUND_CONTEXT;
-const storageId = "retry-test";
+const storageId = "10000000-0000-4000-8000-000000000001";
 const model = { provider: "faux", modelId: "faux-1" };
 function messageText(message: Message | undefined): string {
 	if (message === undefined) return "";
@@ -52,7 +53,15 @@ async function setup(t: TestContext, producerAnswer: (text: string) => Assistant
 		return callerCalls <= awaitRounds ? fauxAssistantMessage([fauxToolCall("agent_await", args)], { stopReason: "toolUse" }) : fauxAssistantMessage("CALLER RECOVERED");
 	}));
 	const dispatch: AgentControlDispatch = async (method, params, ctx = context) => {
-		if (method === "await-native") return readOutcome(harness, (params.result as ResultReference).submissionId as Durable.SubmissionId, ctx);
+		if (method === "receipts") {
+			const result = params.result as ResultReference;
+			const outcome = await readOutcome(harness, result.submissionId as Durable.SubmissionId, ctx);
+			await reconcileDeliveries(harness, ctx);
+			const selected = await snapshotReceipt(harness, result.submissionId, ctx);
+			if (selected === undefined || selected.ownerId !== params.ownerId) throw new Error("The fixture input has no matching retained recipient");
+			const group = await harness.commit((tx) => receiptReferencePage(tx, storageId, selected), ctx);
+			return { outcome, delivery: { requestId: receiptDeliveryRequestId(storageId, selected), recipient: selected.ownerId, results: group.results, complete: group.complete } };
+		}
 		if (method !== "observe-producer-await") throw new Error(`Unexpected control ${method}`);
 		const sessionId = params.sessionId as string;
 		const conversationId = Number(sessionId.split(":")[1]) as Durable.ConversationId;
@@ -71,7 +80,9 @@ async function setup(t: TestContext, producerAnswer: (text: string) => Assistant
 	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
 	const submitProducer = async (text: string) => {
 		const conversation = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-		const input = await conversation.submit({ type: "input", content: text, requestId: text }, context);
+		const admitted = await submitConversation(conversation, { message: text, requestId: text, ownerId: storageId, origin: "model" }, context);
+		const input = await harness.submission(admitted.submissionId, context);
+		assert.ok(input);
 		return { conversation, input, result: { sessionId: `${storageId}:${conversation.id}`, submissionId: input.id, requestId: text } };
 	};
 	const start = async (value: AwaitInput) => { args = value; return root.submit({ type: "input", content: "Await exact work" }, context); };

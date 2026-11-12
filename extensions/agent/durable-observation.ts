@@ -24,7 +24,8 @@ import { createSession, AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, ty
 import { captureSnapshot } from "./snapshot-capture.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationState, AgentConversationSummary, DashboardAutoRetry, DashboardCompactionFailure, DashboardHealth } from "./dashboard-types.ts";
 import { AgentMetaDoc, settleDeliveries, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
-import { snapshotDeliveryState, deliveryState, latestReceipt, migrateDeliveryStore } from "./delivery-store.ts";
+import { snapshotDeliveryState, deliveryState, latestReceipt, migrateDeliveryStore, retainedReceipt, receiptReferencePage, snapshotReceipt } from "./delivery-store.ts";
+import type { AnswerContinuation, ReceiptGroup } from "./observation-schema.ts";
 import { timerStatusRows } from "./durable-timers.ts";
 import { readAwaitFact } from "./await-observation.ts";
 import { snapshotProviderBlock, snapshotInputProviderBlock, snapshotInputRecovery, readProviderBlock, readInputProviderBlock, readInputRecovery } from "./provider-block.ts";
@@ -37,6 +38,9 @@ import { TASK_SENDER_ENTRY_KIND } from "./task-senders.ts";
 /** Byte/unit bounds used by every projection in this module. */
 export const ENTRY_PREVIEW_UNITS = 1200;
 export const ENTRY_PAGE_UNITS = 12000;
+/** Readable answer pages count UTF-16 units; the complete serialized result includes receipt metadata. */
+export const RESULT_PAGE_UNITS = 4096;
+export const RESULT_PAGE_BYTES = 64 * 1024;
 export const HISTORY_LIMIT_DEFAULT = 12;
 export const HISTORY_LIMIT_MAX = 50;
 export const SEARCH_MATCH_LIMIT_DEFAULT = 10;
@@ -92,6 +96,7 @@ export interface DurableInspectParams {
 	readonly submissionId?: SubmissionId;
 	readonly requestId?: string;
 	readonly operationId?: string;
+	readonly receiptCursor?: string;
 }
 
 /** Entry kinds a conversation surface never displays. They are not part of the visible transcript. */
@@ -542,6 +547,13 @@ export function parseInspectParams(params: RequestParams | undefined): DurableIn
 	const view = requestString(params, "view");
 	const requestId = requestString(params, "requestId");
 	if (requestId === "") throw new TypeError("requestId must be nonempty");
+	const receiptCursor = requestString(params, "receiptCursor");
+	if (receiptCursor !== undefined) {
+		if (view !== "result") throw new TypeError("receiptCursor selects only the result view");
+		if (receiptCursor.length === 0 || receiptCursor.length > 2048) throw new TypeError("receiptCursor must contain 1 to 2048 characters");
+	}
+	const offset = requestInteger(params, "offset");
+	if (view === "result" && offset !== undefined && offset < 0) throw new RangeError("result offset must be a nonnegative safe integer");
 	const source = requestString(params, "source");
 	const cursor = params?.cursor;
 	if (view === "search") searchCursor(cursor);
@@ -552,7 +564,8 @@ export function parseInspectParams(params: RequestParams | undefined): DurableIn
 		...optionalParam("cursor", cursor as Cursor | undefined),
 		...optionalParam("entryId", requestPositiveId(params?.entryId, "entryId") as EntryId | undefined),
 		...optionalParam("fromId", requestPositiveId(params?.fromId, "fromId") as EntryId | undefined),
-		...optionalParam("offset", requestInteger(params, "offset")),
+		...optionalParam("offset", offset),
+		...optionalParam("receiptCursor", receiptCursor),
 		...optionalParam("query", requestString(params, "query")),
 		...optionalParam("source", source as DurableInspectParams["source"] | undefined),
 		...optionalParam("submissionId", requestPositiveId(params?.submissionId, "submissionId") as SubmissionId | undefined),
@@ -1969,6 +1982,11 @@ interface ResultPage {
 	readonly answerEntryId?: EntryId;
 	readonly reason?: string;
 	readonly answer?: string;
+	readonly offset?: number;
+	readonly nextOffset?: number | null;
+	readonly truncated?: boolean;
+	readonly answerContinuation?: AnswerContinuation;
+	readonly receiptGroup?: ReceiptGroup;
 	readonly providerBlock?: ProviderBlockFact;
 	readonly recoveryOf?: string;
 	readonly usage: UsageState;
@@ -2021,16 +2039,59 @@ function observedInputProviderBlock(harness: Harness, id: SubmissionId, context:
 	return frozenObservations.has(harness) ? snapshotInputProviderBlock(harness, id, context) : harness.commit((tx) => readInputProviderBlock(tx, id), context);
 }
 
+function boundedResult(page: ResultPage): ResultPage {
+	if (Buffer.byteLength(JSON.stringify(page), "utf8") > RESULT_PAGE_BYTES) throw new InspectionRequestError(`Result identity, body and receipt metadata exceed the ${RESULT_PAGE_BYTES}-byte response limit`);
+	return page;
+}
+
+async function resultReceiptGroup(harness: Harness, storageId: string, record: SubmissionRecord, sessionId: string, cursor: string | undefined, context: Context): Promise<ReceiptGroup | undefined> {
+	if (cursor === undefined && !frozenObservations.has(harness)) await settleDeliveries(harness, context, null);
+	if (await snapshotReceipt(harness, record.id, context) === undefined) {
+		if (cursor !== undefined) throw new InspectionRequestError("No retained receipt matches the selected result");
+		return undefined;
+	}
+	return harness.commit(async (tx) => {
+		const selected = await retainedReceipt(tx, record.id);
+		if (selected === undefined) throw new InspectionRequestError("The selected receipt is no longer retained");
+		if (selected.conversationId !== record.conversationId || (record.requestId !== undefined && selected.requestId !== record.requestId) || (record.type === "input" && record.status === "done" && selected.answerEntryId !== record.answer)) throw new InspectionRequestError("The retained receipt disagrees with the selected native submission");
+		const page = await receiptReferencePage(tx, storageId, selected, cursor);
+		return {
+			...page,
+			next: page.next === null ? null : { tool: "agent_inspect", view: "result", sessionId, submissionId: record.id, ...optionalParam("requestId", record.requestId), receiptCursor: page.next },
+		};
+	}, context);
+}
+
+function unavailableResult(sessionId: string, conversationId: ConversationId, params: DurableInspectParams, reason: string | undefined, usage: UsageState): ResultPage {
+	if (params.receiptCursor !== undefined) throw new InspectionRequestError("No retained receipt matches the selected result");
+	return boundedResult({ view: "result", sessionId, conversationId, status: "unavailable", reason: reason ?? "No native submission matches the result selector in this conversation", ...optionalParam("requestId", params.requestId), ...optionalParam("submissionId", params.submissionId), ...optionalParam("operationId", params.operationId), usage });
+}
+
+async function readResultBody(harness: Harness, selected: ResultPage, record: Extract<SubmissionRecord, { type: "input"; status: "done" }>, params: DurableInspectParams, context: Context): Promise<ResultPage> {
+	const identity = { ...selected, entryId: record.entry, answerEntryId: record.answer };
+	if (params.receiptCursor !== undefined) return boundedResult(identity);
+	const retained = await resultAnswer(harness, record.answer, context);
+	if (retained.answer === undefined) return boundedResult({ ...identity, ...retained });
+	const offset = params.offset ?? 0;
+	if (offset > retained.answer.length) throw new RangeError("result offset exceeds the retained answer length");
+	const cut = fragment(retained.answer, offset, RESULT_PAGE_UNITS);
+	return boundedResult({
+		...identity, answer: cut.text, offset: cut.start, nextOffset: cut.nextOffset, truncated: cut.truncated,
+		...(cut.nextOffset === null ? {} : { answerContinuation: { tool: "agent_inspect", view: "result", sessionId: selected.sessionId, submissionId: record.id, ...optionalParam("requestId", record.requestId), offset: cut.nextOffset } }),
+	});
+}
+
 async function readResult(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<ResultPage> {
 	const target = await resultTarget(harness, conversation, params, context);
 	const record = target.record;
 	const usage = await readUsage(harness, context);
-	if (record === undefined) return { view: "result", sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id), conversationId: conversation.id, status: "unavailable", reason: target.reason ?? "No native submission matches the result selector in this conversation", ...optionalParam("requestId", params.requestId), ...optionalParam("submissionId", params.submissionId), ...optionalParam("operationId", params.operationId), usage };
+	const sessionId = durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id);
+	if (record === undefined) return unavailableResult(sessionId, conversation.id, params, target.reason, usage);
 	const recoveryOf = await observedInputRecovery(harness, record.id, context);
 	const base = {
 		...(recoveryOf === undefined ? {} : { recoveryOf }),
 		view: "result" as const,
-		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
+		sessionId,
 		conversationId: conversation.id,
 		submissionId: record.id,
 		status: record.status,
@@ -2038,19 +2099,25 @@ async function readResult(harness: Harness, storageId: string, conversation: Con
 		...optionalParam("operationId", target.operationId),
 		usage,
 	};
-	if (record.type !== "input") return base;
-	if (record.status === "done") return { ...base, entryId: record.entry, answerEntryId: record.answer, ...(await resultAnswer(harness, record.answer, context)) };
-	if (record.status === "unanswered") {
-		const providerBlock = await observedInputProviderBlock(harness, record.id, context);
-		return { ...base, ...(record.entry === undefined ? {} : { entryId: record.entry }), reason: modelFailureText(record.reason, record.detail, providerBlock), ...(providerBlock === undefined ? {} : { providerBlock }) };
+	if (record.type !== "input" || (record.status !== "done" && record.status !== "unanswered")) {
+		if (params.receiptCursor !== undefined) throw new InspectionRequestError("receiptCursor requires a settled native input");
+		return boundedResult({ ...base, ...("entry" in record ? optionalParam("entryId", record.entry) : {}) });
 	}
-	return { ...base, ...(record.entry === undefined ? {} : { entryId: record.entry }) };
+	const receiptGroup = await resultReceiptGroup(harness, storageId, record, sessionId, params.receiptCursor, context);
+	const selected = { ...base, ...optionalParam("receiptGroup", receiptGroup) };
+	if (record.status === "done") return readResultBody(harness, selected, record, params, context);
+	const providerBlock = await observedInputProviderBlock(harness, record.id, context);
+	return boundedResult({ ...selected, ...(record.entry === undefined ? {} : { entryId: record.entry }), reason: modelFailureText(record.reason, record.detail, providerBlock), ...(providerBlock === undefined ? {} : { providerBlock }) });
 }
 
 /** One bounded inspection over a conversation's committed entries, submissions, and receipts. */
 export async function readInspection(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context, options: DurableInspectionOptions = {}): Promise<unknown> {
 	const view = params.view ?? "history";
 	if (params.requestId !== undefined && view !== "result") throw new TypeError("requestId selects only the result view");
+	if (params.receiptCursor !== undefined) {
+		if (view !== "result") throw new TypeError("receiptCursor selects only the result view");
+		if (typeof params.receiptCursor !== "string" || params.receiptCursor.length === 0 || params.receiptCursor.length > 2048) throw new TypeError("receiptCursor must contain 1 to 2048 characters");
+	}
 	switch (view) {
 		case "history":
 			return readHistoryPage(harness, storageId, conversation, params, "history", context);
@@ -2063,6 +2130,7 @@ export async function readInspection(harness: Harness, storageId: string, conver
 		case "activity":
 			return readActivity(harness, storageId, conversation, params, options, context);
 		case "result":
+			if (params.offset !== undefined && (!Number.isSafeInteger(params.offset) || params.offset < 0)) throw new RangeError("result offset must be a nonnegative safe integer");
 			return readResult(harness, storageId, conversation, params, context);
 	}
 }

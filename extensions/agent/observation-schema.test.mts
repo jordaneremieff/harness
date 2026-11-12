@@ -15,7 +15,7 @@ import { LiveDoc, UsageDoc, type ConversationId, type EntryId, type SubmissionId
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { LiveObservationService } from "./live-observation.ts";
 import { AgentManager } from "./manager.ts";
-import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, NativeListOutputSchema, StatusOutputSchema, StatusToolOutputSchema, nativeStructuredObservation, observationDiagnostic, structuredObservation, ToolOverviewRowSchema } from "./observation-schema.ts";
+import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, InspectToolOutputSchema, ResultOutputSchema, ResultToolOutputSchema, observationSchema, ListRowSchema, NativeListOutputSchema, StatusOutputSchema, StatusToolOutputSchema, nativeStructuredObservation, observationDiagnostic, structuredObservation, ToolOverviewRowSchema } from "./observation-schema.ts";
 import { page as rosterPage } from "./dashboard-test-fixture.mts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
@@ -33,6 +33,36 @@ it("composed inspection validates recursive JSON payloads without unknown leaves
 		assert.equal(validator.check({ ...value, nextCursor: { nested: [{ values: ["text", { leaf }] }] } }), false);
 		assert.equal(validator.check({ ...value, nextCursor: { "line\nbreak": { leaf } } }), false);
 	}
+});
+
+it("shares one result page contract across native host and public tool observations", () => {
+	const result = { view: "result", sessionId: fixtureStorageId, conversationId: 1, submissionId: 7, requestId: "input-7", status: "done", answerEntryId: 9,
+		answer: "Readable answer page", offset: 0, nextOffset: 4096, truncated: true,
+		answerContinuation: { tool: "agent_inspect", view: "result", sessionId: fixtureStorageId, submissionId: 7, requestId: "input-7", offset: 4096 },
+		receiptGroup: { recipient: "reader", results: [{ sessionId: fixtureStorageId, submissionId: 7, requestId: "input-7" }], complete: false,
+			next: { tool: "agent_inspect", view: "result", sessionId: fixtureStorageId, submissionId: 7, requestId: "input-7", receiptCursor: "cGFnZTI" } },
+		usage: { models: {}, tools: {} } };
+	assert.equal(ResultOutputSchema, ResultToolOutputSchema);
+	assert.equal(observationSchema("inspect"), InspectOutputSchema);
+	for (const schema of [ResultOutputSchema, ResultToolOutputSchema, InspectOutputSchema, InspectToolOutputSchema, observationSchema("inspect")]) {
+		assert.deepEqual(structuredObservation(schema, result), result);
+		const { offset: _offset, nextOffset: _next, truncated: _truncated, answerContinuation: _answer, receiptGroup: _receipts, ...subset } = result;
+		assert.deepEqual(structuredObservation(schema, subset), subset);
+		assert.equal(matchesSchema(schema, { ...result, offset: -1 }), false);
+		assert.equal(matchesSchema(schema, { ...result, answerContinuation: { ...result.answerContinuation, receiptCursor: "other" } }), false);
+		assert.equal(matchesSchema(schema, { ...result, receiptGroup: { ...result.receiptGroup, next: result.answerContinuation } }), false);
+	}
+});
+
+it("keeps ordinary-primary evidence outside the native host inspection contract", () => {
+	const ordinary = { kind: "ordinary-primary", view: "status", sessionId: "primary", observedAt: "1970-01-01T00:00:00.000Z",
+		presence: { basis: "endpoint-record", cwd: "/work", process: { pid: 1, hostname: "fixture", state: "unknown", basis: "local-pid-probe", attribution: "process-existence-not-session-progress" } },
+		unknown: { idle: "unknown", selectedLeaf: "unknown", timers: "unknown", tasks: "unknown", unretainedActivity: "unknown" },
+		source: { ancestry: "latest-retained-ancestry", latestKnown: false }, entries: [],
+		coverage: { complete: false, reasons: ["source unavailable"], bytesRead: 0, linesVisited: 0, parentVisits: 0, textScanBytes: 0, omissions: { credentials: 0, fields: 0, text: 0 } } };
+	assert.deepEqual(structuredObservation(InspectToolOutputSchema, ordinary), ordinary);
+	assert.equal(matchesSchema(InspectOutputSchema, ordinary), false);
+	assert.equal(matchesSchema(observationSchema("inspect"), ordinary), false);
 });
 
 it("composed list schemas retain optional fields and reject unknown fields", () => {

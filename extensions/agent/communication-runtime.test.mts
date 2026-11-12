@@ -6,12 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import type { Models, StreamOptions } from "@earendil-works/pi-ai";
+import type { Static } from "@earendil-works/pi-schema";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { LiveDoc, InboxDoc, type ConversationId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 import { matchesSchema } from "./schema-check.ts";
 import { DurableHost } from "./durable-host.ts";
-import { answerMessage, completed, pending, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
+import { answerMessage, completed, pending, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, gateTool, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import { readOutcome, reconcileDeliveries } from "./durable-controls.ts";
 import * as Durable from "@earendil-works/pi-durable";
 import { createAgentContribution } from "./durable-agents.ts";
@@ -19,8 +20,10 @@ import { CommunicationIndexDoc, communicationIndexKey, reconcileInputCommunicati
 import { AwaitDoc, AWAIT_PROVENANCE_LIMIT, recordInputProvenance, type AwaitState } from "./awaited-results.ts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { parseCommunicationView, type Communication } from "./communication.ts";
-import { InspectOutputSchema } from "./observation-schema.ts";
-import { readInspection, readConversationSnapshotPage } from "./durable-observation.ts";
+import { InspectOutputSchema, InspectToolOutputSchema, ResultToolOutputSchema } from "./observation-schema.ts";
+import { readableControlText } from "./control-result.ts";
+import { DurableObservation, readInspection, readConversationSnapshotPage, RESULT_PAGE_BYTES, RESULT_PAGE_UNITS } from "./durable-observation.ts";
+import { deliveryState } from "./delivery-store.ts";
 import { renderCommunicationCard } from "./tool-cards.ts";
 import { theme } from "./dashboard-test-fixture.mts";
 import { stripVTControlCharacters } from "node:util";
@@ -51,7 +54,7 @@ it("resolves native request IDs in the selected conversation with matching submi
 		const outcome = await readOutcome(host.harness, first.submissionId as SubmissionId, BACKGROUND_CONTEXT);
 		assert.ok(outcome.entryId);
 		const root = await host.request("inspect", { sessionId: storageId, view: "result", requestId: "qualified-request", submissionId: String(first.submissionId), entryId: String(outcome.entryId) }) as { submissionId: number; requestId: string; status: string; answer: string; conversationId: number };
-		assert.equal(matchesSchema(InspectOutputSchema, root), true);
+		assert.equal(matchesSchema(InspectToolOutputSchema, root), true);
 		assert.equal(root.submissionId, first.submissionId);
 		assert.equal(root.requestId, "qualified-request");
 		assert.equal(root.conversationId, ROOT);
@@ -122,19 +125,161 @@ it("forwards the native request selector and returns terminal inspection text th
 		assert.notEqual(output.isError, true);
 		const text = output.output?.find((part) => part.type === "text");
 		assert.ok(text?.type === "text");
-		const parsed = JSON.parse(text.text) as { submissionId: number; requestId: string; answer: string };
+		const parsed = output.structuredOutput as { submissionId: number; requestId: string; answer: string };
 		assert.equal(parsed.submissionId, admitted.submissionId);
 		assert.equal(parsed.requestId, "terminal-request");
 		assert.equal(parsed.answer, "durable answer");
-		assert.deepEqual(output.structuredOutput, parsed);
-		assert.equal(matchesSchema(InspectOutputSchema, output.structuredOutput), true);
+		assert.ok(text.text.startsWith("durable answer\n\nResult: "));
+		assert.equal(text.text, readableControlText(parsed));
+		assert.equal(matchesSchema(InspectToolOutputSchema, output.structuredOutput), true);
 		assert.equal(seen[0]?.requestId, args.requestId);
 		const missing = await tool.execute({ sessionId: storageId, view: "result", requestId: "no-terminal-request" }, {} as never, BACKGROUND_CONTEXT);
 		assert.notEqual(missing.isError, true);
 		const unavailable = missing.output?.find((part) => part.type === "text");
 		assert.ok(unavailable?.type === "text");
-		assert.equal(JSON.parse(unavailable.text).status, "unavailable");
+		assert.equal((missing.structuredOutput as { status: string }).status, "unavailable");
+		assert.equal(matchesSchema(InspectToolOutputSchema, missing.structuredOutput), true);
+		assert.equal(unavailable.text, readableControlText(missing.structuredOutput));
+		assert.ok(unavailable.text.startsWith("No answer body is available in this result."));
 	});
+});
+
+type RetainedResultPage = Exclude<Static<typeof ResultToolOutputSchema>, { status: "unavailable" }>;
+function retainedResultPage(value: unknown): RetainedResultPage {
+	assert.equal(matchesSchema(ResultToolOutputSchema, value), true);
+	assert.notEqual((value as { status: string }).status, "unavailable");
+	assert.ok(Buffer.byteLength(JSON.stringify(value)) <= RESULT_PAGE_BYTES);
+	return value as RetainedResultPage;
+}
+
+async function readAnswerPages(initial: RetainedResultPage, execute: (args: Record<string, unknown>) => Promise<RetainedResultPage>): Promise<string> {
+	let body = initial.answer ?? "", page = initial;
+	while (page.answerContinuation !== undefined) {
+		const { tool: name, ...args } = page.answerContinuation;
+		assert.equal(name, "agent_inspect");
+		assert.equal(Object.hasOwn(args, "receiptCursor"), false);
+		const previousOffset = page.offset ?? 0;
+		page = await execute(args);
+		assert.ok((page.offset ?? 0) > previousOffset);
+		assert.ok((page.answer?.length ?? 0) <= RESULT_PAGE_UNITS);
+		body += page.answer ?? "";
+	}
+	assert.equal(page.nextOffset, null);
+	return body;
+}
+
+it("executes independent answer and recipient continuations through native tools, cold reads and reopen", { timeout: 30000 }, async () => {
+	const root = mkdtempSync(join(tmpdir(), "result-pages-")), storageId = randomUUID();
+	const released = signal(), entered = signal();
+	const answer = `${"a".repeat(4095)}😀\n${"separate answer line\n".repeat(400)}`;
+	const models = await scriptedRuntime([toolCallMessage("gate"), answerMessage(answer)]);
+	let host: DurableHost | undefined;
+	try {
+		host = await DurableHost.open({ storagePath: join(root, "storage.sqlite"), storageId, cwd: root, models, registry: fixtureRegistry([gateTool(released.promise, entered.resolve)]), settings: { steeringMode: "all" }, agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
+		const first = await host.request("submit", { message: "first", requestId: "result-group-0", ownerId: "recipient-a", origin: "model" }) as { submissionId: SubmissionId };
+		await entered.promise;
+		const intended = [first.submissionId], other: SubmissionId[] = [];
+		for (let index = 1; index <= 18; index++) {
+			const ownerId = index === 6 || index === 12 ? "recipient-b" : "recipient-a";
+			const admitted = await host.request("submit", { message: `input ${index}`, requestId: `result-group-${index}`, ownerId, origin: "model", whenBusy: "steer" }) as { submissionId: SubmissionId };
+			(ownerId === "recipient-a" ? intended : other).push(admitted.submissionId);
+		}
+		released.resolve();
+		for (const id of [...intended, ...other]) await readOutcome(host.harness, id, BACKGROUND_CONTEXT);
+		const active = host;
+		const contribution = createAgentContribution({ source: import.meta.filename, configureSettings: () => {}, dispatch: (method, params) => active.request(method, params) }).create({ durable: Durable, storageId, cwd: root, agentDir: root, onClose() {}, services: { modelRuntime: { getModel: () => testModel, getModels: () => [testModel] } } });
+		const tool = contribution.tools?.find((item) => item.name === "agent_inspect");
+		assert.ok(tool);
+		const execute = async (args: Record<string, unknown>) => {
+			assert.equal(matchesSchema(tool.parameters, args), true, "each emitted call satisfies the native public input schema");
+			const output = await tool.execute(args, {} as never, BACKGROUND_CONTEXT);
+			assert.notEqual(output.isError, true);
+			const page = retainedResultPage(output.structuredOutput);
+			const text = output.output?.find((part) => part.type === "text");
+			assert.ok(text?.type === "text");
+			assert.equal(text.text, readableControlText(page));
+			assert.equal(page.requestId, "result-group-0");
+			return page;
+		};
+		const selected = { sessionId: storageId, view: "result", submissionId: first.submissionId, requestId: "result-group-0" };
+		const initial = await execute(selected);
+		assert.equal(initial.answer?.length, 4095, "the first page never splits the surrogate pair at its limit");
+		assert.equal(initial.nextOffset, 4095);
+		assert.equal(initial.receiptGroup?.recipient, "recipient-a");
+		assert.equal(initial.receiptGroup?.results.length, 16);
+		assert.equal(initial.receiptGroup?.complete, false);
+		assert.equal(await readAnswerPages(initial, execute), answer);
+		const answerContinuation = initial.answerContinuation;
+		assert.ok(answerContinuation);
+		const receiptCall = initial.receiptGroup?.next;
+		assert.ok(receiptCall);
+		const { tool: receiptTool, ...receiptArgs } = receiptCall;
+		assert.equal(receiptTool, "agent_inspect");
+		assert.equal(Object.hasOwn(receiptArgs, "offset"), false);
+		const receiptPage = await execute(receiptArgs);
+		assert.equal(receiptPage.answer, undefined, "a receipt-only continuation never repeats the answer body");
+		assert.equal(receiptPage.answerContinuation, undefined);
+		assert.equal(receiptPage.offset, undefined);
+		assert.equal(receiptPage.receiptGroup?.complete, true);
+		assert.equal(receiptPage.receiptGroup?.next, null);
+		const references = [...initial.receiptGroup?.results ?? [], ...receiptPage.receiptGroup?.results ?? []];
+		assert.deepEqual(references.map((row) => row.submissionId).sort((a, b) => a - b), [...intended].sort((a, b) => a - b));
+		assert.equal(references.some((row) => other.includes(row.submissionId as SubmissionId)), false);
+		await assert.rejects(host.request("inspect", { ...receiptArgs, submissionId: other[0], requestId: "result-group-6" }), /cursor disagrees.*selected result or recipient/u);
+		await assert.rejects(host.request("inspect", { ...receiptArgs, receiptCursor: "not-a-current-cursor" }), /Invalid receipt cursor/u);
+		const receipts = Object.values((await deliveryState(host.harness, BACKGROUND_CONTEXT, true)).receipts);
+		assert.equal(receipts.length, 19);
+		assert.equal(new Set(receipts.map((row) => row.answerEntryId)).size, 1);
+		assert.ok(receipts.every((row) => row.acknowledged === false), "evidence inspection consumes no recipient receipt");
+		const cold = await DurableObservation.open({ backupFrom: join(root, "storage.sqlite"), storageId, models: await fixtureRuntime("answer"), registry: fixtureRegistry() }, BACKGROUND_CONTEXT);
+		try {
+			const coldReceipt = retainedResultPage(await cold.request("inspect", receiptArgs));
+			assert.deepEqual(coldReceipt.receiptGroup, receiptPage.receiptGroup);
+			assert.equal(coldReceipt.answer, undefined);
+			const { tool: _tool, ...answerArgs } = answerContinuation;
+			const coldAnswer = retainedResultPage(await cold.request("inspect", answerArgs));
+			assert.equal(coldAnswer.answer, answer.slice(4095, 4095 + RESULT_PAGE_UNITS));
+			await assert.rejects(cold.request("inspect", { ...receiptArgs, view: "history" }), /only the result view/u);
+		} finally { await cold.close(); }
+		for (const offset of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, answer.length + 1]) await assert.rejects(host.request("inspect", { ...selected, offset }), /offset|integer/u);
+		await host.close();
+		host = await openFixtureHost(root, storageId);
+		const reopened = retainedResultPage(await host.request("inspect", receiptArgs));
+		assert.deepEqual(reopened.receiptGroup, receiptPage.receiptGroup);
+		assert.equal(reopened.answer, undefined);
+		const after = Object.values((await deliveryState(host.harness, BACKGROUND_CONTEXT, true)).receipts);
+		assert.ok(after.every((row) => row.acknowledged === false));
+	} finally {
+		released.resolve();
+		await host?.close();
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+it("keeps unsettled results and missing answer bodies distinct from readable pages", async () => {
+	const control = await controlledRuntime(1);
+	await withHost(async (host, storageId) => {
+		const admitted = await host.request("submit", { requestId: "pending-page", message: "Hold the answer" }) as { submissionId: SubmissionId };
+		try {
+			await control.held;
+			const pending = retainedResultPage(await host.request("inspect", { view: "result", sessionId: storageId, submissionId: admitted.submissionId }));
+			assert.equal(pending.status, "placed");
+			assert.equal(pending.answer, undefined);
+			assert.equal(pending.offset, undefined);
+			assert.equal(pending.receiptGroup, undefined);
+			await assert.rejects(host.request("inspect", { view: "result", submissionId: admitted.submissionId, receiptCursor: "recipient-page" }), /settled native input/u);
+		} finally { control.release(); }
+		await readOutcome(host.harness, admitted.submissionId, BACKGROUND_CONTEXT);
+	}, control.models);
+	await withHost(async (host) => {
+		const admitted = await host.request("submit", { requestId: "empty-answer", message: "An empty retained answer" }) as { submissionId: SubmissionId };
+		await readOutcome(host.harness, admitted.submissionId, BACKGROUND_CONTEXT);
+		const missing = retainedResultPage(await host.request("inspect", { view: "result", submissionId: admitted.submissionId }));
+		assert.equal(missing.status, "done");
+		assert.equal(missing.answer, undefined);
+		assert.equal(missing.offset, undefined);
+		assert.match(missing.reason ?? "", /answer entry.*not retained/u);
+	}, await scriptedRuntime([answerMessage("")]));
 });
 
 it("preserves user model bytes and keeps communication out of input metadata", async () => {
