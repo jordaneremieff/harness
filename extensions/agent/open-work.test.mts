@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { Harness, LiveDoc, MemoryStorage, type ConversationId, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
-import { retainedReportRequest } from "./delivery-store.ts";
+import { deliveryPendingCount, retainedReportRequest } from "./delivery-store.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { inputEntry } from "./input-entry.ts";
 import {
 	AgentWorkOutputSchema, CLOSED_WORK_LIMIT, OPEN_WORK_LIMIT, OpenWorkDoc, boundClosedItems, closeOpenWork, closeWork, completeOpenWork, completeWork, continueWork,
-	declareOpenWork, dependencyState, executeAgentWork, finalReportLabel, finalReportRequestId, openWorkCheckInLines, openWorkItems, openWorkStatus,
+	declareOpenWork, dependencyState, executeAgentWork, finalReportLabel, finalReportRequestId, finalReportToItself, openWorkCheckInLines, openWorkItems, openWorkStatus,
 	DEPENDENCY_MARK_LIMIT, markedState, parseAgentWorkInput, parseDependencyMarks, receiptDependencyMarks, receiptWork, recordDependencyMarks, reportDelivery, reportDependencyMarks,
 	requestHasOpenWork, stateNoteLabel, withDependencyMarks, withoutVoidItems, type OpenWorkItem, type WorkRoute,
 } from "./open-work.ts";
@@ -299,4 +299,46 @@ it("keeps a mark that arrived before the declaration", async (t) => {
 	const first = await harness.commit((tx) => declareOpenWork(tx, STORAGE, conversation.id, { results: [dependency(), dependency(91)], note: "one result is already here" }, 10), context);
 	assert.ok(!("error" in first));
 	assert.deepEqual(first.item.dependencies.map((item) => item.state), ["arrived", "open"]);
+});
+
+it("never leaves a final report to the declaring conversation itself pending", async (t) => {
+	const { harness, conversation, producer } = await fixture(t);
+	const self = (requestId: string, replyTo = STORAGE): RequestContext => ({ requestId, requester: "operator", replyTo, origin: "operator" });
+	assert.equal(finalReportToItself(STORAGE, { requestId: `work-final:${conversation.id}:task-a`, ownerId: STORAGE }), true);
+	assert.equal(finalReportToItself(STORAGE, { requestId: `work-final:${producer.id}:task-a`, ownerId: `${STORAGE}:${producer.id}` }), true);
+	assert.equal(finalReportToItself(STORAGE, { requestId: `work-final:${producer.id}:task-a`, ownerId: STORAGE }), false);
+	assert.equal(finalReportToItself(STORAGE, { requestId: `work-final:${conversation.id}:task-a`, ownerId: "storage-b" }), false);
+	assert.equal(finalReportToItself(STORAGE, { requestId: "report:other", ownerId: STORAGE }), false);
+	const pending = () => deliveryPendingCount(harness, context);
+	const row = (requestId: string, owner = STORAGE) => harness.commit((tx) => retainedReportRequest(tx, owner, `work-final:${conversation.id}:${requestId}`), context);
+	const declare = async (request: RequestContext) => {
+		const id = await harness.commit((tx) => placed(tx, conversation.id, request), context);
+		await harness.commit((tx) => declareOpenWork(tx, STORAGE, conversation.id, { results: [], note: "own work remains" }, 10), context);
+		await harness.commit((tx) => answered(tx, conversation.id, id), context);
+	};
+
+	await declare(self("task-a"));
+	const done = await executeAgentWork({ action: "complete", request: "task-a", status: "done", message: "result for the operator" }, { harness, storageId: STORAGE, conversationId: conversation.id, now: 20 }, context);
+	assert.ok(matchesSchema(AgentWorkOutputSchema, done.details));
+	assert.deepEqual([done.details.item.close?.delivery, done.details.report?.acknowledged], ["retained", true]);
+	assert.match(done.output?.[0]?.type === "text" ? done.output[0].text : "", /not sent to it as an input/u);
+	assert.equal(await pending(), 0, "a completed item with a self reply recipient leaves no delivery");
+	assert.equal((await row("task-a"))?.message, "Final work result (done) for request task-a\n\nresult for the operator");
+
+	await declare(self("task-b"));
+	assert.deepEqual((await harness.commit((tx) => closeOpenWork(tx, STORAGE, conversation.id, "stopped", 30), context)).map((item) => item.close?.delivery), ["retained"]);
+	assert.equal(await pending(), 0, "an abort leaves no delivery that restarts the stopped conversation");
+	assert.match((await row("task-b"))?.message ?? "", /^Final work result \(stopped\) for request task-b/u);
+
+	await declare(self("task-c"));
+	assert.deepEqual((await harness.commit((tx) => closeOpenWork(tx, STORAGE, conversation.id, "reset", 40), context)).map((item) => item.close?.delivery), ["retained"]);
+	assert.equal(await pending(), 0, "a reset leaves no delivery for the new context");
+	assert.equal((await row("task-c"))?.acknowledged, true);
+	assert.deepEqual((await openWorkStatus({ harness, context }, STORAGE, conversation.id)).map((item) => item.close?.delivery), ["retained", "retained", "retained"]);
+
+	// Another reply recipient keeps the ordinary pending delivery.
+	await declare(self("task-d", "recipient-c"));
+	assert.deepEqual((await harness.commit((tx) => closeOpenWork(tx, STORAGE, conversation.id, "stopped", 50), context)).map((item) => item.close?.delivery), ["active"]);
+	assert.equal(await pending(), 1);
+	assert.equal((await row("task-d", "recipient-c"))?.acknowledged, false);
 });

@@ -19,7 +19,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { arr, bool, int, lit, obj, opt, str, union, type Schema, type Static } from "@earendil-works/pi-schema";
 import { defineDoc, LiveDoc, type ConversationId, type Harness, type SubmissionId, type SubmissionRecord, type ToolExecutionResult, type Tx } from "@earendil-works/pi-durable";
-import { retainedReportRequest } from "./delivery-store.ts";
+import { retainedReportRequest, storeDeliveryRow } from "./delivery-store.ts";
 import { recordReportInTransaction, type DeliveryReceipt, type DeliveryReport } from "./durable-controls.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 import { RequestContextDoc, type RequestContext } from "./request-context.ts";
@@ -129,7 +129,8 @@ export const OpenWorkDependencySchema = obj({
 });
 export type OpenWorkDependencyView = Static<typeof OpenWorkDependencySchema>;
 
-const ReportDeliverySchema = union([lit("active"), lit("parked"), lit("fallback"), lit("terminal"), lit("delivered"), lit("absent")]);
+/** `retained`: the reply recipient is the declaring conversation, so the report is kept for reading and never admitted as an input. */
+const ReportDeliverySchema = union([lit("active"), lit("parked"), lit("fallback"), lit("terminal"), lit("delivered"), lit("absent"), lit("retained")]);
 export type FinalReportDelivery = Static<typeof ReportDeliverySchema>;
 
 export const OpenWorkViewSchema = obj({
@@ -189,6 +190,28 @@ export function dependencyKey(reference: Pick<ResultReference, "sessionId" | "su
 
 export function finalReportRequestId(conversationId: number, requestId: string): string {
 	return `work-final:${conversationId}:${requestId}`;
+}
+
+const FINAL_REPORT_ID = /^work-final:([1-9][0-9]*):(.+)$/su;
+
+/** Conversation of an identity in this storage; undefined for another storage. */
+function localConversation(storageId: string, sessionId: string): ConversationId | undefined {
+	if (sessionId === storageId) return 1 as ConversationId;
+	if (!sessionId.startsWith(`${storageId}:`)) return undefined;
+	const rest = sessionId.slice(storageId.length + 1);
+	const parsed = /^[0-9]+$/u.test(rest) ? Number(rest) : 0;
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed as ConversationId : undefined;
+}
+
+/**
+ * True for a final work report whose reply recipient is the conversation that declared the work, as for an
+ * operator request whose answer stays in its target conversation. Such a report is retained for reading
+ * and is never admitted as an input: an input would start a run of the conversation that just completed,
+ * was stopped, or was reset.
+ */
+export function finalReportToItself(storageId: string, report: Pick<DeliveryReport, "requestId" | "ownerId">): boolean {
+	const match = FINAL_REPORT_ID.exec(report.requestId);
+	return match !== null && localConversation(storageId, report.ownerId) === Number(match[1]);
 }
 
 export function finalReportLabel(status: WorkCloseStatus, requestId: string): string {
@@ -403,15 +426,6 @@ export async function receiptWork(reader: OpenWorkReader, conversationId: Conver
 	return item.close === undefined ? { work: "open", label: stateNoteLabel("open") } : { work: "closed", label: stateNoteLabel("closed", item.close.status) };
 }
 
-/** Conversation of a reference in this storage; undefined for another storage. */
-function localConversation(storageId: string, sessionId: string): ConversationId | undefined {
-	if (sessionId === storageId) return 1 as ConversationId;
-	if (!sessionId.startsWith(`${storageId}:`)) return undefined;
-	const rest = sessionId.slice(storageId.length + 1);
-	const parsed = /^[0-9]+$/u.test(rest) ? Number(rest) : 0;
-	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed as ConversationId : undefined;
-}
-
 async function localInput(reader: OpenWorkReader, conversationId: ConversationId, reference: ResultReference): Promise<Extract<SubmissionRecord, { type: "input" }> | string> {
 	const record = await readSubmission(reader, reference.submissionId);
 	if (record === undefined || record.type !== "input" || record.conversationId !== conversationId) return `Result ${reference.sessionId} submission ${reference.submissionId} is not an admitted input of that conversation`;
@@ -460,7 +474,9 @@ async function dependencyViews(reader: OpenWorkReader, storageId: string, item: 
 
 async function itemView(reader: OpenWorkReader, storageId: string, item: OpenWorkItem, state: OpenWorkView["state"], evidence: DependencyEvidence): Promise<OpenWorkView> {
 	const { requestId, submissionId, requester, replyTo, origin, note, declaredAt, updatedAt, close } = item;
-	const delivery = close === undefined || !isTx(reader) ? undefined : reportDelivery(await retainedReportRequest(reader, replyTo, close.reportRequestId));
+	const delivery = close === undefined ? undefined
+		: finalReportToItself(storageId, { requestId: close.reportRequestId, ownerId: replyTo }) ? "retained" as const
+		: isTx(reader) ? reportDelivery(await retainedReportRequest(reader, replyTo, close.reportRequestId)) : undefined;
 	return {
 		requestId, submissionId, requester, replyTo, origin, note, state, declaredAt, updatedAt,
 		...(close === undefined ? {} : { close: { status: close.status, message: close.message, at: close.at, reportRequestId: close.reportRequestId, ...(delivery === undefined ? {} : { delivery }) } }),
@@ -556,13 +572,16 @@ export async function declareOpenWork(tx: Tx, storageId: string, conversationId:
 async function finalReport(tx: Tx, storageId: string, conversationId: ConversationId, item: OpenWorkItem, message: string): Promise<DeliveryReport> {
 	const close = item.close;
 	if (close === undefined) throw new Error("A final report requires a closed item");
-	return recordReportInTransaction(tx, {
+	const report = await recordReportInTransaction(tx, {
 		storageId,
 		ownerId: item.replyTo,
 		senderIdentity: canonicalIdentity(storageId, conversationId),
 		requestId: close.reportRequestId,
 		message: `${finalReportLabel(close.status, item.requestId)}\n\n${message}`,
 	});
+	// The row of a report to the declaring conversation is never pending: no delivery admits it as an input.
+	if (report.acknowledged || !finalReportToItself(storageId, report)) return report;
+	return storeDeliveryRow(tx, "report", { ...report, acknowledged: true });
 }
 
 export type CompleteWorkInput = { readonly request: string; readonly status: "done" | "failed"; readonly message: string };
@@ -623,7 +642,6 @@ export async function receiptDependencyMarks(reader: OpenWorkReader, storageId: 
 	return marks;
 }
 
-const FINAL_REPORT_ID = /^work-final:([1-9][0-9]*):(.+)$/su;
 
 /**
  * Mark that the producer's host sends with a report delivery: an explicit final report marks the input
@@ -694,7 +712,9 @@ export async function executeAgentWork(args: unknown, host: AgentWorkHost, conte
 	const { report } = completed;
 	const lead = completed.deduped
 		? `Request ${request} was already closed (${retained}); this call changed nothing and sent no second report.`
-		: `${finalReportLabel(retained, request)} is retained for ${completed.item.replyTo}.`;
+		: completed.item.close?.delivery === "retained"
+			? `${finalReportLabel(retained, request)} is retained for reading. The reply recipient is this conversation, so the report is not sent to it as an input.`
+			: `${finalReportLabel(retained, request)} is retained for ${completed.item.replyTo}.`;
 	return workResult(lead, {
 		action: "complete",
 		item: completed.item,
