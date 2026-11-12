@@ -425,7 +425,7 @@ it("publishes retained-acceptance semantics and refuses a pre-retention endpoint
 	const path = primaryEndpointPath(root, id);
 	const published = JSON.parse(readFileSync(path, "utf8")) as { version: string };
 	assert.equal(published.version, PRIMARY_ENDPOINT_VERSION);
-	assert.equal(published.version, "primary-delivery/3.0.0");
+	assert.equal(published.version, "primary-delivery/4.0.0");
 	writeFileSync(path, JSON.stringify({ ...published, version: "primary-delivery/2.0.0" }));
 	await assert.rejects(
 		connectPrimaryChannel({ id, sessionsRoot: root }),
