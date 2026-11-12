@@ -594,7 +594,7 @@ it("hides direct tool declarations in codemode only mode while scripts still rea
 	assert.match(section, /### `read`/u);
 });
 
-it("keeps the model-only agent coordination declarations in codemode only mode", { timeout: 30000 }, async (t) => {
+it("keeps model-only compaction declared in codemode only mode", { timeout: 30000 }, async (t) => {
 	const control = (host: DurableExecutionHost, name: string, modelOnly: boolean) => host.durable.defineTool({
 		name,
 		description: `${name} fixture`,
@@ -606,13 +606,12 @@ it("keeps the model-only agent coordination declarations in codemode only mode",
 		stream: () => answerMessage(),
 		settings: { defaultTools: ["+codemode", "+tool_search"], codemode: { mode: "only" } },
 		builtinExtensions: (host) => [host.durable.defineExtension({ name: "fixture.agent-controls", tools: [
-			control(host, "agent_await", true),
 			control(host, "agent_compact", true),
 			control(host, "agent_status", false),
 		] })],
 	});
 	await f.submit("say hi");
-	assert.deepEqual(declaredTools(f.requests[0]).sort(), ["agent_await", "agent_compact", "codemode", "tool_search"]);
+	assert.deepEqual(declaredTools(f.requests[0]).sort(), ["agent_compact", "codemode", "tool_search"]);
 });
 
 /** The harness Agent contribution as a native extension for one execution fixture host. */
@@ -633,10 +632,11 @@ it("declares direct controls, defers infrequent ones, and discovers a deferred c
 	const f = await executionFixture(t, { settings: { defaultTools: ["+codemode", "+tool_search"] }, stream, builtinExtensions: (host) => [agentContribution(host, dispatched)] });
 	const result = await f.submit("find the retained agent tools and use them");
 	const first = declaredTools(f.requests[0]);
-	for (const name of ["agent_spawn", "agent_send", "agent_steer", "agent_abort", "agent_status", "agent_intent", "agent_collaborate", "agent_await", "agent_compact", "tool_search"])
+	for (const name of ["agent_spawn", "agent_send", "agent_steer", "agent_abort", "agent_status", "agent_intent", "agent_collaborate", "agent_work", "agent_compact", "tool_search"])
 		assert.ok(first.includes(name), `${name} is declared directly`);
 	for (const name of ["agent_inspect", "agent_list", "agent_attach", "agent_place", "agent_fork", "agent_rewind", "agent_reset", "agent_configure", "agent_profile", "agent_command"])
 		assert.ok(!first.includes(name), `${name} starts undeclared`);
+	assert.ok(!first.includes("agent_await"), "the removed wait has no declaration");
 	assert.match(systemSection(f.requests[0], "agent-controls") ?? "", /^- agent_spawn:/mu);
 	assert.doesNotMatch(systemSection(f.requests[0], "agent-controls") ?? "", /^- agent_list:/mu);
 	assert.match(toolResultText(result.toolResults.find((entry) => entry.toolName === "tool_search")), /agent_list/u);
@@ -653,7 +653,7 @@ it("keeps explicit builtin tool-search disablement authoritative without MCP", {
 	assert.ok(!declaredTools(f.requests[0]).includes("tool_search"), "the configured removal stays authoritative");
 });
 
-it("keeps model-only await and compact out of script callables", { timeout: 60000 }, async (t) => {
+it("keeps model-only compaction out of script callables", { timeout: 60000 }, async (t) => {
 	const f = await executionFixture(t, {
 		code: "return ALL_TOOLS.map((tool) => tool.name).sort();",
 		settings: { defaultTools: ["+codemode", "+tool_search"] },
@@ -662,6 +662,7 @@ it("keeps model-only await and compact out of script callables", { timeout: 6000
 	const result = await f.submit("list the script-visible tools");
 	const names = toolResultBody(result.toolResults.at(-1));
 	assert.match(names, /agent_status/u);
+	assert.match(names, /agent_work/u, "background work declarations remain callable from scripts");
 	assert.match(names, /agent_list/u, "deferred controls remain callable from scripts");
 	assert.doesNotMatch(names, /agent_await/u);
 	assert.doesNotMatch(names, /agent_compact/u);
