@@ -26,7 +26,7 @@ import { CommunicationViewSchema } from "./communication.ts";
 import { STORAGE_STATUS_ID_PATTERN } from "./storage-status.ts";
 import { ProviderBlockFactSchema } from "./provider-block-facts.ts";
 import { ResultReferenceSchema } from "./result-schema.ts";
-import { OpenWorkViewSchema } from "./open-work.ts";
+import { OpenWorkViewSchema } from "./open-work-schema.ts";
 
 const string = str();
 const boolean = bool();
