@@ -379,12 +379,25 @@ function addCompactAwait(result: CompactConversation, value: unknown): void {
 	}
 }
 
-/** Only descriptive fields are expendable; identities, counts, and continuation calls stay exact. */
-function reduceCompact(row: CompactConversation, selectionOptional = true): void {
-	if (row.name !== undefined) { delete row.name; row.omitted.push("name omitted for byte limit"); }
-	if (!selectionOptional) return;
-	if (row.model !== undefined) { delete row.model; row.omitted.push("model omitted for byte limit"); }
-	if (row.thinkingLevel !== undefined) { delete row.thinkingLevel; row.omitted.push("thinking level omitted for byte limit"); }
+/** Accept descriptive-field reduction only when its omission metadata also fits within the original size. */
+export function reduceCompactStatus<T extends CompactSelected | CompactStorage>(value: T): T {
+	const reduced = structuredClone(value);
+	if ("conversations" in reduced) {
+		let omitted = false;
+		for (const row of reduced.conversations) {
+			omitted ||= row.name !== undefined || row.model !== undefined || row.thinkingLevel !== undefined;
+			delete row.name;
+			delete row.model;
+			delete row.thinkingLevel;
+			row.omitted = row.omitted.filter(note => note !== "name shortened");
+		}
+		if (omitted) reduced.omitted.push("row names, models and thinking levels omitted for byte limit");
+	} else if (reduced.conversation.name !== undefined) {
+		delete reduced.conversation.name;
+		reduced.conversation.omitted = reduced.conversation.omitted.filter(note => note !== "name shortened");
+		reduced.omitted.push("name omitted for byte limit");
+	}
+	return measure(reduced) <= measure(value) ? reduced : value;
 }
 
 function compactPrimary(source: Record<string, unknown>): CompactConversation | undefined {
@@ -406,10 +419,10 @@ export function projectSelectedStatus(value: unknown): CompactSelected | Present
 	const source = record(value);
 	const conversation = source.kind === "ordinary-primary" ? compactPrimary(source) : compactConversation(source.conversation, sourceAvailability(source));
 	if (!conversation) return refusal(SELECTED_STATUS_BYTE_LIMIT, "Selected status source identity is unavailable.");
-	const result: CompactSelected = { format: "compact", conversation, omitted: ["host inventory", "effort awareness"] };
+	let result: CompactSelected = { format: "compact", conversation, omitted: ["host inventory", "effort awareness"] };
 	if (typeof source.storageId === "string") result.storageId = source.storageId;
 	if (typeof source.live === "boolean") result.live = source.live;
-	if (measure(result) > SELECTED_STATUS_BYTE_LIMIT) reduceCompact(conversation, false);
+	if (measure(result) > SELECTED_STATUS_BYTE_LIMIT) result = reduceCompactStatus(result);
 	return measure(result) <= SELECTED_STATUS_BYTE_LIMIT ? result : refusal(SELECTED_STATUS_BYTE_LIMIT, "Mandatory selected identity, state, or recovery metadata exceeds the output byte limit; request detail:true.");
 }
 
@@ -425,9 +438,9 @@ export function projectStorageStatus(value: unknown): CompactStorage | Presentat
 		if (!compact) return refusal(STATUS_OVERVIEW_BYTE_LIMIT, "A storage status row has no complete source identity.");
 		conversations.push(compact);
 	}
-	const result: CompactStorage = { format: "compact", storageId: source.storageId, conversations, coverage: structuredClone(source.coverage),
+	let result: CompactStorage = { format: "compact", storageId: source.storageId, conversations, coverage: structuredClone(source.coverage),
 		omitted: ["host inventory", "effort awareness", "created-agent detail"] };
 	if (typeof source.live === "boolean") result.live = source.live;
-	if (measure(result) > STATUS_OVERVIEW_BYTE_LIMIT) for (const row of conversations) reduceCompact(row);
+	if (measure(result) > STATUS_OVERVIEW_BYTE_LIMIT) result = reduceCompactStatus(result);
 	return measure(result) <= STATUS_OVERVIEW_BYTE_LIMIT ? result : refusal(STATUS_OVERVIEW_BYTE_LIMIT, "Mandatory storage identities, state, or coverage exceed the output byte limit; no identities were cut and no continuation was invented.");
 }

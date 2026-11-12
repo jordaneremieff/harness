@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { projectSelectedStatus, projectStorageStatus, validateStatusDetail } from "./status-overview.ts";
+import { projectSelectedStatus, projectStorageStatus, reduceCompactStatus, validateStatusDetail } from "./status-overview.ts";
 import { StatusToolInputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
 
@@ -71,13 +71,91 @@ it("drops optional descriptions or refuses boundedly without clipping mandatory 
 	if (storage.format === "compact") {
 		assert.equal(storage.conversations[0]?.identity, source.conversation.identity);
 		assert.equal(storage.conversations[0]?.model, undefined);
-		assert.ok(storage.conversations[0]?.omitted.includes("model omitted for byte limit"));
+		assert.deepEqual(storage.omitted.slice(-1), ["row names, models and thinking levels omitted for byte limit"]);
+		assert.equal(storage.conversations[0]?.omitted.includes("model omitted for byte limit"), false);
 	}
 	const refusal = projectStorageStatus({ storageId: "storage", conversations: Array.from({ length: 40 }, (_, index) => ({ ...row(index + 1), identity: `${index}-${"a".repeat(600)}` })), coverage: { complete: true, returned: 40, scanned: 40, next: null } });
 	assert.equal(refusal.format, "refused");
 	assert.ok(Buffer.byteLength(JSON.stringify(refusal)) <= 16384);
 	structuredObservation(StatusToolOutputSchema, refusal);
 	assert.equal(Object.hasOwn(refusal, "coverage"), false);
+});
+
+const storageId = "01234567-0123-4123-8123-0123456789ab";
+const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+function shortStoragePage(size: number, cold = false) {
+	const conversations = Array.from({ length: size }, (_, index) => ({
+		identity: index === 0 ? storageId : `${storageId}:${index + 1}`, conversationId: index + 1, name: "n", busy: false,
+		agent: { model: { provider: "test", modelId: "model" }, thinkingLevel: "off" },
+		live: null, inbox: null, submissions: [], timers: [],
+	}));
+	const coverage = { complete: false, returned: size, scanned: size, next: { tool: "agent_status" as const, view: "storage-page" as const, storageId, cursor: { page: size }, limit: size } };
+	const source = { storageId, conversations, coverage, ...(cold ? { live: false } : { pid: 7, inventory: {} }) };
+	const singles = conversations.map(conversation => {
+		const value = projectStorageStatus({ ...source, conversations: [conversation] });
+		assert.ok(value.format === "compact");
+		return value;
+	});
+	assert.ok(singles[0]);
+	return { source, projected: { ...singles[0], conversations: singles.map(value => value.conversations[0] as NonNullable<typeof value.conversations[0]>), coverage } };
+}
+
+it("reduces short-name storage rows with one page omission instead of larger per-row notes", () => {
+	for (const cold of [false, true]) {
+		const { projected } = shortStoragePage(50, cold), before = structuredClone(projected);
+		const reduced = reduceCompactStatus(projected);
+		assert.ok(bytes(reduced) < bytes(projected));
+		assert.deepEqual(projected, before);
+		assert.equal(reduced.conversations.length, 50);
+		assert.deepEqual(reduced.coverage, projected.coverage);
+		assert.equal(reduced.omitted.filter(note => note === "row names, models and thinking levels omitted for byte limit").length, 1);
+		for (const [index, row] of reduced.conversations.entries()) {
+			assert.equal(row.identity, projected.conversations[index]?.identity);
+			assert.equal(row.name, undefined);
+			assert.equal(row.model, undefined);
+			assert.equal(row.thinkingLevel, undefined);
+			assert.deepEqual(row.omitted, projected.conversations[index]?.omitted);
+		}
+		structuredObservation(StatusToolOutputSchema, reduced);
+	}
+});
+
+it("never increases either projection when omission metadata outweighs short fields", () => {
+	for (const name of ["", "n", "name".repeat(40)]) {
+		const selected = projectSelectedStatus({ conversation: { ...row(), name } });
+		assert.ok(selected.format === "compact");
+		const reduced = reduceCompactStatus(selected);
+		assert.ok(bytes(reduced) <= bytes(selected));
+		assert.deepEqual(reduced.conversation.model, selected.conversation.model);
+		assert.equal(reduced.conversation.thinkingLevel, selected.conversation.thinkingLevel);
+		assert.equal(reduced.conversation.identity, selected.conversation.identity);
+		if (name.length <= 1) assert.deepEqual(reduced, selected);
+		const { projected } = shortStoragePage(1);
+		const first = projected.conversations[0];
+		assert.ok(first);
+		first.name = name;
+		delete first.model;
+		delete first.thinkingLevel;
+		const reducedStorage = reduceCompactStatus(projected);
+		assert.ok(bytes(reducedStorage) <= bytes(projected));
+		if (name.length <= 1) assert.deepEqual(reducedStorage, projected);
+		assert.deepEqual(reduceCompactStatus(reducedStorage), reducedStorage);
+	}
+});
+
+it("measures the exact fitting row count for connected and cold short-name pages", (t) => {
+	for (const cold of [false, true]) {
+		let fit = 0;
+		for (let size = 1; size <= 50; size++) {
+			const { source, projected } = shortStoragePage(size, cold), reduced = reduceCompactStatus(projected);
+			assert.ok(bytes(reduced) <= bytes(projected));
+			const value = projectStorageStatus(source);
+			if (bytes(reduced) <= 16384) { fit = size; assert.equal(value.format, "compact"); }
+			else assert.equal(value.format, "refused");
+		}
+		assert.equal(fit, cold ? 39 : 40);
+		t.diagnostic(`${cold ? "cold" : "connected"}: ${fit} rows fit; ${fit + 1} rows exceed 16384 bytes`);
+	}
 });
 
 it("requires detail on an explicit selected read and does not alter unselected inputs", () => {
