@@ -387,12 +387,16 @@ it("admits two clients to one target and closes only the first client's observat
 	firstGate.release();
 	await secondGate.started;
 	await continued;
-	assert.equal((await host.settled(firstInput) as { status: string }).status, "done");
+	const sharedRun = await host.status();
+	assert.deepEqual(sharedRun.submissions.filter((input) => input.id === firstInput || input.id === secondInput).map((input) => input.status), ["placed", "placed"], "both inputs remain placed until their shared run ends");
 	assert.equal(secondGate.calls, 1);
 	assert.equal(host.observations.size, 1);
 	const finished = frameWhen(second, id, (frame) => !frame.status.busy && frame.entries.some((entry) => JSON.stringify(entry).includes("answer:second")));
 	secondGate.release();
-	assert.equal((await host.settled(secondInput) as { status: string }).status, "done");
+	const outcomes = await Promise.all([host.settled(firstInput), host.settled(secondInput)]) as Array<{ status: string; answer: number }>;
+	assert.deepEqual(outcomes.map(({ status }) => status), ["done", "done"]);
+	assert.ok(Number.isSafeInteger(outcomes[0]?.answer));
+	assert.equal(outcomes[0]?.answer, outcomes[1]?.answer, "both inputs settle with the same committed answer entry");
 	await finished;
 	assert.equal(second.selected, id);
 	assertNoAbort(host);

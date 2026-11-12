@@ -15,7 +15,7 @@ import type { DeliveryReceipt } from "./durable-controls.ts";
 const checkout = fileURLToPath(new URL("../../", import.meta.url));
 type Receipts = { receipts: DeliveryReceipt[]; pending: number };
 
-it("recovers every native input without profile routes above the explicit-route admission limit", { timeout: 60000 }, async (t) => {
+it("recovers every retained native input without inventing absent request routes", { timeout: 60000 }, async (t) => {
 	const scratch = process.env.PROFILE_TEST_ROOT ?? tmpdir();
 	mkdirSync(scratch, { recursive: true });
 	const offline = allocateOfflineFixture("queue-recovery-", scratch);
@@ -60,9 +60,8 @@ it("recovers every native input without profile routes above the explicit-route 
 	client = await launch(resumed, fileURLToPath(new URL("./", import.meta.url)));
 	assert.equal((await client.request("receipts", { ownerId: metadata.ownerId, wait: false }) as Receipts).pending, messages.length);
 	const profile = await client.request("profile-read", { sessionId: metadata.storageId }) as AgentProfile;
-	assert.equal(profile.requests.length, 128);
-	assert.equal(profile.requestsOmitted, 1);
-	assert.ok(profile.requests.every((route) => route.requester === metadata.ownerId && route.replyTo === metadata.ownerId));
+	assert.deepEqual(profile.requests, [], "retained native inputs without routes do not acquire a requester from the receipt owner");
+	assert.equal(profile.requestsOmitted ?? 0, 0);
 	const changed = await client.request("profile-update", { sessionId: metadata.storageId, expectedRevision: profile.revision, requestId: "update-while-queued", senderIdentity: metadata.ownerId, role: "Retained queue worker" }) as { outcome: string };
 	assert.equal(changed.outcome, "applied", "live mutation remains available while retained work exceeds the projection");
 	const drained = await client.request("command", { sessionId: metadata.storageId, name: "drain" }) as { delivery: Receipts; seen: string[] };
