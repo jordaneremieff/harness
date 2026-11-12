@@ -47,7 +47,7 @@ import { readAwaitFact, releaseAwait, recordProducerAwait } from "./await-observ
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, gateTool } from "./durable-host-fixture.mts";
 import { ContinuityDoc } from "./continuity-native.ts";
-import { CONTINUITY_SEED } from "./control-guidance.ts";
+import { NATIVE_COMPACTION_SEED } from "./control-guidance.ts";
 import { readInspection } from "./durable-observation.ts";
 import { AgentTimerDoc, scheduleTimer } from "./durable-timers.ts";
 import { modelFailureText } from "./provider-block-facts.ts";
@@ -2640,7 +2640,7 @@ it("starts a self-compaction's summarizer instructions with the continuity seed"
 	await say(root, "SELFTEST");
 	const summarizer = route.requests.map((messages) => messages.map((message) => messageText(message)).join("\n")).find((text) => text.includes("conversation to summarize"));
 	assert.ok(summarizer, "the compaction asked the model for a summary");
-	assert.ok(summarizer.includes(`${CONTINUITY_SEED}\n\nKeep the parser notes.`), summarizer.slice(-600));
+	assert.ok(summarizer.includes(`${NATIVE_COMPACTION_SEED}\n\nKeep the parser notes.`), summarizer.slice(-600));
 	const description = registry.snapshot().tools().find(({ tool }) => tool.name === "agent_compact")?.tool.description ?? "";
-	assert.ok(description.includes(CONTINUITY_SEED));
+	assert.ok(description.includes(NATIVE_COMPACTION_SEED));
 });

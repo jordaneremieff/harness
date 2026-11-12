@@ -58,7 +58,7 @@ import { inputEntry } from "./input-entry.ts";
 import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
-import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, CONTINUITY_SEED, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines, type AgentControlToolName } from "./control-guidance.ts";
+import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, NATIVE_COMPACTION_SEED, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines, type AgentControlToolName } from "./control-guidance.ts";
 import { abortScopeContains } from "./abort-scope.ts";
 import { TimerTask, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
@@ -1568,7 +1568,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_compact",
 			description:
-				`Compact a conversation. For the calling conversation the summary applies after the whole tool batch and the run continues; another conversation goes through the session host. The summarizer first receives this fixed text, then your instructions: ${CONTINUITY_SEED}`,
+				`Compact a conversation. For the calling conversation the summary applies after the whole tool batch and the run continues; another conversation goes through the session host. The summarizer first receives this fixed text, then your instructions: ${NATIVE_COMPACTION_SEED}`,
 			parameters: CompactParams,
 			replay: "unsafe",
 			execute: async (args: CompactInput, api, context) => {

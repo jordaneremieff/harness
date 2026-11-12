@@ -85,9 +85,11 @@ export const REPORT_DELIVERY_BOUNDARY = "A report to a busy Durable agent normal
 /** Per-tool snippets and guidelines for the current controls. */
 /**
  * What only the model can carry across a compaction or reset. The host keeps request routes and
- * admitted requests itself, so the seed names the open-request overview instead of asking for them.
+ * delivers results itself, so the seed does not ask for them.
  */
-export const CONTINUITY_SEED = "Preserve the current purpose; consequential operator corrections and what they changed; qualified evidence; unresolved questions. Results of requests routed to this session keep arriving here; the status overview lists open requests.";
+export const CONTINUITY_SEED = "Preserve the current purpose; consequential operator corrections and what they changed; qualified evidence; unresolved questions. Results of requests routed to this session keep arriving here.";
+/** The native host lists the conversation's own outgoing requests after each context head, so a native summary need not repeat them. */
+export const NATIVE_COMPACTION_SEED = `${CONTINUITY_SEED} After the summary, the Agent continuity note lists the requests that this session sent and that have no delivered result here.`;
 const RESET_HANDOFF_GUIDANCE = "A handoff states the current purpose; consequential operator corrections and what they changed; qualified evidence; unresolved questions; and the newest handover or checkpoint identifier.";
 
 export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, AgentToolGuidance>> = {
@@ -146,7 +148,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 			"Use agent_status for orientation and agent_inspect for concrete transcript or result evidence, not as waiting tools. Never poll with sleeps or repeated status/inspection calls. Settlement notices arrive automatically; do independent work while useful agent work continues.",
 			"A selected Durable session lists bounded pending scheduled inputs. Ordinary primaries return presence and bounded raw latest-retained ancestry; live idle state, selected branch and native task/timer state remain unknown. Reads do not contact or wake the primary.",
 			"A full suite needs no claim and no prior status read. When a related effort declares scope.fullGate true, hold your own full suite until that claim clears. Declare your own need for a quiet machine in your integration intent with scope.fullGate true; clear the claim on release. Notify only efforts that requested release. Declarations are not locks.",
-			"Inside a Durable agent with creation records, no-target status includes a bounded Created agents section and structured createdAgents for agents this conversation created, including agents in other storages. Labels reflect creation records, not current activity, result dependency, or task ownership.",
+			"Inside a Durable agent, no-target status is a compact overview of this storage's conversations with explicit coverage. It names what it omits: host inventory, effort awareness and created-agent detail. Select one conversation with sessionId for its status.",
 			"Use view: fleet for sampled machine-local model costs, current selections, and attributed failures. Missing evidence is unknown, not zero; conversation warnings do not prove provider faults.",
 		],
 	},

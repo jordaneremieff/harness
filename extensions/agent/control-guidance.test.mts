@@ -156,7 +156,8 @@ it("teaches nested spawn placement and lineage status", () => {
 	assert.match(spawn, /selected controls permit further delegation/u);
 	assert.ok(spawn.includes("bounded /agent roster"));
 	const status = AGENT_CONTROL_GUIDANCE.agent_status.guidelines?.join("\n") ?? "";
-	assert.match(status, /Created agents section/u);
+	assert.match(status, /names what it omits: host inventory, effort awareness and created-agent detail/u);
+	assert.doesNotMatch(status, /Created agents section/u);
 });
 
 it("renders only the selected controls in control order", () => {

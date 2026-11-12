@@ -16,7 +16,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { parseReportIntervention, type ReportIntervention } from "./report-intervention.ts";
-import { CONTINUITY_SEED } from "./control-guidance.ts";
+import { NATIVE_COMPACTION_SEED } from "./control-guidance.ts";
 import { validateReportIntervention } from "./native-report-intervention.ts";
 import { DeliveryRowDoc, automaticDeliveryPage, deliveryState, migrateDeliveryStore, operationReceipts, readDeliveryDraft, receiptKey, reportKey, retainedIntent, retainedReceipt, retainedReport, retainedReportRequest, storeDeliveryRow, writeDeliveryDraft } from "./delivery-store.ts";
 import { inputEntry } from "./input-entry.ts";
@@ -829,7 +829,7 @@ async function compactionSummaryFacts(harness: Harness, result: { entryId?: Entr
 
 /** The summarizer receives the continuity seed first; the caller's instructions follow byte for byte. */
 export function seededCompactionInstructions(instructions: string | undefined): string {
-	return instructions === undefined ? CONTINUITY_SEED : `${CONTINUITY_SEED}\n\n${instructions}`;
+	return instructions === undefined ? NATIVE_COMPACTION_SEED : `${NATIVE_COMPACTION_SEED}\n\n${instructions}`;
 }
 
 /** Run a manual compaction and optionally wait for its placement. */
