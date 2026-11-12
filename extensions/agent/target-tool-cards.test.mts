@@ -90,7 +90,7 @@ describe("compact observation cards", () => {
 	});
 
 	it("renders exact communication receipt calls even when this chunk clips no references", () => {
-		const receiptContinuation = { tool: "agent_inspect", view: "result", sessionId: id, submissionId: 7, requestId: "input", receiptCursor: "cGFnZTI" };
+		const receiptContinuation = { tool: "agent_inspect", view: "result", sessionId: id, submissionId: 7, requestId: "input", receiptCursor: "cGFnZTI" } as const;
 		const receiptCall = `agent_inspect(${JSON.stringify({ view: "result", sessionId: id, submissionId: 7, requestId: "input", receiptCursor: "cGFnZTI" })})`;
 		const answerCall = `agent_inspect(${JSON.stringify({ view: "result", sessionId: id, submissionId: 7, requestId: "input", offset: 4096 })})`;
 		for (const omittedReferences of [0, 2]) {
