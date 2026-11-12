@@ -42,7 +42,7 @@ import type { AgentObservationSource } from "./agent-observation.ts";
 import { AgentConsole } from "./agent-console.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
 import { clamp, MAX_ROSTER_COLUMNS, MIN_COMPOSER_ROWS, MIN_ROSTER_COLUMNS, dashboardGeometry, dashboardRule, fitLine } from "./dashboard-layout.ts";
-import { attentionReason, currentFault, dashboardRecords, recoveryHint, rosterLines, sessionAppearance, titleOf, needsAttention, openWorkText } from "./dashboard-roster.ts";
+import { attentionReason, currentFault, dashboardRecords, recoveryHint, rosterLines, sessionAppearance, titleOf, needsAttention, openWorkText, unplacedText } from "./dashboard-roster.ts";
 import type { AgentCardLookup } from "./tool-cards.ts";
 import { agentState, dashboardSessionState, updateDraft, notifyAgentState, type DashboardState, type DashboardLayout } from "./dashboard-state.ts";
 import { agentDisplayName } from "./action-outcome.ts";
@@ -2158,8 +2158,8 @@ export class AgentDashboard implements Component, Focusable {
 			stateLine = fitLine(`${theme.fg(appearance.color, ` ${appearance.glyph} ${appearance.label}`)}${status}`, width);
 		}
 		this.headerCache = { row, name, project, identityWidth, room, status, left, stateLine };
-		const work = openWorkText(row);
-		return work ? [left, stateLine, fitLine(theme.fg("muted", ` ${work}`), width)] : [left, stateLine];
+		const facts = [openWorkText(row), unplacedText(row)].filter(Boolean).join(" · ");
+		return facts ? [left, stateLine, fitLine(theme.fg("muted", ` ${facts}`), width)] : [left, stateLine];
 	}
 
 	/**

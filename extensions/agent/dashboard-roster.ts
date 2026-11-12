@@ -262,17 +262,16 @@ function rosterModel(row: AgentConversationSummary): string {
 /**
  * The roster's second line. A row with an error shows its reason; a working agent shows its current
  * tool; every other row shows its model, reasoning level and cost. Inputs that the agent has not
- * read yet show as a count with the age of the oldest one.
+ * read yet show as a count with the age of the oldest one. Rows with open work or unplaced inputs put their model facts first.
  */
 export function rosterDetail(row: AgentConversationSummary, now = Date.now()): { text: string; color: ThemeColor } {
 	const reason = attentionReason(row);
 	// The list keeps the reason's first sentence; the selected agent's header shows all of it.
-	const openWork = openWorkText(row, now);
-	if (reason) return { text: [openWork, reason.split(/(?<=[.!?])\s/u)[0] ?? reason].filter(Boolean).join(" · "), color: currentFault(row) ? "error" : "warning" };
+	const openWork = openWorkText(row, now), unplaced = unplacedText(row, now);
 	const facts = [rosterModel(row), costOf(row)].filter(Boolean).join(" · ");
-	const unplaced = unplacedText(row, now);
-	if (row.state === "working") return { text: [openWork, activityOf(row), unplaced, facts].filter(Boolean).join(" · "), color: "muted" };
-	return { text: [openWork, unplaced, facts].filter(Boolean).join(" · "), color: "muted" };
+	if (reason) return { text: [openWork || unplaced ? facts : "", openWork, unplaced, reason.split(/(?<=[.!?])\s/u)[0] ?? reason].filter(Boolean).join(" · "), color: currentFault(row) ? "error" : "warning" };
+	if (row.state === "working") return { text: (openWork || unplaced ? [facts, openWork, activityOf(row), unplaced] : [activityOf(row), facts]).filter(Boolean).join(" · "), color: "muted" };
+	return { text: [facts, openWork, unplaced].filter(Boolean).join(" · "), color: "muted" };
 }
 function rosterRow(
 	row: AgentConversationSummary,
