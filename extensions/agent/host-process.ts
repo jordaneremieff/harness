@@ -198,8 +198,9 @@ class HostProcessServer implements HostProcess {
 	private unsubscribeRelease: (() => void) | undefined;
 	private closing = false;
 	private closePromise: Promise<void> | undefined;
-	private readonly writerReleased: Promise<void>;
-	private resolveWriterReleased: () => void = () => {};
+	private readonly closeResponseReady: Promise<void>;
+	private resolveCloseResponse: () => void = () => {};
+	private rejectCloseResponse: (error: Error) => void = () => {};
 	private resolveDone: () => void = () => {};
 	private rejectDone: (error: Error) => void = () => {};
 	/** Live observation subscriptions across every attachment; frames publish on actual host writes. */
@@ -235,7 +236,8 @@ class HostProcessServer implements HostProcess {
 			return () => clearTimeout(timer);
 		});
 		this.socketPath = paths.socket;
-		this.writerReleased = new Promise((resolve) => { this.resolveWriterReleased = resolve; });
+		this.closeResponseReady = new Promise((resolve, reject) => { this.resolveCloseResponse = resolve; this.rejectCloseResponse = reject; });
+		void this.closeResponseReady.catch(() => {});
 		this.done = new Promise<void>((resolve, reject) => {
 			this.resolveDone = resolve;
 			this.rejectDone = reject;
@@ -432,9 +434,9 @@ class HostProcessServer implements HostProcess {
 		this.validateOperation(method, rawContract);
 		// Process shutdown owns the transport, runtime, writer claim, and done promise.
 		if (method === "close") {
-			// Chord.close joins method invocations. Leave this invocation after writer release
-			// so process shutdown can join it without awaiting itself.
-			await Promise.race([this.shutdown(), this.writerReleased]);
+			// Chord.close joins method invocations. Release this invocation after writer
+			// release or a terminal failure, before shutdown joins the transport.
+			await Promise.race([this.shutdown(), this.closeResponseReady]);
 			return {};
 		}
 		if (this.closing) throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
@@ -637,14 +639,17 @@ class HostProcessServer implements HostProcess {
 			if (!validNativeWriterId(this.record.token) || endedAt < this.record.createdAt) throw new Error("Writer end identity or time order is invalid");
 			this.writeEndRecord(this.claim.descriptor, Buffer.from(JSON.stringify({ ...this.record, endedAt })));
 			this.claim.release();
-			this.resolveWriterReleased();
+			this.resolveCloseResponse();
 			// Let the released close invocation enqueue its response before transport EOF.
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			await this.server?.close();
 			this.resolveDone();
 		} catch (error) {
-			await this.server?.close().catch(() => undefined);
 			const failure = error instanceof Error ? error : new Error(String(error));
+			this.rejectCloseResponse(failure);
+			// Let a failed close invocation leave before Chord joins it.
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			await this.server?.close().catch(() => undefined);
 			this.rejectDone(failure);
 			throw failure;
 		}

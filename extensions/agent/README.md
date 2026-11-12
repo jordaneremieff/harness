@@ -2835,7 +2835,11 @@ a token request after close.
   attempts final catalog publication, seals native admission, and exits through
   the runner. It keeps the descriptor until process death; a later acquiring
   control takes the released lease and resumes retained native work. Concurrent
-  close paths share one shutdown. If reload fails after runtime teardown starts,
+  close paths share one shutdown. A terminal runtime-close or writer-end failure
+  rejects the close invocation before transport cleanup joins it, so the owner
+  receives the failure without a circular wait. The writer lease remains held;
+  a failed close never announces writer release or replaces its generation.
+  If reload fails after runtime teardown starts,
   the host returns the reload error and takes the same process shutdown path. It
   retains the recovery marker and writer lease until process death.
 - The runtime's `requestRelease()` returns `{ retiring, blockers }` without a

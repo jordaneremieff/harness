@@ -221,7 +221,7 @@ it("returns a failed runtime response before shared shutdown releases the claim"
 	finally { await next.dispose().catch(() => {}); await replacement.close(); }
 });
 
-it("acknowledges owner close after writer release and before transport EOF", async (t) => {
+it("acknowledges owner close after writer release and before transport EOF", { timeout: 10000 }, async (t) => {
 	const { host, metadata: config } = await startHost(fixtureRoot(t));
 	t.after(() => host.close());
 	const client = await connectClient(config);
@@ -444,6 +444,28 @@ it("an end-record write failure retains exclusion until its process exits", { ti
 	const exited = once(child, "exit"); child.send("exit"); await exited;
 	assert.equal(writerAvailable(config), true);
 });
+
+for (const failure of ["native close failed", "end write failed"]) {
+	it(`settles remote close and retains the exact writer after ${failure}`, { timeout: 3000 }, async t => {
+		const root = fixtureRoot(t), config = metadata(root), paths = hostPaths(config);
+		const runtime = { ...echoRuntime(), close: async () => { if (failure === "native close failed") throw new Error(failure); } };
+		const host = await runHost(() => runtime, {
+			metadata: config, idleMs: 0, announceReady: noop,
+			...(failure === "end write failed" ? { writeEndRecord: () => { throw new Error(failure); } } : {}),
+		});
+		const before = readFileSync(paths.claim);
+		const client = await connectClient(config);
+		t.after(() => client.dispose());
+		const done = assert.rejects(host.done, new RegExp(failure, "u"));
+		await assert.rejects(call(client, config, "close"), new RegExp(failure, "u"));
+		await done;
+		await assert.rejects(host.close(), new RegExp(failure, "u"));
+		assert.deepEqual(readFileSync(paths.claim), before, "the failed generation never publishes a clean end");
+		assert.equal(writerAvailable(config), false);
+		await assert.rejects(runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop }), HostClaimRefusedError);
+		assert.deepEqual(readFileSync(paths.claim), before, "a refused contender never changes the writer generation");
+	});
+}
 
 it("retains exclusion when native close fails", async (t) => {
 	const root = fixtureRoot(t), config = metadata(root);
