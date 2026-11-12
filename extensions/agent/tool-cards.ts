@@ -1632,10 +1632,6 @@ function awaitReplyLines(value: Record<string, unknown>): string[] {
 	const lines = [text(value.decision) ? `Wait ${displayText(text(value.decision))} · ${array(value.results).length} results · ${array(value.unresolved).length} unresolved` : "Await result"];
 	if (typeof value.queuedInputCount === "number") lines.push(`${value.queuedInputCount} queued inputs · committed InboxDoc`);
 	if (text(value.releaseReason)) lines.push(displayText(text(value.releaseReason)));
-	if (value.mode === "ordinary") {
-		lines.push(`Ordinary wait · ${displayText(text(value.reason))} · body ${displayText(text(value.bodyState))} · ${array(value.bodyPending).length} pending result bodies`);
-		if (value.bodyRoute === "normal-delivery") lines.push("Body route: normal delivery");
-	}
 	return lines;
 }
 

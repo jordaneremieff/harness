@@ -28,17 +28,6 @@ const hintCount = (value: string) => (value.match(/to expand|expand for full/gu)
 
 describe("compact observation cards", () => {
 	const native = { identity: id, conversationId: 1, busy: true, name: "Reader", live: { run: { taskId: 9 } }, inbox: { items: [1] }, submissions: [], timers: [], agent: { model, thinkingLevel: "high" } };
-	it("shows ordinary wait deadline and pending-body facts without native run identities", () => {
-		const ref = { sessionId: id, submissionId: 7 };
-		const details = { mode: "ordinary", decision: "released", reason: "deadline", bodyPending: [ref], bodyState: "pending-delivery", bodyRoute: "normal-delivery", results: [], unresolved: [ref], elapsedMs: 300000 };
-		const card = createAgentToolCards().agent_await;
-		const output = screen(card.renderResult({ content: [{ type: "text", text: JSON.stringify(details) }], details }, { expanded: false, isPartial: false }, theme, context()));
-		assert.match(output, /Wait released · 0 results · 1 unresolved/u);
-		assert.match(output, /Ordinary wait · deadline · body pending-delivery · 1 pending result bodies/u);
-		assert.match(output, /Body route: normal delivery/u);
-		assert.doesNotMatch(output, /run|InboxDoc|agent_inspect/u);
-	});
-
 	it("distinguishes forward event pages with an omitted known frame from mutation receipts", () => {
 		const threadId = `${id}/thread`, next = { tool: "agent_collaborate", action: "read", threadId, after: 9, knownFrameRevision: 2, limit: 3 };
 		const details = { direction: "forward", threadId, frameRevision: 2, sequence: 12, closed: false, events: [{ sequence: 9, at: 1, atUtc: new Date(1).toISOString() }], next, pending: 0, coverage: { complete: false, bytes: 200, after: 8, through: 9 } };
