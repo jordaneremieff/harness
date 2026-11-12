@@ -4,7 +4,7 @@ import { boundOutput } from "@earendil-works/chord/output";
 import * as Durable from "@earendil-works/pi-durable";
 import { googleContribution } from "./durable.ts";
 import { createFake } from "./fake-gws.test-support.mts";
-import { RESULT_MAX_BYTES } from "./result.ts";
+import { RESULT_MAX_BYTES, toolResult } from "./result.ts";
 import { sheetsTools } from "./sheets.ts";
 import { invoke } from "./tools.ts";
 
@@ -42,4 +42,23 @@ test("the native contribution declares the envelope bound as every tool's output
 	for (const tool of extension.tools ?? []) {
 		assert.deepEqual(tool.outputLimits, { ...nativeLimits }, `tool ${tool.name} declares the envelope bound`);
 	}
+});
+
+test("an envelope over the byte bound reports one outcome", () => {
+	const large = toolResult({
+		schemaVersion: 1,
+		status: "ok",
+		data: { value: "x".repeat(RESULT_MAX_BYTES) },
+	});
+	const [item] = large.content;
+	assert.equal(item.type, "text");
+	const envelope = JSON.parse((item as { text: string }).text) as {
+		status: string;
+		error?: { code: string; retryable: boolean };
+	};
+	assert.equal(envelope.status, "error");
+	assert.equal(envelope.error?.code, "RESULT_TOO_LARGE");
+	assert.equal(envelope.error?.retryable, true);
+	assert.deepEqual(large.details, { schemaVersion: 1, status: "error" });
+	assert.equal(large.isError, true);
 });

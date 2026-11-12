@@ -35,7 +35,9 @@ Uploads and attachments read explicit absolute local paths once.
 Every tool returns one JSON envelope (`schemaVersion`, `status`, `data`,
 `error`, `warnings`) of at most 64 KiB. The envelope is one line of compact
 JSON, so a consumer that bounds tool output by line count never receives a
-cut envelope. Lists and bodies are paged with
+cut envelope. A result that cannot fit the envelope is returned as one
+outcome: a retryable `RESULT_TOO_LARGE` error, with text, details and error
+status derived from it. Lists and bodies are paged with
 cursors and offsets; truncation is explicit.
 
 Content that comes from Google (email headers, snippets and bodies, file names,

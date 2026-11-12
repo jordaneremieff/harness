@@ -120,26 +120,28 @@ export function external<T extends Record<string, unknown>>(
 	return { source, trust: "untrusted" as const, notice: EXTERNAL_NOTICE, ...data };
 }
 
+/** The effective outcome a consumer sees: the result, or the failure envelope when it cannot fit. */
+function effectiveOutcome(result: Result<unknown>): Result<unknown> {
+	if (Buffer.byteLength(JSON.stringify(result)) <= RESULT_MAX_BYTES) return result;
+	return failure(
+		new GoogleError(
+			"RESULT_TOO_LARGE",
+			"The adapter result exceeded its 64 KiB boundary. Narrow the request or continue with a cursor.",
+			true,
+		),
+	);
+}
+
 export function toolResult(
 	result: Result<unknown>,
 ): AgentToolResult<{ schemaVersion: 1; status: Result<unknown>["status"] }> {
 	// Compact JSON keeps the envelope on one line, so a consumer that bounds output by
-	// line count can never split it mid-structure.
-	let text = JSON.stringify(result);
-	if (Buffer.byteLength(text) > RESULT_MAX_BYTES) {
-		text = JSON.stringify(
-			failure(
-				new GoogleError(
-					"RESULT_TOO_LARGE",
-					"The adapter result exceeded its 64 KiB boundary. Narrow the request or continue with a cursor.",
-					true,
-				),
-			),
-		);
-	}
+	// line count can never split it mid-structure. Text, details and error status all
+	// derive from the same effective outcome.
+	const effective = effectiveOutcome(result);
 	return {
-		content: [{ type: "text", text }],
-		details: { schemaVersion: 1, status: result.status },
-		...(result.status === "error" ? { isError: true } : {}),
+		content: [{ type: "text", text: JSON.stringify(effective) }],
+		details: { schemaVersion: 1, status: effective.status },
+		...(effective.status === "error" ? { isError: true } : {}),
 	};
 }
