@@ -18,7 +18,7 @@ it("ordinary delegation guidance names only registered controls and native guida
 		registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, registerCommand() {},
 		getThinkingLevel: () => "off",
 	} as unknown as ExtensionAPI);
-	assert.equal(tools.has("agent_work"), false);
+	assert.equal(tools.has("agent_work"), true, "an ordinary session has its own agent_work");
 	for (const [name, tool] of tools) {
 		const text = [tool.description, ...(tool.promptGuidelines ?? [])].join("\n");
 		for (const mentioned of text.matchAll(/\bagent_[a-z]+\b/gu)) assert.ok(tools.has(mentioned[0]), `${name} names unavailable ${mentioned[0]}`);
@@ -27,10 +27,12 @@ it("ordinary delegation guidance names only registered controls and native guida
 		const actual = tools.get(name)?.promptGuidelines;
 		assert.deepEqual(actual, agentControlGuidance(name, "ordinary").guidelines);
 		const ordinary = actual?.join("\n") ?? "";
-		assert.match(ordinary, /end your turn with a short state note/u);
+		assert.match(ordinary, /agent_work continue .*as the only call of your last tool batch, and write no chat text/u);
+		assert.match(ordinary, /A chat message is only for a decision or act of the operator, a blocker, or a result, and it stands alone/u);
+		assert.doesNotMatch(ordinary, /short state note/u);
 		assert.match(ordinary, /Results arrive as events/u);
 		assert.match(ordinary, /no repeated status or inspection call/u);
-		assert.doesNotMatch(ordinary, /agent_work/u);
+		assert.doesNotMatch(ordinary, /the request and its exact result references|final report/u, "the ordinary contract has no routed request and no final report");
 		const native = agentControlGuidance(name, "native").guidelines?.join("\n") ?? "";
 		assert.match(native, /agent_work continue/u);
 	}
