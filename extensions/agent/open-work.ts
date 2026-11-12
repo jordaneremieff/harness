@@ -18,7 +18,7 @@
  */
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, LiveDoc, type ConversationId, type Harness, type SubmissionId, type SubmissionRecord, type ToolExecutionResult, type Tx } from "@earendil-works/pi-durable";
-import { retainedReportRequest, storeDeliveryRow } from "./delivery-store.ts";
+import { DeliveryRowDoc, reportKey, retainedReportRequest, storeDeliveryRow } from "./delivery-store.ts";
 import { recordReportInTransaction, type DeliveryReceipt, type DeliveryReport } from "./durable-controls.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 import { RequestContextDoc, type RequestContext } from "./request-context.ts";
@@ -263,7 +263,11 @@ export function reportDelivery(report: Pick<DeliveryReport, "acknowledged" | "de
 
 // ─── Committed reads ────────────────────────────────────────────────────────
 
-/** A transaction, or snapshot reads of a Harness that must not commit. */
+/**
+ * A transaction, or snapshot reads of a Harness. A transaction read creates the conversation's document
+ * when it is absent, which is a committed change; a read that must commit nothing, such as a status
+ * read, uses the snapshot reader.
+ */
 export type OpenWorkReader = Tx | { readonly harness: Harness; readonly context: Context };
 
 function isTx(reader: OpenWorkReader): reader is Tx {
@@ -278,6 +282,13 @@ async function readItems(reader: OpenWorkReader, conversationId: ConversationId)
 async function readArrivals(reader: OpenWorkReader, conversationId: ConversationId): Promise<readonly DependencyMark[]> {
 	if (isTx(reader)) return await reader.conversation(conversationId) === undefined ? [] : (await reader.doc(OpenWorkDoc, conversationId)).arrivals ?? [];
 	return (await reader.harness.snapshot(OpenWorkDoc, conversationId, reader.context))?.arrivals ?? [];
+}
+
+/** The retained row of a final report; the snapshot reader finds it by its key and creates nothing. */
+async function readFinalReport(reader: OpenWorkReader, ownerId: string, reportRequestId: string): Promise<DeliveryReport | undefined> {
+	if (isTx(reader)) return retainedReportRequest(reader, ownerId, reportRequestId);
+	const row = await reader.harness.snapshot(DeliveryRowDoc, reportKey(ownerId, `report:${reportRequestId}`), reader.context);
+	return row?.value == null ? undefined : row.value as DeliveryReport;
 }
 
 async function readSubmission(reader: OpenWorkReader, id: number): Promise<SubmissionRecord | undefined> {
@@ -370,7 +381,7 @@ async function itemView(reader: OpenWorkReader, storageId: string, item: OpenWor
 	const { requestId, submissionId, requester, replyTo, origin, note, declaredAt, updatedAt, close } = item;
 	const delivery = close === undefined ? undefined
 		: finalReportToItself(storageId, { requestId: close.reportRequestId, ownerId: replyTo }) ? "retained" as const
-		: isTx(reader) ? reportDelivery(await retainedReportRequest(reader, replyTo, close.reportRequestId)) : undefined;
+		: reportDelivery(await readFinalReport(reader, replyTo, close.reportRequestId));
 	return {
 		requestId, submissionId, requester, replyTo, origin, note, state, declaredAt, updatedAt,
 		...(close === undefined ? {} : { close: { status: close.status, message: close.message, at: close.at, reportRequestId: close.reportRequestId, ...(delivery === undefined ? {} : { delivery }) } }),

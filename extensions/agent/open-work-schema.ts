@@ -95,7 +95,7 @@ export const OpenWorkViewSchema = obj({
 		message: str(),
 		at: timestamp,
 		reportRequestId: str({ minLength: 1 }),
-		/** Delivery state of the final report row; absent when the reader has no delivery store access. */
+		/** Delivery state of the final report row. */
 		delivery: opt(ReportDeliverySchema),
 	})),
 	dependencies: arr(OpenWorkDependencySchema, { maxItems: WORK_DEPENDENCY_LIMIT }),

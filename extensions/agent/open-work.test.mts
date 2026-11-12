@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { Harness, LiveDoc, MemoryStorage, type ConversationId, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import { onStoredCommit } from "./commit-observation.ts";
 import { deliveryPendingCount, retainedReportRequest } from "./delivery-store.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { inputEntry } from "./input-entry.ts";
@@ -362,4 +363,23 @@ it("names both causes when a repeated complete finds no retained item", async (t
 	assert.match(text(dropped), /changed nothing and sent no report/u);
 	assert.equal((await harness.commit((tx) => retainedReportRequest(tx, "recipient-c", `work-final:${conversation.id}:task-0`), context))?.message, "Final work result (done) for request task-0\n\nresult 0", "the first report stays the only one");
 	assert.equal(text(await executeAgentWork({ action: "complete", request: "never-declared", status: "done", message: "m" }, host(202), context)), text(dropped).replace("task-0", "never-declared"));
+});
+
+it("reads the status through snapshots without a committed change", async (t) => {
+	const { harness, conversation, producer } = await fixture(t);
+	const id = await harness.commit((tx) => placed(tx, conversation.id, route()), context);
+	await harness.commit((tx) => declareOpenWork(tx, STORAGE, conversation.id, { results: [], note: "own work remains" }, 11), context);
+	await harness.commit((tx) => answered(tx, conversation.id, id), context);
+	await harness.commit((tx) => completeOpenWork(tx, STORAGE, conversation.id, { request: "task-a", status: "done", message: "result" }, 20), context);
+	const changes: string[] = [];
+	const stop = onStoredCommit(harness, (publication) => { changes.push(...publication.changes.map((change) => change.type)); });
+	t.after(stop);
+	const closed = await openWorkStatus({ harness, context }, STORAGE, conversation.id);
+	assert.deepEqual(closed.map((item) => [item.state, item.close?.delivery]), [["closed", "active"]], "the snapshot reader reads the delivery state of the final report");
+	assert.deepEqual(await openWorkStatus({ harness, context }, STORAGE, producer.id), [], "a conversation without the document has no item");
+	assert.deepEqual(await openWorkItems({ harness, context }, producer.id), []);
+	assert.equal(await requestHasOpenWork({ harness, context }, producer.id, "task-a"), false);
+	assert.equal(await receiptWork({ harness, context }, producer.id, "task-a"), undefined);
+	assert.deepEqual(changes, [], "a snapshot read commits no change, also for a conversation without the document");
+	assert.equal(await harness.snapshot(OpenWorkDoc, producer.id, context), undefined);
 });
