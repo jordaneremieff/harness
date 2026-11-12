@@ -480,7 +480,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				return control("report", { ...input, requestId: `report:${ctx.sessionManager.getSessionId()}:${callId}`, origin: "model" }, ctx);
 			}
 			if (input.deliverAt === undefined)
-				return control("submit", { ...input, checkInMinutes: checkInMinutes(input.checkInMinutes), whenBusy: input.mode ?? "steer", origin: "model" }, ctx);
+				return control("submit", { ...input, checkInMinutes: checkInMinutes(input.checkInMinutes), whenBusy: input.mode ?? "followUp", origin: "model" }, ctx);
 			if (input.replyTo !== undefined) throw new Error("replyTo cannot be combined with deliverAt");
 			return control(
 				"timer-schedule",
