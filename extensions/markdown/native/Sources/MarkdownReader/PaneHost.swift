@@ -197,7 +197,11 @@ final class PaneHost: NSObject, NSWindowDelegate {
         }
         Task { @MainActor in
             await model.close()
-            finish(await state.flush(timeout: 0.75))
+            var result = await state.flush(timeout: 0.75)
+            while result == .saved, state.hasPendingChanges {
+                result = await state.flush(timeout: 0.75)
+            }
+            finish(result)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             MainActor.assumeIsolated {

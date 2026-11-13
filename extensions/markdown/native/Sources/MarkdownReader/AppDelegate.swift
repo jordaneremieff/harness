@@ -80,7 +80,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         Task { @MainActor in
             await windows.closeReaders()
-            finish(await windows.state.flush(timeout: 0.75))
+            var result = await windows.state.flush(timeout: 0.75)
+            while result == .saved, windows.state.hasPendingChanges {
+                result = await windows.state.flush(timeout: 0.75)
+            }
+            finish(result)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
             MainActor.assumeIsolated {
