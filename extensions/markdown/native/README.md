@@ -329,7 +329,7 @@ reference inventory, so there is one Markdown parser.
 | --- | --- | --- |
 | `MarkdownCore` | store records and reading, identities, open requests, asset resolution, rendering through cmark-gfm, page template and stylesheet | Foundation, CryptoKit, cmark |
 | `ReaderFeature` | the reader view and per-window reading state, reading-state store, library view | SwiftUI, WebKit |
-| `MacPlatform` | pasteboard, browser hand-off, Finder reveal, pane helper runner, Rex activation, terminal anchor and printable terminal text | AppKit, Accessibility |
+| `MacPlatform` | pasteboard, browser hand-off, Finder reveal, pane helper runner, Rex activation, terminal anchor, pane stacking feed and printable terminal text | AppKit, Accessibility |
 | `MarkdownReader` | application entry: windows, menus, open intake, pane mode, check modes | AppKit, SwiftUI |
 | `markdown-core` | headless reference inventory | MarkdownCore only |
 
