@@ -26,6 +26,7 @@ struct Verification {
         do {
             let store = try VerifyStore(root: workspace.appendingPathComponent("store"))
             let context = Context(windows: windows, workspace: workspace, store: store)
+            checks.append(await context.tableColumnWidths(keep: &keep))
             checks.append(await context.contentScript(keep: &keep))
             checks.append(await context.remoteLoads(keep: &keep))
             checks.append(await context.assetContainment(keep: &keep))
@@ -297,6 +298,55 @@ struct Context {
         } catch {
             return .init(name: "find-moves-selection", pass: false, detail: String(describing: error))
         }
+    }
+
+    func tableColumnWidths(keep: inout [NSWindow]) async -> Verification.Check {
+        do {
+            let url = workspace.appendingPathComponent("table-width.md")
+            let source = """
+            # Table
+
+            | Label | Description | Code |
+            |---|---|---|
+            | One | Several ordinary words describe this `item` and explain its purpose. | `\(String(repeating: "long_identifier_", count: 5))` |
+
+            | Term | Meaning |
+            |---|---|
+            | Fresh | The time during which a cache serves a stored response without a request to the origin, which sets it with `max-age` or with an expiry date in the response. |
+
+            """
+            try Data(source.utf8).write(to: url)
+            var pass = true
+            var details: [String] = []
+            for width in [600.0, 900.0] {
+                let model = ReaderModel(reference: .file(path: url.path), platform: windows.platform, state: windows.state)
+                keep.append(CheckRunner.offscreenWindow(page: model.page, width: width, height: 700))
+                await model.open(origin: nil)
+                for textSize in [PageSettings.defaultTextSize, PageSettings.defaultTextSize + 2] {
+                    model.settings = PageSettings(textSize: textSize, wrapCode: false)
+                    _ = await wait(seconds: 2) {
+                        (await js(model, "return document.documentElement.dataset.ts") as? String) == String(textSize)
+                    }
+                    let result = await js(model, """
+                    const [wide, fitting] = document.querySelectorAll('table');
+                    const widths = (t) => [...t.rows[1].cells].map(c => Math.round(c.getBoundingClientRect().width));
+                    const em = parseFloat(getComputedStyle(wide.rows[1].cells[1]).fontSize);
+                    const w = widths(wide), f = widths(fitting);
+                    const code = wide.rows[1].cells[2].querySelector('code');
+                    const selection = getSelection();
+                    selection.selectAllChildren(wide.rows[1]);
+                    const row = String(selection).trim();
+                    selection.removeAllRanges();
+                    const scrolls = wide.scrollWidth > wide.clientWidth && w[0] < 6 * em && w[1] >= 12 * em && w[1] <= 16 * em && w[2] > 30 * em && getComputedStyle(code).whiteSpace === 'nowrap';
+                    const fits = fitting.scrollWidth <= fitting.clientWidth && f[1] > 18 * em;
+                    return {pass: scrolls && fits && !row.includes('\\n'), detail: JSON.stringify({viewport: innerWidth, em, wide: {client: wide.clientWidth, scroll: wide.scrollWidth, cells: w}, fitting: {client: fitting.clientWidth, scroll: fitting.scrollWidth, cells: f}, rowLines: row.split('\\n').length})};
+                    """) as? [String: Any]
+                    pass = pass && result?["pass"] as? Bool == true
+                    details.append("text \(textSize): \(result?["detail"] as? String ?? "no geometry")")
+                }
+            }
+            return .init(name: "table-column-geometry", pass: pass, detail: details.joined(separator: "; "))
+        } catch { return .init(name: "table-column-geometry", pass: false, detail: String(describing: error)) }
     }
 
     func codeCopy(keep: inout [NSWindow]) async -> Verification.Check {

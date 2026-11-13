@@ -96,6 +96,11 @@ stopped, error) and for text written before tool calls. A response's title comes
 content (the heading that opens it, else the first text line of its first block); its stored
 title is a provenance label and appears in the provenance line.
 
+A table cell that holds a sentence keeps a minimum width, and inline code in a cell stays
+whole. A table that these rules make wider than the page scrolls sideways in its own region;
+every other table shares the page width between its columns. Short cells stay compact, and a
+row copies as one line.
+
 The app watches the open document's pointer (or a plain file's folder) and shows "Revision n is
 available" without rendering by itself, so a selection or the scroll position never changes
 under the reader. Show Latest Revision restores the same block and the offset inside it; when

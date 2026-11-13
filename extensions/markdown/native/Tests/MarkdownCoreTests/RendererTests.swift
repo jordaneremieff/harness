@@ -52,6 +52,19 @@ private func render(_ source: String, resolver: AssetResolving = NoAssetResolver
         #expect(!html.contains("href=\"javascript:"))
     }
 
+    @Test func onlyProseCellsCarryTheWidthWrapper() {
+        let html = render("""
+        | Label | Description |
+        |---|---|
+        | One | Several words describe [this item](https://example.org/item) and its `purpose`. |
+        | Two | Short text |
+        """).body
+        #expect(html.contains("<td><span class=\"cell-prose\">Several words describe <a class=\"ext\" href=\"https://example.org/item\" title=\"https://example.org/item\">this item</a> and its <code>purpose</code>.</span></td>"))
+        #expect(html.contains("<td>One</td>"))
+        #expect(html.contains("<td>Short text</td>"))
+        #expect(html.contains("<th>Description</th>"))
+    }
+
     @Test func refusedReplacementKeepsOriginalChildren() throws {
         let link = try #require(cmark_node_new(CMARK_NODE_LINK))
         defer { cmark_node_free(link) }

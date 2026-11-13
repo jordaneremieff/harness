@@ -124,7 +124,13 @@ public enum MarkdownRenderer {
         case htmlInline(Node)
         case link(Node)
         case image(Node, html: String)
+        /// A table cell that holds a sentence.
+        case proseCell(Node)
     }
+
+    /// A table cell with at least this many characters of text holds a sentence and keeps a
+    /// minimum width. A shorter cell stays as narrow as its words allow.
+    static let proseCellCharacters = 40
 
     static func renderBody(_ body: String, context: inout Context) -> String {
         let bytes = Array(body.utf8)
@@ -212,6 +218,9 @@ public enum MarkdownRenderer {
                 continue
             }
             guard event == CMARK_EVENT_ENTER, imageDepth == 0 else { continue }
+            if strcmp(cmark_node_get_type_string(node), "table_cell") == 0, plainText(node).count >= proseCellCharacters {
+                work.append(.proseCell(node))
+            }
             switch type {
             case CMARK_NODE_HEADING:
                 let title = plainText(node)
@@ -273,6 +282,24 @@ public enum MarkdownRenderer {
             }
         case .image(let node, let html):
             replace(node, block: false, enter: html, exit: "", keepChildren: false)
+        case .proseCell(let node):
+            // A cell admits an attribute node, which renders its children; the span carries the width.
+            guard let wrapper = cmark_node_new(CMARK_NODE_ATTRIBUTE) else { return }
+            guard let content = cmark_node_new(CMARK_NODE_CUSTOM_INLINE) else {
+                cmark_node_free(wrapper)
+                return
+            }
+            cmark_node_set_on_enter(content, "<span class=\"cell-prose\">")
+            cmark_node_set_on_exit(content, "</span>")
+            cmark_node_append_child(wrapper, content)
+            guard cmark_node_append_child(node, wrapper) == 1 else {
+                cmark_node_free(wrapper)
+                return
+            }
+            while let child = cmark_node_first_child(node), child != wrapper {
+                cmark_node_unlink(child)
+                cmark_node_append_child(content, child)
+            }
         }
     }
 

@@ -174,6 +174,9 @@ public enum Stylesheet {
       line-height: 1.45;
     }
     th, td { border: 1px solid var(--border); padding: 0.4em 0.7em; vertical-align: top; min-width: 3em; }
+    /* A cell with a sentence never gets narrower than this measure; with room, its column takes
+       a share of the page. Inline layout keeps a copied row on one line. */
+    .cell-prose { display: inline-block; min-width: min(12em, 40vw); vertical-align: top; }
     /* A column never splits a code token; a table that grows too wide scrolls in its own region. */
     th code, td code { overflow-wrap: normal; white-space: nowrap; }
     th { background: var(--surface-strong); font-weight: 600; text-align: left; }
