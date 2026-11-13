@@ -8,7 +8,8 @@ content, local file handling, MIME composition and duplicate-send protection.
 
 Approval of consequential acts belongs to policy rules, not to this extension.
 Each act that changes Google state or reaches other people is a separate tool,
-so a rule can target it by name.
+so a rule can target it by name. [Approval rules](#approval-rules) gives the
+recommended rule.
 
 ## Tools
 
@@ -172,6 +173,110 @@ together with a send scope.
 The protection covers sends made through these tools only; a `gws` command run
 another way bypasses it.
 
+## Approval rules
+
+The extension asks for no confirmation. Without a policy rule, a write tool
+runs when an agent calls it, within the granted scopes. A rule gates only the
+tools that it names, so put the rule in place before the first
+`/google setup --access write`, and replace it when a release adds a write
+tool.
+
+The proposal below is input for the policy extension's `policy_propose` tool.
+Its `require-approval` action holds each matching call until the operator
+approves that exact call. It names every tool in the Write tools column of the
+[Tools](#tools) table. An agent submits it, and the rule becomes active when
+the operator approves the proposal. The policy README owns the rule model and
+the approval controls.
+
+```json
+{
+  "operation": "add",
+  "id": "google.writes-require-approval",
+  "purpose": "Change Google data or send mail only after the operator approves the exact call.",
+  "authority": "exact",
+  "reason": "Require exact operator approval before each Google write made through the google extension.",
+  "note": "Inspect the complete target and payload, then ask the operator to approve this exact call.",
+  "language": "facts/v1",
+  "program": {
+    "phase": "input",
+    "selector": {
+      "tools": [
+        "gmail_draft_create",
+        "gmail_draft_update",
+        "gmail_draft_delete",
+        "gmail_send",
+        "gmail_draft_send",
+        "gmail_forward",
+        "gmail_labels_modify",
+        "gmail_trash",
+        "gmail_untrash",
+        "drive_file_upload",
+        "drive_file_rename",
+        "drive_file_move",
+        "drive_file_trash",
+        "drive_file_untrash",
+        "drive_share",
+        "drive_unshare",
+        "sheets_create",
+        "sheets_sheet_add",
+        "sheets_values_update",
+        "sheets_values_append",
+        "calendar_event_create",
+        "calendar_event_update",
+        "calendar_event_cancel",
+        "calendar_share",
+        "calendar_unshare",
+        "docs_append",
+        "docs_replace_text",
+        "tasks_create",
+        "tasks_update",
+        "tasks_complete",
+        "tasks_delete"
+      ]
+    },
+    "when": { "op": "exists", "path": ["input"] },
+    "action": { "kind": "require-approval" },
+    "onUnavailable": "deny"
+  }
+}
+```
+
+- One rule for each tool, with the same program and one tool name, gates the
+  same calls. Use that form when single gates need separate disablement or
+  retirement.
+- The rule leaves the read tools ungated. Downloads, exports and attachment
+  downloads write local files only, and `gmail_operation_status` never sends.
+  Add a tool name to gate it.
+- A `gws` command run from a shell bypasses these tools, their rules and the
+  send ledger. The next proposal holds shell commands that name `gws` or the
+  managed install path. It matches command text, so it also holds an unrelated
+  command that contains either string, such as a commit message that names
+  the program.
+
+```json
+{
+  "operation": "add",
+  "id": "google.gws-shell",
+  "purpose": "Run gws from a shell only after the operator approves the exact command.",
+  "authority": "exact",
+  "reason": "A gws command run from a shell bypasses the google tools, their approval rules and the send ledger.",
+  "note": "Use the google extension's tools instead, or ask the operator to approve this exact gws command.",
+  "language": "facts/v1",
+  "program": {
+    "phase": "input",
+    "selector": { "tools": ["bash"] },
+    "when": {
+      "any": [
+        { "op": "contains", "path": ["input", "command"], "value": "gws " },
+        { "op": "contains", "path": ["input", "command"], "value": "google/bin/" }
+      ]
+    },
+    "action": { "kind": "require-approval" },
+    "onUnavailable": "skip"
+  }
+}
+```
+
 ## Setup
 
 The extension installs and signs in to `gws` itself. Run the `/google`
@@ -250,6 +355,8 @@ offered tools only.
   account checks, the account lock).
 - `gmail.ts`, `drive.ts`, `sheets.ts`, `calendar.ts`, `docs.ts`, `slides.ts`
   and `tasks.ts` define the tools.
+- `documentation.test.mts` keeps the Tools table equal to the registered tools
+  and the recommended approval rule equal to the Write tools column.
 - `mime.ts` builds outgoing messages and reply headers; `send-ledger.ts` keeps
   send records; `files.ts` handles private directories and safe file writes;
   `result.ts` builds bounded results; `settings.ts` reads the `google` section.
