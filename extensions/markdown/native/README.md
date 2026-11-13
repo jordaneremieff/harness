@@ -21,7 +21,9 @@ The script runs `swift build -c release`, assembles `Markdown Reader.app` (bundl
 `markdown.app` setting (`PI_MARKDOWN_APP`, else `markdown.app` in `<agent dir>/harness.json`,
 else `<agent dir>/markdown-reader/Markdown Reader.app`; the agent directory is
 `PI_CODING_AGENT_DIR` or `~/.pi/agent`). The app is a program, not document data: it never lives
-inside a store root.
+inside a store root. If an interrupted install left the destination absent, the installer first
+restores the newest adjacent `.old-*` bundle. A failed final rename restores the previous bundle;
+if that restoration also fails, the error reports both failures and the previous bundle's path.
 
 The bundle carries `Contents/Resources/build.json`:
 

@@ -16,6 +16,7 @@ import {
 	chmodSync,
 	cpSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
@@ -162,6 +163,40 @@ function test(): void {
 	process.exit(result.status ?? 1);
 }
 
+/** Restores an interrupted replacement before installing, and rolls back a failed final rename. */
+export function installBundle(
+	bundle: string,
+	destination: string,
+	rename: (from: string, to: string) => void = renameSync,
+): void {
+	const parent = dirname(destination);
+	if (!existsSync(destination)) {
+		const abandoned = readdirSync(parent, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory() && /^\.old-[a-f0-9]{12}$/u.test(entry.name))
+			.map((entry) => ({ path: join(parent, entry.name), modified: lstatSync(join(parent, entry.name)).mtimeMs }))
+			.sort((a, b) => b.modified - a.modified || a.path.localeCompare(b.path))[0];
+		if (abandoned) rename(abandoned.path, destination);
+	}
+	const previous = existsSync(destination) ? join(parent, `.old-${randomBytes(6).toString("hex")}`) : undefined;
+	if (previous) rename(destination, previous);
+	try {
+		rename(bundle, destination);
+	} catch (installError) {
+		if (previous) {
+			try {
+				rename(previous, destination);
+			} catch (restoreError) {
+				throw new AggregateError(
+					[installError, restoreError],
+					`Install failed: ${String(installError)}; restore failed: ${String(restoreError)}. Previous bundle: ${previous}`,
+				);
+			}
+		}
+		throw installError;
+	}
+	if (previous) rmSync(previous, { recursive: true, force: true });
+}
+
 function main(): void {
 	if (process.platform !== "darwin") {
 		console.error("The Markdown Reader app builds only on macOS.");
@@ -215,10 +250,7 @@ function main(): void {
 		run("codesign", ["--force", "--sign", "-", "--timestamp=none", join(contents, "MacOS", "markdown-core")]);
 		run("codesign", ["--force", "--sign", "-", "--timestamp=none", bundle]);
 
-		const previous = existsSync(destination) ? join(parent, `.old-${randomBytes(6).toString("hex")}`) : undefined;
-		if (previous) renameSync(destination, previous);
-		renameSync(bundle, destination);
-		if (previous) rmSync(previous, { recursive: true, force: true });
+		installBundle(bundle, destination);
 	} finally {
 		rmSync(staging, { recursive: true, force: true });
 	}
