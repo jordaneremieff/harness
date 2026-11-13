@@ -174,6 +174,8 @@ public enum Stylesheet {
       line-height: 1.45;
     }
     th, td { border: 1px solid var(--border); padding: 0.4em 0.7em; vertical-align: top; min-width: 3em; }
+    /* A column never splits a code token; a table that grows too wide scrolls in its own region. */
+    th code, td code { overflow-wrap: normal; white-space: nowrap; }
     th { background: var(--surface-strong); font-weight: 600; text-align: left; }
     tr:nth-child(even) td { background: var(--surface); }
     th[align="center"], td[align="center"] { text-align: center; }
