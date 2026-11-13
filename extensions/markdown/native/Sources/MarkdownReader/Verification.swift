@@ -3,6 +3,7 @@ import CryptoKit
 import MarkdownCore
 import Network
 import ReaderFeature
+import SwiftUI
 import WebKit
 
 /// The fixed WebKit checks of this Mac: content script, remote loads, asset containment, find,
@@ -37,6 +38,10 @@ struct Verification {
             checks.append(await context.codeCopy(keep: &keep))
             checks.append(await context.externalLink(keep: &keep))
             checks.append(await context.pinnedOpen(keep: &keep))
+            checks.append(await context.initialRevisionGap(followsLatest: false, keep: &keep))
+            checks.append(await context.initialRevisionGap(followsLatest: true, keep: &keep))
+            checks.append(await context.positionAtInstallation(keep: &keep))
+            checks.append(await context.interactionDuringPreparation(keep: &keep))
             checks.append(await context.positionAcrossRefresh(keep: &keep))
             checks.append(await context.positionAcrossReopen(keep: &keep))
             checks.append(await context.launchOrigins(keep: &keep))
@@ -52,6 +57,26 @@ struct Verification {
             "checks": checks.map { ["name": $0.name, "pass": $0.pass, "detail": $0.detail] },
         ], to: output)
         return pass ? 0 : 1
+    }
+}
+
+/// Holds a prepared revision until the verification publishes or interacts with the old page.
+@MainActor
+final class RevisionPreparationGate {
+    private(set) var reached = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    func wait() async {
+        reached = true
+        if released { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 
@@ -172,11 +197,19 @@ struct Context {
         return await open(.file(path: FileAccess.canonicalPath(url.path)), revision: nil, keep: &keep)
     }
 
-    func open(_ reference: DocumentReference, revision: Int?, digest: String? = nil, state: ReadingStateStore? = nil, keep: inout [NSWindow]) async -> ReaderModel {
+    func open(_ reference: DocumentReference, revision: Int?, digest: String? = nil, state: ReadingStateStore? = nil, trackedScroll: Bool = false, keep: inout [NSWindow]) async -> ReaderModel {
         let model = ReaderModel(reference: reference, platform: windows.platform, state: state ?? windows.state)
-        keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
+        keep.append(trackedScroll ? readerWindow(model) : CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
         await model.open(revision: revision, digest: digest, origin: nil)
         return model
+    }
+
+    func readerWindow(_ model: ReaderModel) -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 800, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: ReaderView(model: model, chrome: .embedded(close: {}, release: {})))
+        window.orderFrontRegardless()
+        return window
     }
 
     static func png() -> Data {
@@ -474,6 +507,106 @@ struct Context {
             }
         }
         return parts.joined(separator: "\n")
+    }
+
+    func initialRevisionGap(followsLatest: Bool, keep: inout [NSWindow]) async -> Verification.Check {
+        let name = followsLatest ? "initial-gap-follows-latest" : "initial-gap-announces-update"
+        do {
+            let id = VerifyStore.newId()
+            try store.write(id, revision: 1, source: Self.longDocument())
+            let model = ReaderModel(reference: store.reference(id), platform: windows.platform, state: windows.state)
+            keep.append(readerWindow(model))
+            model.followsLatest = followsLatest
+            let gate = RevisionPreparationGate()
+            model.preparationGate = { revision in if revision == 1 { await gate.wait() } }
+            let opening = Task { await model.open(origin: nil) }
+            let reached = await wait(seconds: 5) { gate.reached }
+            try store.write(id, revision: 2, source: Self.longDocument(insert: "A new introduction.\n", change: 30))
+            gate.release()
+            await opening.value
+            let reconciled = await wait(seconds: 5) {
+                followsLatest ? model.snapshot?.revision == 2 : model.update == .revision(2)
+            }
+            let pass = reached && reconciled && (followsLatest || model.snapshot?.revision == 1)
+            let detail = "first preparation gated: \(reached); single publication reconciled: \(reconciled); shown \(model.snapshot?.revision ?? 0); update \(String(describing: model.update))"
+            await model.close()
+            return .init(name: name, pass: pass, detail: detail)
+        } catch {
+            return .init(name: name, pass: false, detail: String(describing: error))
+        }
+    }
+
+    func positionAtInstallation(keep: inout [NSWindow]) async -> Verification.Check {
+        do {
+            let id = VerifyStore.newId()
+            try store.write(id, revision: 1, source: Self.longDocument())
+            let model = await open(store.reference(id), revision: nil, trackedScroll: true, keep: &keep)
+            model.followsLatest = true
+            _ = await js(model, "window.scrollTo(0, 1200); return true;")
+            let stale = await model.capturePositionForCheck()
+            let gate = RevisionPreparationGate()
+            model.preparationGate = { revision in if revision == 2 { await gate.wait() } }
+            try store.write(id, revision: 2, source: Self.longDocument(insert: "An introduction.\n", change: 30))
+            let reached = await wait(seconds: 5) { gate.reached }
+            _ = await js(model, "window.scrollTo(0, 5000); return true;")
+            model.scrolled()
+            let moved = await model.capturePositionForCheck()
+            let settled = await wait(seconds: 2) { !model.isScrollingForCheck }
+            gate.release()
+            let followed = await wait(seconds: 5) { model.snapshot?.revision == 2 && !model.isLoadingForCheck }
+            let restored = await model.capturePositionForCheck()
+            let preserved = moved?.blockKey != nil && moved?.blockKey == restored?.blockKey
+                && abs((moved?.fraction ?? 0) - (restored?.fraction ?? 1)) < 0.05
+                && stale?.blockKey != restored?.blockKey
+            let pass = reached && settled && followed && preserved && model.lastRestore == .block
+            await model.close()
+            return .init(name: "position-captured-at-installation", pass: pass, detail: "preparation gated: \(reached); scroll settled before installation: \(settled); followed: \(followed); new block and fraction retained: \(preserved)")
+        } catch {
+            return .init(name: "position-captured-at-installation", pass: false, detail: String(describing: error))
+        }
+    }
+
+    func interactionDuringPreparation(keep: inout [NSWindow]) async -> Verification.Check {
+        do {
+            let id = VerifyStore.newId()
+            try store.write(id, revision: 1, source: Self.longDocument())
+            let model = await open(store.reference(id), revision: nil, trackedScroll: true, keep: &keep)
+            model.followsLatest = true
+            _ = await js(model, "window.scrollTo(0, 1200); return true;")
+            let stale = await model.capturePositionForCheck()
+            let scrollGate = RevisionPreparationGate()
+            model.preparationGate = { revision in if revision == 2 { await scrollGate.wait() } }
+            try store.write(id, revision: 2, source: Self.longDocument(insert: "A new introduction.\n", change: 30))
+            let prepared = await wait(seconds: 5) { scrollGate.reached }
+            _ = await js(model, "window.scrollTo(0, 5000); return true;")
+            model.scrolled()
+            let moved = await model.capturePositionForCheck()
+            scrollGate.release()
+            let deferred = await wait(seconds: 0.2) { !model.isLoadingForCheck }
+                && model.snapshot?.revision == 1
+            let followed = await wait(seconds: 5) { model.snapshot?.revision == 2 }
+            let restored = await model.capturePositionForCheck()
+            let preserved = moved?.blockKey != nil && moved?.blockKey == restored?.blockKey
+                && abs((moved?.fraction ?? 0) - (restored?.fraction ?? 1)) < 0.05
+                && stale?.blockKey != restored?.blockKey
+            let selectionGate = RevisionPreparationGate()
+            model.preparationGate = { revision in if revision == 3 { await selectionGate.wait() } }
+            try store.write(id, revision: 3, source: Self.longDocument(insert: "Another introduction.\n", change: 31))
+            let selectionPrepared = await wait(seconds: 5) { selectionGate.reached }
+            _ = await js(model, "const p = document.querySelector('p'); getSelection().selectAllChildren(p); return true;")
+            let selected = await model.selectedText()
+            selectionGate.release()
+            let finished = await wait(seconds: 3) { !model.isLoadingForCheck }
+            let retainedSelection = await model.selectedText()
+            let selectionKept = !selected.isEmpty && selected == retainedSelection
+                && model.snapshot?.revision == 2 && model.update == .revision(3)
+            let pass = prepared && deferred && followed && preserved && selectionPrepared && finished && selectionKept
+            let detail = "scroll preparation gated: \(prepared); deferred while scrolling: \(deferred); followed after settling: \(followed); new position restored: \(preserved); selection preparation gated: \(selectionPrepared); selection retained with update notice: \(selectionKept)"
+            await model.close()
+            return .init(name: "interaction-during-revision-preparation", pass: pass, detail: detail)
+        } catch {
+            return .init(name: "interaction-during-revision-preparation", pass: false, detail: String(describing: error))
+        }
     }
 
     func positionAcrossRefresh(keep: inout [NSWindow]) async -> Verification.Check {

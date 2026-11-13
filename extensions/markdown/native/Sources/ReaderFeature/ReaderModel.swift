@@ -82,8 +82,8 @@ public final class ReaderModel {
     public var pendingExternalURL: URL?
     public var detailsVisible = false
     /// When set, a newer revision replaces the shown one at the same reading position as soon as
-    /// the reader sees it, unless text is selected or the find bar is open: then, as without
-    /// this setting, an update notice waits for the reader's choice.
+    /// the reader sees it. Scrolling defers replacement until it settles. A text selection or
+    /// an open find bar keeps the update notice for the reader's choice.
     public var followsLatest = false
     public var settings: PageSettings {
         didSet {
@@ -104,6 +104,10 @@ public final class ReaderModel {
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
     @ObservationIgnored private var monitorTask: Task<Void, Never>?
     @ObservationIgnored private var closed = false
+    @ObservationIgnored private var scrolling = false
+    @ObservationIgnored private var interactionGeneration = 0
+    /// Suspends a prepared revision before installation for controlled lifecycle checks.
+    @ObservationIgnored package var preparationGate: (@MainActor (Int?) async -> Void)?
     @ObservationIgnored var expectingLoad = false
 
     public init(reference: DocumentReference, platform: ReaderPlatform, state: ReadingStateStore) {
@@ -156,17 +160,20 @@ public final class ReaderModel {
     /// `automatic` marks a load that the reader started by itself to follow a new revision: it
     /// gives way when reading interaction started while it prepared the revision.
     func load(revision: Int?, pinnedDigest: String? = nil, restore: RestoreMode, automatic: Bool = false) async {
+        guard !closed else { return }
         generation += 1
         let token = generation
         loadPending = true
         defer { if token == generation { loadPending = false } }
         let started = Date()
+        let firstInstall = snapshot == nil
+        startWatching()
         var position: ReadingPosition?
         switch restore {
         case .saved:
             state.reload()
             position = state.position(for: reference)
-        case .current: position = await capturePosition()
+        case .current: break
         }
         let reference = self.reference
         let result = await Task.detached(priority: .userInitiated) { () -> Result<PreparedDocument, any Error> in
@@ -183,17 +190,28 @@ public final class ReaderModel {
                 )
             }
         }.value
+        if case .success(let prepared) = result {
+            await preparationGate?(prepared.snapshot.revision)
+        }
         guard token == generation, !closed else { return }
         switch result {
         case .failure(let error):
             fail(String(describing: error))
         case .success(let prepared):
             if automatic, await interacting() { return }
+            let interaction = interactionGeneration
+            if case .current = restore { position = await capturePosition() }
+            if automatic, await interacting() { return }
             guard token == generation, !closed else { return }
+            if automatic, interaction != interactionGeneration { return }
             let previousRevision = snapshot?.revision
             guard await install(prepared, position: position, token: token, started: started) else { return }
             if case .current = restore, previousRevision != nil, previousRevision != prepared.snapshot.revision {
                 reportRestore()
+            }
+            if firstInstall || automatic {
+                loadPending = false
+                await checkForUpdate()
             }
         }
     }
@@ -251,7 +269,6 @@ public final class ReaderModel {
         )
         state.noteOpened(reference, title: Provenance.displayTitle(prepared.snapshot, rendered: prepared.rendered))
         readerLog.notice("rendered \(self.reference.key, privacy: .public) revision=\(prepared.snapshot.revision.map(String.init) ?? "-", privacy: .public) latest=\(prepared.snapshot.latestRevision.map(String.init) ?? "-", privacy: .public) update=\(self.update == nil ? "none" : "available", privacy: .public) restore=\(self.lastRestore.rawValue, privacy: .public) totalMs=\(Int(self.timings?.totalMilliseconds ?? 0), privacy: .public)")
-        startWatching()
         await savePosition()
         return true
     }
@@ -320,14 +337,14 @@ public final class ReaderModel {
     // MARK: - Watching the pointer
 
     private func startWatching() {
-        guard watcher == nil, let snapshot else { return }
+        guard watcher == nil, !closed else { return }
         let directory: URL
         switch reference {
         case .stored(let root, _, let id):
             guard let location = try? DirectoryStore(root: URL(fileURLWithPath: root)).pointerLocation(id) else { return }
             directory = location
-        case .file:
-            directory = snapshot.location.deletingLastPathComponent()
+        case .file(let path):
+            directory = URL(fileURLWithPath: path).deletingLastPathComponent()
         }
         watcher = DirectoryWatcher(directory: directory) { [weak self] in
             Task { @MainActor in await self?.checkForUpdate() }
@@ -336,17 +353,22 @@ public final class ReaderModel {
 
     /// Notes a newer revision or a changed file without touching the page.
     public func checkForUpdate() async {
-        guard let snapshot else { return }
+        guard let snapshot, !closed else { return }
+        let token = generation
         let reference = self.reference
         let marker = await Task.detached { DocumentLoader.currentMarker(reference) }.value
-        guard let marker else { return }
+        guard let marker, token == generation, !closed else { return }
         switch reference {
         case .stored:
-            guard let latest = Int(marker), latest > (latestRevision ?? 0) || (latest > (snapshot.revision ?? 0) && update == nil) else { return }
-            latestRevision = latest
-            update = .revision(latest)
+            guard let latest = Int(marker), latest > (snapshot.revision ?? 0) else { return }
+            let newest = max(latestRevision ?? 0, latest)
+            latestRevision = newest
+            update = .revision(newest)
             readerLog.notice("update available \(self.reference.key, privacy: .public) revision=\(latest, privacy: .public)")
-            if followsLatest, await !interacting() { await load(revision: nil, restore: .current, automatic: true) }
+            if followsLatest, !loadPending, await !interacting() {
+                guard token == generation, !closed, !loadPending else { return }
+                await load(revision: nil, restore: .current, automatic: true)
+            }
         case .file:
             if marker != snapshot.digest { update = .fileChanged }
         }
@@ -356,11 +378,21 @@ public final class ReaderModel {
 
     /// Called when the page scrolls; saves the position after scrolling settles.
     public func scrolled() {
+        guard !closed else { return }
+        scrolling = true
+        interactionGeneration += 1
         positionTask?.cancel()
         positionTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(500))
-            guard !Task.isCancelled else { return }
-            await self?.savePosition()
+            guard !Task.isCancelled, let self, !self.closed else { return }
+            self.scrolling = false
+            await self.savePosition()
+            guard !Task.isCancelled, !self.closed else { return }
+            self.positionTask = nil
+            if self.followsLatest, !self.loadPending, case .revision = self.update, await !self.interacting() {
+                guard !self.closed, !self.loadPending else { return }
+                await self.load(revision: nil, restore: .current, automatic: true)
+            }
         }
     }
 
@@ -419,10 +451,11 @@ public final class ReaderModel {
     }
 
     /// Whether the reader is in the middle of something that a page replacement would undo: a
-    /// text selection or an open find bar.
+    /// text selection, an open find bar or a scroll that has not settled.
     func interacting() async -> Bool {
-        if findVisible { return true }
-        return !(await selectedText()).isEmpty
+        if findVisible || scrolling { return true }
+        let selection = await selectedText()
+        return findVisible || scrolling || !selection.isEmpty
     }
 
     public func showFind() {
@@ -564,6 +597,8 @@ extension ReaderModel {
     }
 
     package var isDisplayingForCheck: Bool { expectingLoad }
+    package var isLoadingForCheck: Bool { loadPending }
+    package var isScrollingForCheck: Bool { scrolling }
     package var refusedAssetRequests: Int { assets.refused }
     package var savedPositionForCheck: ReadingPosition? { state.position(for: reference) }
     package var servedAssetRequests: Int { assets.served }
