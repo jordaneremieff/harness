@@ -27,6 +27,7 @@ struct Verification {
             let store = try VerifyStore(root: workspace.appendingPathComponent("store"))
             let context = Context(windows: windows, workspace: workspace, store: store)
             checks.append(await context.latestExplicitOpen(keep: &keep))
+            checks.append(await context.inlineFind(keep: &keep))
             checks.append(await context.codeLineEndings(keep: &keep))
             checks.append(await context.tableColumnWidths(keep: &keep))
             checks.append(await context.contentScript(keep: &keep))
@@ -285,7 +286,6 @@ struct Context {
             await model.find()
             let first = await js(model, position) as? String ?? ""
             let text = await model.selectedText()
-            let counted = model.findPosition
             await model.find()
             let second = await js(model, position) as? String ?? ""
             await model.find()
@@ -295,8 +295,8 @@ struct Context {
             model.findQuery = "absent-word"
             await model.find()
             let missing = model.findStatus
-            let pass = counted?.index == 1 && counted?.total == 3 && text == "needle" && !first.isEmpty && first != second && second != third && back == second && missing == .notFound
-            return .init(name: "find-moves-selection", pass: pass, detail: "position \(counted.map { "\($0.index) of \($0.total)" } ?? "-"); matches: [\(first)] [\(second)] [\(third)], previous: [\(back)], missing word: \(missing)")
+            let pass = text == "needle" && !first.isEmpty && first != second && second != third && back == second && missing == .notFound
+            return .init(name: "find-moves-selection", pass: pass, detail: "matches: [\(first)] [\(second)] [\(third)], previous: [\(back)], missing word: \(missing)")
         } catch {
             return .init(name: "find-moves-selection", pass: false, detail: String(describing: error))
         }
@@ -327,6 +327,24 @@ struct Context {
             }
             return .init(name: "latest-explicit-open-wins", pass: pass, detail: results.joined(separator: "; "))
         } catch { return .init(name: "latest-explicit-open-wins", pass: false, detail: String(describing: error)) }
+    }
+
+    func inlineFind(keep: inout [NSWindow]) async -> Verification.Check {
+        do {
+            let model = try await openFile("inline-find.md", "# Find\n\nSearch for **joined** words.\n\nSearch for joined words.\n", keep: &keep)
+            let position = "const r = getSelection().getRangeAt(0); return r.startContainer.parentElement.tagName;"
+            model.findQuery = "joined words"
+            await model.find()
+            let first = await js(model, position) as? String ?? ""
+            let firstText = await model.selectedText()
+            await model.find()
+            let second = await js(model, position) as? String ?? ""
+            let secondText = await model.selectedText()
+            await model.find(backwards: true)
+            let back = await js(model, position) as? String ?? ""
+            let pass = first == "STRONG" && second == "P" && back == first && firstText == "joined words" && secondText == firstText
+            return .init(name: "find-across-inline-formatting", pass: pass, detail: "first: \(first) [\(firstText)]; next: \(second) [\(secondText)]; previous: \(back)")
+        } catch { return .init(name: "find-across-inline-formatting", pass: false, detail: String(describing: error)) }
     }
 
     func codeLineEndings(keep: inout [NSWindow]) async -> Verification.Check {

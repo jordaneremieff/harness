@@ -191,28 +191,6 @@ enum PageScript {
     return window.find(query, false, backwards, true, false, false, false);
     """
 
-    /// Counts matches inside single text nodes (at most 10000) and the position of the selected
-    /// match among them. Index 0 means the selection is not one of the counted matches.
-    static let findCount = """
-    const needle = query.toLocaleLowerCase();
-    if (!needle) return { total: 0, index: 0 };
-    const selection = getSelection();
-    const range = selection.rangeCount ? selection.getRangeAt(0) : null;
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    let total = 0, index = 0;
-    while (walker.nextNode() && total < 10000) {
-      const node = walker.currentNode;
-      const text = node.nodeValue.toLocaleLowerCase();
-      let at = text.indexOf(needle);
-      while (at !== -1 && total < 10000) {
-        total += 1;
-        if (range && range.startContainer === node && range.startOffset === at) index = total;
-        at = text.indexOf(needle, at + needle.length);
-      }
-    }
-    return { total: total, index: index };
-    """
-
     static let selectionText = "return String(window.getSelection());"
 
     static let applySettings = """

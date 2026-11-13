@@ -88,8 +88,8 @@ Foundation directly.
 
 ## Reading
 
-Outline (sidebar, hidden below 680 points width), find with next and previous and a match
-count, text size, code wrapping, Copy for each code block (the exact fenced text without its
+Outline (sidebar, hidden below 680 points width), find with next and previous and a not-found
+state, text size, code wrapping, Copy for each code block (the parsed code without its
 final line break), Copy Markdown (the exact source), Show Source, a revision menu, a compact
 provenance line with details on demand (both name the newest revision the window knows), and
 labels for partial responses (length limit,
@@ -173,8 +173,8 @@ APP="<app>/Contents/MacOS/MarkdownReader"
   content scripts do not run; nothing reaches a loopback listener from remote images,
   stylesheets, frames or media (a control request proves the listener); the asset scheme serves
   a retained image and refuses traversal, unknown tokens, other hosts and a file swapped for a
-  symlink; find moves the selection and counts matches; code copy puts the exact literal on the
-  pasteboard and a forged action copies nothing; web links ask for confirmation; a pinned open
+  symlink; find moves the selection, including across inline formatting; code copy puts the
+  literal on the pasteboard and a forged action copies nothing; web links ask for confirmation; a pinned open
   request shows its revision with the update notice; the folder watcher reports a new revision
   and the position survives the refresh; the position survives a reopen through a reading-state
   file that a second state store reads from disk; each explicit open sets or clears the window's

@@ -129,10 +129,6 @@ public struct ReaderView: View {
                 .accessibilityLabel("Find in document")
             if model.findStatus == .notFound {
                 Text("Not found").font(.callout).foregroundStyle(.secondary)
-            } else if let position = model.findPosition {
-                Text(position.index > 0 ? "\(position.index) of \(position.total)" : "\(position.total) matches")
-                    .font(.callout.monospacedDigit())
-                    .foregroundStyle(.secondary)
             }
             Button { Task { await model.find(backwards: true) } } label: { Image(systemName: "chevron.up") }
                 .help("Find Previous (⇧⌘G)")

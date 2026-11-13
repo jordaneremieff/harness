@@ -71,15 +71,13 @@ public final class ReaderModel {
     public private(set) var launchOrigin: LaunchOrigin?
     public private(set) var showingSource = false
     public private(set) var findStatus: FindStatus = .idle
-    /// Position of the selected match and the number of matches, when they could be counted.
-    public private(set) var findPosition: (index: Int, total: Int)?
     public private(set) var timings: ReaderTimings?
     public private(set) var lastRestore: PositionRestore = .none
     public private(set) var recoveries = 0
     public var outlineVisible = true
     public var findVisible = false
     public var findQuery = "" {
-        didSet { if findQuery != oldValue { findStatus = .idle; findPosition = nil } }
+        didSet { if findQuery != oldValue { findStatus = .idle } }
     }
     public var pendingExternalURL: URL?
     public var detailsVisible = false
@@ -400,11 +398,6 @@ public final class ReaderModel {
         }
         let found = (try? await page.callJavaScript(PageScript.find, arguments: ["query": query, "backwards": backwards], contentWorld: PageScript.world) as? Bool) ?? false
         findStatus = found ? .found : .notFound
-        findPosition = nil
-        if found, let count = try? await page.callJavaScript(PageScript.findCount, arguments: ["query": query], contentWorld: PageScript.world) as? [String: Any],
-           let total = count["total"] as? Int, let index = count["index"] as? Int, total > 0 {
-            findPosition = (index, total)
-        }
     }
 
     public func selectedText() async -> String {
