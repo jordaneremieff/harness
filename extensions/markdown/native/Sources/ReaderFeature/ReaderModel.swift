@@ -96,6 +96,7 @@ public final class ReaderModel {
     @ObservationIgnored let assets = AssetTable()
     @ObservationIgnored private let router = NavigationRouter()
     @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var loadPending = false
     @ObservationIgnored private var watcher: DirectoryWatcher?
     @ObservationIgnored private var positionTask: Task<Void, Never>?
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
@@ -123,7 +124,7 @@ public final class ReaderModel {
         readerLog.notice("open \(self.reference.key, privacy: .public) revision=\(revision.map(String.init) ?? "latest", privacy: .public) origin=\(self.launchOrigin.map { $0.terminal + ($0.exact == nil ? "" : "+pane") } ?? "none", privacy: .public) window=\(self.snapshot == nil ? "new" : "existing", privacy: .public)")
         if snapshot == nil {
             await load(revision: revision, pinnedDigest: digest, restore: .saved)
-        } else if (revision ?? latestRevision) != snapshot?.revision || update == .fileChanged || (digest != nil && digest != snapshot?.digest) {
+        } else if loadPending || (revision ?? latestRevision) != snapshot?.revision || update == .fileChanged || (digest != nil && digest != snapshot?.digest) {
             await load(revision: revision, pinnedDigest: digest, restore: .current)
         }
     }
@@ -153,6 +154,8 @@ public final class ReaderModel {
     func load(revision: Int?, pinnedDigest: String? = nil, restore: RestoreMode) async {
         generation += 1
         let token = generation
+        loadPending = true
+        defer { if token == generation { loadPending = false } }
         let started = Date()
         var position: ReadingPosition?
         switch restore {
@@ -545,6 +548,7 @@ extension ReaderModel {
         try? await display(html: html)
     }
 
+    package var isDisplayingForCheck: Bool { expectingLoad }
     package var refusedAssetRequests: Int { assets.refused }
     package var savedPositionForCheck: ReadingPosition? { state.position(for: reference) }
     package var servedAssetRequests: Int { assets.served }

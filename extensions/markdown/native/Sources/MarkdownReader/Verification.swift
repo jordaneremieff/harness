@@ -26,6 +26,7 @@ struct Verification {
         do {
             let store = try VerifyStore(root: workspace.appendingPathComponent("store"))
             let context = Context(windows: windows, workspace: workspace, store: store)
+            checks.append(await context.latestExplicitOpen(keep: &keep))
             checks.append(await context.codeLineEndings(keep: &keep))
             checks.append(await context.tableColumnWidths(keep: &keep))
             checks.append(await context.contentScript(keep: &keep))
@@ -299,6 +300,33 @@ struct Context {
         } catch {
             return .init(name: "find-moves-selection", pass: false, detail: String(describing: error))
         }
+    }
+
+    func latestExplicitOpen(keep: inout [NSWindow]) async -> Verification.Check {
+        do {
+            let id = VerifyStore.newId()
+            try store.write(id, revision: 1, source: "# First revision\n")
+            try store.write(id, revision: 2, source: "# Second revision\n\n" + String(repeating: "A paragraph with **formatted** text.\n\n", count: 1000))
+            let model = await open(store.reference(id), revision: 1, keep: &keep)
+            let origin = LaunchOrigin(terminal: "Rex", bundleId: "com.superlogical.rex")
+            var results: [String] = []
+            var pass = true
+            for duringDisplay in [false, true] {
+                let pending = Task { await model.open(revision: 2, origin: origin) }
+                let deadline = Date().addingTimeInterval(5)
+                while Date() < deadline && (duringDisplay ? !model.isDisplayingForCheck : model.launchOrigin == nil) {
+                    await Task.yield()
+                }
+                let overlapped = duringDisplay ? model.isDisplayingForCheck : model.launchOrigin != nil
+                await model.open(revision: 1, origin: nil)
+                await pending.value
+                let heading = await js(model, "return document.querySelector('h1').textContent") as? String ?? "?"
+                let correct = overlapped && model.snapshot?.revision == 1 && heading.trimmingCharacters(in: .whitespacesAndNewlines) == "First revision" && model.launchOrigin == nil
+                pass = pass && correct
+                results.append("\(duringDisplay ? "display" : "preparation") overlap: \(overlapped); revision: \(model.snapshot?.revision ?? 0); heading: \(heading)")
+            }
+            return .init(name: "latest-explicit-open-wins", pass: pass, detail: results.joined(separator: "; "))
+        } catch { return .init(name: "latest-explicit-open-wins", pass: false, detail: String(describing: error)) }
     }
 
     func codeLineEndings(keep: inout [NSWindow]) async -> Verification.Check {

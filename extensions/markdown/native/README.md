@@ -82,8 +82,9 @@ Foundation directly.
   responses and file snapshots that says when its scan stopped. The known store folders are the
   `store` folder recorded in `build.json` and the stores of accepted open requests, which the app
   remembers. Everything stays openable after every producer exited.
-- One window per document. A repeated open brings that window forward without rendering again;
-  a reopen after closing returns to the saved reading position.
+- One window per document. A repeated open brings that window forward without rendering again
+  unless a load is pending. The last explicit open supersedes pending loads, even when it names
+  the revision already on screen. A reopen after closing returns to the saved reading position.
 
 ## Reading
 
@@ -177,7 +178,10 @@ APP="<app>/Contents/MacOS/MarkdownReader"
   request shows its revision with the update notice; the folder watcher reports a new revision
   and the position survives the refresh; the position survives a reopen through a reading-state
   file that a second state store reads from disk; each explicit open sets or clears the window's
-  origin; the page recovers after its web content process is killed.
+  origin and supersedes pending loads; pure-CRLF code copy retains its internal line endings;
+  a table that scrolls keeps its sentence width, its compact short cells and its one-line
+  rows, and a table that fits uses the page width; the page recovers after its web content
+  process is killed.
 - `--measure` builds documents of the given sizes from the corpus and reports read, render and
   display times for two opens (each taken right after its open, so the second is a warm open),
   refresh and find latency, and app plus web content memory.
