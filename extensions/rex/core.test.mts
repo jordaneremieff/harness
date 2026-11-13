@@ -728,8 +728,36 @@ test("creation focus is explicit for windows and splits and refused for sessions
 	const refused = await f.core.execute({ op: "create", kind: "session", label: "Project", focus: true }, { ...context, callId: "session" });
 	assert.equal(refused.ok, false);
 	assert.equal(refused.effects.state, "none");
-	assert.match(refused.error ?? "", /focus applies to window and split/);
+	assert.match(refused.error ?? "", /focus applies to window, split and float/);
 	assert.equal(f.transport.calls.some((call) => call.method === "session.create"), false);
+});
+
+test("float creation opens an owned floating pane in the anchor block's window", async () => {
+	const f = fixture();
+	const floating = "block:44444444-4444-4444-8444-444444444444";
+	f.transport.handler = (method) => (method === "session.new_layer" ? reply({ layer_id: "layer:55555555-5555-4555-8555-555555555555", block_ids: [floating], revision: 7 }) : undefined);
+	const created = await f.core.execute({ op: "create", kind: "float", label: "Document", command: ["node", "show.ts"], target: { session, block } }, { ...context, callId: "float" });
+	assert.equal(created.ok, true);
+	assert.equal(created.outcome, "created");
+	assert.equal(created.target?.blockId, floating);
+	assert.equal(created.target?.windowId, window);
+	const layers = () => f.transport.calls.filter((call) => call.method === "session.new_layer").map((call) => call.data);
+	assert.deepEqual(layers()[0], {
+		session_id: session,
+		window_id: window,
+		bounds: [0.1, 0.06, 0.8, 0.88],
+		layout: { block: { flavor: "com.superlogical.terminal.shell", label: "Document", options: { command: ["node", "show.ts"], exit: { on_completion: false } } } },
+		focus: false,
+	});
+	await f.core.execute({ op: "create", kind: "float", label: "Shown", focus: true, bounds: [0, 0, 0.5, 1], target: { session, block } }, { ...context, callId: "shown-float" });
+	assert.deepEqual([layers()[1]?.bounds, layers()[1]?.focus], [[0, 0, 0.5, 1], true]);
+	const outside = await f.core.execute({ op: "create", kind: "float", label: "Wide", bounds: [0.5, 0, 0.6, 1], target: { session, block } }, { ...context, callId: "outside" });
+	assert.equal(outside.ok, false);
+	assert.equal(outside.effects.state, "none");
+	assert.match(outside.error ?? "", /float bounds/);
+	const misplaced = await f.core.execute({ op: "create", kind: "split", label: "Split", bounds: [0, 0, 1, 1], target: { session, block } }, { ...context, callId: "misplaced" });
+	assert.match(misplaced.error ?? "", /bounds apply only to float creation/);
+	assert.equal(layers().length, 2);
 });
 
 test("cleanup acknowledgement preserves released original and attempt claims without revival", async () => {

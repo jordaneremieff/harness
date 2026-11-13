@@ -37,13 +37,14 @@ export type RexRequest =
 	| (RequestBase & { op: "resolve"; kind: "session" | "window" | "block" | "client"; query?: string })
 	| (RequestBase & {
 			op: "create";
-			kind: "session" | "window" | "split";
+			kind: "session" | "window" | "split" | "float";
 			label: string;
 			command?: string[];
 			cwd?: string;
 			shell?: string;
 			direction?: "right" | "left" | "above" | "below";
 			ratio?: number;
+			bounds?: number[];
 			focus?: boolean;
 	  })
 	| (RequestBase & {
@@ -1560,7 +1561,7 @@ function targetKey(kind: TargetKind): "sessionId" | "windowId" | "blockId" | "cl
 function targetNeed(request: RexRequest): TargetKind | undefined {
 	if (request.op === "create") {
 		if (request.kind === "session") return undefined;
-		return request.kind === "split" ? "block" : "session";
+		return request.kind === "split" || request.kind === "float" ? "block" : "session";
 	}
 	if (request.op === "native") return undefined;
 	if (request.op === "inspect" && request.view === "structure") return "session";
@@ -1613,7 +1614,8 @@ function createLayout(request: CreateRequest): Record<string, unknown> {
 		throw new Error("Use an absolute cwd on the selected server.");
 	if (request.shell !== undefined && !boundedText(request.shell, 4096)) throw new Error("Rex shell is invalid.");
 	if (request.kind === "session" && request.focus !== undefined)
-		throw new Error("focus applies to window and split creation. Display a new session through a client action.");
+		throw new Error("focus applies to window, split and float creation. Display a new session through a client action.");
+	if (request.bounds !== undefined && request.kind !== "float") throw new Error("bounds apply only to float creation.");
 	return {
 		block: {
 			flavor: "com.superlogical.terminal.shell",
@@ -1651,6 +1653,13 @@ function creationCall(
 			args: { session_id: target.sessionId, window_label: request.label, layout, focus: request.focus ?? false },
 		};
 	requireBlock(target);
+	if (request.kind === "float") {
+		if (!fullId(target.windowId, "window")) throw new Error("Rex did not resolve the anchor block's window.");
+		return {
+			method: "session.new_layer",
+			args: { session_id: target.sessionId, window_id: target.windowId, bounds: floatBounds(request.bounds), layout, focus: request.focus ?? false },
+		};
+	}
 	const direction = request.direction ?? "right";
 	const ratio = boundedInteger(request.ratio ?? 50, 1, 99, "split ratio") / 100;
 	const before = direction === "left" || direction === "above";
@@ -1667,12 +1676,27 @@ function creationCall(
 		},
 	};
 }
+/** A centred pane that leaves the surrounding layout visible. */
+const FLOAT_BOUNDS = [0.1, 0.06, 0.8, 0.88];
+/** Floating pane rectangle as [x, y, width, height] fractions of its window, inside the window. */
+function floatBounds(bounds: number[] | undefined): number[] {
+	if (bounds === undefined) return FLOAT_BOUNDS;
+	const [x, y, width, height] = bounds;
+	if (
+		bounds.length !== 4 ||
+		!bounds.every((value) => Number.isFinite(value) && value >= 0 && value <= 1) ||
+		x === undefined || y === undefined || width === undefined || height === undefined ||
+		width <= 0 || height <= 0 || x + width > 1 || y + height > 1
+	)
+		throw new Error("Use float bounds [x, y, width, height] as fractions of the window, with a positive size inside it.");
+	return bounds;
+}
 function createdResources(kind: CreateRequest["kind"], target: ResolvedTarget, raw: unknown): ResourceRef[] {
 	const data = object(raw);
 	const sessionId = kind === "session" ? data.session_id : target.sessionId;
 	const window =
 		kind === "session" ? object(Array.isArray(data.initial_windows) ? data.initial_windows[0] : undefined) : data;
-	const windowId = kind === "split" ? target.windowId : window.window_id;
+	const windowId = kind === "split" || kind === "float" ? target.windowId : window.window_id;
 	const blockIds = Array.isArray(window.block_ids) ? window.block_ids : [];
 	if (
 		!fullId(sessionId, "session") ||

@@ -11,7 +11,7 @@ It does not replace Bash, Jobs, Agent, Policy, Rex configuration or Rex's skill.
 | Tool | Operations | Contract |
 |---|---|---|
 | `rex_environment` | `environment`, `resolve` | Discover the selected server, sessions and clients; resolve session, window, block or client selectors. Return full IDs and server identity. |
-| `rex_terminal` | `create`, `inspect`, `input` | Establish persistent sessions, windows or splits, optionally shown to the operator; inspect structure, the most recent output, process or program status; deliver application text and keys. |
+| `rex_terminal` | `create`, `inspect`, `input` | Establish persistent sessions, windows, splits or floating panes, optionally shown to the operator; inspect structure, the most recent output, process or program status; deliver application text and keys. |
 | `rex_wait` | `wait` | Observe direct child exit with its exit status and most recent output, literal text in the most recent output, or a reported status. Combine bounded live events with current snapshots. |
 | `rex_native` | `native` | Retrieve the installed method catalogue or one method's schema; call an API, execute Lua or invoke an existing action. |
 | `rex_owned` | `owned`, `observe`, `reconcile`, `cleanup` | Read stored claims or current child evidence and output for selected claims; reconcile uncertainty, close only recorded owned blocks, or forget closed records. |
@@ -160,12 +160,16 @@ input to the terminal that hosts the agent.
 For an owned interactive application, use `rex_terminal` with `op: "create"`,
 `kind: "session"`, a useful `label`, and a command array such as
 `["node", "--interactive"]`. New windows and splits use an explicit existing
-session or anchor block. Creation preserves completed output. A new window or
-split does not take focus unless the request sets `focus: true`; use that when
-the operator asked to see the work, such as a diff tab or a test run. A new
-session cannot be shown this way; `focus` is refused there, and a client action
-such as `session.select` displays it. Save the returned target and effect
-record ID.
+session or anchor block. `kind: "float"` opens a floating pane in front of the
+anchor block's window (`session.new_layer`); `bounds` sets its rectangle as
+`[x, y, width, height]` fractions of that window and defaults to a centred pane
+that leaves the layout around it visible. Creation preserves completed output.
+A new window, split or floating pane does not take focus unless the request sets
+`focus: true`; use that when the operator asked to see the work, such as a diff
+tab, a test run or a document. A new session cannot be shown this way; `focus`
+is refused there, and a client action such as `session.select` displays it.
+Save the returned target and effect record ID. Cleanup of a floating pane closes
+its block, and Rex removes the emptied floating layer.
 
 Use `inspect` before application input. Deliver text with `input`; add keys such
 as `enter` when the application needs them. `observe: true` returns a subsequent
