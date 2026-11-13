@@ -364,8 +364,11 @@ public final class ReaderModel {
         }
     }
 
-    func savePosition() async {
-        guard phase == .ready, !showingSource, let position = await capturePosition() else { return }
+    func savePosition(final: Bool = false) async {
+        let token = generation
+        guard (!closed || final), phase == .ready, !showingSource,
+              let position = await capturePosition(), token == generation, (!closed || final)
+        else { return }
         state.setPosition(position, for: reference)
     }
 
@@ -540,14 +543,15 @@ public final class ReaderModel {
         }
     }
 
-    /// Ends the window's work: the watcher stops and the last position is saved.
+    /// Stops observation and queues the last position without waiting for persistence.
     public func close() async {
-        await savePosition()
+        guard !closed else { return }
         closed = true
         generation += 1
         watcher = nil
         positionTask?.cancel()
         monitorTask?.cancel()
+        await savePosition(final: true)
         state.saveNow()
     }
 }

@@ -69,6 +69,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         false
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard case .application = mode else { return .terminateNow }
+        var answered = false
+        let finish: (ReadingStateFlushResult) -> Void = { result in
+            guard !answered else { return }
+            answered = true
+            result.logFailure()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        Task { @MainActor in
+            await windows.closeReaders()
+            finish(await windows.state.flush(timeout: 0.75))
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            MainActor.assumeIsolated {
+                finish(.notSaved(reason: "The final position capture or state flush exceeded one second."))
+            }
+        }
+        return .terminateLater
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if case .pane = mode { return false }
         if !flag { showLibrary(nil) }

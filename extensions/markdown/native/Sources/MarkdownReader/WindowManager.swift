@@ -16,6 +16,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
     let platform: ReaderPlatform
     let defaultRoots: [String]
     private var readers: [String: Reader] = [:]
+    private var closing: [UUID: Task<Void, Never>] = [:]
     private var libraryWindow: NSWindow?
     private var libraryModel: LibraryModel?
 
@@ -26,6 +27,12 @@ final class WindowManager: NSObject, NSWindowDelegate {
     }
 
     var readerWindowCount: Int { readers.count }
+
+    func closeReaders() async {
+        let models = readers.values.map(\.model)
+        for model in models { await model.close() }
+        for task in Array(closing.values) { await task.value }
+    }
 
     var keyModel: ReaderModel? {
         guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return nil }
@@ -113,7 +120,11 @@ final class WindowManager: NSObject, NSWindowDelegate {
         guard let entry = readers.first(where: { $0.value.window === window }) else { return }
         readers.removeValue(forKey: entry.key)
         let model = entry.value.model
-        Task { await model.close() }
+        let id = UUID()
+        closing[id] = Task { [weak self] in
+            await model.close()
+            self?.closing.removeValue(forKey: id)
+        }
     }
 
     func showLibrary(openFile: @escaping () -> Void) {

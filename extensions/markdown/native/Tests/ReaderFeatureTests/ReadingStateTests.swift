@@ -64,7 +64,7 @@ import Testing
 
     /// Two reader processes that loaded the file before either saved: each save keeps the
     /// other's progress, and the newer position of one document wins.
-    @Test func savesFromSeveralReadersKeepEachOthersPositions() throws {
+    @Test func savesFromSeveralReadersKeepEachOthersPositions() async throws {
         let directory = try Self.directory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let first = ReadingStateStore(directory: directory)
@@ -73,8 +73,8 @@ import Testing
         first.setPosition(Self.position("old", at: 10), for: Self.reference(3))
         second.setPosition(Self.position("b", at: 20), for: Self.reference(2))
         second.setPosition(Self.position("new", at: 30), for: Self.reference(3))
-        second.saveNow()
-        first.saveNow()
+        #expect(await second.flush(timeout: 2) == .saved)
+        #expect(await first.flush(timeout: 2) == .saved)
 
         let later = ReadingStateStore(directory: directory)
         #expect(later.position(for: Self.reference(1))?.blockKey == "a")
@@ -83,13 +83,13 @@ import Testing
     }
 
     /// An opening reads positions that another reader saved after this one started.
-    @Test func reloadTakesInPositionsSavedElsewhere() throws {
+    @Test func reloadTakesInPositionsSavedElsewhere() async throws {
         let directory = try Self.directory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let reader = ReadingStateStore(directory: directory)
         let other = ReadingStateStore(directory: directory)
         other.setPosition(Self.position("elsewhere", at: 5), for: Self.reference(1))
-        other.saveNow()
+        #expect(await other.flush(timeout: 2) == .saved)
         #expect(reader.position(for: Self.reference(1)) == nil)
         reader.reload()
         #expect(reader.position(for: Self.reference(1))?.blockKey == "elsewhere")
@@ -114,18 +114,18 @@ import Testing
     }
 
     /// A position that this reader saved earlier never replaces a newer one that another reader
-    /// saved within the same second, although the file keeps whole seconds only.
-    @Test func anEarlierSaveNeverReplacesAnotherReadersNewerPosition() throws {
+    /// saved within the same second.
+    @Test func anEarlierSaveNeverReplacesAnotherReadersNewerPosition() async throws {
         let directory = try Self.directory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let first = ReadingStateStore(directory: directory)
         let second = ReadingStateStore(directory: directory)
         first.setPosition(Self.position("older", at: 0.1), for: Self.reference(1))
-        first.saveNow()
+        #expect(await first.flush(timeout: 2) == .saved)
         second.setPosition(Self.position("newer", at: 0.8), for: Self.reference(1))
-        second.saveNow()
+        #expect(await second.flush(timeout: 2) == .saved)
         first.setPosition(Self.position("other", at: 0.9), for: Self.reference(2))
-        first.saveNow()
+        #expect(await first.flush(timeout: 2) == .saved)
 
         let later = ReadingStateStore(directory: directory)
         #expect(later.position(for: Self.reference(1))?.blockKey == "newer")

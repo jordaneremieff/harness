@@ -178,16 +178,32 @@ final class PaneHost: NSObject, NSWindowDelegate {
         ending = true
         anchor.stop()
         window.orderOut(nil)
-        let finish = { [self] in
-            state.saveNow()
-            if !terminalGone { terminal.leave() }
-            exit(status)
+        var gone = terminalGone
+        var finished = false
+        terminal.onHangUp = { gone = true }
+        let finish: (ReadingStateFlushResult) -> Void = { [self] result in
+            guard !finished else { return }
+            finished = true
+            if !gone { terminal.leave() }
+            var finalStatus = status
+            if case .notSaved = result {
+                result.logFailure()
+                if !gone {
+                    FileHandle.standardError.write(Data("Markdown Reader: the reading position was not saved.\n".utf8))
+                }
+                if finalStatus == 0 { finalStatus = 1 }
+            }
+            exit(finalStatus)
         }
         Task { @MainActor in
             await model.close()
-            finish()
+            finish(await state.flush(timeout: 0.75))
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { MainActor.assumeIsolated { finish() } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            MainActor.assumeIsolated {
+                finish(.notSaved(reason: "The final position capture or state flush exceeded one second."))
+            }
+        }
     }
 }
 

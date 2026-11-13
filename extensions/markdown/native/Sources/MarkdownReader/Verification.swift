@@ -514,12 +514,17 @@ struct Context {
             let id = VerifyStore.newId()
             try store.write(id, revision: 1, source: Self.longDocument(), kind: "response")
             let stateDirectory = workspace.appendingPathComponent("reading-state")
-            let first = await open(store.reference(id), revision: nil, state: ReadingStateStore(directory: stateDirectory), keep: &keep)
+            let firstState = ReadingStateStore(directory: stateDirectory)
+            let first = await open(store.reference(id), revision: nil, state: firstState, keep: &keep)
             _ = await js(first, "window.scrollTo(0, 3100); return true;")
             first.scrolled()
             try? await Task.sleep(for: .milliseconds(800))
             let saved = await first.capturePositionForCheck()
             await first.close()
+            let flushed = await firstState.flush(timeout: 2)
+            if case .notSaved(let reason) = flushed {
+                return .init(name: "position-survives-reopen", pass: false, detail: "the state flush failed: \(reason)")
+            }
             let second = await open(store.reference(id), revision: nil, state: ReadingStateStore(directory: stateDirectory), keep: &keep)
             let restored = await second.capturePositionForCheck()
             let scroll = await js(second, "return window.scrollY") as? Double ?? 0
