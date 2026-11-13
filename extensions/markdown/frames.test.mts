@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { FrameClient, frameAppStatus, validFrame, type Frame } from "./frame-client.ts";
-import { cellReply, frameSequence, graphicsFallback, graphicsReply } from "./show-graphics.ts";
+import { cellReply, frameScale, frameSequence, graphicsFallback, graphicsReply } from "./show-graphics.ts";
 import { keyAction } from "./show-screen.ts";
 
 const digest = `sha256:${"a".repeat(64)}`;
@@ -24,6 +24,13 @@ test("graphics replies and cell size require complete bounded protocol answers",
 	assert.equal(graphicsFallback(true, { width: 8, height: 16 }), undefined);
 	assert.equal(keyAction("\x1b[5~"), "page-up");
 	assert.equal(keyAction("\x1b[6~"), "page-down");
+});
+
+test("the frame scale follows the current cell size", () => {
+	assert.equal(frameScale({ width: 8, height: 16 }, 2), 1);
+	assert.equal(frameScale({ width: 23, height: 44 }, 2), 2);
+	assert.equal(frameScale({ width: 12, height: 24 }, 2), 2);
+	assert.equal(frameScale({ width: 23, height: 44 }, 1), 1);
 });
 
 test("frames use whole raw RGBA temporary files and fixed body placement", () => {

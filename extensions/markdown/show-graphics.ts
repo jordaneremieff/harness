@@ -22,6 +22,14 @@ export function graphicsReply(data: string): { id: number; message: string } | u
 export function graphicsFallback(supported: boolean, cell?: Cell): string | undefined {
 	return !supported ? "Text view: terminal graphics are unavailable." : !cell ? "Text view: terminal pixel size is unavailable." : undefined;
 }
+/**
+ * Device pixels per page point for the current cells. A terminal with no attached display reports
+ * cells under 24 pixels high; those pages keep one pixel per point. The rule follows every new cell
+ * report, so a pane that starts hidden renders at the display scale once a display shows it.
+ */
+export function frameScale(cell: Cell, displayScale: number): number {
+	return cell.height < 24 ? 1 : displayScale;
+}
 export function frameFailure(error: unknown): string {
 	const message = error instanceof Error ? error.message : "";
 	if (message.startsWith("Terminal")) return "Text view: terminal graphics failed.";
@@ -78,8 +86,8 @@ export async function runGraphics(root: string, store: MarkdownStore, initial: S
 	const background = colors.background;
 	const appearance = background && background.r * 0.2126 + background.g * 0.7152 + background.b * 0.0722 > 128 ? "light" : "dark";
 	const backgroundHex = background ? `#${[background.r, background.g, background.b].map((n) => n.toString(16).padStart(2, "0")).join("")}` : undefined;
-	let scale = 1;
-	const viewport = (): Viewport => ({ width: terminal.columns * cell.width, height: Math.max(1, terminal.rows - 3) * cell.height, scale, appearance, textSize: 4, ...(backgroundHex ? { background: backgroundHex } : {}) });
+	let displayScale = 1;
+	const viewport = (): Viewport => ({ width: terminal.columns * cell.width, height: Math.max(1, terminal.rows - 3) * cell.height, scale: frameScale(cell, displayScale), appearance, textSize: 4, ...(backgroundHex ? { background: backgroundHex } : {}) });
 	const chrome = () => {
 		const heading = documentHeading(stored);
 		const percentage = shown ? `${Math.round(100 * shown.scrollY / Math.max(1, shown.documentHeight - shown.height))}%` : "";
@@ -165,9 +173,7 @@ export async function runGraphics(root: string, store: MarkdownStore, initial: S
 		terminal.setTitle(`${documentHeading(stored).title} · Markdown`);
 		if (!watcher) status = "Press r to load new revisions.";
 		const ready = await service.ready;
-		scale = ready.scale;
-		// Small unattached terminals report unscaled cells; retain normal point-sized text there.
-		if (cell.height < 24) scale = 1;
+		displayScale = ready.scale;
 		running = true;
 		const first = await service.request({ op: "open", root, document: stored.document.id, revision: stored.revision.revision, digest: stored.revision.digest, ...viewport() });
 		await draw(first); running = false;
