@@ -2,7 +2,7 @@ import type { JsonValue, OperatorPanelModule, PanelHost } from "../../operator-u
 import { markdownView, type MarkdownOperations, type MarkdownRow } from "./operator-view.ts";
 import { acquireResponse, readPanelAnswer, type MarkdownAnswer, type MarkdownRequest } from "./panel-protocol.ts";
 
-/** Requests stay on the captured owner route; only the explicit Read action imports reveal. */
+/** Requests stay on the captured owner route, and the view signal withdraws them; only the explicit Read action imports reveal. */
 export function panelOperations(host: PanelHost): MarkdownOperations {
 	const ask = async (request: MarkdownRequest, signal: AbortSignal): Promise<MarkdownAnswer> => {
 		signal.throwIfAborted();
@@ -11,14 +11,12 @@ export function panelOperations(host: PanelHost): MarkdownOperations {
 		return readPanelAnswer(request, answer.data);
 	};
 	const read = async (row: MarkdownRow, signal: AbortSignal): Promise<string> => {
-		const target = host.target.id;
 		if (row.kind === "response") {
 			const entryId = row.response.entryId;
 			const response = await acquireResponse(entryId, (request) => ask(request, signal), signal);
 			signal.throwIfAborted();
 			const reveal = await import("./reveal.ts");
 			signal.throwIfAborted();
-			if (target !== host.target.id) throw new Error("The selected conversation changed.");
 			return reveal.openResponse(response, signal);
 		}
 		const { id, revision, digest } = row.document;
@@ -26,7 +24,6 @@ export function panelOperations(host: PanelHost): MarkdownOperations {
 		if (!root || !storeId) throw new Error("The host did not supply a local store identity.");
 		const reveal = await import("./reveal.ts");
 		signal.throwIfAborted();
-		if (target !== host.target.id) throw new Error("The selected conversation changed.");
 		return reveal.openStored(root, id, signal, { gui: true, storeId, pin: { revision, digest } });
 	};
 	return {
