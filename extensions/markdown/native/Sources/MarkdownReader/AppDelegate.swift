@@ -131,7 +131,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             _ = try store.document(document)
             reference = .stored(root: FileAccess.canonicalPath(root), storeId: store.storeId, document: document)
         } catch {
-            FileHandle.standardError.write(Data("Markdown Reader: \(document) cannot be shown: \(error)\n".utf8))
+            // The document identifier and the error text come from the command line and the
+            // store; neither may control the terminal.
+            FileHandle.standardError.write(Data(TerminalText.line("Markdown Reader: \(document) cannot be shown: \(error)").utf8))
             exit(1)
         }
         let model = ReaderModel(reference: reference, platform: windows.platform, state: windows.state)

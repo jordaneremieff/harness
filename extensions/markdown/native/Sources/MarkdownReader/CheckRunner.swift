@@ -41,7 +41,7 @@ struct CheckRunner {
         case .returnCheck(let request):
             status = await returnCheck(request: request)
         case .usage(let text):
-            FileHandle.standardError.write(Data("usage: MarkdownReader \(text)\n".utf8))
+            FileHandle.standardError.write(Data(TerminalText.line("usage: MarkdownReader \(text)").utf8))
             status = 2
         case .application, .pane:
             status = 0

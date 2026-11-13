@@ -13,6 +13,12 @@ public enum TerminalText {
         }))
     }
 
+    /// One line for a terminal's error output: the printable characters of `text`, shortened to
+    /// `limit` characters, and a newline.
+    public static func line(_ text: String, limit: Int = 400) -> String {
+        fit(printable(text), limit) + "\n"
+    }
+
     /// Shortens text to `width` characters, ending with an ellipsis when it was longer.
     public static func fit(_ text: String, _ width: Int) -> String {
         text.count <= width ? text : String(text.prefix(max(1, width - 1))) + "…"

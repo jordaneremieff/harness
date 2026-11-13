@@ -53,4 +53,13 @@ import Testing
         #expect(TerminalText.wrap("one two three four", 9) == ["one two", "three", "four"])
         #expect(TerminalText.wrap("averyveryverylongword", 6) == ["avery…"])
     }
+
+    @Test func boundsAndCleansAnErrorLine() {
+        let storeId = "\u{1B}]52;c;aGVsbG8=\u{07}\u{1B}[2J\u{9B}31m"
+        let line = TerminalText.line("Markdown Reader: md-1 cannot be shown: Invalid document identifier: \(storeId)" + String(repeating: "x", count: 1000))
+        #expect(line.hasSuffix("\n"))
+        #expect(line.count == 401)
+        #expect(!line.dropLast().unicodeScalars.contains { $0.properties.generalCategory == .control })
+        #expect(line.hasPrefix("Markdown Reader: md-1 cannot be shown: Invalid document identifier: ]52;c;aGVsbG8=[2J31m"))
+    }
 }
