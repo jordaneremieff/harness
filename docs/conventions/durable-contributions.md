@@ -71,7 +71,9 @@ interface DurableContribution {
   };
   /**
    * Optional owner browser for the attached Agent terminal, bound to one of this
-   * contribution's own commands. Same entry rules as `display`. See
+   * contribution's own commands. Same entry rules as `display`. Explicit
+   * client-local document reveal is governed by the operator-panel contract;
+   * the headless contribution never launches a GUI. See
    * [operator panels](operator-panels.md#attached-panels).
    */
   readonly panel?: {

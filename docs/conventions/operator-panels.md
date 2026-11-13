@@ -167,8 +167,8 @@ another command of its owner that opens it, as the statusline's Model view
 names `/dashboard`. Pi's status footer carries no control or menu for
 these destinations.
 
-Publishers: stash (Stashes), clipboard (Clipboard), policy (Policy), pillars
-(Pillars), statusline (Commands, Model, Statuses). The frame collects the
+Publishers: stash (Stashes), clipboard (Clipboard), markdown (Markdown), policy
+(Policy), pillars (Pillars), statusline (Commands, Model, Statuses). The frame collects the
 publications each time it opens.
 
 ### Loading a view
@@ -192,8 +192,10 @@ view: (ctx, host) =>
   and a selection survive closing and reopening the destination.
 - The loading view drops a late result when its host signal aborted, and shows
   a load failure in place with the way to retry.
-- No renderer, action or key handler starts an import. The owner imports at
-  open time or at command time, never from a render path.
+- No renderer or selection handler starts an import. Presentation imports run
+  at open time or command time, never from a render path. The narrowly scoped
+  [client-local reveal](#client-local-reveal) adapter is imported by its explicit
+  action, not while the view opens.
 - A factory that publishes a view imports only `operator-ui/registration.ts`,
   so evaluating its entrypoint does not evaluate the frame and its building
   blocks. A view implementation may import `operator-ui/index.ts` when it
@@ -251,7 +253,9 @@ interface PanelHost extends ViewHost {
 
 `readPanelModule` accepts a module export only in this shape; any other value
 is refused, never adapted. The module imports only presentation code from its
-own slice, `operator-ui/index.ts`, and public Pi or pi-tui types. Evaluating it
+own slice, `operator-ui/index.ts`, and public Pi or pi-tui types at evaluation.
+An explicit action may lazily import the owner-local adapter specified under
+[Client-local reveal](#client-local-reveal). Evaluating it
 registers nothing, starts no host, opens no store, emits no event, and reads no
 settings or credentials. It is trusted local code, not a sandbox.
 
@@ -310,6 +314,38 @@ Each owner documents its request union and effects in its README:
 | stash | recent and archive views, exact preview, lifecycle and coverage | pickup (optionally with a note) activates the record and submits one follow-up to the bound conversation, keyed by the invocation; close, release, reopen, rotate through the owner's lifecycle rules |
 | policy | registry, fire summary, recent activity, inspection views, exact review artifacts, data list and show | approve, reject, lifecycle, effect, reset; data set, set-file and remove answer first with the complete review and an exact approval that the view sends only after the effect-labelled final action; revisions, file rereads and the view audit are checked again on apply |
 | pillars | inventory and source pages with resource identity, offset, continuation, and digest | none; browsing never starts a judgment run or corpus mutation |
+| markdown | recent assistant responses, exact response pages, published documents with host store identity | Read saves a response snapshot in the client store or opens a locally accessible published document, then requests the fixed native reader reveal; the host command starts no model work and launches no GUI |
+
+## Client-local reveal
+
+An explicit operator action in a panel view may invoke an owner-local document
+reveal adapter, imported lazily by that action from the owner's slice. Import,
+render, selection and focus never materialize a document or reveal an app. Every
+module remains free of import-time effects.
+
+The adapter materializes bounded, validated source already acquired through the
+bound owner command into the owner's private client-side store, or opens an
+existing local document from the store identity returned by that command. It
+uses one fixed owner-defined OS invocation, with no caller-supplied executable,
+helper path or generic command bridge. The owner documents the invocation and
+its locality checks in its README.
+
+The action captures the target and entry or document identity before asynchronous
+work. It checks the view signal after each awaited acquisition, before
+materialization, and immediately before reveal. A changed selection or closed
+view withdraws the action. A save that already completed remains saved; it does
+not grant permission for a stale reveal. The adapter distinguishes saved,
+accepted, not confirmed and reveal failed. It never claims rendering, focus or human
+acceptance from a launch receipt.
+
+The adapter runs only in the local operator client. It starts no model turn,
+sends no conversation input, and cannot control producer work. A headless host,
+publication tool, print process or RPC process never invokes it to launch a GUI.
+The owner command supplies data only. The adapter reads the client's own owner
+settings when the action runs; host settings never select the client's store or
+app. A store path from a remote producer is not
+proof of local access: the adapter checks the returned store identity and refuses
+an unavailable local store, rather than inventing a transfer path.
 
 ## Verification
 

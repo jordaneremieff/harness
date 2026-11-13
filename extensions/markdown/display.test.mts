@@ -1,0 +1,21 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { createPublishTool } from "./publish.ts";
+import { toolDisplay } from "./display.ts";
+import { MarkdownStore } from "./store.ts";
+const theme = { fg: (_colour: string, value: string) => value } as never;
+test("publication cards are pure records shared by ordinary and attached presentation", () => {
+	const publication = toolDisplay();
+	assert.equal(publication.version, 1);
+	const card = publication.tools[0]; assert.ok(card);
+	assert.deepEqual(Object.keys(card).sort(), ["name", "renderCall", "renderResult"]);
+	const ordinary = createPublishTool({ store: new MarkdownStore("/unused") });
+	assert.equal(ordinary.renderCall, card.renderCall); assert.equal(ordinary.renderResult, card.renderResult);
+	assert.ok(card.renderCall); assert.ok(card.renderResult);
+	const call = card.renderCall({ title: "Title\n\u001b[31m" }, theme, {} as never).render(100).join("\n");
+	assert.match(call, /Markdown publish/); assert.ok(!call.includes("\u001b"));
+	const saved = card.renderResult({ content: [], details: { ok: true, documentId: "md-12345678901234567890", revision: 2, bytes: 100 } }, {} as never, theme, {} as never).render(100).join("\n");
+	assert.match(saved, /revision 2/); assert.match(saved, /No window opened/);
+	const error = card.renderResult({ content: [], details: { ok: false, error: { message: "Stale revision." } } }, {} as never, theme, {} as never).render(100).join("\n");
+	assert.match(error, /Stale revision/);
+});

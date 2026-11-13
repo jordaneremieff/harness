@@ -609,7 +609,7 @@ lookup rebuilds the selected transcript from its retained entries at once, so
 the reading position and each card's disclosure survive it. Builtin,
 codemode and Agent cards keep their precedence. A host from another release
 refuses the status read through the existing operation identity check; there
-is no older reader. Owner views (clipboard, pillars, policy, stash) load the
+is no older reader. Owner views (clipboard, markdown, pillars, policy, stash) load the
 same way and open from `o owner views` in the footer; see
 [operator views](../../docs/conventions/operator-panels.md#attached-panels).
 

@@ -53,8 +53,8 @@ extension state, or a tool registration API. Do not wait for `session_start`.
 A request response only emits display data; it executes no tool. Publishers own
 their renderer logic and its handling of arguments and result details.
 
-The owning slices are brave, clipboard, history, jobs, memory, pillars, policy,
-registry, rex, and stash. Agent publishes its internal cards from the same renderer
+The owning slices are brave, clipboard, history, jobs, markdown, memory, pillars,
+policy, registry, rex, and stash. Agent publishes its internal cards from the same renderer
 records used by its ordinary registration. The agent dashboard also retains
 local precedence for those cards.
 

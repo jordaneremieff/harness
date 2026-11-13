@@ -1310,7 +1310,7 @@ export class AgentDashboard implements Component, Focusable {
 		const row = this.console?.row;
 		if (!row) return [];
 		const actions = this.primaryTargetActions(row);
-		if (this.operations.panels) actions.push({ id: "browsers", label: "Owner views", key: "o", description: "Stashes, clipboard, policy and pillars bound to this agent", run: () => void this.openBrowsers() });
+		if (this.operations.panels) actions.push({ id: "browsers", label: "Owner views", key: "o", description: "Stashes, clipboard, Markdown, policy and pillars bound to this agent", run: () => void this.openBrowsers() });
 		const secondary: Array<[string, string, string]> = [
 			["fork", "Fork", "An idle branch from a committed message"],
 			["rewind", "Rewind", "A corrected branch before a mistake; files stay current"],

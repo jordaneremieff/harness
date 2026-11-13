@@ -262,7 +262,7 @@ export function literalSpecifiers(source: string): string[] {
 }
 
 /** Slices whose operator views use the package-level presentation entry. */
-const OPERATOR_UI_CONSUMERS = new Set(["agent", "clipboard", "pillars", "policy", "stash", "statusline"]);
+const OPERATOR_UI_CONSUMERS = new Set(["agent", "clipboard", "markdown", "pillars", "policy", "stash", "statusline"]);
 
 /** Slices that derive session names through the package-level module. */
 const SESSION_NAME_CONSUMERS = new Set(["agent", "evo"]);
