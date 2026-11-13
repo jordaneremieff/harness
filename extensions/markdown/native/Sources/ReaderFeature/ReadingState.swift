@@ -323,7 +323,11 @@ public final class ReadingStateStore {
             Thread.sleep(forTimeInterval: 0.01)
         }
         defer { flock(lock, LOCK_UN) }
-        let merged = Self.merged(ours: snapshot, theirs: Self.read(file) ?? ReadingStateFile(), changes: changes)
+        // A missing file starts empty. A file that exists but cannot be read is replaced by this
+        // process's whole view of the state, not by its changes alone, so the entries that this
+        // process loaded survive.
+        let disk = Self.read(file) ?? (FileManager.default.fileExists(atPath: file.path) ? snapshot : ReadingStateFile())
+        let merged = Self.merged(ours: snapshot, theirs: disk, changes: changes)
         let data = try JSONEncoder.reading.encode(merged)
         try beforeWrite()
         try data.write(to: file, options: [.atomic])
