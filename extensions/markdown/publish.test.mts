@@ -256,6 +256,13 @@ test("native model and codemode calls share outcomes, prefixes and explicit reus
 		const message = page.items.flatMap((entry) => entry.model ?? []).find((message) => message.role === "toolResult" && message.toolName === "codemode"); assert.ok(message && message.role === "toolResult");
 		const output = message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\\n");
 		const nested = JSON.parse(output.slice(output.indexOf("{"), output.lastIndexOf("}") + 1));
-		assert.equal(nested.a.ok, true); assert.equal(nested.b.ok, true); assert.notEqual(nested.a.documentId, nested.b.documentId); assert.equal(nested.c.documentId, nested.d.documentId); assert.equal(nested.d.replayed, true);
+		assert.equal(nested.a.ok, true); assert.equal(nested.b.ok, true); assert.notEqual(nested.a.documentId, nested.b.documentId); assert.equal(nested.c.documentId, nested.d.documentId); assert.equal(nested.c.replayed, false); assert.equal(nested.d.replayed, true);
+		const keyed = { title: "Keyed native", text: "keyed", reuseKey: "native-reuse" };
+		const before = results.length;
+		faux.setResponses([fauxAssistantMessage(fauxToolCall("markdown_publish", keyed), { stopReason: "toolUse" }), fauxAssistantMessage(fauxToolCall("markdown_publish", keyed), { stopReason: "toolUse" }), fauxAssistantMessage("Done.")]);
+		assert.equal((await (await conversation.submit({ type: "input", content: "Publish with a key twice." }, context)).wait(context)).status, "done");
+		const [created, returned] = results.slice(before).map((entry) => success(entry.outcome));
+		assert.ok(created && returned); assert.equal(created.documentId, returned.documentId);
+		assert.equal(created.created, true); assert.equal(created.replayed, false); assert.equal(returned.replayed, true);
 	} finally { await first.close(context); sandbox.close(); }
 }));

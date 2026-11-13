@@ -225,7 +225,7 @@ export class MarkdownStore {
 	}
 	async preparePlan(input: WriteInput, options: { document?: string; expectedRevision?: number; reuseKey?: string } = {}): Promise<PublicationPlan> {
 		validateInput(input);
-		return this.locked(async () => (await this.publicationPlan(input, { id: options.document, expectedRevision: options.expectedRevision, reuseKey: options.reuseKey })).plan);
+		return this.locked(() => this.publicationPlan(input, { id: options.document, expectedRevision: options.expectedRevision, reuseKey: options.reuseKey }));
 	}
 	async create(input: WriteInput, options: { kind?: DocumentKind; plan?: PublicationPlan; reuseKey?: string } = {}): Promise<WriteResult> {
 		validateInput(input);
@@ -263,7 +263,7 @@ export class MarkdownStore {
 		if (!validId(id)) return undefined;
 		try { return await this.get(id); } catch (error) { if (error instanceof StoreError && error.code === "not-found") return undefined; throw error; }
 	}
-	private async publicationPlan(input: WriteInput, options: WriteOptions): Promise<{ plan: PublicationPlan; reused: boolean }> {
+	private async publicationPlan(input: WriteInput, options: WriteOptions): Promise<PublicationPlan> {
 		const inputDigest = publicationDigest(input, options.id, options.expectedRevision);
 		let plan = options.plan;
 		const request = options.reuseKey === undefined ? undefined : join(this.root, "reuse", `${hash(options.reuseKey)}.json`);
@@ -273,7 +273,7 @@ export class MarkdownStore {
 		plan ??= planPublication(input, options.id, options.expectedRevision);
 		if (!validId(plan.documentId) || plan.revision !== (options.expectedRevision ?? 0) + 1 || (options.id && options.id !== plan.documentId)) throw new StoreError("invalid", "Invalid publication plan.");
 		if (request && !reused) { await jsonNew(request, plan, () => this.checkpoint?.("reuse-temp")); await this.checkpoint?.("intent"); }
-		return { plan, reused };
+		return plan;
 	}
 	private async savedPublication(plan: PublicationPlan): Promise<WriteResult | undefined> {
 		const id = plan.documentId;
@@ -293,7 +293,7 @@ export class MarkdownStore {
 		return previous;
 	}
 	private async write(input: WriteInput, options: WriteOptions): Promise<WriteResult> {
-		const { plan, reused } = await this.publicationPlan(input, options);
+		const plan = await this.publicationPlan(input, options);
 		const saved = await this.savedPublication(plan);
 		if (saved) return saved;
 		const id = plan.documentId;
@@ -309,7 +309,7 @@ export class MarkdownStore {
 		await json(join(base, "document.json"), { ...document, title: prepared.title, updatedAt: prepared.createdAt, digest: prepared.digest, bytes: prepared.bytes });
 		if (!previous) await rename(base, target);
 		await this.checkpoint?.("pointer");
-		return { ...await this.get(id, number), created: !previous, replayed: reused };
+		return { ...await this.get(id, number), created: !previous, replayed: false };
 	}
 	async pruneOpenRequests(olderThanMs = 86400000): Promise<number> {
 		if (!Number.isFinite(olderThanMs) || olderThanMs < 0) throw new StoreError("invalid", "Invalid request age.");

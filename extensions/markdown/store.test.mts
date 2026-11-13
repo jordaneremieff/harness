@@ -26,7 +26,9 @@ test("create, snapshots, updates, old revisions, distinct creates and reuse", ()
 	assert.equal((await store.create(input(), { plan })).document.id, keyed.document.id);
 	await assert.rejects(store.create(input("other"), { plan }), code("replay-conflict"));
 	const reused = await store.create(input(), { reuseKey: "explicit" });
-	assert.equal((await store.create(input(), { reuseKey: "explicit" })).document.id, reused.document.id);
+	assert.equal(reused.created, true); assert.equal(reused.replayed, false);
+	const returned = await store.create(input(), { reuseKey: "explicit" });
+	assert.equal(returned.document.id, reused.document.id); assert.equal(returned.replayed, true);
 	await assert.rejects(store.create(input("other"), { reuseKey: "explicit" }), code("replay-conflict"));
 	await store.update(first.document.id, 1, input("second"));
 	assert.equal((await store.get(first.document.id, 1)).source, input().source);
