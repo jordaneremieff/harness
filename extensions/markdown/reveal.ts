@@ -33,9 +33,11 @@ export function readLaunchOrigin(value: unknown): LaunchOrigin | null {
 	if (origin.exact !== undefined && (typeof origin.exact !== "object" || origin.exact === null || Array.isArray(origin.exact))) return null;
 	return { version: 1, terminal: "Rex", application: { bundleId: "com.superlogical.rex" }, ...(origin.exact === undefined ? {} : { exact: origin.exact as Record<string, unknown> }) };
 }
+/** Exceeds the helper's own child deadline plus process start, so a slow terminal still yields the helper's result. */
+const ORIGIN_TIMEOUT_MS = 4000;
 async function captureOrigin(signal: AbortSignal, processRuntime: RevealRuntime): Promise<LaunchOrigin | null> {
 	try {
-		const result = await processRuntime.run(process.execPath, [join(PACKAGE_ROOT, "extensions", "rex", "terminal-origin.ts"), "capture"], { timeout: 2000, maxBuffer: 8192, signal });
+		const result = await processRuntime.run(process.execPath, [join(PACKAGE_ROOT, "extensions", "rex", "terminal-origin.ts"), "capture"], { timeout: ORIGIN_TIMEOUT_MS, maxBuffer: 8192, signal });
 		return readLaunchOrigin(JSON.parse(result.stdout));
 	} catch { return null; }
 }

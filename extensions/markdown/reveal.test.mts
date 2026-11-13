@@ -160,6 +160,24 @@ test("a published row opens its own revision, refuses a changed digest and an un
 		assert.deepEqual(await readdir(join(f.store.root, "opens")), []);
 	} finally { await f.cleanup(); }
 });
+test("origin capture that uses the helper's whole child deadline still reaches the open request", async (t) => {
+	const f = await fixture();
+	try {
+		const origin = { version: 1, terminal: "Rex", application: { bundleId: "com.superlogical.rex" } };
+		let launchOrigin: unknown;
+		const runtime: RevealRuntime = { ...f.runtime, run: (executable, args, options) => new Promise((resolve, reject) => {
+			if (executable !== process.execPath) { void readFile(args[2], "utf8").then((text) => { launchOrigin = JSON.parse(text).launchOrigin; resolve({ stdout: "" }); }, reject); return; }
+			const deadline = setTimeout(() => reject(new Error("timed out")), options.timeout);
+			setTimeout(() => { clearTimeout(deadline); resolve({ stdout: JSON.stringify(origin) }); }, 3500);
+		}) };
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const revealed = revealSaved(f.saved, new AbortController().signal, runtime);
+		t.mock.timers.tick(3500);
+		t.mock.timers.reset();
+		await revealed;
+		assert.deepEqual(launchOrigin, origin);
+	} finally { t.mock.timers.reset(); await f.cleanup(); }
+});
 test("response labels use the working directory and local response time, with capture time as fallback", async () => {
 	const f = await fixture();
 	try {
