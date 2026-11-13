@@ -249,16 +249,14 @@ final class PaneContentView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
-        guard !holes.isEmpty else {
+        guard let path = TerminalAnchor.maskPath(bounds: bounds, holes: holes) else {
             layer.mask = nil
             return
         }
-        // The holes can overlap, so the mask is the bounds minus the union of the holes.
-        let covered = holes.dropFirst().reduce(CGPath(rect: holes[0], transform: nil)) { $0.union(CGPath(rect: $1, transform: nil)) }
         let mask = (layer.mask as? CAShapeLayer) ?? CAShapeLayer()
         mask.frame = bounds
         mask.fillRule = .nonZero
-        mask.path = CGPath(rect: bounds, transform: nil).subtracting(covered)
+        mask.path = path
         layer.mask = mask
     }
 }
@@ -356,6 +354,8 @@ final class PaneTerminal {
         let count = read(STDIN_FILENO, &buffer, buffer.count)
         if count < 0, errno == EINTR || errno == EAGAIN { return }
         guard count > 0 else {
+            // The input stays readable at its end; stop reading it before the reader ends.
+            sources.first?.cancel()
             onHangUp?()
             return
         }
@@ -390,13 +390,26 @@ final class PaneTerminal {
         write(text)
     }
 
+    /// Writes to the terminal and waits at most a fifth of a second for it in all: a terminal
+    /// that stops reading loses the rest of the text rather than holding the main thread.
     private func write(_ text: String) {
-        var bytes = Array(text.utf8)
+        let bytes = Array(text.utf8)
+        let flags = fcntl(STDOUT_FILENO, F_GETFL)
+        if flags >= 0 { _ = fcntl(STDOUT_FILENO, F_SETFL, flags | O_NONBLOCK) }
+        defer { if flags >= 0 { _ = fcntl(STDOUT_FILENO, F_SETFL, flags) } }
+        let deadline = Date().addingTimeInterval(0.2)
         var offset = 0
         while offset < bytes.count {
-            let written = bytes.withUnsafeMutableBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress! + offset, $0.count - offset) }
-            if written <= 0 { return }
-            offset += written
+            let written = bytes.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress! + offset, $0.count - offset) }
+            if written > 0 {
+                offset += written
+                continue
+            }
+            guard written < 0, errno == EAGAIN || errno == EINTR else { return }
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { return }
+            var descriptor = pollfd(fd: STDOUT_FILENO, events: Int16(POLLOUT), revents: 0)
+            _ = poll(&descriptor, 1, Int32(max(1, remaining * 1000)))
         }
     }
 }

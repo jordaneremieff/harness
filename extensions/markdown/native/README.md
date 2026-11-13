@@ -271,8 +271,10 @@ it among its window's children (for example while another pane fills the window)
 hides.
 
 All accessibility and window-server requests run on one background queue, one step at a time,
-so a slow host never stalls the reader's window. A step starts no new request after 0.1 seconds;
-a request already waiting can take up to the 0.25-second messaging timeout. The anchor reads the
+so a slow host never stalls the reader's window. A search step visits at least one element and
+starts no new request after 0.1 seconds; a scan for covering content starts none after 0.3
+seconds or 400 requests, and an unfinished scan keeps the last holes. A request already waiting
+can take up to the 0.25-second messaging timeout. The anchor reads the
 frame ten times a second and sixty times a second for a moment after a change or a terminal
 resize, and looks for covering content four times a second, after a frame change and after each
 stacking report. The window hides when the text area disappears (for example, the host shows
@@ -292,18 +294,23 @@ again, so a revision published while the document opens is not missed. The readi
 for the new revision is taken from the page at the moment of replacement, not before the
 revision was prepared. While the page scrolls, replacement waits until scrolling has been still
 for half a second; while text is selected or the find bar is open, the update notice waits for
-the reader's choice instead.
+the reader's choice instead. A revision that the reader chooses in the revision menu stays until
+the reader returns to the latest one, and a revision whose automatic load failed is not tried
+again by itself until the pointer names another revision.
 
 Keys typed into the pane's terminal: `q`, Ctrl-C or Ctrl-D close the reader; any other key
-gives the reader window the keyboard. Closing the reader by key, close control, Command-W, a
-termination signal or an interruption signal captures the reading position, saves the pending
+gives the reader window the keyboard. Closing the reader by key, close control, Command-W,
+Command-Q, a quit request, a termination signal or an interruption signal captures the reading
+position, saves the pending
 reading state, restores the terminal and ends with status 0. A hang-up signal or the end of
 input ends it the same way without writing to the terminal. Capture and save together get one
 second, measured on the main thread while the save runs in the background, so a stalled lock or
 file system never keeps the process alive. If the state was not saved in that time, the process
 restores the terminal, writes one line saying that the reading position was not saved (only
 when the terminal is still there) and ends with status 1, so a pane that closes only on success
-keeps the message; the last saved position then stands. The placeholder places each line by row
+keeps the message; the last saved position then stands. A write to the terminal waits at most
+a fifth of a second, so a terminal that stops reading loses placeholder text but never holds the
+process. The placeholder places each line by row
 and stops at the last row, so a short pane keeps the marker on screen. The document, its
 revisions and the saved reading position never depend on the process: opening the document
 again restores the saved position.

@@ -70,6 +70,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // A quit request to a pane reader, such as a scripted quit or a logout, ends it like its
+        // close control: the position is saved and the terminal restored before the exit.
+        if case .pane = mode, let paneHost {
+            paneHost.end(status: 0)
+            return .terminateCancel
+        }
         guard case .application = mode else { return .terminateNow }
         var answered = false
         let finish: (ReadingStateFlushResult) -> Void = { result in

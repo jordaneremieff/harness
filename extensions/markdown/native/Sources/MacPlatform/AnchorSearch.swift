@@ -97,12 +97,19 @@ struct AnchorSearch<Tree: AccessibilityTree> {
     /// Continues the round until a text area shows `marker`, the round ends, or `expired` says
     /// that the step's time is over. After a found element the next call continues behind it.
     mutating func run(_ tree: Tree, marker: String, expired: () -> Bool) -> Found? {
+        // Each call visits at least one node, so a step whose time went to earlier requests still
+        // moves the round forward.
+        var visitedNow = 0
         while index < applications.count {
-            if expired() { return nil }
+            if visitedNow > 0, expired() { return nil }
             let application = applications[index]
             guard let windows = loadWindows(tree, application) else { continue }
+            guard visited < Self.nodeBudget else {
+                leaveApplication()
+                continue
+            }
             if queueIndex >= queue.count {
-                guard windowIndex < windows.count, visited < Self.nodeBudget else {
+                guard windowIndex < windows.count else {
                     leaveApplication()
                     continue
                 }
@@ -113,11 +120,23 @@ struct AnchorSearch<Tree: AccessibilityTree> {
             let (node, depth) = queue[queueIndex]
             queueIndex += 1
             visited += 1
-            if let found = visit(tree, node: node, depth: depth, window: windows[windowIndex - 1], application: application, marker: marker) {
-                return found
+            switch visit(tree, node: node, depth: depth, window: windows[windowIndex - 1], application: application, marker: marker, expired: { visitedNow > 0 && expired() }) {
+            case .found(let found): return found
+            case .paused:
+                // The step's time ended between two requests for this node: visit it again first.
+                queueIndex -= 1
+                visited -= 1
+                return nil
+            case .done: visitedNow += 1
             }
         }
         return nil
+    }
+
+    private enum Visit {
+        case found(Found)
+        case done
+        case paused
     }
 
     /// The application's windows, read once per round; nil while the request goes unanswered.
@@ -136,32 +155,34 @@ struct AnchorSearch<Tree: AccessibilityTree> {
         }
     }
 
-    private mutating func visit(_ tree: Tree, node: Tree.Node, depth: Int, window: Tree.Node, application: pid_t, marker: String) -> Found? {
+    private mutating func visit(_ tree: Tree, node: Tree.Node, depth: Int, window: Tree.Node, application: pid_t, marker: String, expired: () -> Bool) -> Visit {
         let role: String
         switch tree.role(node) {
         case .value(let value): role = value
-        case .missing: return nil
+        case .missing: return .done
         case .busy:
             noteBusy()
-            return nil
+            return .done
         }
-        if role == kAXTextAreaRole {
+        let textArea = role == kAXTextAreaRole
+        guard textArea || (!Self.skippedRoles.contains(role) && depth < Self.depthLimit) else { return .done }
+        if expired() { return .paused }
+        if textArea {
             switch tree.visibleText(node, limit: Self.textLimit) {
             case .value(let text) where Self.shows(marker, text):
-                return Found(element: node, window: window, application: application)
+                return .found(Found(element: node, window: window, application: application))
             case .busy: noteBusy()
             default: break
             }
-            return nil
+            return .done
         }
-        guard !Self.skippedRoles.contains(role), depth < Self.depthLimit else { return nil }
         switch tree.children(node) {
         case .value(let children):
             for child in children where queue.count < Self.nodeBudget { queue.append((child, depth + 1)) }
         case .busy: noteBusy()
         case .missing: break
         }
-        return nil
+        return .done
     }
 
     private mutating func noteBusy() {
@@ -211,14 +232,26 @@ enum CoverScan {
     /// stacking report.
     static let matchLimit = 0.5
 
-    /// The scan's result; nil when it did not complete.
-    static func scan<Tree: AccessibilityTree>(_ tree: Tree, element: Tree.Node, frame: CGRect, window: Tree.Node, application: pid_t, stacking: StackingReport? = nil) -> Result? {
-        var requests = 0
+    /// The requests that one scan may still make: at most `requestLimit`, and none after the
+    /// caller's time is over.
+    struct Budget {
+        private(set) var requests = 0
+        let expired: () -> Bool
+
+        /// Counts one request; false when the scan must stop without a result.
+        mutating func spend() -> Bool {
+            requests += 1
+            return requests <= CoverScan.requestLimit && !expired()
+        }
+    }
+
+    /// The scan's result; nil when it did not complete within its budget.
+    static func scan<Tree: AccessibilityTree>(_ tree: Tree, element: Tree.Node, frame: CGRect, window: Tree.Node, application: pid_t, stacking: StackingReport? = nil, expired: @escaping () -> Bool = { false }) -> Result? {
+        var budget = Budget(expired: expired)
         var chain: [Tree.Node] = []
         var node = element
         while true {
-            requests += 1
-            guard chain.count < depthLimit, case .value(let parent) = tree.parent(node) else { return nil }
+            guard budget.spend(), chain.count < depthLimit, case .value(let parent) = tree.parent(node) else { return nil }
             chain.append(parent)
             if tree.same(parent, window) { break }
             node = parent
@@ -226,45 +259,44 @@ enum CoverScan {
         var candidates: [(node: Tree.Node, frame: CGRect)] = []
         for level in stride(from: chain.count - 1, through: 0, by: -1) {
             let below = level == 0 ? element : chain[level - 1]
-            requests += 1
-            guard case .value(let children) = tree.children(chain[level]) else { return nil }
+            guard budget.spend(), case .value(let children) = tree.children(chain[level]) else { return nil }
             guard children.contains(where: { tree.same($0, below) }) else { return .detached }
             for child in children where !tree.same(child, below) {
-                requests += 1
-                guard requests <= requestLimit else { return nil }
+                guard budget.spend() else { return nil }
                 guard case .value(let rect) = tree.frame(child), overlaps(rect, frame) else { continue }
                 candidates.append((child, rect))
             }
         }
-        if let stacking { return classify(tree, candidates, frame: frame, stacking: stacking, requests: &requests) }
+        if let stacking { return classify(tree, candidates, frame: frame, stacking: stacking, budget: &budget) }
         var covers: [CGRect] = []
         for candidate in candidates {
             let overlap = candidate.frame.intersection(frame)
             var above = false
             for point in samplePoints(overlap) {
-                requests += 1
-                guard requests <= requestLimit else { return nil }
+                guard budget.spend() else { return nil }
                 guard case .value(let hit) = tree.element(at: point, in: application) else { continue }
-                if belongs(tree, hit, to: candidate.node, ours: chain + [element], requests: &requests) {
+                guard let inside = belongs(tree, hit, to: candidate.node, ours: chain + [element], budget: &budget) else { return nil }
+                if inside {
                     above = true
                     break
                 }
             }
             guard above else { continue }
-            let bounds = contentBounds(tree, candidate.node, frame: candidate.frame, requests: &requests).intersection(frame)
-            if overlaps(bounds, frame) { covers.append(bounds) }
+            guard let bounds = contentBounds(tree, candidate.node, frame: candidate.frame, budget: &budget) else { return nil }
+            let covered = bounds.intersection(frame)
+            if overlaps(covered, frame) { covers.append(covered) }
         }
         return .covers(covers)
     }
 
     /// Covers by the stacking report. A report that places the pane in no shown layout, or lists an
     /// area over the whole pane, covers the whole frame.
-    static func classify<Tree: AccessibilityTree>(_ tree: Tree, _ candidates: [(node: Tree.Node, frame: CGRect)], frame: CGRect, stacking: StackingReport, requests: inout Int) -> Result {
+    static func classify<Tree: AccessibilityTree>(_ tree: Tree, _ candidates: [(node: Tree.Node, frame: CGRect)], frame: CGRect, stacking: StackingReport, budget: inout Budget) -> Result? {
         guard let pane = stacking.pane, pane.width > 0, pane.height > 0 else { return .covers([frame]) }
         if stacking.above.contains(where: { $0.insetBy(dx: -0.001, dy: -0.001).contains(pane) }) { return .covers([frame]) }
         var covers: [CGRect] = []
         for candidate in candidates {
-            let bounds = contentBounds(tree, candidate.node, frame: candidate.frame, requests: &requests)
+            guard let bounds = contentBounds(tree, candidate.node, frame: candidate.frame, budget: &budget) else { return nil }
             let placed = layoutRect(bounds, frame: frame, pane: pane)
             guard stacking.above.contains(where: { match($0, placed) >= matchLimit }) else { continue }
             let covered = bounds.intersection(frame)
@@ -312,14 +344,14 @@ enum CoverScan {
         ]
     }
 
-    /// Whether `hit` is the candidate or lies inside it. Reaching the element or one of its
-    /// ancestors first means the point shows the element's own branch.
-    static func belongs<Tree: AccessibilityTree>(_ tree: Tree, _ hit: Tree.Node, to candidate: Tree.Node, ours: [Tree.Node], requests: inout Int) -> Bool {
+    /// Whether `hit` is the candidate or lies inside it; nil when the budget ran out. Reaching
+    /// the element or one of its ancestors first means the point shows the element's own branch.
+    static func belongs<Tree: AccessibilityTree>(_ tree: Tree, _ hit: Tree.Node, to candidate: Tree.Node, ours: [Tree.Node], budget: inout Budget) -> Bool? {
         var node = hit
         for _ in 0 ..< depthLimit {
             if tree.same(node, candidate) { return true }
             if ours.contains(where: { tree.same($0, node) }) { return false }
-            requests += 1
+            guard budget.spend() else { return nil }
             guard case .value(let parent) = tree.parent(node) else { return false }
             node = parent
         }
@@ -327,13 +359,13 @@ enum CoverScan {
     }
 
     /// The union of the candidate's children's frames inside its own frame, or its frame when it
-    /// has no children.
-    static func contentBounds<Tree: AccessibilityTree>(_ tree: Tree, _ node: Tree.Node, frame: CGRect, requests: inout Int) -> CGRect {
-        requests += 1
+    /// has no children; nil when the budget ran out.
+    static func contentBounds<Tree: AccessibilityTree>(_ tree: Tree, _ node: Tree.Node, frame: CGRect, budget: inout Budget) -> CGRect? {
+        guard budget.spend() else { return nil }
         guard case .value(let children) = tree.children(node), !children.isEmpty else { return frame }
         var bounds = CGRect.null
         for child in children {
-            requests += 1
+            guard budget.spend() else { return nil }
             if case .value(let rect) = tree.frame(child) { bounds = bounds.union(rect.intersection(frame)) }
         }
         return bounds.isNull ? frame : bounds

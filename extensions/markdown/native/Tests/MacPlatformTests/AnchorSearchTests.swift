@@ -144,6 +144,32 @@ final class ModelTree: AccessibilityTree {
         #expect(run(&search, tree, allowance: 100, steps: 5).found?.element == pane)
     }
 
+    @Test func visitsAtLeastOneNodePerStepWhenTheStepTimeIsAlreadyOver() {
+        let tree = ModelTree()
+        let window = tree.add("AXWindow", .zero, window: 1)
+        let group = tree.add("AXGroup", .zero, parent: window)
+        let pane = tree.add("AXTextArea", .zero, parent: group, text: marker)
+        var search = AnchorSearch<ModelTree>()
+        search.begin([1])
+        var found: AnchorSearch<ModelTree>.Found?
+        for _ in 0 ..< 10 where found == nil { found = search.run(tree, marker: marker, expired: { true }) }
+        #expect(found?.element == pane)
+    }
+
+    @Test func countsTheNodeBudgetPerApplication() {
+        let tree = ModelTree()
+        for _ in 0 ..< 2 {
+            let window = tree.add("AXWindow", .zero, window: 1)
+            for _ in 0 ..< 2000 { tree.add("AXGroup", .zero, parent: window) }
+        }
+        let last = tree.windowsOf[1]!.last!
+        tree.add("AXTextArea", .zero, parent: last, text: marker)
+        var search = AnchorSearch<ModelTree>()
+        search.begin([1])
+        #expect(run(&search, tree, allowance: 10_000, steps: 5).found == nil)
+        #expect(tree.requests < 2 * AnchorSearch<ModelTree>.nodeBudget + 10)
+    }
+
     @Test func prefersAnApplicationOnlyWithinARound() {
         var search = AnchorSearch<ModelTree>()
         search.prefer(9)
@@ -211,6 +237,24 @@ final class ModelTree: AccessibilityTree {
         let screen = Screen(floatAbove: true)
         screen.tree.late.insert(screen.tiled)
         #expect(CoverScan.scan(screen.tree, element: screen.right, frame: screen.rightFrame, window: screen.window, application: 1) == nil)
+    }
+
+    @Test func givesNoResultWhenACandidateExceedsTheRequestBudget() {
+        let screen = Screen(floatAbove: true)
+        for _ in 0 ..< CoverScan.requestLimit { screen.tree.add("AXGroup", screen.floatVisible, parent: screen.floating) }
+        #expect(CoverScan.scan(screen.tree, element: screen.right, frame: screen.rightFrame, window: screen.window, application: 1) == nil)
+        let small = Screen(floatAbove: true)
+        #expect(CoverScan.scan(small.tree, element: small.right, frame: small.rightFrame, window: small.window, application: 1, expired: { true }) == nil)
+    }
+
+    @Test func overlappingHolesStayOpen() throws {
+        let bounds = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let path = try #require(TerminalAnchor.maskPath(bounds: bounds, holes: [CGRect(x: 10, y: 10, width: 40, height: 40), CGRect(x: 30, y: 30, width: 40, height: 40)]))
+        #expect(!path.contains(CGPoint(x: 40, y: 40)))
+        #expect(!path.contains(CGPoint(x: 15, y: 15)))
+        #expect(!path.contains(CGPoint(x: 65, y: 65)))
+        #expect(path.contains(CGPoint(x: 90, y: 10)))
+        #expect(TerminalAnchor.maskPath(bounds: bounds, holes: []) == nil)
     }
 
     @Test func reportsAnElementThatItsWindowNoLongerShows() {

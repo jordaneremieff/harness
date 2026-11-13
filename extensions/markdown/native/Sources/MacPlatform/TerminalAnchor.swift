@@ -143,7 +143,12 @@ public final class TerminalAnchor {
         case .concealed(let raw): next = .concealed(raw.placement(primaryHeight: primaryHeight))
         case .unchanged: next = status
         case .found:
-            next = status
+            // A window over a place that the anchor no longer follows hides until the found
+            // element is confirmed.
+            switch status {
+            case .placed, .concealed: next = .searching
+            case .searching, .untrusted: next = status
+            }
             marker = Self.newMarker()
             fastUntil = Date().addingTimeInterval(1)
             onMarker?()
@@ -159,6 +164,14 @@ public final class TerminalAnchor {
     }
 
     // MARK: - Pure helpers
+
+    /// The visible part of a window with holes: its bounds minus the union of the holes, which can
+    /// overlap. Nil without holes.
+    public nonisolated static func maskPath(bounds: CGRect, holes: [CGRect]) -> CGPath? {
+        guard let first = holes.first else { return nil }
+        let covered = holes.dropFirst().reduce(CGPath(rect: first, transform: nil)) { $0.union(CGPath(rect: $1, transform: nil)) }
+        return CGPath(rect: bounds, transform: nil).subtracting(covered)
+    }
 
     /// Converts an accessibility rectangle (origin at the top left of the primary screen, y
     /// downwards) to AppKit screen coordinates.
@@ -234,6 +247,9 @@ final class AnchorWorker: @unchecked Sendable {
     static let missLimit = 3
     /// Time between two scans for covering content while the element's frame stays the same.
     static let coverInterval: TimeInterval = 0.25
+    /// Time after which a scan for covering content starts no new request; an unfinished scan
+    /// keeps the last covers.
+    static let scanAllowance: TimeInterval = 0.3
     /// While the application that last showed the marker runs, only every this many rounds
     /// search the other applications as well.
     static let wideRoundEvery = 8
@@ -308,16 +324,22 @@ final class AnchorWorker: @unchecked Sendable {
         let coveredBy = number.flatMap { Self.hostWindowAbove(host: host, window: $0, over: frame) }
         let stacking = feed?.latest
         if let window, frame != coversFrame || stacking?.generation != coversGeneration || Date() >= coversAt.addingTimeInterval(Self.coverInterval) {
-            switch CoverScan.scan(tree, element: element, frame: frame, window: window, application: host, stacking: stacking?.report) {
+            // A scan that runs out of time or requests keeps the last covers and runs again on
+            // the next step.
+            let scanDeadline = Date().addingTimeInterval(Self.scanAllowance)
+            let result = CoverScan.scan(tree, element: element, frame: frame, window: window, application: host, stacking: stacking?.report, expired: { Date() >= scanDeadline })
+            switch result {
             case .covers(let found):
                 covers = found
                 detached = false
             case .detached: detached = true
             case nil: break
             }
-            coversFrame = frame
-            coversGeneration = stacking?.generation
-            coversAt = Date()
+            if result != nil {
+                coversFrame = frame
+                coversGeneration = stacking?.generation
+                coversAt = Date()
+            }
         }
         let placement = RawPlacement(frame: frame, host: host, window: number, coveredBy: coveredBy, covers: covers)
         let hidden = NSRunningApplication(processIdentifier: host)?.isHidden ?? false
