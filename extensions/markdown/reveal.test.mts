@@ -98,7 +98,8 @@ test("missing, incompatible, non-Mac and failed launch retain saved source", asy
 			const result = await revealSaved(f.saved, new AbortController().signal, { ...f.runtime, platform, run: async (exe) => { if (failure && exe === "/usr/bin/open") throw new Error("launch failed"); return { stdout: "null" }; } });
 			assert.equal(result.state, "reveal-failed");
 			if (result.state === "reveal-failed") { assert.equal(result.reason, expected); if (expected !== "unsupported-platform") assert.match(result.remedy, /native\/build\.mts/u);
-				assert.match(revealNotice(result), /^Saved md-[a-f0-9]{8} revision 1\. The reader/u); }
+				assert.match(revealNotice(result), /^Selected md-[a-f0-9]{8} revision 1\. The reader/u);
+				assert.match(revealNotice({ ...result, newlySaved: true }), /^Saved md-[a-f0-9]{8} revision 1\. The reader/u); }
 			assert.equal((await f.store.get(f.saved.documentId)).source, "Exact saved Markdown");
 		} finally { await f.cleanup(); }
 	}
@@ -141,7 +142,8 @@ test("origin capture starts alongside saving and both finish before the request"
 		const accepted = await pending;
 		assert.equal(accepted.state, "accepted");
 		assert.equal(revealNotice(accepted), `Markdown Reader accepted ${f.saved.documentId.slice(0, 11)} revision 1.`);
-		assert.equal(revealNotice({ ...f.saved, state: "saved" }), `Saved ${f.saved.documentId.slice(0, 11)} revision 1. No window was opened.`);
+		assert.equal(revealNotice({ ...f.saved, state: "saved" }), `Selected ${f.saved.documentId.slice(0, 11)} revision 1. No window was opened.`);
+		assert.equal(revealNotice({ ...f.saved, newlySaved: true, state: "saved" }), `Saved ${f.saved.documentId.slice(0, 11)} revision 1. No window was opened.`);
 		assert.match(revealNotice({ ...f.saved, state: "not-confirmed", request: "unused" }), /did not confirm within 5 seconds\. If no window appeared, run node extensions\/markdown\/native\/build\.mts/u);
 	} finally { await f.cleanup(); }
 });

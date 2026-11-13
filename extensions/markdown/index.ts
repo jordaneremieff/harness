@@ -94,7 +94,7 @@ async function openFile(ctx: ExtensionContext, path: string, signal: AbortSignal
 		signal.throwIfAborted();
 		const identity = await store.initialise();
 		signal.throwIfAborted();
-		return { root: settings.dir, storeId: identity.storeId, documentId: result.document.id, revision: result.revision.revision, digest: result.revision.digest };
+		return { root: settings.dir, storeId: identity.storeId, documentId: result.document.id, revision: result.revision.revision, digest: result.revision.digest, newlySaved: !result.replayed };
 	}, signal, { gui: ctx.mode === "tui" }));
 }
 export default function markdown(pi: ExtensionAPI): void {

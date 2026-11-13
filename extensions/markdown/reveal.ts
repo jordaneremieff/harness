@@ -12,7 +12,8 @@ import { responseText, type ResponseSnapshot } from "./responses.ts";
 const execute = promisify(execFile);
 const PACKAGE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const BUILD_REMEDY = "Run node extensions/markdown/native/build.mts with this client's Markdown app setting.";
-export interface SavedDocument { root: string; storeId: string; documentId: string; revision: number; digest: string }
+/** `newlySaved` is true only when this action wrote the revision; otherwise the document already existed. */
+export interface SavedDocument { root: string; storeId: string; documentId: string; revision: number; digest: string; newlySaved: boolean }
 export type LaunchOrigin = { version: 1; terminal: "Rex"; application: { bundleId: "com.superlogical.rex" }; exact?: Record<string, unknown> };
 export type RevealOutcome = SavedDocument & ({ state: "saved" } | { state: "accepted" | "not-confirmed"; request: string } | { state: "reveal-failed"; reason: "app-missing" | "app-incompatible" | "unsupported-platform" | "launch-failed"; remedy: string });
 /** Only tests replace the process runner; callers never supply an executable. */
@@ -60,8 +61,8 @@ async function storeIdentity(root: string): Promise<string> {
 		return value.storeId;
 	} catch { throw new Error("The document store is not readable on this machine. No document transfer route is configured."); }
 }
-function savedDocument(root: string, storeId: string, value: StoredDocument): SavedDocument {
-	return { root, storeId, documentId: value.document.id, revision: value.revision.revision, digest: value.revision.digest };
+function savedDocument(root: string, storeId: string, value: StoredDocument, newlySaved: boolean): SavedDocument {
+	return { root, storeId, documentId: value.document.id, revision: value.revision.revision, digest: value.revision.digest, newlySaved };
 }
 export async function selectStored(root: string, id: string, expectedStoreId?: string): Promise<SavedDocument> {
 	const storeId = await storeIdentity(root);
@@ -76,7 +77,7 @@ export async function selectStored(root: string, id: string, expectedStoreId?: s
 	}
 	const value = await new MarkdownStore(root).get(id);
 	if (expectedStoreId !== undefined && value.document.kind !== "published") throw new Error("The host identity does not name a published document.");
-	return savedDocument(root, storeId, value);
+	return savedDocument(root, storeId, value, false);
 }
 function responseTitle(response: ResponseSnapshot): string {
 	const date = new Date(response.timestamp ?? response.provenance.capturedAt);
@@ -91,7 +92,7 @@ export async function saveResponse(response: ResponseSnapshot, root: string): Pr
 	const identity = origin.conversation === undefined ? origin.session : `${origin.session}:${origin.conversation}`;
 	const sourceKey = `response\0${origin.kind}\0${identity ?? ""}\0${response.entryId}`;
 	const result = await store.snapshot(sourceKey, "response", { title: responseTitle(response), source: responseText(response), contentOrigin: origin, completeness: response.completeness, references: { state: "uninspected", truncated: false, items: [], omitted: 0 } });
-	return savedDocument(root, await storeIdentity(root), result);
+	return savedDocument(root, await storeIdentity(root), result, !result.replayed);
 }
 /** Saving and origin capture overlap; only their completed results reach the open request. */
 export async function materializeAndReveal(save: () => Promise<SavedDocument>, signal: AbortSignal, options: { gui: boolean; runtime?: RevealRuntime }): Promise<RevealOutcome> {
@@ -157,7 +158,7 @@ export async function openStored(root: string, id: string, signal: AbortSignal, 
 }
 export function revealNotice(outcome: RevealOutcome): string {
 	const identity = `${outcome.documentId.slice(0, 11)} revision ${outcome.revision}`;
-	const saved = `Saved ${identity}.`;
+	const saved = outcome.newlySaved ? `Saved ${identity}.` : `Selected ${identity}.`;
 	if (outcome.state === "saved") return `${saved} No window was opened.`;
 	if (outcome.state === "reveal-failed") {
 		const reason = { "app-missing": "The reader app is missing", "app-incompatible": "The reader app has an incompatible build", "unsupported-platform": "The reader requires macOS 26 or later", "launch-failed": "The reader launch failed" }[outcome.reason];

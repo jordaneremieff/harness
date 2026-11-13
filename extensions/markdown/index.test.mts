@@ -69,7 +69,7 @@ test("headless commands notify without session messages or stdout and resolve bo
 		const context = (mode: string) => ({ mode, cwd: root, sessionManager: source, ui: { notify } }) as unknown as ExtensionContext;
 		for (const mode of ["print", "json", "rpc"]) {
 			await handler("", context(mode));
-			assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", /^Saved md-[a-f0-9]{8} revision 1\. No window was opened\.$/u);
+			assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", mode === "print" ? /^Saved md-[a-f0-9]{8} revision 1\. No window was opened\.$/u : /^Selected md-[a-f0-9]{8} revision 1\. No window was opened\.$/u);
 		}
 		const store = new MarkdownStore(process.env.PI_MARKDOWN_DIR);
 		const snapshot = (await store.list({ kind: "response" })).documents[0];
@@ -78,7 +78,7 @@ test("headless commands notify without session messages or stdout and resolve bo
 		for (const id of [snapshot.id, published.document.id]) {
 			for (const lookup of [id, id.slice(0, -1)]) {
 				await handler(lookup, context("json"));
-				assert.equal(notify.mock.calls.at(-1)?.arguments[0], `Saved ${id.slice(0, 11)} revision 1. No window was opened.`);
+				assert.equal(notify.mock.calls.at(-1)?.arguments[0], `Selected ${id.slice(0, 11)} revision 1. No window was opened.`);
 			}
 		}
 		assert.equal(notify.mock.callCount(), 7);
