@@ -13,3 +13,7 @@ node_modules
 .evals/
 dump/
 *.log
+
+# SwiftPM build output of the native reader
+extensions/markdown/native/.build/
+extensions/markdown/native/.swiftpm/
