@@ -1,6 +1,6 @@
 # Markdown reader
 
-The Markdown slice retains exact agent responses, file snapshots and deliberately published documents in a private local store. Publication saves silently; the operator chooses when to open a document in the native Mac reader. Ordinary Pi and native Durable tools share the same publication operation and structured result.
+The Markdown slice retains exact agent responses, file snapshots and deliberately published documents in a private local store. Publication saves silently; the operator chooses when to open a document in the native Mac reader. An agent puts a document in front of the operator by running the publication's terminal view command in a pane beside them. Ordinary Pi and native Durable tools share the same publication operation and structured result.
 
 <!-- harness:settings:start -->
 | Key | Environment | Type | Default | Constraints | Description |
@@ -49,9 +49,23 @@ An open request contains `{version:1, storeId, document, revision, digest, reque
 
 `markdown_publish` requires `title` and exactly one of `text` or `file`. A file path is explicit, absolute or relative to the working directory; the operation never modifies that file. Updates supply `document` and `expectedRevision` together. Optional `reuseKey` requests explicit reuse. Separate identical creates without a key remain separate documents.
 
-Both hosts return the same structured outcome. Success includes `ok:true`, document ID, revision, source digest, byte count, title, kind, created/replayed flags, reference counts, provenance, `open` (the `/markdown <id>` command of an ordinary Pi session), and `selfContained` only after reference inspection. `replayed` is true only when a saved publication is returned again; a newly completed write, including the first keyed publication, reports false. Failure includes `ok:false` and a bounded error with code `invalid`, `too-large`, `not-found`, `conflict`, `replay-conflict`, `file-unreadable` or `store-failure`. Conflicts include the current revision and digest.
+Both hosts return the same structured outcome. Success includes `ok:true`, document ID, revision, source digest, byte count, title, kind, created/replayed flags, reference counts, provenance, `open` (the `/markdown <id>` command of an ordinary Pi session), `show` (the [terminal view](#terminal-view) command for the document) and `selfContained` only after reference inspection. `replayed` is true only when a saved publication is returned again; a newly completed write, including the first keyed publication, reports false. Failure includes `ok:false` and a bounded error with code `invalid`, `too-large`, `not-found`, `conflict`, `replay-conflict`, `file-unreadable` or `store-failure`. Conflicts include the current revision and digest.
 
-The text result and the tool card say that no window opened, that the operator opens the document from the Markdown view under Published (Owner views in the agent view), and that `/markdown <id>` opens it in an ordinary Pi session. An attached agent terminal sends that slash text to the conversation, so the view comes first. Ordinary tools return `structuredContent` and presentation details. Native tools return `structuredOutput` and presentation details. Native publication declares `replay: "safe"` and memoises its random publication plan in the Durable tool task before the document write. A recovered task returns a saved receipt before it reads the original file again. Publication performs no reveal, app launch or focus action.
+The text result and the tool card say that no window opened, that the operator opens the document from the Markdown view under Published (Owner views in the agent view), and that `/markdown <id>` opens it in an ordinary Pi session. An attached agent terminal sends that slash text to the conversation, so the view comes first. The text result ends with the `show` command as a JSON array for an agent to run in a terminal pane; the tool description asks for one pane per document, opened only when the operator should read it now. Ordinary tools return `structuredContent` and presentation details. Native tools return `structuredOutput` and presentation details. Native publication declares `replay: "safe"` and memoises its random publication plan in the Durable tool task before the document write. A recovered task returns a saved receipt before it reads the original file again. Publication performs no reveal, app launch or focus action.
+
+## Terminal view
+
+`show.ts` shows one stored document in an interactive terminal:
+
+```text
+node extensions/markdown/show.ts [--store <directory>] <document ID or unique prefix>
+```
+
+The receipt's `show` array is this command with the publishing host's Node executable, the loaded program path, that host's store root and the full document ID, so it runs on the same machine as the store. Without `--store`, `markdown.dir` selects the store. The command names no terminal application; any pane, split or floating pane that runs a program can show the view. Importing `show.ts` starts no work and loads no interface package; the screen module loads only when the program runs.
+
+The view renders the current revision with Pi's Markdown component and the theme from Pi's settings, in a centred column of at most 100 columns. The heading names the title, short ID, revision, kind, size and partial state. The view watches the document's pointer, loads each new revision and keeps the scroll position; `r` reloads on request. Up, Down, `j` and `k` scroll; Space, `b`, Page Up and Page Down page; `g` and `G` go to the start and end. A mouse selection copies its text through the terminal clipboard sequence (OSC 52). `o` opens the shown revision in the native reader through the [client-local reveal](#client-local-reveal) adapter, so the view's own terminal is the reader's opening origin. `q`, Escape or Ctrl-C closes the view.
+
+C0 controls other than tab and line feed become visible Control Pictures, and DEL and C1 controls become U+FFFD, so a document cannot change the title, clipboard, links or reported status of the terminal that shows it. CRLF line endings display as one line ending; the stored source is unchanged. A missing document or an absent interactive terminal ends the program with one error line and a nonzero status.
 
 ## References and limits
 

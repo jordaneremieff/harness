@@ -27,7 +27,7 @@ it in an assignment.
 | jobs | Background builds, test suites, and servers while the agent works | `bash` with `background`, `jobs` | `extensions/jobs/README.md` |
 | brave | Public web search and bounded page reads | `web_search`, `web_read` | `extensions/brave/README.md` |
 | clipboard | macOS clipboard and its history | `clipboard_*` | `extensions/clipboard/README.md` |
-| markdown | Long Markdown documents saved for the operator's native reader; saving opens no window | `markdown_publish`, `/markdown` | `extensions/markdown/README.md` |
+| markdown | Long Markdown documents saved for the operator's native reader; saving opens no window, and the receipt's show command displays the document in a terminal pane | `markdown_publish`, `/markdown` | `extensions/markdown/README.md` |
 | evo | Directed harness improvement through full agent sessions | `/evo` | `extensions/evo/README.md` |
 | statusline | Two-line session footer for long sessions | none | `extensions/statusline/README.md` |
 

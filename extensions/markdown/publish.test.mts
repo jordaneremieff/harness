@@ -13,6 +13,7 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { captureReferences, inspectReferences, fileSnapshotInput, createNativePublishTool, createPublishTool, invocationDigest, publish, type PublishOutcome, type PublishInput } from "./publish.ts";
 import { LIMITS, MarkdownStore, type PublicationPlan } from "./store.ts";
+import { showCommand } from "./show.ts";
 const scratch = tmpdir();
 async function fixture(run: (root: string, store: MarkdownStore) => Promise<void>) { const root = await mkdtemp(join(scratch, "markdown-publish-")); try { await run(root, new MarkdownStore(join(root, "store"))); } finally { await rm(root, { recursive: true, force: true }); } }
 async function inspection(root: string, images: string[] = [], links: string[] = [], truncated = false) {
@@ -160,7 +161,9 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 	assert.deepEqual(result.structuredContent, result.details);
 	assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /No window opened\. The operator opens it from the Markdown view under Published \(in the agent view, under Owner views\)\. In an ordinary Pi session, \/markdown md-[a-f0-9]{20} also opens it\./u);
 	assert.ok(tool.outputSchema);
-	const first = success(result.details); assert.equal(first.provenance.session, "first"); assert.equal(first.provenance.model, "faux/faux-1"); assert.ok(first.provenance.host);
+	const first = success(result.details);
+	assert.deepEqual(first.show, showCommand(store.root, first.documentId));
+	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(`\nTo show it to the operator in a terminal pane, run this command there: ${JSON.stringify(first.show)}. In that pane, o opens the native reader.`)); assert.equal(first.provenance.session, "first"); assert.equal(first.provenance.model, "faux/faux-1"); assert.ok(first.provenance.host);
 	session = "second";
 	const updated = await tool.execute("next", { title: "Updated", text: "other", document: first.documentId.slice(0, 12), expectedRevision: 1 }, undefined, undefined, context);
 	assert.equal(success(updated.details).provenance.session, "second"); assert.equal(success(updated.details).revision, 2);
