@@ -233,7 +233,9 @@ assume it is the only screen of the app. Each window owns one model and one `Web
 - The store reader requires the document directory, the revision directory and its `assets/`
   directory to be the expected paths under the canonical store root, with no symbolic link below
   the root. It reads `document.json`, `revision.json`, `source.md` and assets without following a
-  symbolic link and accepts only regular files.
+  symbolic link and accepts only regular files. These checks bind the checked paths and the
+  opened files, not a concurrent replacement of a parent folder: a process of the same user that
+  replaces a parent folder between the path check and the open is outside this guarantee.
 - Every navigation is decided: the document load and in-page anchors pass; web links open in
   the browser only after confirmation; app actions (code copy) carry a per-rendering nonce;
   everything else is cancelled. App DOM helpers run only through `callJavaScript` in the
