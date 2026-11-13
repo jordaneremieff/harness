@@ -31,6 +31,29 @@ function boundedValues(value: unknown, offset: number, limit: number) {
 	);
 	return { values, nextCursor: offset + limit < all.length ? String(offset + limit) : undefined, truncatedCells };
 }
+function sheetView(sheet: Record<string, unknown>, budget: TextBudget) {
+	const properties = object(sheet.properties) ? sheet.properties : {};
+	const grid = object(properties.gridProperties) ? properties.gridProperties : {};
+	return {
+		sheetId: properties.sheetId,
+		index: properties.index,
+		title: budget.clip(properties.title, 2048).text,
+		rowCount: grid.rowCount,
+		columnCount: grid.columnCount,
+	};
+}
+function spreadsheetView(response: Record<string, unknown>) {
+	const budget = new TextBudget();
+	return {
+		spreadsheetId: text(response.spreadsheetId),
+		externalData: external("sheets", {
+			title: budget.clip(object(response.properties) ? response.properties.title : "", 2048).text,
+			sheets: (Array.isArray(response.sheets) ? response.sheets.filter(object) : []).map((sheet) =>
+				sheetView(sheet, budget),
+			),
+		}),
+	};
+}
 function updateResult(response: Record<string, unknown>) {
 	return {
 		spreadsheetId: text(response.spreadsheetId),
@@ -54,24 +77,42 @@ export const sheetsTools: ToolSpec[] = [
 				const response = await operation.call<Record<string, unknown>>("sheets", ["spreadsheets", "get"], {
 					params: { spreadsheetId: args.spreadsheetId, includeGridData: false },
 				});
-				const budget = new TextBudget();
+				return ok(spreadsheetView(response));
+			}),
+	},
+	{
+		name: "sheets_create",
+		label: "Sheets create",
+		description: "Create a new spreadsheet with a title.",
+		parameters: obj({ title: str({ minLength: 1, maxLength: 1024 }) }),
+		replay: "unsafe",
+		execute: async (value, runtime, signal) =>
+			runtime.run({ scopes: writeScopes }, signal, async (operation) => {
+				const args = value as { title: string };
+				const response = await operation.call<Record<string, unknown>>("sheets", ["spreadsheets", "create"], {
+					body: { properties: { title: args.title } },
+				});
+				return ok({ ...spreadsheetView(response), spreadsheetUrl: text(response.spreadsheetUrl) || undefined });
+			}),
+	},
+	{
+		name: "sheets_sheet_add",
+		label: "Sheets add sheet",
+		description: "Add one sheet tab with a title to an existing spreadsheet.",
+		parameters: obj({ spreadsheetId: SpreadsheetId, title: str({ minLength: 1, maxLength: 512 }) }),
+		replay: "unsafe",
+		execute: async (value, runtime, signal) =>
+			runtime.run({ scopes: writeScopes }, signal, async (operation) => {
+				const args = value as { spreadsheetId: string; title: string };
+				const response = await operation.call<Record<string, unknown>>("sheets", ["spreadsheets", "batchUpdate"], {
+					params: { spreadsheetId: args.spreadsheetId },
+					body: { requests: [{ addSheet: { properties: { title: args.title } } }] },
+				});
+				const reply = Array.isArray(response.replies) ? response.replies.find(object) : undefined;
 				return ok({
-					spreadsheetId: text(response.spreadsheetId),
+					spreadsheetId: text(response.spreadsheetId) || args.spreadsheetId,
 					externalData: external("sheets", {
-						title: budget.clip(
-							response.properties && object(response.properties) ? response.properties.title : "",
-							2048,
-						).text,
-						sheets: (Array.isArray(response.sheets) ? response.sheets.filter(object) : []).map((sheet) => {
-							const properties = object(sheet.properties) ? sheet.properties : {};
-							return {
-								sheetId: properties.sheetId,
-								index: properties.index,
-								title: budget.clip(properties.title, 2048).text,
-								rowCount: object(properties.gridProperties) ? properties.gridProperties.rowCount : undefined,
-								columnCount: object(properties.gridProperties) ? properties.gridProperties.columnCount : undefined,
-							};
-						}),
+						sheet: sheetView(reply && object(reply.addSheet) ? reply.addSheet : {}, new TextBudget()),
 					}),
 				});
 			}),

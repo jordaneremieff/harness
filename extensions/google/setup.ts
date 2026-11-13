@@ -8,7 +8,7 @@ import { GWS_RELEASE, type Release, releaseUrl } from "./release.ts";
 import { GoogleError } from "./result.ts";
 import { type Environment, managedExecutable, readSettings } from "./settings.ts";
 
-export const SERVICES = ["gmail", "drive", "sheets", "calendar"] as const;
+export const SERVICES = ["gmail", "drive", "sheets", "calendar", "docs", "slides", "tasks"] as const;
 export type Service = (typeof SERVICES)[number];
 export type Access = "read" | "write";
 
@@ -17,12 +17,18 @@ const READ_SCOPES: Record<Service, string[]> = {
 	drive: [SCOPES.driveRead],
 	sheets: [SCOPES.sheetsRead],
 	calendar: [SCOPES.calendarListRead, SCOPES.calendarEventsRead, SCOPES.calendarAclRead],
+	docs: [SCOPES.docsRead],
+	slides: [SCOPES.slidesRead],
+	tasks: [SCOPES.tasksRead],
 };
 const WRITE_SCOPES: Record<Service, string[]> = {
 	gmail: [SCOPES.gmailModify],
 	drive: [SCOPES.drive],
 	sheets: [SCOPES.sheets],
 	calendar: [SCOPES.calendar],
+	docs: [SCOPES.docs],
+	slides: [SCOPES.slidesRead],
+	tasks: [SCOPES.tasks],
 };
 const ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
@@ -48,7 +54,10 @@ export function productionDeps(log: (line: string) => void): SetupDeps {
 	};
 }
 
-/** Write scopes include read access, so each service needs only one scope set. */
+/**
+ * Write scopes include read access, so each service needs only one scope set. Slides has no write
+ * tool, so its write access asks for the read scope.
+ */
 export function scopesFor(services: readonly Service[], access: Access): string[] {
 	const table = access === "write" ? WRITE_SCOPES : READ_SCOPES;
 	return [...new Set(services.flatMap((service) => table[service]))];

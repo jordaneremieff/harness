@@ -3,15 +3,26 @@ import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent"
 import type { Static } from "@earendil-works/pi-schema";
 import { calendarTools } from "./calendar.ts";
 import { googleCommand, USAGE } from "./command.ts";
+import { docsTools } from "./docs.ts";
 import { driveTools } from "./drive.ts";
 import { googleContribution } from "./durable.ts";
 import { gmailTools } from "./gmail.ts";
 import { GoogleRuntime } from "./gws.ts";
 import { publishSettings } from "./settings.ts";
 import { sheetsTools } from "./sheets.ts";
+import { slidesTools } from "./slides.ts";
+import { tasksTools } from "./tasks.ts";
 import { GUIDELINES, invoke } from "./tools.ts";
 
-export const googleTools = [...gmailTools, ...driveTools, ...sheetsTools, ...calendarTools];
+export const googleTools = [
+	...gmailTools,
+	...driveTools,
+	...sheetsTools,
+	...calendarTools,
+	...docsTools,
+	...slidesTools,
+	...tasksTools,
+];
 
 export default function (pi: ExtensionAPI) {
 	const agentDir = getAgentDir();

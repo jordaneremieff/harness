@@ -4,7 +4,7 @@ import type { Environment } from "./settings.ts";
 import { logout, parseSetupArgs, productionDeps, type SetupDeps, setup, update } from "./setup.ts";
 
 export const USAGE =
-	"google setup [--client <file>] [--account <email>] [--services gmail,drive,sheets,calendar] [--access read|write] | google update | google status | google logout";
+	"google setup [--client <file>] [--account <email>] [--services gmail,drive,sheets,calendar,docs,slides,tasks] [--access read|write] | google update | google status | google logout";
 
 export type Print = (line: string, level?: "info" | "error") => void;
 

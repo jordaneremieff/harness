@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createFake, methodCalls } from "./fake-gws.test-support.mts";
+import { base64url, createFake, errorCode, methodCalls } from "./fake-gws.test-support.mts";
+import { SCOPES } from "./gws.ts";
 
 const MAIL = { to: ["friend@example.org"], subject: "Plan", text: "Hello" };
 const SEND = "gmail users messages send";
@@ -124,5 +125,154 @@ test("composed mail reaches gws as RFC 822 bytes with reply threading", async ()
 		assert.ok(!/[^\r]\n/.test(call.upload));
 	} finally {
 		await fake.cleanup();
+	}
+});
+
+const SOURCE = {
+	id: "src",
+	threadId: "thread-5",
+	payload: {
+		mimeType: "multipart/mixed",
+		headers: [
+			{ name: "From", value: "Ann <ann@example.org>" },
+			{ name: "To", value: "person@example.com" },
+			{ name: "Subject", value: "Report" },
+			{ name: "Date", value: "Mon, 9 Nov 2026 10:00:00 +0000" },
+		],
+		parts: [
+			{
+				partId: "0",
+				mimeType: "multipart/alternative",
+				parts: [
+					{
+						partId: "0.0",
+						mimeType: "text/plain",
+						filename: "",
+						body: { size: 17, data: base64url("Line one\nLine two") },
+					},
+					{
+						partId: "0.1",
+						mimeType: "text/html",
+						filename: "",
+						body: { size: 15, data: base64url("<p>Line one</p>") },
+					},
+				],
+			},
+			{
+				partId: "1",
+				mimeType: "application/pdf",
+				filename: "report.pdf",
+				headers: [{ name: "Content-Disposition", value: "attachment; filename=report.pdf" }],
+				body: { size: 4, data: base64url("%PDF") },
+			},
+			{
+				partId: "2",
+				mimeType: "image/png",
+				filename: "logo.png",
+				headers: [
+					{ name: "Content-ID", value: "<logo>" },
+					{ name: "Content-Disposition", value: "inline" },
+				],
+				body: { size: 3, data: base64url("png") },
+			},
+		],
+	},
+};
+const FORWARD = { messageId: "src", to: ["friend@example.org"] };
+
+function forwardFake(source: unknown = SOURCE) {
+	return createFake({
+		responses: { "gmail users messages get src": { stdout: source }, [SEND]: { stdout: { id: "g7", threadId: "t7" } } },
+	});
+}
+
+/** The decoded text/plain body of an uploaded message. */
+function bodyText(upload: string): string {
+	const encoded = /Content-Transfer-Encoding: base64\r\n\r\n([A-Za-z0-9+/=\r\n]+?)\r\n(?:--|$)/.exec(upload)?.[1] ?? "";
+	return Buffer.from(encoded.replaceAll("\r\n", ""), "base64").toString("utf8");
+}
+
+test("gmail_forward sends the quoted plain text with the original attachments once", async () => {
+	const fake = await forwardFake();
+	try {
+		const args = { operationId: "fw-1", ...FORWARD, text: "FYI" };
+		const first = await fake.tool("gmail_forward", args);
+		assert.equal(first.status, "ok", JSON.stringify(first));
+		assert.equal((first.data as { gmailMessageId?: string }).gmailMessageId, "g7");
+		const again = await fake.tool("gmail_forward", args);
+		assert.equal((again.data as { gmailMessageId?: string }).gmailMessageId, "g7");
+		const sends = methodCalls(await fake.calls(), SEND);
+		assert.equal(sends.length, 1);
+		const upload = sends[0].upload ?? "";
+		assert.match(upload, /\r\nSubject: Fwd: Report\r\n/);
+		assert.match(upload, /\r\nTo: friend@example\.org\r\n/);
+		assert.equal(
+			bodyText(upload),
+			[
+				"FYI",
+				"",
+				"---------- Forwarded message ---------",
+				"From: Ann <ann@example.org>",
+				"Date: Mon, 9 Nov 2026 10:00:00 +0000",
+				"Subject: Report",
+				"To: person@example.com",
+				"",
+				"Line one",
+				"Line two",
+			].join("\r\n"),
+		);
+		assert.match(upload, /filename="report\.pdf"/);
+		assert.doesNotMatch(upload, /logo\.png/);
+		assert.equal(sends[0].args[sends[0].args.indexOf("--json") + 1], "{}");
+		const conflict = await fake.tool("gmail_forward", { ...args, text: "Changed" });
+		assert.equal(errorCode(conflict), "OPERATION_CONFLICT");
+	} finally {
+		await fake.cleanup();
+	}
+});
+
+test("gmail_forward carries only the selected original parts", async () => {
+	const fake = await forwardFake();
+	try {
+		const inline = await fake.tool("gmail_forward", { operationId: "fw-2", ...FORWARD, attachmentPartIds: ["2"] });
+		assert.equal(inline.status, "ok", JSON.stringify(inline));
+		const bare = await fake.tool("gmail_forward", { operationId: "fw-3", ...FORWARD, attachmentPartIds: [] });
+		assert.equal(bare.status, "ok", JSON.stringify(bare));
+		const [first, second] = methodCalls(await fake.calls(), SEND);
+		assert.match(first.upload ?? "", /filename="logo\.png"/);
+		assert.doesNotMatch(first.upload ?? "", /report\.pdf/);
+		assert.match(second.upload ?? "", /\r\nContent-Type: text\/plain; charset=utf-8\r\n/);
+		assert.doesNotMatch(second.upload ?? "", /multipart/);
+		const absent = await fake.tool("gmail_forward", { operationId: "fw-4", ...FORWARD, attachmentPartIds: ["9"] });
+		assert.equal(errorCode(absent), "INVALID_ARGUMENT");
+		assert.equal(methodCalls(await fake.calls(), SEND).length, 2);
+	} finally {
+		await fake.cleanup();
+	}
+});
+
+test("gmail_forward refuses a message without a plain text body and a grant that cannot read it", async () => {
+	const htmlOnly = {
+		id: "src",
+		payload: {
+			mimeType: "text/html",
+			headers: SOURCE.payload.headers,
+			body: { size: 15, data: base64url("<p>Line one</p>") },
+		},
+	};
+	const fake = await forwardFake(htmlOnly);
+	const sendOnly = await createFake({ scopes: [SCOPES.gmailSend], responses: { [SEND]: { stdout: { id: "g8" } } } });
+	try {
+		const refused = await fake.tool("gmail_forward", { operationId: "fw-5", ...FORWARD });
+		assert.equal(errorCode(refused), "UNSUPPORTED_MESSAGE");
+		assert.equal(errorCode(await fake.tool("gmail_operation_status", { operationId: "fw-5" })), "OPERATION_NOT_FOUND");
+		assert.equal(methodCalls(await fake.calls(), SEND).length, 0);
+		const unreadable = await sendOnly.tool("gmail_forward", { operationId: "fw-6", ...FORWARD });
+		assert.equal(errorCode(unreadable), "SCOPE_REQUIRED");
+		assert.ok((unreadable.error as { requiredAnyOf?: string[] }).requiredAnyOf?.includes(SCOPES.gmailRead));
+		assert.equal(methodCalls(await sendOnly.calls(), SEND).length, 0);
+	} finally {
+		await fake.cleanup();
+		await sendOnly.cleanup();
 	}
 });

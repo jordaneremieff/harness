@@ -6,6 +6,7 @@ import {
 	decodeBase64Url,
 	readSnapshot,
 	removeQuietly,
+	sha256,
 	stageBytes,
 	writeNewFile,
 } from "./files.ts";
@@ -17,6 +18,7 @@ import {
 	type Compose,
 	newRfcMessageId,
 	type PreparedAttachment,
+	type PreparedMime,
 	replyContext,
 	rewriteRawMessage,
 } from "./mime.ts";
@@ -35,10 +37,13 @@ import type { ToolSpec } from "./tools.ts";
 
 const OperationId = str({ minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9._:-]+$" });
 const Limit = (maximum: number, fallback: number) => opt(int({ minimum: 1, maximum, default: fallback }));
+const To = arr(str({ minLength: 1, maxLength: 320 }), { minItems: 1, maxItems: COMPOSE_LIMITS.recipients });
+const Copies = opt(arr(str({ minLength: 1, maxLength: 320 }), { maxItems: COMPOSE_LIMITS.recipients }));
+const MIME_TYPE = "^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$";
 const ComposeSchema = obj({
-	to: arr(str({ minLength: 1, maxLength: 320 }), { minItems: 1, maxItems: COMPOSE_LIMITS.recipients }),
-	cc: opt(arr(str({ minLength: 1, maxLength: 320 }), { maxItems: COMPOSE_LIMITS.recipients })),
-	bcc: opt(arr(str({ minLength: 1, maxLength: 320 }), { maxItems: COMPOSE_LIMITS.recipients })),
+	to: To,
+	cc: Copies,
+	bcc: Copies,
 	subject: opt(str({ maxLength: 4096 })),
 	text: str({ maxLength: COMPOSE_LIMITS.textBytes }),
 	replyToMessageId: opt(str({ minLength: 1, maxLength: 200 })),
@@ -47,7 +52,7 @@ const ComposeSchema = obj({
 			obj({
 				path: str({ minLength: 1, maxLength: 4096 }),
 				filename: opt(str({ minLength: 1, maxLength: 512 })),
-				mimeType: opt(str({ minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$" })),
+				mimeType: opt(str({ minLength: 1, maxLength: 200, pattern: MIME_TYPE })),
 			}),
 			{ maxItems: COMPOSE_LIMITS.attachments },
 		),
@@ -383,22 +388,143 @@ async function dispatch(
 	return settled.state === "accepted" ? ok(receipt(settled), warnings) : recordResult(settled);
 }
 
-async function send(args: { operationId: string; mail: Compose }, operation: Operation): Promise<Result<unknown>> {
+type ForwardArgs = {
+	operationId: string;
+	messageId: string;
+	to: string[];
+	cc?: string[];
+	bcc?: string[];
+	text?: string;
+	attachmentPartIds?: string[];
+};
+
+function partHeader(part: Part, name: string): string {
+	for (const item of Array.isArray(part.part.headers) ? part.part.headers : [])
+		if (object(item) && typeof item.name === "string" && item.name.toLowerCase() === name) return text(item.value);
+	return "";
+}
+/** A named part with a Content-ID and no attachment disposition is an image that an HTML body shows in place. */
+function inlineImage(part: Part): boolean {
+	return partHeader(part, "content-id") !== "" && !/^\s*attachment/i.test(partHeader(part, "content-disposition"));
+}
+/** The original files a forward carries: every named attachment except inline images, or the caller's selection. */
+function forwardedParts(parts: Part[], selected: string[] | undefined): Part[] {
+	const named = parts.filter((part) => part.filename);
+	if (!selected) return named.filter((part) => !inlineImage(part));
+	return [...new Set(selected)].map((partId) => {
+		const part = named.find((item) => item.partId === partId);
+		if (!part) throw new GoogleError("INVALID_ARGUMENT", `Part ${partId} is not a named attachment of the message.`);
+		return part;
+	});
+}
+async function forwardedAttachments(
+	operation: Operation,
+	messageId: string,
+	parts: Part[],
+): Promise<PreparedAttachment[]> {
+	const declared = parts.reduce((sum, part) => sum + part.size, 0);
+	if (parts.length > COMPOSE_LIMITS.attachments || declared > COMPOSE_LIMITS.attachmentBytes)
+		throw new GoogleError(
+			"SIZE_LIMIT",
+			"The message attachments exceed the count or byte limit. Select a subset with attachmentPartIds.",
+		);
+	const result: PreparedAttachment[] = [];
+	for (const part of parts) {
+		const bytes = await partBytes(operation, messageId, part);
+		result.push({
+			bytes,
+			sha256: sha256(bytes),
+			size: bytes.length,
+			name: part.filename,
+			filename: part.filename.replaceAll(/[\\/\p{Cc}]/gu, "_"),
+			mimeType: new RegExp(MIME_TYPE).test(part.mimeType) ? part.mimeType : "application/octet-stream",
+		});
+	}
+	return result;
+}
+/** Only a text/plain body that decodes as UTF-8 is quoted, so a forward never carries a misdecoded body. */
+async function forwardedBody(operation: Operation, messageId: string, parts: Part[]): Promise<string> {
+	const body = parts.find((part) => part.mimeType === "text/plain" && !part.filename);
+	if (!body)
+		throw new GoogleError(
+			"UNSUPPORTED_MESSAGE",
+			"The message has no text/plain body part; gmail_forward forwards plain text only.",
+		);
+	const bytes = await partBytes(operation, messageId, body);
+	try {
+		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	} catch {
+		throw new GoogleError("UNSUPPORTED_MESSAGE", "The message body is not valid UTF-8 text.");
+	}
+}
+function headerLine(value: string | undefined): string {
+	return (value ?? "")
+		.replaceAll(/\s+/g, " ")
+		.replaceAll(/\p{Cc}/gu, "")
+		.trim();
+}
+async function prepareForward(
+	operation: Operation,
+	args: ForwardArgs,
+	forcedMessageId?: string,
+): Promise<PreparedMime> {
+	const message = await getMessage(operation, args.messageId);
+	const parts = partsOf(message);
+	const headers = headersOf(message);
+	const subject = headerLine(headers.subject);
+	const quoted = [
+		"---------- Forwarded message ---------",
+		`From: ${headerLine(headers.from)}`,
+		...(headers.date ? [`Date: ${headerLine(headers.date)}`] : []),
+		`Subject: ${subject}`,
+		`To: ${headerLine(headers.to)}`,
+		...(headers.cc ? [`Cc: ${headerLine(headers.cc)}`] : []),
+		"",
+		await forwardedBody(operation, args.messageId, parts),
+	].join("\n");
+	const attachments = await forwardedAttachments(
+		operation,
+		args.messageId,
+		forwardedParts(parts, args.attachmentPartIds),
+	);
+	return buildMime(
+		{
+			to: args.to,
+			cc: args.cc,
+			bcc: args.bcc,
+			subject: /^fwd:/i.test(subject) ? subject : `Fwd: ${subject}`,
+			text: args.text?.trim() ? `${args.text}\n\n${quoted}` : quoted,
+		},
+		operation.auth.account,
+		attachments,
+		undefined,
+		forcedMessageId,
+		COMPOSE_LIMITS.forwardTextBytes,
+	);
+}
+
+/** A repeated operation ID composes the message again with its recorded Message-ID, so the fingerprints compare. */
+async function sendComposed(
+	operation: Operation,
+	operationId: string,
+	tool: "gmail_send" | "gmail_forward",
+	prepare: (forcedMessageId?: string) => Promise<PreparedMime>,
+): Promise<Result<unknown>> {
 	const ledger = new SendLedger(operation.stateDir, operation.auth.account);
-	const previous = await ledger.get(args.operationId);
-	const prepared = await prepareMail(operation, args.mail, previous?.rfcMessageId);
-	const fingerprint = createHash("sha256").update(`gmail_send:${prepared.fingerprint}`).digest("hex");
-	if (previous) return existingSend(operation, previous, "gmail_send", fingerprint);
-	const unresolved = await ledger.unresolved(fingerprint, "gmail_send");
+	const previous = await ledger.get(operationId);
+	const prepared = await prepare(previous?.rfcMessageId);
+	const fingerprint = createHash("sha256").update(`${tool}:${prepared.fingerprint}`).digest("hex");
+	if (previous) return existingSend(operation, previous, tool, fingerprint);
+	const unresolved = await ledger.unresolved(fingerprint, tool);
 	if (unresolved) return reconcile(operation, unresolved);
 	const now = new Date().toISOString();
 	return dispatch(
 		operation,
 		ledger,
 		{
-			operationId: args.operationId,
+			operationId,
 			account: operation.auth.account,
-			tool: "gmail_send",
+			tool,
 			requestFingerprint: fingerprint,
 			rfcMessageId: prepared.rfcMessageId,
 			threadId: prepared.threadId,
@@ -808,9 +934,42 @@ export const gmailTools: ToolSpec[] = [
 		parameters: obj({ operationId: OperationId, mail: ComposeSchema }),
 		replay: "unsafe",
 		execute: async (value, runtime, signal) =>
-			runtime.run({ scopes: gmailSend, profile: true }, signal, async (operation) =>
-				send(value as { operationId: string; mail: Compose }, operation),
-			),
+			runtime.run({ scopes: gmailSend, profile: true }, signal, async (operation) => {
+				const args = value as { operationId: string; mail: Compose };
+				return sendComposed(operation, args.operationId, "gmail_send", (forcedMessageId) =>
+					prepareMail(operation, args.mail, forcedMessageId),
+				);
+			}),
+	},
+	{
+		name: "gmail_forward",
+		label: "Gmail forward",
+		description:
+			"Forward one message as plain text once under a caller operation ID, with its attachments or a selected subset.",
+		parameters: obj({
+			operationId: OperationId,
+			messageId: str({ minLength: 1, maxLength: 200 }),
+			to: To,
+			cc: Copies,
+			bcc: Copies,
+			text: opt(str({ maxLength: COMPOSE_LIMITS.textBytes })),
+			attachmentPartIds: opt(arr(str({ minLength: 1, maxLength: 200 }), { maxItems: COMPOSE_LIMITS.attachments })),
+		}),
+		replay: "unsafe",
+		execute: async (value, runtime, signal) =>
+			runtime.run({ scopes: gmailSend, profile: true }, signal, async (operation) => {
+				const args = value as ForwardArgs;
+				if (!gmailRead.some((scope) => operation.auth.scopes.includes(scope)))
+					throw new GoogleError(
+						"SCOPE_REQUIRED",
+						"Forwarding reads the source message and needs a Gmail read scope.",
+						false,
+						gmailRead,
+					);
+				return sendComposed(operation, args.operationId, "gmail_forward", (forcedMessageId) =>
+					prepareForward(operation, args, forcedMessageId),
+				);
+			}),
 	},
 	{
 		name: "gmail_draft_send",

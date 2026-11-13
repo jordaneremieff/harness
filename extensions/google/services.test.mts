@@ -63,6 +63,54 @@ test("sheets_values_get returns bounded rows as external data", async () => {
 	}
 });
 
+test("sheets_create and sheets_sheet_add create a spreadsheet and a sheet tab", async () => {
+	const fake = await createFake({
+		responses: {
+			"sheets spreadsheets create": {
+				stdout: {
+					spreadsheetId: "s9",
+					spreadsheetUrl: "https://docs.google.com/spreadsheets/d/s9/edit",
+					properties: { title: "Budget" },
+					sheets: [{ properties: { sheetId: 0, index: 0, title: "Sheet1", gridProperties: { rowCount: 1000 } } }],
+				},
+			},
+			"sheets spreadsheets batchUpdate": {
+				stdout: {
+					spreadsheetId: "s9",
+					replies: [{ addSheet: { properties: { sheetId: 7, index: 1, title: "Q1" } } }],
+				},
+			},
+		},
+	});
+	try {
+		const created = await fake.tool("sheets_create", { title: "Budget" });
+		assert.equal(created.status, "ok", JSON.stringify(created));
+		const data = created.data as {
+			spreadsheetId: string;
+			spreadsheetUrl: string;
+			externalData: Record<string, unknown>;
+		};
+		assert.equal(data.spreadsheetId, "s9");
+		assert.equal(data.spreadsheetUrl, "https://docs.google.com/spreadsheets/d/s9/edit");
+		assert.equal(data.externalData.trust, "untrusted");
+		assert.equal(data.externalData.title, "Budget");
+		const [create] = methodCalls(await fake.calls(), "sheets spreadsheets create");
+		assert.deepEqual(JSON.parse(create.args[create.args.indexOf("--json") + 1]), { properties: { title: "Budget" } });
+		const added = await fake.tool("sheets_sheet_add", { spreadsheetId: "s9", title: "Q1" });
+		assert.equal(added.status, "ok", JSON.stringify(added));
+		const sheet = (added.data as { externalData: { sheet: Record<string, unknown> } }).externalData.sheet;
+		assert.equal(sheet.sheetId, 7);
+		assert.equal(sheet.title, "Q1");
+		const [update] = methodCalls(await fake.calls(), "sheets spreadsheets batchUpdate");
+		assert.equal(params(update.args).spreadsheetId, "s9");
+		assert.deepEqual(JSON.parse(update.args[update.args.indexOf("--json") + 1]), {
+			requests: [{ addSheet: { properties: { title: "Q1" } } }],
+		});
+	} finally {
+		await fake.cleanup();
+	}
+});
+
 test("calendar_event_create sends no attendee notifications unless asked", async () => {
 	const fake = await createFake({
 		responses: { "calendar events insert": { stdout: { id: "e1", status: "confirmed" } } },

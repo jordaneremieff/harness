@@ -1,11 +1,14 @@
 import type * as Durable from "@earendil-works/pi-durable";
 import { calendarTools } from "./calendar.ts";
+import { docsTools } from "./docs.ts";
 import { driveTools } from "./drive.ts";
 import { gmailTools } from "./gmail.ts";
 import { GoogleRuntime } from "./gws.ts";
 import { RESULT_MAX_BYTES } from "./result.ts";
 import { publishSettings, type SettingsBus } from "./settings.ts";
 import { sheetsTools } from "./sheets.ts";
+import { slidesTools } from "./slides.ts";
+import { tasksTools } from "./tasks.ts";
 import { guidance, invoke } from "./tools.ts";
 
 export interface DurableContributionHost {
@@ -15,7 +18,15 @@ export interface DurableContributionHost {
 }
 
 export function googleContribution(source: string, bus: SettingsBus, stopFactoryPublisher: () => void) {
-	const tools = [...gmailTools, ...driveTools, ...sheetsTools, ...calendarTools];
+	const tools = [
+		...gmailTools,
+		...driveTools,
+		...sheetsTools,
+		...calendarTools,
+		...docsTools,
+		...slidesTools,
+		...tasksTools,
+	];
 	return {
 		name: "google",
 		source,

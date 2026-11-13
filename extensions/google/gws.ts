@@ -13,6 +13,7 @@ export const STDOUT_LIMITS = {
 	metadata: 2 * 1024 * 1024,
 	message: 16 * 1024 * 1024,
 	rawDraft: 24 * 1024 * 1024,
+	document: 32 * 1024 * 1024,
 	attachment: 36 * 1024 * 1024,
 } as const;
 const STDERR_LIMIT = 32 * 1024;
@@ -35,7 +36,22 @@ export const SCOPES = {
 	calendarAclRead: "https://www.googleapis.com/auth/calendar.acls.readonly",
 	calendarAcls: "https://www.googleapis.com/auth/calendar.acls",
 	calendar: "https://www.googleapis.com/auth/calendar",
+	docsRead: "https://www.googleapis.com/auth/documents.readonly",
+	docs: "https://www.googleapis.com/auth/documents",
+	slidesRead: "https://www.googleapis.com/auth/presentations.readonly",
+	slides: "https://www.googleapis.com/auth/presentations",
+	tasksRead: "https://www.googleapis.com/auth/tasks.readonly",
+	tasks: "https://www.googleapis.com/auth/tasks",
 } as const;
+
+/** The scopes Google accepts for each Docs, Slides and Tasks capability; one granted scope is enough. */
+export const GRANTS: Record<"docsRead" | "docsWrite" | "slidesRead" | "tasksRead" | "tasksWrite", string[]> = {
+	docsRead: [SCOPES.docsRead, SCOPES.docs, SCOPES.driveRead, SCOPES.driveFile, SCOPES.drive],
+	docsWrite: [SCOPES.docs, SCOPES.driveFile, SCOPES.drive],
+	slidesRead: [SCOPES.slidesRead, SCOPES.slides, SCOPES.driveRead, SCOPES.driveFile, SCOPES.drive],
+	tasksRead: [SCOPES.tasksRead, SCOPES.tasks],
+	tasksWrite: [SCOPES.tasks],
+};
 
 export class BackendError extends GoogleError {
 	readonly unknownOutcome: boolean;
@@ -491,6 +507,12 @@ export class GoogleRuntime {
 						),
 						calendarEventsRead: [SCOPES.calendarEventsRead, SCOPES.calendarEvents, SCOPES.calendar].some((scope) =>
 							auth.scopes.includes(scope),
+						),
+						...Object.fromEntries(
+							Object.entries(GRANTS).map(([name, scopes]) => [
+								name,
+								scopes.some((scope) => auth.scopes.includes(scope)),
+							]),
 						),
 					},
 				}),

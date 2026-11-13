@@ -5,6 +5,7 @@ import { GoogleError } from "./result.ts";
 export const COMPOSE_LIMITS = {
 	recipients: 50,
 	textBytes: 64 * 1024,
+	forwardTextBytes: 1024 * 1024,
 	attachments: 10,
 	attachmentBytes: 10 * 1024 * 1024,
 	mimeBytes: 15 * 1024 * 1024,
@@ -132,7 +133,12 @@ export function newRfcMessageId(): string {
 	return `<${randomUUID()}@pi.local>`;
 }
 
-function checkLimits(mail: Compose, attachments: PreparedAttachment[], reply: ReplyContext | undefined) {
+function checkLimits(
+	mail: Compose,
+	attachments: PreparedAttachment[],
+	reply: ReplyContext | undefined,
+	textBytes: number,
+) {
 	const to = addresses(mail.to, "to");
 	const cc = addresses(mail.cc, "cc");
 	const bcc = addresses(mail.bcc, "bcc");
@@ -142,8 +148,8 @@ function checkLimits(mail: Compose, attachments: PreparedAttachment[], reply: Re
 			"INVALID_ARGUMENT",
 			`Mail requires at least one To recipient and at most ${COMPOSE_LIMITS.recipients} recipients.`,
 		);
-	if (Buffer.byteLength(mail.text) > COMPOSE_LIMITS.textBytes)
-		throw new GoogleError("SIZE_LIMIT", `Mail text exceeds ${COMPOSE_LIMITS.textBytes} bytes.`);
+	if (Buffer.byteLength(mail.text) > textBytes)
+		throw new GoogleError("SIZE_LIMIT", `Mail text exceeds ${textBytes} bytes.`);
 	const attachmentBytes = attachments.reduce((sum, item) => sum + item.size, 0);
 	if (attachments.length > COMPOSE_LIMITS.attachments || attachmentBytes > COMPOSE_LIMITS.attachmentBytes) {
 		throw new GoogleError("SIZE_LIMIT", "Mail exceeds the attachment count or byte limit.");
@@ -196,8 +202,9 @@ export function buildMime(
 	attachments: PreparedAttachment[],
 	reply?: ReplyContext,
 	forcedMessageId?: string,
+	textBytes: number = COMPOSE_LIMITS.textBytes,
 ): PreparedMime {
-	const { to, cc, bcc } = checkLimits(mail, attachments, reply);
+	const { to, cc, bcc } = checkLimits(mail, attachments, reply, textBytes);
 	const subject = resolveSubject(mail, reply);
 	const rfcMessageId = forcedMessageId ?? newRfcMessageId();
 	if (!/^<[^<>\s]+@[^<>\s]+>$/.test(rfcMessageId))

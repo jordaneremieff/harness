@@ -35,13 +35,20 @@ test("scopesFor gives one scope set per service and access level", () => {
 		SCOPES.sheets,
 		SCOPES.calendar,
 	]);
+	assert.deepEqual(scopesFor(["docs", "slides", "tasks"], "read"), [
+		SCOPES.docsRead,
+		SCOPES.slidesRead,
+		SCOPES.tasksRead,
+	]);
+	assert.deepEqual(scopesFor(["docs", "slides", "tasks"], "write"), [SCOPES.docs, SCOPES.slidesRead, SCOPES.tasks]);
 	assert.deepEqual(parseSetupArgs([]), {
 		client: undefined,
 		account: undefined,
-		services: ["gmail", "drive", "sheets", "calendar"],
+		services: ["gmail", "drive", "sheets", "calendar", "docs", "slides", "tasks"],
 		access: "read",
 	});
-	assert.throws(() => parseSetupArgs(["--services", "gmail,docs"]), /docs/);
+	assert.deepEqual(parseSetupArgs(["--services", "docs,tasks", "--access", "write"]).services, ["docs", "tasks"]);
+	assert.throws(() => parseSetupArgs(["--services", "gmail,keep"]), /keep/);
 	assert.throws(() => parseSetupArgs(["--access", "admin"]), /read or write/);
 });
 

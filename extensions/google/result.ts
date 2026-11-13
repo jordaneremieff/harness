@@ -148,7 +148,7 @@ export class TextBudget {
 }
 
 export function external<T extends Record<string, unknown>>(
-	source: "gmail" | "drive" | "sheets" | "calendar",
+	source: "gmail" | "drive" | "sheets" | "calendar" | "docs" | "slides" | "tasks",
 	data: T,
 ) {
 	return { source, trust: "untrusted" as const, notice: EXTERNAL_NOTICE, ...data };

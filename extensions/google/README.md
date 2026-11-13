@@ -1,4 +1,4 @@
-# google: Gmail, Drive, Sheets and Calendar through gws
+# google: Gmail, Drive, Sheets, Calendar, Docs, Slides and Tasks through gws
 
 The extension gives agents bounded tools for one configured Google account. It
 runs the Google Workspace CLI (`gws`, release 0.22.5) as a subprocess. `gws`
@@ -17,13 +17,17 @@ All tools are deferred: `tool_search` or codemode reaches them.
 | Area | Read tools | Write tools |
 |---|---|---|
 | Status | `google_status` | |
-| Gmail | `gmail_search`, `gmail_message_get`, `gmail_thread_get`, `gmail_attachment_download`, `gmail_labels_list`, `gmail_drafts_list`, `gmail_draft_get`, `gmail_operation_status` | `gmail_draft_create`, `gmail_draft_update`, `gmail_draft_delete`, `gmail_send`, `gmail_draft_send`, `gmail_labels_modify`, `gmail_trash`, `gmail_untrash` |
+| Gmail | `gmail_search`, `gmail_message_get`, `gmail_thread_get`, `gmail_attachment_download`, `gmail_labels_list`, `gmail_drafts_list`, `gmail_draft_get`, `gmail_operation_status` | `gmail_draft_create`, `gmail_draft_update`, `gmail_draft_delete`, `gmail_send`, `gmail_draft_send`, `gmail_forward`, `gmail_labels_modify`, `gmail_trash`, `gmail_untrash` |
 | Drive | `drive_files_list`, `drive_file_get`, `drive_file_download`, `drive_file_export`, `drive_permissions_list` | `drive_file_upload`, `drive_file_rename`, `drive_file_move`, `drive_file_trash`, `drive_file_untrash`, `drive_share`, `drive_unshare` |
-| Sheets | `sheets_get`, `sheets_values_get` | `sheets_values_update`, `sheets_values_append` |
+| Sheets | `sheets_get`, `sheets_values_get` | `sheets_create`, `sheets_sheet_add`, `sheets_values_update`, `sheets_values_append` |
 | Calendar | `calendar_calendars_list`, `calendar_events_list`, `calendar_event_get`, `calendar_acl_list` | `calendar_event_create`, `calendar_event_update`, `calendar_event_cancel`, `calendar_share`, `calendar_unshare` |
+| Docs | `docs_get` | `docs_append`, `docs_replace_text` |
+| Slides | `slides_get` | |
+| Tasks | `tasks_lists_list`, `tasks_list`, `tasks_get` | `tasks_create`, `tasks_update`, `tasks_complete`, `tasks_delete` |
 
 No tool deletes a message, file, event or calendar permanently, and no tool
-passes an arbitrary command to `gws`.
+passes an arbitrary command to `gws`. `gmail_draft_delete` removes one draft
+and `tasks_delete` removes one task; these tools cannot restore either.
 
 Downloads, exports and attachments are written to an explicit absolute path
 whose parent exists. The tools never overwrite an existing file, never follow a
@@ -44,10 +48,49 @@ marker, and reading on from `nextOffset` loses and repeats nothing, including
 for multibyte characters at the cut.
 
 Content that comes from Google (email headers, snippets and bodies, file names,
-cell values, event titles, descriptions and attendee names, label names) sits
+cell values, event titles, descriptions and attendee names, label names,
+document and slide text, task titles and notes) sits
 inside an `externalData` object with a fixed notice that it is untrusted data.
 Terminal control characters in that content are neutralised. The marking
 records provenance; it does not detect or prevent prompt injection.
+
+## Documents and presentations
+
+`docs_get` and `slides_get` return text inline, so a read needs no export file.
+Each call fetches the current document or presentation and returns one slice of
+its markdown rendering in `externalData.content`: `text`, `truncated`,
+`nextOffset` and `totalCodePoints`. Pass `nextOffset` as `offset` to read on.
+Offsets count code points of the rendering.
+
+- `docs_get` renders one tab: headings, lists, tables, links and the footnotes
+  that the body refers to. `tabId` selects a tab; the default is the first tab.
+  `externalData.tabs` lists the tabs with their nesting level and parent.
+  Pending suggestions are not part of the text.
+- `slides_get` renders the slides in order. Each slide starts with a
+  `## Slide <number> (<objectId>)` line, followed by its text, tables and media
+  markers, then its speaker notes. The first page (`offset` 0) carries
+  `externalData.slides`: the `objectId`, number and text offset of each slide
+  and, for a slide with speaker notes, the offset of the notes. A slide's
+  offset reads from that slide.
+
+Both results carry Google's `revisionId` when the account can edit the file;
+Google returns none for a file the account can only view. Google states that an
+unchanged revision ID means unchanged content, and that an ID stays valid for
+24 hours. Compare it, or the `modifiedTime` that `drive_file_get` returns for
+any readable file, with an earlier read to decide whether a kept copy is
+current. The read tools take no freshness parameter.
+
+`docs_append` and `docs_replace_text` require `expectedRevisionId`, the
+`revisionId` of the read that the edit is based on. Google applies the edit
+only while that revision is the latest one, so a repeated call cannot apply an
+edit twice. A refused edit returns `DOCUMENT_CHANGED` when the latest revision
+differs from the expected one, and Google's own `API_ERROR` otherwise. Each
+write returns the new `revisionId`.
+
+`docs_append` inserts plain text at the end of a tab body; the text joins the
+last paragraph unless it starts with a newline. `docs_replace_text` replaces
+every occurrence in the document, or in one tab, and reports
+`occurrencesChanged`. Neither tool interprets markdown in the written text.
 
 ## Scopes and capabilities
 
@@ -80,11 +123,17 @@ bound to that same context and the observed account and scopes.
 | Calendar events write | `calendar.events.owned`, `calendar.events` or `calendar` |
 | Calendar sharing read | `calendar.acls.readonly`, `calendar.acls` or `calendar` |
 | Calendar sharing write | `calendar.acls` or `calendar` |
+| Docs read | `documents.readonly`, `documents`, `drive.readonly`, `drive.file` or `drive` |
+| Docs write | `documents`, `drive.file` or `drive` |
+| Slides read | `presentations.readonly`, `presentations`, `drive.readonly`, `drive.file` or `drive` |
+| Tasks read | `tasks.readonly` or `tasks` |
+| Tasks write | `tasks` |
 
 `gmail.compose` and `gmail.modify` also permit sending; no Gmail scope grants
 draft editing or label changes without send. `drive.file` reaches only files the
-app created or the user opened with it. Use policy rules to separate acts that a
-scope does not separate.
+app created or the user opened with it. A Drive scope also satisfies the Sheets,
+Docs and Slides tools, so a Drive grant needs no second scope for them. Use
+policy rules to separate acts that a scope does not separate.
 
 `gws` adds `openid`, `userinfo.email` and `userinfo.profile` to every sign-in.
 Unverified apps in testing mode are limited in the number of scopes they may
@@ -92,7 +141,8 @@ request; request the services you need rather than every scope.
 
 ## Duplicate-send protection
 
-`gmail_send` and `gmail_draft_send` require a caller `operationId`. The
+`gmail_send`, `gmail_draft_send` and `gmail_forward` require a caller
+`operationId`. The
 extension records each send in a private ledger before it starts `gws`, then
 records the outcome: `accepted` (Gmail returned a message), `rejected` (Gmail
 refused the request) or `unknown` (timeout, cancellation, a lost process or an
@@ -109,6 +159,15 @@ unparseable response).
 - The ledger belongs to the account and survives sign-out, expired credentials
   and sign-in again.
 
+`gmail_forward` sends a new plain-text message: the caller's text, then a
+forwarded-message block with the original sender, date, subject and recipients,
+then the original `text/plain` body. It carries the original named attachments
+except inline images; `attachmentPartIds` selects other parts, and an empty list
+carries none. The forward starts its own thread. A source message with no
+`text/plain` body, or with a body that is not valid UTF-8, returns
+`UNSUPPORTED_MESSAGE` and sends nothing. The tool needs a Gmail read scope
+together with a send scope.
+
 `accepted` means Gmail accepted the message, not that a recipient received it.
 The protection covers sends made through these tools only; a `gws` command run
 another way bypasses it.
@@ -121,7 +180,7 @@ command in Pi, or the same verbs from a shell with
 
 | Verb | Effect |
 |---|---|
-| `setup [--client <file>] [--account <email>] [--services gmail,drive,sheets,calendar] [--access read\|write]` | Installs the pinned `gws` release when the managed copy is in use, imports a Google Cloud Desktop app OAuth client JSON into the configuration directory, signs out locally, signs in with the scopes for the chosen services, and records the signed-in account. Services default to all four and access to `read`. |
+| `setup [--client <file>] [--account <email>] [--services gmail,drive,sheets,calendar,docs,slides,tasks] [--access read\|write]` | Installs the pinned `gws` release when the managed copy is in use, imports a Google Cloud Desktop app OAuth client JSON into the configuration directory, signs out locally, signs in with the scopes for the chosen services, and records the signed-in account. Services default to every listed service and access to `read`. |
 | `update` | Installs the pinned `gws` release again if the managed copy is missing or reports another version, and names the newest upstream release. |
 | `status` | Shows the backend, account, granted scopes and capabilities. |
 | `logout` | Removes local `gws` credentials and the recorded account. The grant at Google stays until you remove the app's access in your Google Account. |
@@ -134,9 +193,15 @@ a change to `release.ts`, followed by `/google update`.
 
 Before the first setup, create the OAuth client in a Google Cloud project:
 an External consent screen with your account as a test user, a Desktop app
-client, and the Gmail, Drive, Sheets and Calendar APIs enabled for the services
-you use. In testing mode Google expires refresh tokens after seven days; run
+client, and the Gmail, Drive, Sheets, Calendar, Docs, Slides and Tasks APIs
+enabled for the services you use. In testing mode Google expires refresh
+tokens after seven days; run
 setup again when that happens, or publish the consent screen to production.
+
+Each service asks for one scope per access level; Calendar read asks for its
+list, events and sharing read scopes. `--access write` asks for each service's
+write scope; Slides has no write tool and keeps its read scope. Name fewer
+services to keep a consent request small.
 
 Setup signs in through Google's consent page in the browser. To change
 services or access later, run setup again with the complete set you want; it
@@ -183,7 +248,8 @@ offered tools only.
   `command.ts` implements the `/google` verbs for the command and `cli.ts`.
 - `gws.ts` runs `gws` (environment, limits, exit-code mapping, version and
   account checks, the account lock).
-- `gmail.ts`, `drive.ts`, `sheets.ts` and `calendar.ts` define the tools.
+- `gmail.ts`, `drive.ts`, `sheets.ts`, `calendar.ts`, `docs.ts`, `slides.ts`
+  and `tasks.ts` define the tools.
 - `mime.ts` builds outgoing messages and reply headers; `send-ledger.ts` keeps
   send records; `files.ts` handles private directories and safe file writes;
   `result.ts` builds bounded results; `settings.ts` reads the `google` section.

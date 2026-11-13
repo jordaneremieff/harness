@@ -6,7 +6,7 @@ import { failure, GoogleError, ok, type Result } from "./result.ts";
 export type SendRecord = {
 	operationId: string;
 	account: string;
-	tool: "gmail_send" | "gmail_draft_send";
+	tool: "gmail_send" | "gmail_draft_send" | "gmail_forward";
 	requestFingerprint: string;
 	rfcMessageId: string;
 	draftId?: string;
@@ -25,7 +25,7 @@ function validRecord(value: unknown): value is SendRecord {
 	return (
 		typeof record.operationId === "string" &&
 		typeof record.account === "string" &&
-		(record.tool === "gmail_send" || record.tool === "gmail_draft_send") &&
+		(record.tool === "gmail_send" || record.tool === "gmail_draft_send" || record.tool === "gmail_forward") &&
 		typeof record.requestFingerprint === "string" &&
 		typeof record.rfcMessageId === "string" &&
 		["in_flight", "accepted", "rejected", "unknown"].includes(String(record.state)) &&

@@ -2,10 +2,13 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { calendarTools } from "./calendar.ts";
+import { docsTools } from "./docs.ts";
 import { driveTools } from "./drive.ts";
 import { gmailTools } from "./gmail.ts";
 import { GoogleRuntime, SCOPES } from "./gws.ts";
 import { sheetsTools } from "./sheets.ts";
+import { slidesTools } from "./slides.ts";
+import { tasksTools } from "./tasks.ts";
 import { invoke } from "./tools.ts";
 
 export const ACCOUNT = "person@example.com";
@@ -117,7 +120,15 @@ export type Fake = {
 };
 
 export const ALL_SCOPES = Object.values(SCOPES);
-const TOOLS = [...gmailTools, ...driveTools, ...sheetsTools, ...calendarTools];
+const TOOLS = [
+	...gmailTools,
+	...driveTools,
+	...sheetsTools,
+	...calendarTools,
+	...docsTools,
+	...slidesTools,
+	...tasksTools,
+];
 
 export async function createFake(scenario: Scenario = {}, extraEnv: Record<string, string> = {}): Promise<Fake> {
 	const root = await mkdtemp(join(tmpdir(), "google-fake-"));

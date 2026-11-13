@@ -278,6 +278,21 @@ test("a tool without a granted scope returns SCOPE_REQUIRED and makes no API cal
 	}
 });
 
+test("google_status derives the Docs, Slides and Tasks capabilities from the granted scopes", async () => {
+	const fake = await createFake({ scopes: [SCOPES.driveRead, SCOPES.tasks] });
+	try {
+		const result = await fake.tool("google_status", {});
+		const { capabilities } = result.data as { capabilities: Record<string, boolean> };
+		assert.equal(capabilities.docsRead, true);
+		assert.equal(capabilities.docsWrite, false);
+		assert.equal(capabilities.slidesRead, true);
+		assert.equal(capabilities.tasksRead, true);
+		assert.equal(capabilities.tasksWrite, true);
+	} finally {
+		await fake.cleanup();
+	}
+});
+
 test("gws exits map to stable error codes", async () => {
 	const cases: [Record<string, unknown>, string, boolean][] = [
 		[{ exit: 1, stdout: { error: { code: 403, message: "denied", reason: "forbidden" } } }, "API_ERROR", false],
