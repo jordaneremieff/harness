@@ -619,6 +619,28 @@ single shutdown attempt.
 One limit remains. Rex exposes no conditional label setter, so a simultaneous manual edit between
 the final `session.view` read and `session.set_window_label` can receive the automatic label.
 
+## Return from a local reader
+
+The standalone `terminal-origin.ts` helper implements the package-level
+[terminal origin contract](../../docs/conventions/terminal-origin.md). A local
+opener runs `node <fixed helper path> capture` in its own environment and keeps
+the resulting origin with the open request and reader window, never document
+metadata. Capture confirms the inherited server, session and terminal block;
+missing confirmation preserves only the Rex application identity.
+
+`node <fixed helper path> focus` reads that origin from stdin. It revalidates
+the server host and instance, session and placed block before the server
+selects the exact block. It reports `focused`, `stale` or `unavailable` and
+never guesses, sends input, creates resources or calls a client action. The
+helper uses only the fixed installed Rex executable under the OS account's
+home directory, bounded subprocesses and no retained state. Importing it does
+nothing; native builds may embed the single file at build time.
+
+The server selects a terminal block and its Rex tab, not a verified client or
+Mac workspace window. A reader's application-level action therefore stays
+**Return to Rex**. A failed or stale exact return must not prevent reading.
+The helper is separate from tool configuration and caller ownership records.
+
 ## Configuration and loading
 
 Load `extensions/rex/index.ts` through Pi's normal extension configuration.
