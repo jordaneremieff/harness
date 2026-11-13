@@ -1,5 +1,6 @@
 import Testing
 @testable import MarkdownCore
+import cmark_gfm
 
 private func render(_ source: String, resolver: AssetResolving = NoAssetResolver()) -> RenderedDocument {
     MarkdownRenderer.render(source, resolver: resolver, nonce: "n0")
@@ -25,6 +26,41 @@ private func render(_ source: String, resolver: AssetResolving = NoAssetResolver
         #expect(html.contains("<del>gone</del>"))
         #expect(html.contains("<a class=\"ext\" href=\"http://www.example.com\""))
         #expect(html.contains("<a class=\"ext\" href=\"https://example.org/x\""))
+    }
+
+    @Test func tableCellsKeepLinksImagesAndRawHTML() {
+        let html = render("""
+        | Content | Kind |
+        |---|---|
+        | [named](https://example.org/n) | direct |
+        | **[nested](https://example.org/b)** | bold |
+        | https://example.org/auto | autolink |
+        | ![diagram](https://example.org/i.png) | image |
+        | before<br>after <kbd>key</kbd> | HTML |
+        | [unsafe](javascript:alert(1)) | inert |
+        """).body
+        #expect(html.contains("href=\"https://example.org/n\" title=\"https://example.org/n\">named</a>"))
+        #expect(html.contains("<strong><a class=\"ext\" href=\"https://example.org/b\" title=\"https://example.org/b\">nested</a></strong>"))
+        #expect(html.contains("href=\"https://example.org/auto\""))
+        #expect(html.contains("Remote image not loaded"))
+        #expect(html.contains("<span class=\"ph-alt\">diagram</span>"))
+        #expect(html.contains("before<code class=\"raw-inline\" title=\"HTML shown as text\">&lt;br&gt;</code>after"))
+        #expect(html.contains("&lt;kbd&gt;"))
+        #expect(html.contains("&lt;/kbd&gt;"))
+        #expect(html.contains("<span class=\"inert-link\" title=\"Not opened by the reader: javascript:alert(1)\">unsafe</span>"))
+        #expect(!html.contains("<img"))
+        #expect(!html.contains("href=\"javascript:"))
+    }
+
+    @Test func refusedReplacementKeepsOriginalChildren() throws {
+        let link = try #require(cmark_node_new(CMARK_NODE_LINK))
+        defer { cmark_node_free(link) }
+        let text = try #require(cmark_node_new(CMARK_NODE_TEXT))
+        cmark_node_set_literal(text, "retained")
+        cmark_node_append_child(link, text)
+        MarkdownRenderer.replace(link, block: false, enter: "<span>", exit: "</span>", keepChildren: true)
+        #expect(cmark_node_first_child(link) == text)
+        #expect(MarkdownRenderer.plainText(link) == "retained")
     }
 
     @Test func nestedListsKeepStructure() {

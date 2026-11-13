@@ -327,13 +327,29 @@ public enum MarkdownRenderer {
         guard let custom = cmark_node_new(block ? CMARK_NODE_CUSTOM_BLOCK : CMARK_NODE_CUSTOM_INLINE) else { return }
         cmark_node_set_on_enter(custom, enter)
         cmark_node_set_on_exit(custom, exit)
+        // Table cells reject custom inlines but admit attribute nodes, which render their children.
+        // Insert before moving children so that a refused replacement leaves the original intact.
+        if cmark_node_insert_before(node, custom) == 0 {
+            guard !block, let wrapper = cmark_node_new(CMARK_NODE_ATTRIBUTE) else {
+                cmark_node_free(custom)
+                return
+            }
+            guard cmark_node_append_child(wrapper, custom) == 1 else {
+                cmark_node_free(wrapper)
+                cmark_node_free(custom)
+                return
+            }
+            guard cmark_node_insert_before(node, wrapper) == 1 else {
+                cmark_node_free(wrapper)
+                return
+            }
+        }
         if keepChildren {
             while let child = cmark_node_first_child(node) {
                 cmark_node_unlink(child)
                 cmark_node_append_child(custom, child)
             }
         }
-        cmark_node_insert_before(node, custom)
         cmark_node_unlink(node)
         cmark_node_free(node)
     }
