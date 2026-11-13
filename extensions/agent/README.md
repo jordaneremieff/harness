@@ -93,7 +93,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | Tool | Effect |
 |---|---|
 | `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. |
-| `agent_work` | Inside a native agent, declare background work with `continue`, or close it with `complete` and one final report to its retained reply recipient. Both actions return at once. Results and native settlement do not complete declared work; see [declared background work](#declared-background-work). An ordinary session has its own contract: one state note, where `continue` ends the turn; see [state note of an ordinary session](#state-note-of-an-ordinary-session). |
+| `agent_work` | Inside a native agent, declare background work with `continue`, or close it with `complete` and one final report to its retained reply recipient. Both actions return at once. Results and native settlement do not complete declared work; see [declared background work](#declared-background-work). An ordinary session has its own contract: `continue` ends the turn with one state note for the operator and nothing else; see [state note of an ordinary session](#state-note-of-an-ordinary-session). |
 | `agent_send` | Admit a task or correction. Omitted `mode` means `followUp`, new work, on every path. `mode: "steer"` corrects current work; both reach the same tool-round boundary. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. A busy Durable recipient receives each active input at its next tool boundary, for `steer` and for `followUp`; no input waits for the end of the run. These inputs do not promise separate answers. See [input placement](#input-placement-and-unplaced-notices). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. A successful report returns its identity and state facts (retention, acknowledgement, admission or queue placement) without the message body; these facts do not show that the recipient read the report. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; an unavailable endpoint preserves the attachment error and proves no global host absence. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
@@ -452,9 +452,10 @@ Text without a retained author role uses `Latest message` or `Working on the tas
 After successful ordinary or native registration, Agent answers the package's
 [continuity-tool request](../../docs/conventions/continuity-tools.md). It declares
 `agent_compact` for whole-tool compaction, bounded forms of `agent_abort`,
-`agent_steer` and `agent_send` for worker resolution, and the closing form of
-`agent_work` for work completion. A finished result can therefore close its
-declared work and send its final report at the capacity stop.
+`agent_steer` and `agent_send` for worker resolution, and, in a native
+conversation, the closing form of `agent_work` for work completion. A finished
+result can therefore close its declared work and send its final report at the
+capacity stop.
 
 The worker-resolution declarations accept only closed argument shapes. Targets
 and optional steer reply targets use 1–256 UTF-16 code units; messages use
@@ -465,12 +466,12 @@ shared by both runtimes, not ordinary-only `trust`. Steer accepts `sessionId`,
 `mode: "report"`. It refuses `passive`, `deliverAt`, `replyTo`, `checkInMinutes`
 and other modes. Unknown fields are refused.
 
-The work-completion declaration follows the runtime. In a native conversation it
-accepts only `action: "complete"` with `request` (1–1024), `status` (`done` or
-`failed`) and `message` (1–100000). In an ordinary session it accepts only
-`{ action: "complete" }`, which clears the state note before the answer. Both
-refuse `continue`: it keeps work open in a full context and can declare new
-dependencies. After compaction, `continue` runs normally again.
+The work-completion declaration belongs to the native runtime. It accepts only
+`action: "complete"` with `request` (1–1024), `status` (`done` or `failed`) and
+`message` (1–100000). It refuses `continue`: that keeps work open in a full
+context and can declare new dependencies. After compaction, `continue` runs
+normally again. An ordinary session declares no work, so it declares no
+work-completion tool: its `agent_work` only ends a turn with a state note.
 
 A declaration checks argument shape, not authority, ownership or target state.
 It does not prove that continuity succeeded or prevent an idle target from
@@ -1798,38 +1799,45 @@ Sources: `open-work.ts` (`AgentWorkParams`, `declareOpenWork`,
 
 #### State note of an ordinary session
 
-A session that a person types into registers its own `agent_work`. It keeps
-one state note for the session. It has no routed request, so it takes no
-request, no dependency reference and no reply route, writes no final report,
-and calls no host.
+A session that a person types into registers its own `agent_work`. It ends a
+turn that needs nothing from the operator with one state note. It has no
+routed request, so it takes no request, no dependency reference and no reply
+route, writes no final report, and calls no host. `continue` is its only
+action.
 
 ```ts
 agent_work({ action: "continue", note: "Two workers review the parser; nothing needs you until their results arrive." });
 ```
 
-`continue` stores the note as the current state of the session, shows it in
-one widget above the input (a title with the local time of the note, then the
-note on at most three lines), and returns `terminate: true`. Pi sends no
-further model request when that call is the only call of its tool batch, so a
-turn that needs nothing from the operator ends without a chat line. A queued
-steer or follow-up still starts the next request. A repeated `continue`
-replaces the note. Without a UI the tool stores the note and ends the turn.
-A client of Pi's RPC mode receives the widget as two plain lines (the title
-line, then the note with collapsed white space) and lays them out itself.
+`continue` returns `terminate: true`. Pi sends no further model request when
+that call is the only call of its tool batch, so a turn that needs nothing
+from the operator ends without a chat line. A queued steer or follow-up still
+starts the next request. The tool needs no UI.
 
-`complete` clears the note and the widget and does not end the turn. The
-session calls it when the state that the note describes has ended, for example
-in the turn that gives the operator the result, the blocker or the question;
-the chat message follows it. When the state changed but still needs nothing
-from the operator, a new `continue` replaces the note.
+The card of the call in the transcript is the only display of the note. It
+shows `agent_work`, then the note with collapsed white space, wrapped on at
+most three lines; an expanded card shows the complete note. The tool stores
+no state, sets no widget and writes no session entry. The note is true when
+the session writes it. When an event or the operator starts the next run, the
+card is history in the transcript, so no surface shows a state that ended. A
+later turn that needs nothing from the operator ends with a new `continue`;
+no call clears a note. A client of Pi's RPC mode reads the note from the
+arguments of the tool call.
 
-The session entry `agent.state-note` keeps the note: a reload and `/tree`
-navigation restore the note and the widget from the newest entry of the
-current branch. The card of the call is the note on one line.
+The note is text for the operator: what is open and what happens next, in
+plain words and one or two short sentences (at most 1,200 characters). It
+describes each agent and each piece of work by what it does and carries no
+session, submission or request identifier. The session does not need the
+note for its own continuity: the receipts of its spawn and send calls name
+the result references, and after a compaction the
+[continuity note](#ordinary-sessions) lists each admitted request that has no
+delivered result. The tool description and the ordinary
+guidance of `agent_spawn` and `agent_send` state this rule; the tool does not
+inspect the note.
 
-Sources: `ordinary-work.ts` (`registerOrdinaryWork`, `ordinaryWorkWidget`),
-`tool-cards.ts` (`ordinaryWorkCard`), and `control-guidance.ts` (the ordinary
-guidance of `agent_spawn` and `agent_send`).
+Sources: `ordinary-work.ts` (`registerOrdinaryWork`), `tool-cards.ts`
+(`ordinaryWorkCard`), and `control-guidance.ts` (the ordinary guidance of
+`agent_spawn` and `agent_send`).
 
 ### Input placement and unplaced notices
 

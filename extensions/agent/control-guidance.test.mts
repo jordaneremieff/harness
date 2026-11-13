@@ -27,7 +27,8 @@ it("ordinary delegation guidance names only registered controls and native guida
 		const actual = tools.get(name)?.promptGuidelines;
 		assert.deepEqual(actual, agentControlGuidance(name, "ordinary").guidelines);
 		const ordinary = actual?.join("\n") ?? "";
-		assert.match(ordinary, /call agent_work continue with the current state in note/u);
+		assert.match(ordinary, /call agent_work continue with a short note for the operator/u);
+		assert.doesNotMatch(ordinary, /agent_work complete|widget|exact result references|Preserve known request IDs/u, "the note is operator text: it is no stored state and carries no result reference");
 		assert.match(ordinary, /the only call in the last tool batch and write no chat text\./u);
 		assert.match(ordinary, /A chat message is only for a decision or act of the operator, a blocker, or a result, and it stands alone/u);
 		assert.doesNotMatch(ordinary, /short state note/u);

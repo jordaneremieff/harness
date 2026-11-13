@@ -270,17 +270,19 @@ inspections as a wait. After you send work:
   `agent_work` `complete`, which alone closes an item.
   In an ordinary session, when only delegated work remains, or after you
   handled an event that needs no operator message under "Operator status
-  reports", call `agent_work` `continue` with the current state in `note`
-  (the open work and its exact result references).
+  reports", call `agent_work` `continue` with a short note for the operator:
+  what is open and what happens next.
   Make it the only call in the last tool batch and write no chat text.
-  `continue` stores the note as the current session state, shows it in a
-  widget above the input, and ends the turn without a further model call.
-  Call `agent_work` `complete` when the state that the note describes has
-  ended, for example in the turn that gives the operator the result, the
-  blocker or the question. In this session, `complete` clears the note and
-  the widget and does not end the turn, so the chat message follows it.
-  When the state changed but still needs nothing from the operator, a new
-  `continue` replaces the note.
+  `continue` shows the note as one card in the transcript and ends the turn
+  without a further model call. The operator reads the note, so "Operator
+  status reports" governs its wording: plain words, each agent and each
+  piece of work described by what it does, and no session, submission or
+  request identifier. The result references of your open requests stay in
+  the receipts of your spawn and send calls, and after a compaction a
+  continuity note lists the requests that have no delivered result, so the
+  note carries none. The note is not stored as session state. When the session works
+  again, the card is history; a later turn that needs nothing from the
+  operator ends with a new `continue`.
 - **Stay reachable.** An input reaches a running agent at its next tool
   boundary, the end of its current round of tool calls. With parallel calls
   nothing is placed between two tool completions of one round. The reach of

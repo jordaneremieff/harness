@@ -2,116 +2,75 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { Component, TUI } from "@earendil-works/pi-tui";
-import { ORDINARY_CONTINUE_TEXT, ORDINARY_WORK_ENTRY, ORDINARY_WORK_WIDGET, registerOrdinaryWork } from "./ordinary-work.ts";
+import { ORDINARY_CONTINUE_TEXT, ORDINARY_NOTE_CHARS, ORDINARY_WORK_DESCRIPTION, OrdinaryWorkParams, registerOrdinaryWork } from "./ordinary-work.ts";
+import { matchesSchema } from "./schema-check.ts";
 import { ordinaryWorkCard } from "./tool-cards.ts";
 
-type WidgetContent = undefined | string[] | ((tui: TUI, theme: Theme) => Component);
-const plain = (content: WidgetContent) => Array.isArray(content) ? content : undefined;
 const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
 
+/** An object whose every member except the named ones throws, so a test shows what the code does not use. */
+function only<T extends object>(members: T, name: string): T {
+	return new Proxy(members, { get: (target, key) => { if (key in target) return target[key as keyof T]; throw new Error(`${name} must not use ${String(key)}`); } });
+}
+
 function fixture() {
-	const entries: { type: "custom"; customType: string; data: unknown }[] = [];
-	const widgets: [string, WidgetContent][] = [];
-	const handlers = new Map<string, ((event: unknown, ctx: ExtensionContext) => void)[]>();
 	let tool: ToolDefinition | undefined;
-	let now = Date.UTC(2026, 10, 12, 3, 4);
 	const card = ordinaryWorkCard();
-	registerOrdinaryWork({
-		registerTool: (definition: ToolDefinition) => { tool = definition; },
-		appendEntry: (customType: string, data: unknown) => { entries.push({ type: "custom", customType, data }); },
-		on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
-	} as unknown as ExtensionAPI, card, () => now);
+	registerOrdinaryWork(only({ registerTool: (definition: ToolDefinition) => { tool = definition; } }, "the registration") as unknown as ExtensionAPI, card);
 	assert.ok(tool);
 	const registered = tool;
 	assert.equal(registered.renderCall, card.renderCall, "the registered renderers are the caller's card references");
 	assert.equal(registered.renderResult, card.renderResult);
-	const context = (hasUI: boolean) => ({ hasUI, ui: { setWidget: (key: string, content: WidgetContent) => { widgets.push([key, content]); } }, sessionManager: { getBranch: () => entries } }) as unknown as ExtensionContext;
-	const lines = (content: WidgetContent, width = 40) => typeof content === "function" ? content(undefined as unknown as TUI, theme).render(width).map((line) => stripVTControlCharacters(line)) : undefined;
-	return {
-		entries, widgets, tool: registered, context, lines,
-		at: (value: number) => { now = value; },
-		start: (ctx: ExtensionContext) => { for (const handler of handlers.get("session_start") ?? []) handler({}, ctx); },
-		tree: (ctx: ExtensionContext) => { for (const handler of handlers.get("session_tree") ?? []) handler({}, ctx); },
-		run: (input: unknown, ctx: ExtensionContext) => registered.execute("call", input as never, undefined, undefined, ctx as never),
-	};
+	const context = only({}, "the tool") as unknown as ExtensionContext;
+	return { tool: registered, run: (input: unknown) => registered.execute("call", input as never, undefined, undefined, context as never) };
 }
 
-it("ends the turn in continue with the note in one widget, keeps the note across a reload, and clears it in complete", async () => {
+it("ends the turn in continue and keeps the note nowhere outside the call", async () => {
 	const f = fixture();
-	const ui = f.context(true);
-	const note = "Two workers run the parser review; their results arrive as events and need nothing from you until then. ".repeat(4).trim();
-	const first = await f.run({ action: "continue", note }, ui);
-	assert.equal(first.terminate, true, "no model request follows the only call of its batch");
-	assert.deepEqual(first.content, [{ type: "text", text: ORDINARY_CONTINUE_TEXT }]);
-	assert.deepEqual(first.details, { action: "continue", note, at: Date.UTC(2026, 10, 12, 3, 4) });
-	assert.deepEqual(f.entries, [{ type: "custom", customType: ORDINARY_WORK_ENTRY, data: { note, at: Date.UTC(2026, 10, 12, 3, 4) } }]);
-	const title = `agent state · ${new Date(Date.UTC(2026, 10, 12, 3, 4)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
-	assert.deepEqual(f.widgets.map(([key]) => key), [ORDINARY_WORK_WIDGET, ORDINARY_WORK_WIDGET], "one widget, set twice");
-	assert.deepEqual(f.widgets[0][1], [title, note], "first as string lines, which is all that RPC mode takes");
-	assert.equal(typeof f.widgets[1][1], "function", "then as the component that replaces the lines in the TUI");
-	const shown = f.lines(f.widgets[1][1]);
-	assert.ok(shown);
-	assert.equal(shown[0], title, "the title carries the local time of the note");
-	assert.equal(shown.length, 4, "the note takes at most three lines");
-	assert.ok(shown.every((line) => line.length <= 40));
-	assert.match(shown[3], /…$/u, "a longer note is clipped");
-	assert.ok(shown[1].startsWith("Two workers run the parser review"));
+	const note = "Two workers review the parser. Their results arrive as events; nothing needs you until then.";
+	const result = await f.run({ action: "continue", note });
+	assert.equal(result.terminate, true, "no model request follows the only call of its batch");
+	assert.deepEqual(result.content, [{ type: "text", text: ORDINARY_CONTINUE_TEXT }]);
+	assert.deepEqual(result.details, { action: "continue", note }, "no widget, no session entry and no event hook: the context and the API stay unused");
+	assert.deepEqual((result as { structuredContent?: unknown }).structuredContent, result.details);
+	assert.equal((await f.run({ action: "continue", note: "One result is in; one worker still runs." })).terminate, true, "each call stands alone");
 
-	const card = { expanded: false, isError: false, keyText: () => "" } as never;
-	const call = f.tool.renderCall?.({ action: "continue", note: "Two workers run;\nnothing needs you." } as never, theme, card);
-	assert.deepEqual(call?.render(80).map((line) => stripVTControlCharacters(line)), ["agent_work · Two workers run; nothing needs you."], "the card is the note on one line");
-	assert.deepEqual(call?.render(20).map((line) => stripVTControlCharacters(line)), ["agent_work · Two wo…"], "a longer note is clipped to the line");
-	assert.deepEqual(f.tool.renderResult?.(first as never, { expanded: false, isPartial: false }, theme, card).render(80), [], "the result adds no line");
+	for (const input of [{ action: "complete" }, { action: "continue" }, { action: "continue", note: "" }, { action: "continue", note, results: [] }, { note }]) {
+		await assert.rejects(f.run(input), /agent_work takes action continue and a note/u, JSON.stringify(input));
+	}
+	assert.equal(matchesSchema(OrdinaryWorkParams, { action: "continue", note: "x".repeat(ORDINARY_NOTE_CHARS) }), true);
+	assert.equal(matchesSchema(OrdinaryWorkParams, { action: "continue", note: "x".repeat(ORDINARY_NOTE_CHARS + 1) }), false);
 
-	f.at(Date.UTC(2026, 10, 12, 3, 9));
-	const second = await f.run({ action: "continue", note: "One result is in; one worker still runs." }, ui);
-	assert.equal(second.terminate, true);
-	assert.deepEqual(plain(f.widgets[2][1])?.slice(1), ["One result is in; one worker still runs."]);
-	assert.deepEqual(f.lines(f.widgets[3][1])?.slice(1), ["One result is in; one worker still runs."], "a repeated continue replaces the note");
-
-	// A reload registers the tool again and reads the newest entry of the branch.
-	const reloaded = fixture();
-	reloaded.entries.push(...f.entries);
-	const reloadedUi = reloaded.context(true);
-	reloaded.start(reloadedUi);
-	assert.deepEqual(plain(reloaded.widgets[0][1])?.slice(1), ["One result is in; one worker still runs."]);
-	assert.deepEqual(reloaded.lines(reloaded.widgets[1][1])?.slice(1), ["One result is in; one worker still runs."]);
-
-	const done = await f.run({ action: "complete" }, ui);
-	assert.equal(done.terminate, undefined, "complete does not end the turn");
-	assert.deepEqual(done.details, { action: "complete", cleared: true });
-	assert.deepEqual(f.widgets.at(-1), [ORDINARY_WORK_WIDGET, undefined], "complete clears the widget");
-	assert.deepEqual(f.entries.at(-1)?.data, { note: null, at: Date.UTC(2026, 10, 12, 3, 9) });
-	assert.deepEqual((await f.run({ action: "complete" }, ui)).details, { action: "complete", cleared: false });
-	const cleared = fixture();
-	cleared.entries.push(...f.entries);
-	cleared.start(cleared.context(true));
-	assert.deepEqual(cleared.widgets, [[ORDINARY_WORK_WIDGET, undefined]], "a cleared note does not come back after a reload");
-
-	const headless = fixture();
-	const stored = await headless.run({ action: "continue", note: "No operator is here." }, headless.context(false));
-	assert.equal(stored.terminate, true, "without a UI the tool stores the note and ends the turn");
-	assert.deepEqual([headless.entries.length, headless.widgets.length], [1, 0]);
-	await assert.rejects(headless.run({ action: "continue" }, headless.context(false)), /continue requires note/u);
-	await assert.rejects(headless.run({ action: "complete", note: "x" }, headless.context(false)), /complete takes only action/u);
+	assert.match(ORDINARY_WORK_DESCRIPTION, /Put no internal identifier in the note \(no session, submission or request ID\)/u, "the note is text for the operator");
+	assert.doesNotMatch(ORDINARY_WORK_DESCRIPTION, /widget|complete|result references\)/u, "the tool keeps no state to clear and asks for no reference");
+	assert.match(f.tool.promptSnippet ?? "", /no chat text/u);
 });
 
-it("shows the note of the branch that tree navigation selects", async () => {
+it("shows the note as the card of the call: at most three lines, and all of it when expanded", () => {
 	const f = fixture();
-	const ui = f.context(true);
-	await f.run({ action: "continue", note: "The first branch waits for one worker." }, ui);
+	const card = { expanded: false, isError: false, keyText: () => "" };
+	const lines = (note: unknown, width: number, context: Record<string, unknown> = card) => f.tool.renderCall?.({ action: "continue", note } as never, theme, context as never).render(width).map((line) => stripVTControlCharacters(line));
 
-	// Navigation to a point before the note leaves a branch that has none.
-	f.entries.length = 0;
-	f.tree(ui);
-	assert.deepEqual(f.widgets.at(-1), [ORDINARY_WORK_WIDGET, undefined], "a branch without a note clears the widget");
-	assert.deepEqual((await f.run({ action: "complete" }, ui)).details, { action: "complete", cleared: false }, "the note of the branch that was left is gone");
+	assert.deepEqual(lines("Two workers run;\nnothing needs you.", 80), ["agent_work · Two workers run; nothing needs you."], "white space collapses and a short note takes one line");
+	assert.deepEqual(lines(undefined, 80), ["agent_work"], "a call whose note did not arrive yet shows the title");
 
-	// Navigation to a branch with its own note shows that note.
-	f.entries.push({ type: "custom", customType: ORDINARY_WORK_ENTRY, data: { note: "The second branch has its result.", at: Date.UTC(2026, 10, 12, 3, 20) } });
-	f.tree(ui);
-	assert.deepEqual(plain(f.widgets.at(-2)?.[1])?.slice(1), ["The second branch has its result."]);
-	assert.deepEqual(f.lines(f.widgets.at(-1)?.[1])?.slice(1), ["The second branch has its result."]);
-	assert.deepEqual((await f.run({ action: "complete" }, ui)).details, { action: "complete", cleared: true });
+	const note = "Two workers run the parser review; their results arrive as events and need nothing from you until then. ".repeat(4).trim();
+	const shown = lines(note, 40);
+	assert.ok(shown);
+	assert.equal(shown.length, 3, "a longer note takes at most three lines");
+	assert.ok(shown.every((line) => line.length <= 40));
+	assert.ok(shown[0].startsWith("agent_work · Two workers run the parser"));
+	assert.match(shown[2], /…$/u, "a clipped note says so");
+	const all = lines(note, 40, { ...card, expanded: true });
+	assert.ok(all && all.length > 3);
+	assert.equal(all.map((line) => line.trim()).join(" "), `agent_work · ${note}`, "an expanded card shows the complete note");
+
+	const first = f.tool.renderCall?.({ action: "continue", note: "first" } as never, theme, card as never);
+	const second = f.tool.renderCall?.({ action: "continue", note: "second" } as never, theme, { ...card, lastComponent: first } as never);
+	assert.equal(second, first, "a rerender reuses the component");
+	assert.deepEqual(second?.render(80).map((line) => stripVTControlCharacters(line)), ["agent_work · second"]);
+
+	assert.deepEqual(f.tool.renderResult?.({ content: [{ type: "text", text: ORDINARY_CONTINUE_TEXT }] } as never, { expanded: false, isPartial: false }, theme, card as never).render(80), [], "the result adds no line");
+	const failed = f.tool.renderResult?.({ content: [{ type: "text", text: "agent_work takes action continue and a note" }] } as never, { expanded: false, isPartial: false }, theme, { ...card, isError: true } as never).render(80).map((line) => stripVTControlCharacters(line));
+	assert.deepEqual(failed, ["agent_work takes action continue and a note"], "a failed call shows its error");
 });

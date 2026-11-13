@@ -1,126 +1,46 @@
 /**
  * The state note of an ordinary session: `agent_work` for a session that a person types into.
  *
- * `continue` keeps one note as the current state of the session, shows it in a widget above the input, and
- * ends the turn in the tool call, so a turn that needs nothing from the operator leaves no chat line.
- * `complete` clears the note and the widget. An ordinary session has no routed request: the note names no
+ * `continue` ends the turn in the tool call, so a turn that needs nothing from the operator leaves no chat
+ * line. Its note is text for the operator, and the card of the call in the transcript is its only display.
+ * The note is true when the session writes it and is history when the session works again, so nothing
+ * outside the transcript keeps or shows it. An ordinary session has no routed request: the note names no
  * reply route and no dependency, and nothing here calls a host.
  */
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { bool, int, lit, obj, opt, str, union, type Schema, type Static } from "@earendil-works/pi-schema";
-import { truncateToWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { lit, obj, str, type Schema, type Static } from "@earendil-works/pi-schema";
 import { matchesSchema } from "./schema-check.ts";
-import { displayText, type AgentToolCard } from "./tool-cards.ts";
+import type { AgentToolCard } from "./tool-cards.ts";
 
-/** Session entry that keeps the note across a reload; `note: null` records that it was cleared. */
-export const ORDINARY_WORK_ENTRY = "agent.state-note";
-export const ORDINARY_WORK_WIDGET = "agent-work";
 export const ORDINARY_NOTE_CHARS = 1200;
-const WIDGET_NOTE_LINES = 3;
 
-export type OrdinaryWorkNote = { readonly note: string; readonly at: number };
-
-export const ORDINARY_WORK_DESCRIPTION = "Keep one state note for this session, or clear it. continue stores the note as the current state of the session, shows it in a widget above the input, and ends the turn: no model request follows when it is the only call of its tool batch, so write no chat text with it. Use it when an agent event needs no decision or act of the operator, no blocker report and no result. Call complete when the state that the note describes has ended, for example in the turn that gives the operator the result, the blocker or the question: complete clears the note and the widget and does not end the turn, so the chat message follows it. When the state changed but still needs nothing from the operator, a new continue replaces the note. The note has no reply route and no dependency.";
+export const ORDINARY_WORK_DESCRIPTION = "End a turn that needs nothing from the operator, with one state note for the operator. continue shows the note as one card in the transcript and ends the turn: no model request follows when it is the only call of its tool batch, so write no chat text with it. Use it when only delegated or background work remains, or after an agent event that needs no decision or act of the operator, no blocker report and no result. Write the note for the operator in plain words, in one or two short sentences: what is open and what happens next. Describe each agent and each piece of work by what it does. Put no internal identifier in the note (no session, submission or request ID): the receipts of your spawn and send calls keep the result references of the open requests. The note is not stored as session state: when the session works again, the card is history, and a later turn that needs nothing from the operator ends with a new continue. The note has no reply route and no dependency.";
 
 const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
-const noteText = str({ minLength: 1, maxLength: ORDINARY_NOTE_CHARS });
 
-/** One object root for every provider; the action-specific shapes apply at execution. */
 export const OrdinaryWorkParams = obj({
-	action: StringEnum(["continue", "complete"]),
-	note: opt(str({ minLength: 1, maxLength: ORDINARY_NOTE_CHARS, description: "continue only, required: the current state of the session, for the operator." })),
+	action: StringEnum(["continue"]),
+	note: str({ minLength: 1, maxLength: ORDINARY_NOTE_CHARS, description: "The state for the operator in plain words: what is open and what happens next. One or two short sentences, no session, submission or request ID." }),
 });
-const ContinueParams = obj({ action: lit("continue"), note: noteText });
-const CompleteParams = obj({ action: lit("complete") });
 
-export const OrdinaryWorkOutputSchema = obj({
-	action: union([lit("continue"), lit("complete")]),
-	note: opt(str()),
-	/** Time of the note, in milliseconds. */
-	at: opt(int({ minimum: 0 })),
-	/** complete: whether a note was there to clear. */
-	cleared: opt(bool()),
-});
+export const OrdinaryWorkOutputSchema = obj({ action: lit("continue"), note: str() });
 export type OrdinaryWorkDetails = Static<typeof OrdinaryWorkOutputSchema>;
 
-export const ORDINARY_CONTINUE_TEXT = "The state note is stored and shown to the operator. The turn ends here: write no chat text.";
-const COMPLETE_TEXT = "The state note is cleared.";
+export const ORDINARY_CONTINUE_TEXT = "The state note is shown to the operator. The turn ends here: write no chat text.";
 
-/** The widget as plain lines: the title with the local time of the note, then the note with collapsed white space. */
-export function ordinaryWorkLines(state: OrdinaryWorkNote): [title: string, note: string] {
-	const time = new Date(state.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-	return [`agent state · ${time}`, displayText(state.note).replace(/\s+/gu, " ").trim()];
-}
-
-/** The widget: a title with the local time of the note, then the note on at most three lines. */
-export function ordinaryWorkWidget(state: OrdinaryWorkNote, theme: Pick<Theme, "fg">): Component {
-	const [title, note] = ordinaryWorkLines(state);
-	return {
-		invalidate() {},
-		render(width: number): string[] {
-			const lines = wrapTextWithAnsi(note, Math.max(1, width));
-			const shown = lines.slice(0, WIDGET_NOTE_LINES);
-			if (lines.length > WIDGET_NOTE_LINES) shown[WIDGET_NOTE_LINES - 1] = truncateToWidth(`${shown[WIDGET_NOTE_LINES - 1]} ${lines[WIDGET_NOTE_LINES]}`, Math.max(1, width), "…");
-			return [truncateToWidth(theme.fg("muted", title), Math.max(1, width), "…"), ...shown.map((line) => theme.fg("text", line))];
-		},
-	};
-}
-
-type WorkUi = Pick<ExtensionContext, "hasUI"> & { readonly ui: Pick<ExtensionContext["ui"], "setWidget"> };
-
-/**
- * RPC mode takes a widget as string lines only and ignores a component, and its client lays the lines out
- * itself. So the lines are set first; in the TUI the component then replaces them in the same tick.
- */
-function show(ctx: WorkUi, state: OrdinaryWorkNote | undefined): void {
-	if (!ctx.hasUI) return;
-	if (state === undefined) { ctx.ui.setWidget(ORDINARY_WORK_WIDGET, undefined); return; }
-	ctx.ui.setWidget(ORDINARY_WORK_WIDGET, ordinaryWorkLines(state));
-	ctx.ui.setWidget(ORDINARY_WORK_WIDGET, (_tui, theme) => ordinaryWorkWidget(state, theme));
-}
-
-/** The note that the newest entry of the current branch keeps; undefined when it was cleared or never set. */
-function retainedNote(ctx: Pick<ExtensionContext, "sessionManager">): OrdinaryWorkNote | undefined {
-	const entry = ctx.sessionManager.getBranch().findLast((candidate) => candidate.type === "custom" && candidate.customType === ORDINARY_WORK_ENTRY);
-	const data = entry?.type === "custom" ? entry.data as { note?: unknown; at?: unknown } | undefined : undefined;
-	return typeof data?.note === "string" && typeof data.at === "number" ? { note: data.note, at: data.at } : undefined;
-}
-
-/**
- * Register the ordinary `agent_work` and restore its note and widget when a session starts or tree navigation
- * selects another branch. The caller owns
- * `card`, so the registered renderers are the same references that it publishes for display.
- */
-export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool" | "appendEntry" | "on">, card: AgentToolCard, now: () => number = Date.now): void {
-	let current: OrdinaryWorkNote | undefined;
-	const restore = (ctx: WorkUi & Pick<ExtensionContext, "sessionManager">): void => {
-		current = retainedNote(ctx);
-		show(ctx, current);
-	};
-	pi.on("session_start", (_event, ctx) => restore(ctx));
-	pi.on("session_tree", (_event, ctx) => restore(ctx));
+/** Register the ordinary `agent_work`. The caller owns `card`, so the registered renderers are the same references that it publishes for display. */
+export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool">, card: AgentToolCard): void {
 	pi.registerTool({
 		name: "agent_work",
 		label: "Agent work",
 		description: ORDINARY_WORK_DESCRIPTION,
-		promptSnippet: "Keep or clear the state note of this session; continue ends the turn without chat text",
+		promptSnippet: "End a turn that needs nothing from the operator with one state note and no chat text",
 		parameters: OrdinaryWorkParams,
 		outputSchema: OrdinaryWorkOutputSchema,
-		async execute(_callId, input: Static<typeof OrdinaryWorkParams>, _signal, _update, ctx) {
-			if (matchesSchema(ContinueParams, input)) {
-				current = { note: input.note, at: now() };
-				pi.appendEntry(ORDINARY_WORK_ENTRY, current);
-				show(ctx, current);
-				const details: OrdinaryWorkDetails = { action: "continue", note: current.note, at: current.at };
-				return { content: [{ type: "text", text: ORDINARY_CONTINUE_TEXT }], details, structuredContent: details, terminate: true };
-			}
-			if (!matchesSchema(CompleteParams, input)) throw new Error("continue requires note; complete takes only action");
-			const cleared = current !== undefined;
-			current = undefined;
-			if (cleared) pi.appendEntry(ORDINARY_WORK_ENTRY, { note: null, at: now() });
-			show(ctx, undefined);
-			const details: OrdinaryWorkDetails = { action: "complete", cleared };
-			return { content: [{ type: "text", text: COMPLETE_TEXT }], details, structuredContent: details };
+		async execute(_callId, input: Static<typeof OrdinaryWorkParams>) {
+			if (!matchesSchema(OrdinaryWorkParams, input)) throw new Error("agent_work takes action continue and a note");
+			const details: OrdinaryWorkDetails = { action: "continue", note: input.note };
+			return { content: [{ type: "text", text: ORDINARY_CONTINUE_TEXT }], details, structuredContent: details, terminate: true };
 		},
 		renderCall: card.renderCall,
 		renderResult: card.renderResult,

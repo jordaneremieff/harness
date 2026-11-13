@@ -316,11 +316,17 @@ completion returns the close while that close remains retained; it does not
 create another final report. The work document keeps the newest 16 closed items.
 Use this retained declaration, not an informal promise of a later manual report.
 
-An ordinary session keeps its state in its own `agent_work`. When only
+An ordinary session has its own `agent_work`, which ends a turn that needs
+nothing from the operator without a chat line. When only
 delegated work remains, or after an event that needs nothing from the
-operator, it calls `agent_work` with `action: "continue"` and its current
-state in `note` as the only call of its last tool batch and writes no chat
-text: the note shows in a widget above the input and the turn ends there.
+operator, it calls `agent_work` with `action: "continue"` and a short note
+for the operator in `note` as the only call of its last tool batch and writes
+no chat text: the note shows as the card of that call in the transcript and
+the turn ends there. The note says in plain words what is open and what
+happens next. It carries no session, submission or request identifier: the
+receipts of the session's spawn and send calls keep the result references,
+and after a compaction its continuity note lists the requests that have no
+delivered result.
 Results arrive as events
 at its next tool boundary or start its next turn; it never polls. Follow the
 [supervision guidance](../skills/delegate/SKILL.md#6-supervise-without-polling)

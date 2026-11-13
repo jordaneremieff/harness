@@ -11,7 +11,7 @@ import { ProviderBlockFactSchema, providerBlockSummary, providerBlockText } from
 import { matchesSchema } from "./schema-check.ts";
 import type { AgentToolResult, MessageRenderer, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme, type KeybindingHints } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, Spacer, Text, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Box, Markdown, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { dashboardClock, dashboardTime } from "./dashboard-time.ts";
 import type { Communication } from "./communication.ts";
 import { receiptContinuationLine, resultContinuationLines } from "./control-result.ts";
@@ -1702,16 +1702,45 @@ function workLines(details: Record<string, unknown>, theme: Theme, context: Agen
 
 const NO_LINES: Component = { render: () => [], invalidate() {} };
 
+const STATE_NOTE_LINES = 3;
+
+/** The title and the note as wrapped text: every line when expanded, otherwise at most three lines. */
+class StateNoteText implements Component {
+	private note = "";
+	private expanded = false;
+	private theme: Theme | undefined;
+	private readonly title: string;
+	constructor(title: string) { this.title = title; }
+	set(note: string, theme: Theme, expanded: boolean): void {
+		this.note = note;
+		this.theme = theme;
+		this.expanded = expanded;
+	}
+	invalidate(): void {}
+	render(width: number): string[] {
+		const theme = this.theme;
+		if (!theme) return [];
+		const space = Math.max(1, width);
+		const lines = wrapTextWithAnsi(this.note ? `${this.title} · ${this.note}` : this.title, space);
+		const shown = this.expanded ? lines : lines.slice(0, STATE_NOTE_LINES);
+		if (shown.length < lines.length) shown[STATE_NOTE_LINES - 1] = truncateToWidth(`${shown[STATE_NOTE_LINES - 1]} ${lines[STATE_NOTE_LINES]}`, space, "…");
+		return shown.map((line, index) => index === 0 && line.startsWith(this.title)
+			? theme.fg("toolTitle", theme.bold(this.title)) + theme.fg("accent", line.slice(this.title.length))
+			: theme.fg("accent", line));
+	}
+}
+
 /**
- * The card of `agent_work` in an ordinary session: the state note on one line. The note is the call, so a
- * result adds no line unless the call failed.
+ * The card of `agent_work` in an ordinary session: the state note, which this card alone shows to the
+ * operator. The note wraps on at most three lines; an expanded card shows all of it. The note is the call,
+ * so a result adds no line unless the call failed.
  */
 export function ordinaryWorkCard(): AgentToolCard {
 	return {
 		renderCall: (value, theme, context) => {
-			const args = record(value);
-			const label = text(args.note) || displayPreview(text(args.action), 20);
-			return cardLayout({ title: "agent_work", ...(label ? { label } : {}) }, theme, { expanded: context.expanded, previous: context.lastComponent });
+			const component = context.lastComponent instanceof StateNoteText ? context.lastComponent : new StateNoteText("agent_work");
+			component.set(displayText(text(record(value).note)).replace(/\s+/gu, " ").trim(), theme, context.expanded);
+			return component;
 		},
 		renderResult: (result, options, theme, context) => context.isError === true
 			? cardLayout({ body: [theme.fg("error", resultPreview(resultText(result)))] }, theme, { expanded: options.expanded, previous: context.lastComponent })

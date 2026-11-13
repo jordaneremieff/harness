@@ -61,11 +61,6 @@ function acceptsNativeCompletion(input: unknown): boolean {
 		&& typeof input.message === "string" && input.message.length >= 1 && input.message.length <= WORK_MESSAGE_CHARS;
 }
 
-/** Ordinary `agent_work complete`: clears the state note before the answer. */
-function acceptsOrdinaryCompletion(input: unknown): boolean {
-	return closed(input, ["action"]) && input.action === "complete";
-}
-
 export function declareContinuityTools(pi: ExtensionAPI, runtime: "native" | "ordinary"): void {
 	pi.events.on("harness:continuity-tools", (data) => {
 		if (data === null || typeof data !== "object") return;
@@ -76,6 +71,7 @@ export function declareContinuityTools(pi: ExtensionAPI, runtime: "native" | "or
 		declare({ name: "agent_abort", act: "worker-resolution", accepts: acceptsAbort });
 		declare({ name: "agent_steer", act: "worker-resolution", accepts: acceptsSteer });
 		declare({ name: "agent_send", act: "worker-resolution", accepts: acceptsReport });
-		declare({ name: "agent_work", act: "work-completion", accepts: runtime === "native" ? acceptsNativeCompletion : acceptsOrdinaryCompletion });
+		// An ordinary session declares no work: its `agent_work` only ends a turn with a state note.
+		if (runtime === "native") declare({ name: "agent_work", act: "work-completion", accepts: acceptsNativeCompletion });
 	});
 }

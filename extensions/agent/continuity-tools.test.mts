@@ -38,6 +38,8 @@ function fixture() {
 }
 
 const DECLARED = ["agent_compact", "agent_abort", "agent_steer", "agent_send", "agent_work"];
+/** An ordinary session declares no work, so its `agent_work` completes none. */
+const ORDINARY_DECLARED = DECLARED.filter((name) => name !== "agent_work");
 
 it("declares whole-tool compaction, the owned worker-resolution tools and work completion synchronously", () => {
 	const { pi, events } = fixture();
@@ -118,16 +120,12 @@ it("accepts only the complete form of native agent_work with its required fields
 	assert.equal(accept(Object.defineProperty({ ...valid }, "message", { enumerable: true, get() { throw new Error("getter must not run"); } })), false);
 });
 
-it("accepts only the bare complete form of ordinary agent_work", () => {
+it("declares no work-completion tool for an ordinary session", () => {
 	const { pi, events } = fixture();
 	declareContinuityTools(pi, "ordinary");
-	assert.deepEqual(declarations(events).map((tool) => tool.name), DECLARED);
-	const accept = predicates(events).get("agent_work");
-	assert.ok(accept);
-	assert.equal(accept({ action: "complete" }), true);
-	for (const input of [{ action: "continue", note: "waiting" }, { action: "continue" }, { action: "complete", note: "x" }, { action: "complete", request: "r", status: "done", message: "m" }, {}, null]) {
-		assert.equal(accept(input), false, JSON.stringify(input));
-	}
+	assert.deepEqual(declarations(events).map((tool) => tool.name), ORDINARY_DECLARED);
+	assert.deepEqual(declarations(events).filter((tool) => tool.act === "work-completion"), [], "the state note of an ordinary session is no declared work");
+	assert.equal(predicates(events).get("agent_work"), undefined);
 });
 
 it("refuses invalid abort flags and combinations", () => {
@@ -159,8 +157,7 @@ it("refuses invalid messages, modes and reply targets", () => {
 it("declares only after successful ordinary registration", { timeout: 20000 }, async () => {
 	const { pi, events, tools } = fixture();
 	await register(pi);
-	assert.deepEqual(declarations(events).map((tool) => tool.name), DECLARED);
-	assert.equal(predicates(events).get("agent_work")?.({ action: "complete" }), true, "the ordinary form");
+	assert.deepEqual(declarations(events).map((tool) => tool.name), ORDINARY_DECLARED);
 	for (const tool of declarations(events)) assert.ok(tools.includes(tool.name));
 	const failed = fixture();
 	failed.pi.registerTool = () => { throw new Error("registration failed"); };
@@ -205,7 +202,7 @@ it("advertises only registered tools through the public ordinary resource loader
 	assert.deepEqual(resourceLoader.getExtensions().errors, []);
 	assert.ok(events);
 	const declared = declarations(events);
-	assert.deepEqual(declared.map((tool) => tool.name), DECLARED);
+	assert.deepEqual(declared.map((tool) => tool.name), ORDINARY_DECLARED);
 	const sessionManager = SessionManager.create(cwd, sessionsRoot);
 	const socketDirectory = join(sessionsRoot, ".primaries");
 	assert.ok(Buffer.byteLength(join(socketDirectory, `${sessionManager.getSessionId()}.sock`)) <= 100, "reject shared socket fallback before bind");
