@@ -51,7 +51,8 @@ test("the real contribution publishes and serves text/data reads without a submi
 		assert.equal(result?.role, "toolResult");
 		if (result?.role !== "toolResult") throw new Error("Missing tool result");
 		assert.equal(result.isError, false);
-		assert.match(result.content.map((part) => part.type === "text" ? part.text : "").join(""), /No window opened/u);
+		const receipt = result.content.map((part) => part.type === "text" ? part.text : "").join("");
+		assert.match(receipt, /No window opened\. The operator opens it from the Markdown view under Published \(in the agent view, under Owner views\)\. In an ordinary Pi session, \/markdown md-[a-f0-9]{20} also opens it\./u);
 		assert.equal((await new MarkdownStore(process.env.PI_MARKDOWN_DIR).list()).documents.length, 1);
 		const count = faux.state.callCount;
 		const text = await command.run(call);

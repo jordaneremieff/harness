@@ -16,6 +16,8 @@ test("publication cards are pure records shared by ordinary and attached present
 	assert.match(call, /Markdown publish/); assert.ok(!call.includes("\u001b"));
 	const saved = card.renderResult({ content: [], details: { ok: true, documentId: "md-12345678901234567890", revision: 2, bytes: 100 } }, {} as never, theme, {} as never).render(100).join("\n");
 	assert.match(saved, /revision 2/); assert.match(saved, /No window opened/);
+	assert.match(saved.replace(/\s+/gu, " "), /Open it from the Markdown view under Published \(Owner views in the agent view\)\. In an ordinary Pi session: \/markdown md-12345678901234567890/u);
+	assert.doesNotMatch(saved, /No window opened\. \/markdown/u);
 	const error = card.renderResult({ content: [], details: { ok: false, error: { message: "Stale revision." } } }, {} as never, theme, {} as never).render(100).join("\n");
 	assert.match(error, /Stale revision/);
 });

@@ -51,7 +51,7 @@ An open request contains `{version:1, storeId, document, revision, digest, reque
 
 Both hosts return the same structured outcome. Success includes `ok:true`, document ID, revision, source digest, byte count, title, kind, created/replayed flags, reference counts, provenance, the `/markdown <id>` opening command, and `selfContained` only after reference inspection. Failure includes `ok:false` and a bounded error with code `invalid`, `too-large`, `not-found`, `conflict`, `replay-conflict`, `file-unreadable` or `store-failure`. Conflicts include the current revision and digest.
 
-Ordinary tools return `structuredContent` and presentation details. Native tools return `structuredOutput` and presentation details. Native publication declares `replay: "safe"` and memoises its random publication plan in the Durable tool task before the document write. A recovered task returns a saved receipt before it reads the original file again. Publication performs no reveal, app launch or focus action.
+The text result and the tool card say that no window opened, that the operator opens the document from the Markdown view under Published (Owner views in the agent view), and that `/markdown <id>` opens it in an ordinary Pi session. An attached agent terminal sends that slash text to the conversation, so the view comes first. Ordinary tools return `structuredContent` and presentation details. Native tools return `structuredOutput` and presentation details. Native publication declares `replay: "safe"` and memoises its random publication plan in the Durable tool task before the document write. A recovered task returns a saved receipt before it reads the original file again. Publication performs no reveal, app launch or focus action.
 
 ## References and limits
 

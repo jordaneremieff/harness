@@ -12,6 +12,7 @@ const renderResult: NonNullable<ToolDefinition["renderResult"]> = (result, _opti
 	const details = record(result.details);
 	if (details.ok === false) return new Text(theme.fg("error", plain(record(details.error).message) || "Publication failed."), 0, 0);
 	const id = plain(details.documentId);
-	return new Text(id ? `Saved ${id} · revision ${details.revision} · ${details.bytes} bytes\nNo window opened. /markdown ${id}` : "Publication result unavailable.", 0, 0);
+	// An attached agent terminal sends slash text to the conversation, so the card names the view first.
+	return new Text(id ? `Saved ${id} · revision ${details.revision} · ${details.bytes} bytes\nNo window opened. Open it from the Markdown view under Published (Owner views in the agent view). In an ordinary Pi session: /markdown ${id}` : "Publication result unavailable.", 0, 0);
 };
 export function toolDisplay(): Publication { return { version: 1, tools: [{ name: "markdown_publish", renderCall, renderResult }] }; }

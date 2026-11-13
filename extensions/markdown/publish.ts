@@ -206,9 +206,13 @@ export async function publish(params: PublishInput, options: PublishOptions): Pr
 		return await save(params, await preparePublication(params, options), { ...options, plan });
 	} catch (error) { return failure(error); }
 }
+/** An attached agent terminal sends slash text to the conversation, so the receipt names the view first. */
+function openingRoute(documentId: string): string {
+	return `The operator opens it from the Markdown view under Published (in the agent view, under Owner views). In an ordinary Pi session, /markdown ${documentId} also opens it.`;
+}
 export function publicationText(outcome: PublishOutcome): string {
 	if (!outcome.ok) return `Markdown publication failed (${outcome.error.code}): ${outcome.error.message}`;
-	return `Saved ${outcome.documentId}, revision ${outcome.revision}, ${outcome.bytes} bytes.\nNo window opened. Open with ${outcome.open}.${outcome.references.state === "uninspected" ? ` ${REMEDY}` : ""}`;
+	return `Saved ${outcome.documentId}, revision ${outcome.revision}, ${outcome.bytes} bytes.\nNo window opened. ${openingRoute(outcome.documentId)}${outcome.references.state === "uninspected" ? ` ${REMEDY}` : ""}`;
 }
 export function createPublishTool(options: Omit<PublishOptions, "cwd"> & { cwd?: string }): ToolDefinition<typeof PublishParameters, PublishOutcome> {
 	const presentation = toolDisplay().tools[0];

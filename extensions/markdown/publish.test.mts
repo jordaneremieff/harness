@@ -140,7 +140,7 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 	const result = await tool.execute("call", { title: "Ordinary", text: "# exact" }, undefined, undefined, context);
 	assert.equal((result.structuredContent as PublishOutcome).ok, true);
 	assert.deepEqual(result.structuredContent, result.details);
-	assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /No window opened/);
+	assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /No window opened\. The operator opens it from the Markdown view under Published \(in the agent view, under Owner views\)\. In an ordinary Pi session, \/markdown md-[a-f0-9]{20} also opens it\./u);
 	assert.ok(tool.outputSchema);
 	const first = success(result.details); assert.equal(first.provenance.session, "first"); assert.equal(first.provenance.model, "faux/faux-1"); assert.ok(first.provenance.host);
 	session = "second";
@@ -235,15 +235,16 @@ test("native model and codemode calls share outcomes, prefixes and explicit reus
 	const storage = new Durable.MemoryStorage(); const faux = fauxProvider(); const models = createModels(); models.setProvider(faux.provider);
 	const native = createNativePublishTool({ durable: Durable, cwd: root, storageId: "synthetic" }, { store });
 	assert.equal(native.replay, "safe"); assert.ok(native.structuredOutputSchema);
-	const registry = Durable.createRegistry(); let firstOutcome: PublishOutcome | undefined;
-	registry.install(Durable.defineExtension({ name: "markdown", tools: [{ ...native, async execute(args, api, context) { const result = await native.execute(args as PublishInput, api, context); firstOutcome ??= result.structuredOutput as PublishOutcome; return result; } }] }));
+	const registry = Durable.createRegistry(); const results: { outcome: PublishOutcome; text: string }[] = [];
+	registry.install(Durable.defineExtension({ name: "markdown", tools: [{ ...native, async execute(args, api, context) { const result = await native.execute(args as PublishInput, api, context); results.push({ outcome: result.structuredOutput as PublishOutcome, text: (result.output ?? []).flatMap((part) => part.type === "text" ? [part.text] : []).join("") }); return result; } }] }));
 	const sandbox = new CodemodeSandbox(); registry.install(createCodemodeExtension({ sandbox, models: false }));
 	const first = await Durable.Harness.open(storage, { models, registry }, context);
 	try {
 		const conversation = await first.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 		faux.setResponses([fauxAssistantMessage(fauxToolCall("markdown_publish", { title: "Native", text: "# persisted" }), { stopReason: "toolUse" }), fauxAssistantMessage("Saved.")]);
 		const submission = await conversation.submit({ type: "input", content: "Publish." }, context);
-		assert.equal((await submission.wait(context)).status, "done"); assert.ok(firstOutcome?.ok);
+		assert.equal((await submission.wait(context)).status, "done"); const firstOutcome = results[0]?.outcome; assert.ok(firstOutcome?.ok);
+		assert.match(results[0]?.text ?? "", /^Saved md-[a-f0-9]{20}, revision 1, \d+ bytes\.\nNo window opened\. The operator opens it from the Markdown view under Published \(in the agent view, under Owner views\)\. In an ordinary Pi session, \/markdown md-[a-f0-9]{20} also opens it\./u);
 		faux.setResponses([fauxAssistantMessage(fauxToolCall("markdown_publish", { title: "Prefix update", text: "updated by prefix", document: firstOutcome.documentId.slice(0, 12), expectedRevision: 1 }), { stopReason: "toolUse" }), fauxAssistantMessage("Updated.")]);
 		assert.equal((await (await conversation.submit({ type: "input", content: "Update by prefix." }, context)).wait(context)).status, "done");
 		assert.equal((await store.get(firstOutcome.documentId)).document.revision, 2);
