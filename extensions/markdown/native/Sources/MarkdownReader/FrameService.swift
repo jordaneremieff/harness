@@ -188,6 +188,7 @@ final class FrameService {
             guard let context = CGContext(data: bytes.baseAddress, width: viewport.width, height: viewport.height, bitsPerComponent: 8, bytesPerRow: viewport.width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue) else { throw FrameProtocolError("RGBA context unavailable") }
             context.draw(image, in: CGRect(x: 0, y: 0, width: viewport.width, height: viewport.height))
         }
+        if let background = viewport.background { FramePixels.clearBackground(&rgba, background: background) }
         let file = directory.appendingPathComponent("tty-graphics-protocol-\(UUID().uuidString).rgba")
         let descriptor = Darwin.open(file.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { throw FrameProtocolError("private frame file unavailable") }

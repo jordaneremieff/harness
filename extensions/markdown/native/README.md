@@ -260,7 +260,10 @@ line or unusable ID returns error ID 0; other errors retain the request ID. A fa
 request leaves the last good revision available to `frame`.
 
 Each file is exactly `width * height * 4` bytes: row-major RGBA, top row first, without a header
-or row padding. The viewport has an opaque page background. The file name contains
+or row padding. When `background` is present, every opaque pixel of exactly that colour is fully
+transparent, so a terminal draws its own background around the content, including any window
+translucency; antialiased edges and surfaces such as code blocks stay opaque. Without
+`background`, the viewport has the reader's opaque page background. The file name contains
 `tty-graphics-protocol`; files use mode 0600 inside a fresh mode 0700 `markdown-frames-…`
 directory. The next command removes the previous file even when that command fails validation.
 A terminal that takes file ownership is free to remove it first. EOF closes the model and window

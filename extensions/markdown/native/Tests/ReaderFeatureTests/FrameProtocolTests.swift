@@ -14,6 +14,18 @@ import Testing
         try FrameRequest.decode(JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]))
     }
 
+    @Test func clearsOnlyOpaqueBackgroundPixels() {
+        var pixels = Data([0x17, 0x11, 0x22, 255, 0xD6, 0xCB, 0xE6, 255, 0x17, 0x11, 0x22, 128, 0x17, 0x11, 0x23, 255])
+        FramePixels.clearBackground(&pixels, background: "#171122")
+        #expect(Array(pixels) == [0, 0, 0, 0, 0xD6, 0xCB, 0xE6, 255, 0x17, 0x11, 0x22, 128, 0x17, 0x11, 0x23, 255])
+        var upper = Data([0xAA, 0xBB, 0x09, 255])
+        FramePixels.clearBackground(&upper, background: "#Aabb09")
+        #expect(Array(upper) == [0, 0, 0, 0])
+        var unchanged = Data([0x17, 0x11, 0x22, 255])
+        FramePixels.clearBackground(&unchanged, background: "171122")
+        #expect(Array(unchanged) == [0x17, 0x11, 0x22, 255])
+    }
+
     @Test func acceptsEveryOperation() throws {
         let open = try Self.decode(Self.open)
         #expect(open.op == .open)

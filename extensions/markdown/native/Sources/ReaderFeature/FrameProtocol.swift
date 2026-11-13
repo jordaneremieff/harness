@@ -91,6 +91,30 @@ public struct FrameRequest: Sendable {
     }
 }
 
+/// Frame pixel work that needs no WebKit or AppKit.
+public enum FramePixels {
+    /// Makes every opaque pixel of exactly the page background colour fully transparent, so a
+    /// terminal draws its own background, including any window translucency, around the content.
+    /// Antialiased edges and surfaces such as code blocks keep their colours.
+    public static func clearBackground(_ rgba: inout Data, background: String) {
+        guard background.count == 7, background.first == "#", let value = UInt32(background.dropFirst(), radix: 16) else { return }
+        let red = UInt8((value >> 16) & 0xFF), green = UInt8((value >> 8) & 0xFF), blue = UInt8(value & 0xFF)
+        rgba.withUnsafeMutableBytes { raw in
+            guard let bytes = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+            var index = 0
+            while index + 3 < raw.count {
+                if bytes[index + 3] == 255, bytes[index] == red, bytes[index + 1] == green, bytes[index + 2] == blue {
+                    bytes[index] = 0
+                    bytes[index + 1] = 0
+                    bytes[index + 2] = 0
+                    bytes[index + 3] = 0
+                }
+                index += 4
+            }
+        }
+    }
+}
+
 public struct FrameProtocolError: Error, CustomStringConvertible, Sendable {
     public let description: String
     public init(_ description: String) { self.description = description }
