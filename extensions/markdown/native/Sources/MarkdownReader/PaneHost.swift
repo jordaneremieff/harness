@@ -253,13 +253,12 @@ final class PaneContentView: NSView {
             layer.mask = nil
             return
         }
-        let path = CGMutablePath()
-        path.addRect(bounds)
-        for hole in holes { path.addRect(hole) }
+        // The holes can overlap, so the mask is the bounds minus the union of the holes.
+        let covered = holes.dropFirst().reduce(CGPath(rect: holes[0], transform: nil)) { $0.union(CGPath(rect: $1, transform: nil)) }
         let mask = (layer.mask as? CAShapeLayer) ?? CAShapeLayer()
         mask.frame = bounds
-        mask.fillRule = .evenOdd
-        mask.path = path
+        mask.fillRule = .nonZero
+        mask.path = CGPath(rect: bounds, transform: nil).subtracting(covered)
         layer.mask = mask
     }
 }
@@ -285,6 +284,12 @@ final class PaneWindow: NSPanel {
 
     override func performClose(_ sender: Any?) {
         close()
+    }
+
+    /// A window without a close button disables Close in the menu; this one closes by its own
+    /// control, Command-W and Command-Q.
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        item.action == #selector(performClose(_:)) ? true : super.validateUserInterfaceItem(item)
     }
 }
 
