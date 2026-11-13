@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { createRexBudget, type BudgetClock } from "./deadline.ts";
 import { validateRequest } from "./schema.ts";
 import { boundResult, resultByteLimit, RexCore } from "./core.ts";
@@ -148,6 +149,10 @@ test("creation retains pending intent before its external effect and refuses sam
 	const windows = creation.data.initial_windows as Array<{ layout: { block: { options: Record<string, unknown> } } }>;
 	assert.equal(windows[0]?.layout.block.options.shell, "none");
 	assert.equal(windows[0]?.layout.block.options.login, false);
+	const wrapped = windows[0]?.layout.block.options.command as string[];
+	assert.equal(wrapped[0], "/usr/bin/env");
+	assert.equal(wrapped[1], `PI_PANE_STACKING=${JSON.stringify([process.execPath, fileURLToPath(new URL("./pane-stacking.mts", import.meta.url))])}`);
+	assert.deepEqual(wrapped.slice(2), request.command);
 	const auto = fixture();
 	await auto.core.execute({ op: "create", kind: "session", label: "auto-shell", command: ["node", "server.mjs"] }, context);
 	const autoCreation = auto.transport.calls.find((call) => call.method === "session.create");
@@ -746,11 +751,14 @@ test("float creation opens an owned floating pane in the anchor block's window",
 		session_id: session,
 		window_id: window,
 		bounds: [0.1, 0.06, 0.8, 0.88],
-		layout: { block: { flavor: "com.superlogical.terminal.shell", label: "Document", options: { command: ["node", "show.ts"], exit: { on_completion: false } } } },
+		layout: { block: { flavor: "com.superlogical.terminal.shell", label: "Document", options: { command: ["/usr/bin/env", `PI_PANE_STACKING=${JSON.stringify([process.execPath, fileURLToPath(new URL("./pane-stacking.mts", import.meta.url))])}`, "node", "show.ts"], exit: { on_completion: false } } } },
 		focus: false,
 	});
 	await f.core.execute({ op: "create", kind: "float", label: "Shown", focus: true, bounds: [0, 0, 0.5, 1], target: { session, block } }, { ...context, callId: "shown-float" });
 	assert.deepEqual([layers()[1]?.bounds, layers()[1]?.focus], [[0, 0, 0.5, 1], true]);
+	const unwrapped = layers()[1];
+	assert.ok(unwrapped);
+	assert.equal((unwrapped.layout as { block: { options: { command?: unknown } } }).block.options.command, undefined);
 	const outside = await f.core.execute({ op: "create", kind: "float", label: "Wide", bounds: [0.5, 0, 0.6, 1], target: { session, block } }, { ...context, callId: "outside" });
 	assert.equal(outside.ok, false);
 	assert.equal(outside.effects.state, "none");

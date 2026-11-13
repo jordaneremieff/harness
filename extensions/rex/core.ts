@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import {
 	beginOwnership,
 	boundedText,
@@ -1631,7 +1632,7 @@ function createLayout(request: CreateRequest): Record<string, unknown> {
 			flavor: "com.superlogical.terminal.shell",
 			label: request.label,
 			options: {
-				...(request.command ? { command: request.command } : {}),
+				...(request.command ? { command: ["/usr/bin/env", `PI_PANE_STACKING=${JSON.stringify([process.execPath, fileURLToPath(new URL("./pane-stacking.mts", import.meta.url))])}`, ...request.command] } : {}),
 				...(request.cwd ? { cwd: request.cwd } : {}),
 				...(request.shell ? { shell: request.shell } : {}),
 				...(request.shell === "none" ? { login: false } : {}),

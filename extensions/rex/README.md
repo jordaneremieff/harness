@@ -197,6 +197,29 @@ appropriate evidence. Inspect the same IDs after an interruption. Start dependen
 work only after the prerequisite's relevant outcome is observed; unrelated work
 need not stop.
 
+## Pane stacking feed
+
+Every pane created with a `command` receives `PI_PANE_STACKING` through an
+`/usr/bin/env` command wrapper. Panes without a command remain unchanged. The
+value is a JSON argument array `[absoluteNodeExecutable, absoluteHelperPath]`,
+using the running Node executable and this slice's `pane-stacking.mts` helper.
+This implements the package-level
+[pane stacking contract](../../docs/conventions/pane-stacking.md).
+
+A consumer starts the helper without a shell, with the pane's environment and
+piped standard input and output. The helper reads `REX_SESSION`, `REX_BLOCK`
+and `REX_SERVER`, and uses `REX_BIN_DIR/rex` when available, otherwise `rex`.
+It writes only JSON report lines: the pane rectangle and intersecting layers
+above it, or a null pane when the block is absent. Reports use window fractions,
+account for zoom, and change only when the geometry changes.
+
+Each consumer costs one Rex events stream and one initial `session.view` call.
+A newer layout revision requests another `session.view`; concurrent events
+coalesce and revisions already covered by the current view require no call.
+The helper bounds event lines and snapshot output. It exits and terminates its
+children on standard-input EOF, event-source exit, signal or transport failure.
+It performs no layout changes and stores no state.
+
 ## Read the most recent output
 
 `inspect` with `view: "capture"` (and the capture inside `view: "summary"`)
