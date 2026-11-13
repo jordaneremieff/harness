@@ -6,11 +6,14 @@ the document store and never writes documents; its only change inside a store is
 an open request it accepted. Its own reading state (positions, recent documents, known store
 folders, text size) lives in `~/Library/Application Support/Markdown Reader/` and is bounded;
 trimming it never touches a stored document. The application and every [pane mode](#pane-mode)
-reader share that state: each process records the entries it changed since its last save, a
-save takes an exclusive lock on `reading-state.lock`, applies only those changes to the file's
-current state and replaces the file, and an opening reads the file again before it restores a
-position. A changed position yields only to one in the file saved at least a second later,
-because the file keeps whole seconds.
+reader share that state: each process records the entries it changed since its last save, and
+an opening reads the file again before it restores a position. A save runs on a background
+queue, never on the main thread: it takes an exclusive lock on `reading-state.lock` within
+250 milliseconds or does not write, applies only this process's changes to the file's current
+state and replaces the file atomically. Only a successful write clears the changes it covered;
+a change made while a save runs, and every change of a failed save, stays pending, and a failed
+save is logged and tried again a second later. The file keeps fractional seconds, so for one
+document the position captured later wins, whichever process saves first.
 
 Requirements: macOS 26 or later and Swift 6.2 (the Command Line Tools are enough). SwiftUI's
 `WebView` and `WebKit.WebPage` need macOS 26.
@@ -72,8 +75,11 @@ closes its input; the pane reader's coordinate conversion, window matching, prin
 placeholder text and bounded error lines; search rounds against a model screen with a slow
 application, a large tree, long text and copies of the marker; covering content found by hit test
 and by stacking report, and an element that its window no longer shows; stacking report parsing
-and a stacking command that ends with its input) and `ReaderFeatureTests` (the bounds of the reading-state file and the merging
-of saves from several reader processes). Under the Command Line Tools
+and a stacking command that ends with its input) and `ReaderFeatureTests` (the bounds of the
+reading-state file; saves from several stores in reverse order within one second; a lock that a
+second process holds, a failed write, a change during a save and bounded flushes; revision
+following with a held preparation: a publication during the first load, scrolling during
+preparation and a text selection). Under the Command Line Tools
 the Testing framework is outside the default search path, so the script passes its directory.
 The tools also ship the `_Testing_Foundation` overlay without a module, so a test file imports
 `Testing` first and then the core with `@testable` (which re-exports Foundation), never
@@ -280,18 +286,27 @@ title, provenance line, revision menu, view options, find, Copy Markdown, detail
 that returns the keyboard to the host and a close control. Escape outside a text field also
 returns the keyboard to the host. Pane mode follows new revisions: the model's `followsLatest`
 loads a revision as soon as the pointer watcher sees it, with the reader's block, heading and
-ratio restoration, and a failed load keeps the shown revision with a warning. While text is
-selected or the find bar is open, the update notice waits for the reader's choice instead.
+ratio restoration, and a failed load keeps the shown revision with a warning. The watcher
+starts before the first read, and the first displayed revision is checked against the pointer
+again, so a revision published while the document opens is not missed. The reading position
+for the new revision is taken from the page at the moment of replacement, not before the
+revision was prepared. While the page scrolls, replacement waits until scrolling has been still
+for half a second; while text is selected or the find bar is open, the update notice waits for
+the reader's choice instead.
 
 Keys typed into the pane's terminal: `q`, Ctrl-C or Ctrl-D close the reader; any other key
 gives the reader window the keyboard. Closing the reader by key, close control, Command-W, a
-termination signal or an interruption signal saves the reading position, restores the terminal
-and ends with status 0. A hang-up signal or the end of input ends it the same way without
-writing to the terminal. The final position capture gets one second; after that the last saved
-position stands. The placeholder places each line by row and stops at the last row, so a short
-pane keeps the marker on screen. The document, its revisions and
-the reading position never depend on the process: opening the document again restores the
-saved position.
+termination signal or an interruption signal captures the reading position, saves the pending
+reading state, restores the terminal and ends with status 0. A hang-up signal or the end of
+input ends it the same way without writing to the terminal. Capture and save together get one
+second, measured on the main thread while the save runs in the background, so a stalled lock or
+file system never keeps the process alive. If the state was not saved in that time, the process
+restores the terminal, writes one line saying that the reading position was not saved (only
+when the terminal is still there) and ends with status 1, so a pane that closes only on success
+keeps the message; the last saved position then stands. The placeholder places each line by row
+and stops at the last row, so a short pane keeps the marker on screen. The document, its
+revisions and the saved reading position never depend on the process: opening the document
+again restores the saved position.
 
 ## Headless core tool
 
