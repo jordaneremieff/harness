@@ -37,18 +37,6 @@ import Testing
         #expect(TerminalAnchor.uniqueWindow([], host: 42, frame: frame, title: "a") == nil)
     }
 
-    /// A smaller terminal mostly inside the pane lies over it; a larger one lies under a pane
-    /// that floats over it.
-    @Test func tellsATerminalOverThePaneFromOneUnderIt() {
-        let tiledReader = CGRect(x: 250, y: 75, width: 1260, height: 470)
-        let floatingShell = CGRect(x: 600, y: 200, width: 500, height: 200)
-        #expect(TerminalAnchor.overlaps(floatingShell, pane: tiledReader))
-        let floatingReader = CGRect(x: 376, y: 105, width: 1008, height: 409)
-        #expect(!TerminalAnchor.overlaps(tiledReader, pane: floatingReader))
-        let besideIt = CGRect(x: 1400, y: 200, width: 300, height: 200)
-        #expect(!TerminalAnchor.overlaps(besideIt, pane: tiledReader))
-    }
-
     @Test func printableTextCannotControlTheTerminal() {
         let hostile = "Title\u{1B}]52;c;ZXZpbA==\u{07}\u{1B}[2J\u{9B}31m\u{202E}txet\u{2028}end\u{0}"
         let shown = TerminalText.printable(hostile)

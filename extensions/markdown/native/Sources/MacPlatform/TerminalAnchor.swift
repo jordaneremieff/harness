@@ -35,8 +35,8 @@ public final class TerminalAnchor {
         case searching
         /// The element is on screen at this place.
         case placed(Placement)
-        /// The element exists, but it cannot be seen: its window is minimised, hidden, on another
-        /// Space or behind a locked screen, or another of the host's terminals lies over it.
+        /// The element exists, but its window is not on screen: minimised, hidden, on another
+        /// Space or behind a locked screen.
         case concealed(Placement)
     }
 
@@ -50,7 +50,6 @@ public final class TerminalAnchor {
     private var interval: TimeInterval = 0
     private var stepRunning = false
     private var fastUntil = Date.distantPast
-    private var urgent = false
 
     public init(marker: String) {
         self.marker = marker
@@ -73,7 +72,6 @@ public final class TerminalAnchor {
     /// the caller saw first, such as a new terminal size.
     public func refresh() {
         fastUntil = Date().addingTimeInterval(1.5)
-        urgent = true
         step()
     }
 
@@ -93,11 +91,9 @@ public final class TerminalAnchor {
     private func step() {
         guard timer != nil, !stepRunning else { return }
         stepRunning = true
-        let request = AnchorWorker.Request(fast: Date() < fastUntil, urgent: urgent)
-        urgent = false
         let worker = worker
         queue.async { [weak self] in
-            let result = worker.step(request)
+            let result = worker.step()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.finish(result) }
             }
@@ -153,25 +149,11 @@ public final class TerminalAnchor {
         guard chosen.count == 1 else { return nil }
         return chosen[0][kCGWindowNumber as String] as? CGWindowID
     }
-
-    /// Whether another terminal of the host lies over the pane: a smaller text area that the
-    /// pane's frame holds for at least half of that text area's own area. A larger one is a
-    /// terminal that the pane floats over.
-    nonisolated static func overlaps(_ other: CGRect, pane: CGRect) -> Bool {
-        let shared = other.intersection(pane)
-        guard !shared.isNull, other.width * other.height < pane.width * pane.height else { return false }
-        return shared.width * shared.height >= 0.5 * other.width * other.height
-    }
 }
 
 /// The accessibility and window-server work of a `TerminalAnchor`. It runs only on the anchor's
 /// queue, one step at a time, and keeps its state there.
 final class AnchorWorker: @unchecked Sendable {
-    struct Request: Sendable {
-        var fast: Bool
-        var urgent: Bool
-    }
-
     struct RawPlacement: Sendable {
         var frame: CGRect
         var host: pid_t
@@ -205,8 +187,6 @@ final class AnchorWorker: @unchecked Sendable {
     static let wholeTextLimit = 200_000
     /// Roles whose subtrees hold documents, lists or menus rather than terminals.
     static let skippedRoles: Set<String> = ["AXWebArea", "AXTable", "AXOutline", "AXList", "AXBrowser", "AXMenuBar", "AXMenu"]
-    /// Time between two checks for another of the host's terminals over the pane.
-    static let overlapPeriod: TimeInterval = 0.5
 
     let marker: String
     private var element: AXUIElement?
@@ -219,14 +199,12 @@ final class AnchorWorker: @unchecked Sendable {
     private var searches = 0
     private var nextSearch = Date.distantPast
     private var cachedWindow: CGWindowID?
-    private var lastOverlapCheck = Date.distantPast
-    private var overlapped = false
 
     init(marker: String) {
         self.marker = marker
     }
 
-    func step(_ request: Request) -> Result {
+    func step() -> Result {
         guard AXIsProcessTrusted() else { return Result(state: .untrusted, slow: true) }
         // Nothing is visible behind a locked screen, and applications answer few accessibility
         // requests there; keep the last place and wait.
@@ -235,8 +213,7 @@ final class AnchorWorker: @unchecked Sendable {
             return Result(state: .concealed(RawPlacement(frame: frame, host: host, window: cachedWindow)), slow: true)
         }
         if let element {
-            let checkOverlap = request.urgent || Date().timeIntervalSince(lastOverlapCheck) >= Self.overlapPeriod
-            if let state = read(element, checkOverlap: checkOverlap) { return Result(state: state) }
+            if let state = read(element) { return Result(state: state) }
             if let windowElement { lostWindow = (windowElement, Self.string(windowElement, kAXTitleAttribute)) }
             self.element = nil
             windowElement = nil
@@ -249,7 +226,7 @@ final class AnchorWorker: @unchecked Sendable {
     // MARK: - Following
 
     /// The element's place and its window's state, or nil when the element is gone.
-    private func read(_ element: AXUIElement, checkOverlap: Bool) -> State? {
+    private func read(_ element: AXUIElement) -> State? {
         guard let frame = Self.rect(element, "AXFrame"), frame.width >= 1, frame.height >= 1, let host = Self.pid(element) else { return nil }
         let window = windowElement ?? Self.element(element, kAXWindowAttribute)
         windowElement = window
@@ -257,13 +234,9 @@ final class AnchorWorker: @unchecked Sendable {
         let minimised = window.flatMap { Self.bool($0, kAXMinimizedAttribute) } ?? false
         let number = windowFrame.flatMap { verifiedWindow(host: host, frame: $0, title: window.flatMap { Self.string($0, kAXTitleAttribute) }) }
         let coveredBy = number.flatMap { Self.hostWindowAbove(host: host, window: $0, over: frame) }
-        if checkOverlap, let window {
-            overlapped = Self.hostTerminalOver(frame, in: window, except: element)
-            lastOverlapCheck = Date()
-        }
         let placement = RawPlacement(frame: frame, host: host, window: number, coveredBy: coveredBy)
         let hidden = NSRunningApplication(processIdentifier: host)?.isHidden ?? false
-        if minimised || hidden || number == nil || overlapped { return .concealed(placement) }
+        if minimised || hidden || number == nil { return .concealed(placement) }
         return .placed(placement)
     }
 
@@ -297,24 +270,6 @@ final class AnchorWorker: @unchecked Sendable {
         return lowest
     }
 
-    /// Whether another terminal text area in `window` lies over the pane at `frame`.
-    static func hostTerminalOver(_ frame: CGRect, in window: AXUIElement, except own: AXUIElement) -> Bool {
-        var queue: [(AXUIElement, Int)] = [(window, 0)]
-        var index = 0
-        while index < queue.count, index < 400 {
-            let (node, depth) = queue[index]
-            index += 1
-            let role = string(node, kAXRoleAttribute) ?? ""
-            if role == kAXTextAreaRole {
-                if !CFEqual(node, own), let other = rect(node, "AXFrame"), TerminalAnchor.overlaps(other, pane: frame) { return true }
-                continue
-            }
-            if skippedRoles.contains(role) || depth >= depthLimit { continue }
-            for child in elements(node, kAXChildrenAttribute) ?? [] where queue.count < 400 { queue.append((child, depth + 1)) }
-        }
-        return false
-    }
-
     // MARK: - Search
 
     /// Searches when a search is due. A changed title of the window that last showed the pane,
@@ -337,8 +292,7 @@ final class AnchorWorker: @unchecked Sendable {
             lastHost = found.host
             lostWindow = nil
             searches = 0
-            overlapped = false
-            return read(found.element, checkOverlap: true) ?? .searching
+            return read(found.element) ?? .searching
         }
         searches += 1
         nextSearch = now.addingTimeInterval(searches < 8 ? 0.25 : hostRunning ? 1 : 3)

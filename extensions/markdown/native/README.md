@@ -239,11 +239,9 @@ the active application, and the first click already acts on the page. While the 
 reader is active, the window floats; otherwise it sits at the normal level directly above the
 host's window, so other applications cover both. While another window of the host below the
 floating level lies over the pane, such as its command palette, the reader orders itself below
-that window. Inside the host's window, the reader hides while another of the host's terminals
-lies over its pane: a smaller text area that the pane's frame holds for at least half of that
-text area's own area, such as a floating pane over a tiled reader pane; a larger one is a
-terminal that the reader floats over. Other drawing inside the host's window, such as a popover
-that is not a separate window, stays under the reader. All accessibility and window-server
+that window. Drawing inside the host's own window, such as one of its floating panes over a
+tiled reader pane or another reader pane, stays under the reader: accessibility reports no
+stacking order inside a window. All accessibility and window-server
 requests run on one background queue, one step at a time, so a slow host never stalls the
 reader's window; a search stops after 0.4 seconds. The anchor reads the frame
 ten times a second and sixty times a second for a moment after a change or a terminal resize.
