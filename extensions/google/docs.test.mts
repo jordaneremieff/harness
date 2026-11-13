@@ -48,6 +48,17 @@ const DOCUMENT = {
 								],
 							},
 						},
+						{
+							paragraph: {
+								elements: [
+									{ textRun: { content: "Due " } },
+									{ dateElement: { dateElementProperties: { displayText: "Nov 20, 2026" } } },
+									{ textRun: { content: ", status " } },
+									{ dropdown: { dropdownProperties: { displayValue: "In progress" } } },
+									{ textRun: { content: "\n" } },
+								],
+							},
+						},
 						bullet("First\n", "numbered"),
 						bullet("Nested\n", "numbered", 1),
 						bullet("Loose\n", "dotted"),
@@ -75,6 +86,8 @@ const MARKDOWN = [
 	"## Goals",
 	"",
 	"See [the site](https://example.com/)[^1]",
+	"",
+	"Due Nov 20, 2026, status In progress",
 	"",
 	"1. First",
 	"  1. Nested",

@@ -63,8 +63,9 @@ its markdown rendering in `externalData.content`: `text`, `truncated`,
 `nextOffset` and `totalCodePoints`. Pass `nextOffset` as `offset` to read on.
 Offsets count code points of the rendering.
 
-- `docs_get` renders one tab: headings, lists, tables, links and the footnotes
-  that the body refers to. `tabId` selects a tab; the default is the first tab.
+- `docs_get` renders one tab: headings, lists, tables, links, the display text
+  of person, date, dropdown and file chips, and the footnotes that the body
+  refers to. An image or an equation appears as a marker without content. `tabId` selects a tab; the default is the first tab.
   `externalData.tabs` lists the tabs with their nesting level and parent.
   Pending suggestions are not part of the text.
 - `slides_get` renders the slides in order. Each slide starts with a

@@ -45,6 +45,11 @@ function richLinkText(richLink: Json): string {
 	const uri = text(properties.uri);
 	return uri ? linked(text(properties.title) || uri, uri) : text(properties.title);
 }
+/** The text that Google returns for a smart chip, such as the display text of a date. */
+function chipText(chip: Json, group: string, name: string): string {
+	const properties = chip[group];
+	return object(properties) ? text(properties[name]) : "";
+}
 function footnoteMark(reference: Json, render: Render): string {
 	const number = text(reference.footnoteNumber);
 	render.footnotes.set(text(reference.footnoteId), number);
@@ -57,6 +62,8 @@ const INLINE: Record<string, (value: Json, render: Render) => string> = {
 	person: personText,
 	richLink: richLinkText,
 	footnoteReference: footnoteMark,
+	dateElement: (chip) => chipText(chip, "dateElementProperties", "displayText"),
+	dropdown: (chip) => chipText(chip, "dropdownProperties", "displayValue"),
 	inlineObjectElement: () => "[image]",
 	equation: () => "[equation]",
 	horizontalRule: () => "---",
