@@ -154,3 +154,29 @@ it("New, leave, select B, then onCreated keeps B and its draft and retains the c
 		f.ui.dispose();
 	}
 });
+
+it("Tab reaches the owner views' destination row, where an arrow and Enter open another owner view", async () => {
+	const body = (label: string): Destination => ({
+		key: label.toLocaleLowerCase(),
+		label,
+		open: () => ({ title: label, render: (width) => [`${label} body`.padEnd(width)], handleInput: () => true }),
+	});
+	const f = fixture(140, 40, source([row("one", { state: "idle", name: "Alpha" })]), { panels: async () => [body("Stash"), body("Notes")] });
+	try {
+		await turn();
+		await turn();
+		press(f, "o");
+		await turn();
+		await turn();
+		assert.match(shown(f), /Stash body/u, "the first owner view opens");
+		press(f, "\t");
+		assert.equal(f.ui.focus.region, "inspector", "Tab stays in the owner views while the destination row is next");
+		assert.match(shown(f), /←→ choose · enter open/u, "the footer shows the destination row's keys");
+		press(f, "\x1b[C", "\r");
+		assert.match(shown(f), /Notes body/u, "the chosen owner view opens");
+		assert.doesNotMatch(shown(f), /Stash body/u);
+		assert.deepEqual(f.calls, [], "choosing an owner view sends nothing");
+	} finally {
+		f.ui.dispose();
+	}
+});

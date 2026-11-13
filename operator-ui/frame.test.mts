@@ -443,6 +443,33 @@ it("Tab moves through the view's regions and then the destination row, where com
 	assert.equal(back.lines().at(-1), "o open · esc close");
 });
 
+it("an embedded frame gives its host the view's regions and then the destination row when there is a choice", () => {
+	const seen = probe();
+	const f = frame([
+		{ key: "a", label: "Alpha", open: (host) => counter(host, "Alpha", seen) },
+		{ key: "b", label: "Beta", open: (host) => counter(host, "Beta", seen) },
+	], { footer: false });
+	const footer = () => {
+		const hits = new HitMap();
+		hits.begin(80, 12);
+		return plain(f.view.renderFooter(80, hits, 11)).trimEnd();
+	};
+	assert.equal(f.view.focusNext(false), true, "the destination row follows the view's last region");
+	assert.equal(footer(), "←→ choose · enter open · esc back");
+	f.view.handleInput("\u001b[C");
+	f.view.handleInput("\r");
+	assert.equal(f.view.activeKey, "b", "the destination row takes arrows and Enter");
+	assert.equal(f.view.focusNext(false), true, "the opened view has the focus, so the row comes next again");
+	assert.equal(f.view.focusNext(false), false, "after the destination row the host moves focus on");
+	assert.notEqual(footer(), "←→ choose · enter open · esc back", "a frame that gave up focus shows no chosen destination");
+	f.view.focusEdge(true);
+	assert.equal(footer(), "←→ choose · enter open · esc back", "backward entry starts at the destination row");
+	assert.equal(f.view.focusNext(true), true, "backward from the row returns to the view");
+	assert.equal(f.view.focusNext(true), false, "backward from the view's first region leaves the frame");
+	const single = frame([{ key: "a", label: "Alpha", open: (host) => counter(host, "Alpha", seen) }], { footer: false });
+	assert.equal(single.view.focusNext(false), false, "one destination offers no row to choose from");
+});
+
 it("a host that draws its own footer can request the frame's row", () => {
 	const seen = probe();
 	const f = frame([{ key: "a", label: "Alpha", open: (host) => counter(host, "Alpha", seen) }], { footer: false });

@@ -738,7 +738,9 @@ wider thread evidence. No relationship store or host protocol is added.
 ### Focus and input
 
 Tab and Shift+Tab move between the list, the conversation, the message field
-and an open form. Escape leaves an inspector form, then the message field,
+and an open form. In owner views, Tab passes the view's own regions and then
+the row of owner views, where Left and Right choose one and Enter opens it.
+Escape leaves an inspector form, then the message field,
 then the view; it never stops work. `/` moves to Find, where letters narrow
 the list: the selection follows the first match, and the pane previews it
 without starting its host. Up and Down select, Home and End select the first

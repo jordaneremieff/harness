@@ -75,7 +75,7 @@ Stored snapshots remain openable by ID after the producer exits; the reader app 
 
 ## Attached Agent terminal
 
-Open **Owner views** with `o`, then select **Markdown**. The same owner view is available from the `/agent` dashboard. It binds to the selected conversation and supplies Read latest, Recent responses and Published documents. Enter reads the selected item; `l`, `n` and `p` match the footer actions. The attached terminal does not interpret an ordinary `/markdown` slash command: use the owner view instead of sending that text to a conversation.
+Open **Owner views** with `o`, then select **Markdown**: click its tab, or press Tab until the row of owner views has the focus, choose with Left or Right and press Enter. The same owner view is available from the `/agent` dashboard. It binds to the selected conversation and supplies Read latest, Recent responses and Published documents. Enter reads the selected item; `l`, `n` and `p` match the footer actions. The attached terminal does not interpret an ordinary `/markdown` slash command: use the owner view instead of sending that text to a conversation.
 
 The native contribution advertises `operator-panel.ts` and the `markdown` owner command under the [operator views contract](../../docs/conventions/operator-panels.md). Its finite request union is:
 

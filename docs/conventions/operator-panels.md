@@ -63,8 +63,10 @@ An owner builds its content as `OperatorView` objects mounted in a
   closes the More menu, then lets the view leave an edit, then runs the
   view's action whose key is `escape` (a Cancel), then leaves a nested
   view, then leaves the frame. Tab moves through the view's regions, then
-  the tab row when the frame shows tabs. One destination's failure costs
-  only its own view.
+  the tab row when the frame shows tabs. A frame embedded in a larger view
+  gives its host the same order, with the tab row only when it holds more
+  than one destination, and hands focus on after it. One destination's
+  failure costs only its own view.
 - **Building blocks.** `Browser` (search, scopes, list, and detail, with the
   detail as its own view below `SPLIT_MIN_WIDTH`; item actions push through
   `Browser.push`, which opens from the visible detail while one is open, and

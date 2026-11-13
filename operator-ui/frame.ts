@@ -429,19 +429,44 @@ export class NavigationFrame implements Component, Focusable {
 	}
 
 	/**
-	 * Move focus one step inside a frame embedded in a larger view. Returns false at the view's edge
-	 * so the embedding view moves focus on.
+	 * Move focus one step inside a frame embedded in a larger view: through the view's regions, then
+	 * the destination row when it offers a choice. Returns false at the frame's edge so the embedding
+	 * view moves focus on.
 	 */
 	focusNext(backward: boolean): boolean {
 		this.bar.closeMenu();
-		return this.top()?.view.focusNext?.(backward) ?? false;
+		const view = this.top()?.view;
+		if (this.zone === "tabs") {
+			this.zone = "view";
+			if (!backward) return false;
+			view?.focusEdge?.(true);
+			return true;
+		}
+		if (view?.focusNext?.(backward)) return true;
+		if (backward || !this.offersDestinations()) return false;
+		this.zone = "tabs";
+		this.tabFocus = this.active;
+		return true;
 	}
 
-	/** Focus enters an embedded frame: the view's first region, or its last going backward. */
+	/**
+	 * Focus enters an embedded frame: the view's first region, or going backward the destination row
+	 * when it offers a choice, else the view's last region.
+	 */
 	focusEdge(backward: boolean): void {
 		this.bar.closeMenu();
+		if (backward && this.offersDestinations()) {
+			this.zone = "tabs";
+			this.tabFocus = this.active;
+			return;
+		}
 		this.zone = "view";
 		this.top()?.view.focusEdge?.(backward);
+	}
+
+	/** An embedded frame gives its destination row to the keyboard only when there is another destination to choose. */
+	private offersDestinations(): boolean {
+		return this.options.tabs !== false && this.options.destinations().length > 1;
 	}
 
 	/** Tab moves through the view's regions, then the destination row when the frame shows tabs. */
