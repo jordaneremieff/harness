@@ -105,6 +105,12 @@ public final class ReaderModel {
     @ObservationIgnored private var monitorTask: Task<Void, Never>?
     @ObservationIgnored private var closed = false
     @ObservationIgnored private var scrolling = false
+    /// The reader chose an older revision than the latest; following waits until the reader
+    /// returns to the latest revision.
+    @ObservationIgnored private var olderChosen = false
+    /// The latest revision whose automatic load failed; following skips it until the pointer
+    /// names another revision.
+    @ObservationIgnored private var failedRevision: Int?
     @ObservationIgnored private var interactionGeneration = 0
     /// Suspends a prepared revision before installation for controlled lifecycle checks.
     @ObservationIgnored package var preparationGate: (@MainActor (Int?) async -> Void)?
@@ -137,12 +143,23 @@ public final class ReaderModel {
 
     /// Shows the latest revision. Without `followsLatest` the reader never does this by itself.
     public func refresh() async {
+        olderChosen = false
+        failedRevision = nil
         await load(revision: nil, restore: .current)
     }
 
     public func showRevision(_ revision: Int) async {
         guard revision != snapshot?.revision else { return }
+        olderChosen = revision < (latestRevision ?? revision)
         await load(revision: revision, restore: .current)
+    }
+
+    /// Whether the reader replaces the shown revision by itself now: it follows, no load runs,
+    /// a newer revision is known, the reader did not choose an older one, and that revision's
+    /// automatic load did not fail.
+    private var followsNow: Bool {
+        guard followsLatest, !olderChosen, !loadPending, case .revision(let latest) = update else { return false }
+        return latest != failedRevision
     }
 
     public func showAdjacentRevision(newer: Bool) async {
@@ -196,6 +213,7 @@ public final class ReaderModel {
         guard token == generation, !closed else { return }
         switch result {
         case .failure(let error):
+            if automatic { failedRevision = latestRevision }
             fail(String(describing: error))
         case .success(let prepared):
             if automatic, await interacting() { return }
@@ -205,7 +223,11 @@ public final class ReaderModel {
             guard token == generation, !closed else { return }
             if automatic, interaction != interactionGeneration { return }
             let previousRevision = snapshot?.revision
-            guard await install(prepared, position: position, token: token, started: started) else { return }
+            guard await install(prepared, position: position, token: token, started: started) else {
+                if automatic, token == generation, failure != nil { failedRevision = latestRevision }
+                return
+            }
+            if automatic { failedRevision = nil }
             if case .current = restore, previousRevision != nil, previousRevision != prepared.snapshot.revision {
                 reportRestore()
             }
@@ -365,7 +387,7 @@ public final class ReaderModel {
             latestRevision = newest
             update = .revision(newest)
             readerLog.notice("update available \(self.reference.key, privacy: .public) revision=\(latest, privacy: .public)")
-            if followsLatest, !loadPending, await !interacting() {
+            if followsNow, await !interacting() {
                 guard token == generation, !closed, !loadPending else { return }
                 await load(revision: nil, restore: .current, automatic: true)
             }
@@ -389,7 +411,7 @@ public final class ReaderModel {
             await self.savePosition()
             guard !Task.isCancelled, !self.closed else { return }
             self.positionTask = nil
-            if self.followsLatest, !self.loadPending, case .revision = self.update, await !self.interacting() {
+            if self.followsNow, await !self.interacting() {
                 guard !self.closed, !self.loadPending else { return }
                 await self.load(revision: nil, restore: .current, automatic: true)
             }

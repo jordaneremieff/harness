@@ -39,6 +39,12 @@ private struct LifecycleStore {
                    "updatedAt": date, "revision": revision, "digest": digest, "bytes": source.count],
                   to: document.appendingPathComponent("document.json"))
     }
+
+    /// Replaces a revision's source so that it no longer matches its digest.
+    func corrupt(_ revision: Int) throws {
+        let source = root.appendingPathComponent("documents/\(id)/revisions/\(revision)/source.md")
+        try Data("# Changed after publication\n".utf8).write(to: source)
+    }
 }
 
 @MainActor
@@ -134,6 +140,55 @@ private final class LifecycleGate {
         #expect(moved?.blockKey != nil)
         #expect(moved?.blockKey == restored?.blockKey)
         #expect(abs((moved?.fraction ?? 0) - (restored?.fraction ?? 1)) < 0.05)
+        await model.close()
+    }
+
+    @Test func aChosenOlderRevisionStaysWhileFollowing() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1)
+        try store.publish(2)
+        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
+        let window = window(model)
+        defer { window.close() }
+        await model.open(origin: nil)
+        model.followsLatest = true
+        #expect(model.snapshot?.revision == 2)
+        await model.showRevision(1)
+        #expect(model.snapshot?.revision == 1)
+        model.scrolled()
+        try await Task.sleep(for: .milliseconds(800))
+        await model.checkForUpdate()
+        #expect(model.snapshot?.revision == 1)
+        #expect(model.update == .revision(2))
+        await model.refresh()
+        #expect(model.snapshot?.revision == 2)
+        await model.close()
+    }
+
+    @Test func aFailedAutomaticLoadIsNotRepeated() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1)
+        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
+        let window = window(model)
+        defer { window.close() }
+        await model.open(origin: nil)
+        model.followsLatest = true
+        try store.publish(2)
+        try store.corrupt(2)
+        await model.checkForUpdate()
+        #expect(await wait { model.failure != nil && !model.isLoadingForCheck })
+        #expect(model.snapshot?.revision == 1)
+        model.dismissNotice()
+        model.scrolled()
+        try await Task.sleep(for: .milliseconds(800))
+        await model.checkForUpdate()
+        #expect(model.notice == nil)
+        #expect(model.snapshot?.revision == 1)
+        try store.publish(3)
+        await model.checkForUpdate()
+        #expect(await wait { model.snapshot?.revision == 3 })
         await model.close()
     }
 
