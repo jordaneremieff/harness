@@ -3,15 +3,24 @@ import ApplicationServices
 
 /// Finds the on-screen element that shows this process's terminal and follows its place.
 ///
-/// The process prints a marker on its own terminal screen. The anchor searches the accessibility
-/// text areas of running applications for that marker, then reads the element's frame and the
-/// state of its window. It names no terminal application: any application that exposes its
-/// terminal screen text through accessibility qualifies. Accessibility access is required; a
-/// process that a trusted application starts usually inherits that application's access.
+/// The process prints a marker in the first row of its own terminal screen. The anchor searches
+/// the accessibility text areas of running applications for that marker, reading at most a short
+/// start of each text area's visible text. A found element must then show a new marker that the
+/// process prints, so that a copy of the screen elsewhere, such as captured output in another
+/// pane, never qualifies. While it follows the element, the anchor reads the element's frame, the
+/// state of its window and the content of the same window that covers it, and checks that the
+/// element still shows the marker. When the pane's environment offers a stacking command
+/// (`docs/conventions/pane-stacking.md`), its reports decide which content lies above the pane;
+/// otherwise the application's accessibility hit test decides.
 ///
-/// Every accessibility and window-server request runs on one background queue, so an
-/// application that answers slowly never stalls the reader's own window. The main actor only
-/// receives the results, converts coordinates and publishes the status.
+/// The anchor names no terminal application: any application that exposes its terminal screen as
+/// an accessibility text area with a visible character range qualifies. Accessibility access is
+/// required; a process that a trusted application starts usually inherits that application's
+/// access.
+///
+/// Every accessibility and window-server request runs on one background queue, one step at a
+/// time, so an application that answers slowly never stalls the reader's own window. The main
+/// actor only receives the results, converts coordinates and publishes the status.
 @MainActor
 public final class TerminalAnchor {
     public struct Placement: Equatable, Sendable {
@@ -25,6 +34,14 @@ public final class TerminalAnchor {
         /// The lowest other window of the host that lies over the element, such as a command
         /// palette or a dialog that the host shows above the window that contains the element.
         public var coveredBy: CGWindowID?
+        /// Parts of the frame that other content of the same window lies over, such as a floating
+        /// pane above a tiled one, in AppKit screen coordinates.
+        public var covers: [CGRect]
+
+        /// Whether the covers leave nothing of the frame visible.
+        public var coveredEntirely: Bool {
+            covers.contains { $0.insetBy(dx: -1, dy: -1).contains(frame) }
+        }
     }
 
     public enum Status: Equatable, Sendable {
@@ -40,25 +57,37 @@ public final class TerminalAnchor {
         case concealed(Placement)
     }
 
-    public let marker: String
+    /// The text that the terminal must show in its first row. It changes when a search finds an
+    /// element; `onMarker` then asks the terminal to show the new text.
+    public private(set) var marker = TerminalAnchor.newMarker()
     public private(set) var status: Status = .searching
     public var onChange: ((Status) -> Void)?
+    public var onMarker: (() -> Void)?
 
     private let worker: AnchorWorker
+    private let feed: StackingFeed?
     private let queue = DispatchQueue(label: "local.harness.markdown-reader.terminal-anchor", qos: .userInitiated)
     private var timer: Timer?
     private var interval: TimeInterval = 0
     private var stepRunning = false
     private var fastUntil = Date.distantPast
 
-    public init(marker: String) {
-        self.marker = marker
-        worker = AnchorWorker(marker: marker)
+    /// Starts the stacking command that the pane's environment offers, if any.
+    public init() {
+        feed = StackingFeed.start()
+        worker = AnchorWorker(feed: feed)
+        feed?.onReport = { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.refresh() } }
+        }
+    }
+
+    static func newMarker() -> String {
+        "reader-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12).lowercased()
     }
 
     /// Starts following. The first status arrives after the first step.
     public func start() {
-        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.25)
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), Float(AnchorWorker.messagingTimeout))
         schedule(interval: 0.1)
         step()
     }
@@ -66,6 +95,7 @@ public final class TerminalAnchor {
     public func stop() {
         timer?.invalidate()
         timer = nil
+        feed?.stop()
     }
 
     /// Reads the element again soon and follows it closely for a short time, for a change that
@@ -92,8 +122,9 @@ public final class TerminalAnchor {
         guard timer != nil, !stepRunning else { return }
         stepRunning = true
         let worker = worker
+        let marker = marker
         queue.async { [weak self] in
-            let result = worker.step()
+            let result = worker.step(marker: marker)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.finish(result) }
             }
@@ -111,6 +142,11 @@ public final class TerminalAnchor {
         case .placed(let raw): next = .placed(raw.placement(primaryHeight: primaryHeight))
         case .concealed(let raw): next = .concealed(raw.placement(primaryHeight: primaryHeight))
         case .unchanged: next = status
+        case .found:
+            next = status
+            marker = Self.newMarker()
+            fastUntil = Date().addingTimeInterval(1)
+            onMarker?()
         }
         if case .placed(let shown) = next, case .placed(let before) = status, shown != before {
             fastUntil = Date().addingTimeInterval(1)
@@ -159,14 +195,23 @@ final class AnchorWorker: @unchecked Sendable {
         var host: pid_t
         var window: CGWindowID?
         var coveredBy: CGWindowID?
+        var covers: [CGRect] = []
 
         func placement(primaryHeight: CGFloat) -> TerminalAnchor.Placement {
-            TerminalAnchor.Placement(frame: TerminalAnchor.appKitRect(frame, primaryHeight: primaryHeight), host: host, window: window, coveredBy: coveredBy)
+            TerminalAnchor.Placement(
+                frame: TerminalAnchor.appKitRect(frame, primaryHeight: primaryHeight),
+                host: host,
+                window: window,
+                coveredBy: coveredBy,
+                covers: covers.map { TerminalAnchor.appKitRect($0, primaryHeight: primaryHeight) }
+            )
         }
     }
 
     enum State: Sendable {
         case untrusted, searching, unchanged
+        /// A text area shows the marker; the terminal must show a new marker to confirm it.
+        case found
         case placed(RawPlacement)
         case concealed(RawPlacement)
     }
@@ -177,67 +222,122 @@ final class AnchorWorker: @unchecked Sendable {
         var slow = false
     }
 
-    /// Nodes visited in one application's accessibility tree during one search.
-    static let nodeBudget = 2500
-    /// Deepest level of an application's tree that a search visits.
-    static let depthLimit = 24
-    /// Time one search may take before it stops; the next search starts again.
-    static let searchDeadline: TimeInterval = 0.4
-    /// Text areas with more characters are searched through their visible range only.
-    static let wholeTextLimit = 200_000
-    /// Roles whose subtrees hold documents, lists or menus rather than terminals.
-    static let skippedRoles: Set<String> = ["AXWebArea", "AXTable", "AXOutline", "AXList", "AXBrowser", "AXMenuBar", "AXMenu"]
+    /// Longest wait for one answer of an application.
+    static let messagingTimeout: TimeInterval = 0.25
+    /// Time after which a step starts no new request. One request that is already waiting can
+    /// still take up to the messaging timeout.
+    static let stepAllowance: TimeInterval = 0.1
+    /// Time a found element has to show the new marker.
+    static let confirmTime: TimeInterval = 0.6
+    /// Consecutive reads without the marker after which the followed element counts as gone,
+    /// for example because the application now uses it for another terminal.
+    static let missLimit = 3
+    /// Time between two scans for covering content while the element's frame stays the same.
+    static let coverInterval: TimeInterval = 0.25
+    /// While the application that last showed the marker runs, only every this many rounds
+    /// search the other applications as well.
+    static let wideRoundEvery = 8
 
-    let marker: String
+    private let tree = LiveTree()
+    private var search = AnchorSearch<LiveTree>()
     private var element: AXUIElement?
     private var windowElement: AXUIElement?
-    private var lastHost: pid_t?
+    /// The application whose element showed a confirmed marker last.
+    private var host: pid_t?
+    private var candidate: (found: AnchorSearch<LiveTree>.Found, marker: String, until: Date)?
+    private var misses = 0
     /// The window that last showed the element and its title then. A changed title, such as a
-    /// switch to another tab of that window, starts the next search at once.
+    /// switch to another tab of that window, starts the next round at once.
     private var lostWindow: (element: AXUIElement, title: String?)?
     private var lastFront: String?
-    private var searches = 0
-    private var nextSearch = Date.distantPast
+    private var rounds = 0
+    private var nextRound = Date.distantPast
     private var cachedWindow: CGWindowID?
+    private var covers: [CGRect] = []
+    private var detached = false
+    private var coversFrame: CGRect?
+    private var coversGeneration: Int?
+    private var coversAt = Date.distantPast
+    private let feed: StackingFeed?
 
-    init(marker: String) {
-        self.marker = marker
+    init(feed: StackingFeed?) {
+        self.feed = feed
     }
 
-    func step() -> Result {
+    func step(marker: String) -> Result {
+        let deadline = Date().addingTimeInterval(Self.stepAllowance)
         guard AXIsProcessTrusted() else { return Result(state: .untrusted, slow: true) }
         // Nothing is visible behind a locked screen, and applications answer few accessibility
         // requests there; keep the last place and wait.
         if Self.screenLocked() {
-            guard let element, let host = Self.pid(element), let frame = Self.rect(element, "AXFrame") else { return Result(state: .unchanged, slow: true) }
-            return Result(state: .concealed(RawPlacement(frame: frame, host: host, window: cachedWindow)), slow: true)
+            guard let element, let host = Self.pid(element), let frame = tree.frame(element).value else { return Result(state: .unchanged, slow: true) }
+            return Result(state: .concealed(RawPlacement(frame: frame, host: host, window: cachedWindow, covers: covers)), slow: true)
         }
+        if let candidate { return Result(state: confirm(candidate, marker: marker)) }
         if let element {
-            if let state = read(element) { return Result(state: state) }
-            if let windowElement { lostWindow = (windowElement, Self.string(windowElement, kAXTitleAttribute)) }
-            self.element = nil
-            windowElement = nil
-            cachedWindow = nil
-            nextSearch = .distantPast
+            if let state = follow(element, marker: marker) { return Result(state: state) }
+            lose()
         }
-        return Result(state: searchIfDue())
+        return Result(state: searchStep(marker: marker, deadline: deadline))
     }
 
     // MARK: - Following
 
-    /// The element's place and its window's state, or nil when the element is gone.
-    private func read(_ element: AXUIElement) -> State? {
-        guard let frame = Self.rect(element, "AXFrame"), frame.width >= 1, frame.height >= 1, let host = Self.pid(element) else { return nil }
-        let window = windowElement ?? Self.element(element, kAXWindowAttribute)
+    /// The element's place and its window's state, or nil when the element is gone. A request
+    /// that the application did not answer in time keeps the last state.
+    private func follow(_ element: AXUIElement, marker: String) -> State? {
+        let frame: CGRect
+        switch tree.frame(element) {
+        case .value(let value): frame = value
+        case .busy: return .unchanged
+        case .missing: return nil
+        }
+        guard frame.width >= 1, frame.height >= 1, let host = Self.pid(element) else { return nil }
+        switch tree.visibleText(element, limit: AnchorSearch<LiveTree>.textLimit) {
+        case .value(let text) where AnchorSearch<LiveTree>.shows(marker, text): misses = 0
+        case .busy: break
+        default:
+            misses += 1
+            if misses >= Self.missLimit { return nil }
+        }
+        let window = windowElement ?? tree.read(element, kAXWindowAttribute).value.flatMap(LiveTree.element)
         windowElement = window
-        let windowFrame = window.flatMap { Self.rect($0, "AXFrame") }
-        let minimised = window.flatMap { Self.bool($0, kAXMinimizedAttribute) } ?? false
-        let number = windowFrame.flatMap { verifiedWindow(host: host, frame: $0, title: window.flatMap { Self.string($0, kAXTitleAttribute) }) }
+        let windowFrame = window.flatMap { tree.frame($0).value }
+        let minimised = window.flatMap { (tree.read($0, kAXMinimizedAttribute).value as? NSNumber)?.boolValue } ?? false
+        let number = windowFrame.flatMap { verifiedWindow(host: host, frame: $0, title: window.flatMap(title)) }
         let coveredBy = number.flatMap { Self.hostWindowAbove(host: host, window: $0, over: frame) }
-        let placement = RawPlacement(frame: frame, host: host, window: number, coveredBy: coveredBy)
+        let stacking = feed?.latest
+        if let window, frame != coversFrame || stacking?.generation != coversGeneration || Date() >= coversAt.addingTimeInterval(Self.coverInterval) {
+            switch CoverScan.scan(tree, element: element, frame: frame, window: window, application: host, stacking: stacking?.report) {
+            case .covers(let found):
+                covers = found
+                detached = false
+            case .detached: detached = true
+            case nil: break
+            }
+            coversFrame = frame
+            coversGeneration = stacking?.generation
+            coversAt = Date()
+        }
+        let placement = RawPlacement(frame: frame, host: host, window: number, coveredBy: coveredBy, covers: covers)
         let hidden = NSRunningApplication(processIdentifier: host)?.isHidden ?? false
-        if minimised || hidden || number == nil { return .concealed(placement) }
+        if minimised || hidden || detached || number == nil { return .concealed(placement) }
         return .placed(placement)
+    }
+
+    private func lose() {
+        if let windowElement { lostWindow = (windowElement, title(windowElement)) }
+        element = nil
+        windowElement = nil
+        cachedWindow = nil
+        covers = []
+        detached = false
+        coversFrame = nil
+        coversGeneration = nil
+        misses = 0
+        rounds = 0
+        nextRound = .distantPast
+        search = AnchorSearch()
     }
 
     /// The cached window number while that window is on screen at `frame`; otherwise a new
@@ -272,79 +372,100 @@ final class AnchorWorker: @unchecked Sendable {
 
     // MARK: - Search
 
-    /// Searches when a search is due. A changed title of the window that last showed the pane,
-    /// or of the frontmost window, makes it due at once.
-    private func searchIfDue() -> State {
-        let now = Date()
-        if let lostWindow, Self.string(lostWindow.element, kAXTitleAttribute) != lostWindow.title {
-            self.lostWindow = nil
-            nextSearch = now
-        }
-        let front = Self.frontWindowTitle()
-        if front != lastFront {
-            lastFront = front
-            nextSearch = now
-        }
-        guard now >= nextSearch else { return .searching }
-        if let found = search(deadline: now.addingTimeInterval(Self.searchDeadline)) {
-            element = found.element
-            windowElement = found.window
-            lastHost = found.host
+    /// Accepts the found element when it shows the marker that the terminal printed after the
+    /// search found it. An element that keeps the older marker is a copy of the terminal's text,
+    /// such as captured output in another pane; the round then continues behind it, with the new
+    /// marker that no earlier copy shows.
+    private func confirm(_ candidate: (found: AnchorSearch<LiveTree>.Found, marker: String, until: Date), marker: String) -> State {
+        let reply = tree.visibleText(candidate.found.element, limit: AnchorSearch<LiveTree>.textLimit)
+        if marker != candidate.marker, case .value(let text) = reply, AnchorSearch<LiveTree>.shows(marker, text) {
+            self.candidate = nil
+            element = candidate.found.element
+            windowElement = candidate.found.window
+            host = candidate.found.application
             lostWindow = nil
-            searches = 0
-            return read(found.element) ?? .searching
+            misses = 0
+            rounds = 0
+            return follow(candidate.found.element, marker: marker) ?? .searching
         }
-        searches += 1
-        nextSearch = now.addingTimeInterval(searches < 8 ? 0.25 : hostRunning ? 1 : 3)
+        let gone: Bool
+        if case .missing = reply { gone = true } else { gone = false }
+        if !gone, Date() < candidate.until { return .unchanged }
+        self.candidate = nil
         return .searching
     }
 
+    /// Continues the current round, or starts a new one when it is due. A changed title of the
+    /// window that last showed the element, or a change of the frontmost window, makes a round
+    /// due at once.
+    private func searchStep(marker: String, deadline: Date) -> State {
+        let now = Date()
+        if let lostWindow {
+            let reply = tree.read(lostWindow.element, kAXTitleAttribute)
+            if case .busy = reply {} else if (reply.value as? String) != lostWindow.title {
+                self.lostWindow = nil
+                nextRound = now
+                if let host { search.prefer(host) }
+            }
+        }
+        if let front = Self.frontmostApplication(), let frontTitle = frontWindowTitle(front), frontTitle != lastFront {
+            lastFront = frontTitle
+            nextRound = now
+            search.prefer(front)
+        }
+        if search.roundComplete {
+            guard now >= nextRound else { return .searching }
+            rounds += 1
+            search.begin(roundApplications())
+        }
+        if let found = search.run(tree, marker: marker, expired: { Date() >= deadline }) {
+            candidate = (found, marker, Date().addingTimeInterval(Self.confirmTime))
+            return .found
+        }
+        if search.roundComplete {
+            nextRound = now.addingTimeInterval(rounds < 8 ? 0.25 : hostRunning ? 1 : 3)
+        }
+        return .searching
+    }
+
+    /// The applications of a new round: the one that showed the marker last, while it runs, and
+    /// on every few rounds, or without such an application, also the frontmost application and
+    /// every application with a window on screen, front to back.
+    private func roundApplications() -> [pid_t] {
+        let own = ProcessInfo.processInfo.processIdentifier
+        var list: [pid_t] = []
+        if let host, hostRunning {
+            list.append(host)
+            if rounds % Self.wideRoundEvery != 0 { return list }
+        }
+        if let front = Self.frontmostApplication(), front != own, !list.contains(front) { list.append(front) }
+        for pid in Self.processesWithWindows() where pid != own && !list.contains(pid) { list.append(pid) }
+        return list
+    }
+
     private var hostRunning: Bool {
-        guard let lastHost, let application = NSRunningApplication(processIdentifier: lastHost) else { return false }
+        guard let host, let application = NSRunningApplication(processIdentifier: host) else { return false }
         return !application.isTerminated
     }
 
-    private struct Found {
-        let element: AXUIElement
-        let window: AXUIElement?
-        let host: pid_t
+    private func title(_ window: AXUIElement) -> String? {
+        tree.read(window, kAXTitleAttribute).value as? String
     }
 
-    /// Looks in the application that showed the marker last while it runs. Otherwise in the
-    /// frontmost application, then in every application with a window on screen.
-    private func search(deadline: Date) -> Found? {
-        if hostRunning, let lastHost { return search(application: lastHost, deadline: deadline) }
-        let own = ProcessInfo.processInfo.processIdentifier
-        var candidates: [pid_t] = []
-        if let front = NSWorkspace.shared.frontmostApplication?.processIdentifier, front != own { candidates.append(front) }
-        for pid in Self.processesWithWindows() where pid != own && !candidates.contains(pid) { candidates.append(pid) }
-        for pid in candidates where Date() < deadline {
-            if let found = search(application: pid, deadline: deadline) { return found }
-        }
-        return nil
-    }
-
-    private func search(application pid: pid_t, deadline: Date) -> Found? {
-        let application = AXUIElementCreateApplication(pid)
-        guard let windows = Self.elements(application, kAXWindowsAttribute) else { return nil }
-        var visited = 0
-        for window in windows {
-            var queue: [(AXUIElement, Int)] = [(window, 0)]
-            var index = 0
-            while index < queue.count, visited < Self.nodeBudget, Date() < deadline {
-                let (node, depth) = queue[index]
-                index += 1
-                visited += 1
-                let role = Self.string(node, kAXRoleAttribute) ?? ""
-                if role == kAXTextAreaRole {
-                    if let text = Self.visibleText(node), text.contains(marker) { return Found(element: node, window: window, host: pid) }
-                    continue
-                }
-                if Self.skippedRoles.contains(role) || depth >= Self.depthLimit { continue }
-                for child in Self.elements(node, kAXChildrenAttribute) ?? [] where queue.count < Self.nodeBudget { queue.append((child, depth + 1)) }
+    /// The frontmost application and the title of its focused window; nil when the application
+    /// does not answer in time.
+    private func frontWindowTitle(_ front: pid_t) -> String? {
+        switch tree.read(AXUIElementCreateApplication(front), kAXFocusedWindowAttribute) {
+        case .busy: return nil
+        case .missing: return "\(front):"
+        case .value(let value):
+            guard let window = LiveTree.element(value) else { return "\(front):" }
+            switch tree.read(window, kAXTitleAttribute) {
+            case .busy: return nil
+            case .missing: return "\(front):"
+            case .value(let title): return "\(front):" + ((title as? String) ?? "")
             }
         }
-        return nil
     }
 
     // MARK: - Window server facts
@@ -354,11 +475,8 @@ final class AnchorWorker: @unchecked Sendable {
         return (session["CGSSessionScreenIsLocked"] as? Bool) == true || (session[kCGSessionOnConsoleKey as String] as? Bool) == false
     }
 
-    /// The frontmost application and the title of its focused window.
-    static func frontWindowTitle() -> String? {
-        guard let front = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return nil }
-        let window = element(AXUIElementCreateApplication(front), kAXFocusedWindowAttribute)
-        return "\(front):" + (window.flatMap { string($0, kAXTitleAttribute) } ?? "")
+    static func frontmostApplication() -> pid_t? {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier
     }
 
     /// Processes that own a normal-level window on screen, front to back.
@@ -371,54 +489,9 @@ final class AnchorWorker: @unchecked Sendable {
         return result
     }
 
-    // MARK: - Accessibility values
-
-    static func visibleText(_ element: AXUIElement) -> String? {
-        if let count = number(element, kAXNumberOfCharactersAttribute), count <= wholeTextLimit {
-            return string(element, kAXValueAttribute)
-        }
-        guard let rangeValue = value(element, kAXVisibleCharacterRangeAttribute) else { return nil }
-        var parameter: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(element, kAXStringForRangeParameterizedAttribute as CFString, rangeValue, &parameter) == .success else { return nil }
-        return parameter as? String
-    }
-
-    static func value(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
-        var result: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, name as CFString, &result) == .success else { return nil }
-        return result
-    }
-
-    static func string(_ element: AXUIElement, _ name: String) -> String? {
-        value(element, name) as? String
-    }
-
-    static func number(_ element: AXUIElement, _ name: String) -> Int? {
-        (value(element, name) as? NSNumber)?.intValue
-    }
-
-    static func bool(_ element: AXUIElement, _ name: String) -> Bool? {
-        (value(element, name) as? NSNumber)?.boolValue
-    }
-
-    static func element(_ element: AXUIElement, _ name: String) -> AXUIElement? {
-        guard let result = value(element, name), CFGetTypeID(result) == AXUIElementGetTypeID() else { return nil }
-        return (result as! AXUIElement)
-    }
-
-    static func elements(_ element: AXUIElement, _ name: String) -> [AXUIElement]? {
-        value(element, name) as? [AXUIElement]
-    }
-
-    static func rect(_ element: AXUIElement, _ name: String) -> CGRect? {
-        guard let result = value(element, name), CFGetTypeID(result) == AXValueGetTypeID() else { return nil }
-        var rect = CGRect.zero
-        guard AXValueGetValue(result as! AXValue, .cgRect, &rect) else { return nil }
-        return rect
-    }
-
     static func pid(_ element: AXUIElement) -> pid_t? {
         var pid: pid_t = 0
         return AXUIElementGetPid(element, &pid) == .success ? pid : nil
     }
 }
+

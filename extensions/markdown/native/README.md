@@ -68,8 +68,11 @@ HTML and unsafe links, images and asset containment, store reading against a fix
 format including symbolic links and scan bounds, open requests and their removal, the pinned
 digest, the reference inventory), `MacPlatformTests` (the pane helper runner against fake helper
 scripts: each outcome, a timeout, malformed output, refusal, an oversized origin and a helper that
-closes its input; the pane reader's coordinate conversion, window matching and printable
-placeholder text) and `ReaderFeatureTests` (the bounds of the reading-state file and the merging
+closes its input; the pane reader's coordinate conversion, window matching, printable
+placeholder text and bounded error lines; search rounds against a model screen with a slow
+application, a large tree, long text and copies of the marker; covering content found by hit test
+and by stacking report, and an element that its window no longer shows; stacking report parsing
+and a stacking command that ends with its input) and `ReaderFeatureTests` (the bounds of the reading-state file and the merging
 of saves from several reader processes). Under the Command Line Tools
 the Testing framework is outside the default search path, so the script passes its directory.
 The tools also ship the `_Testing_Foundation` overlay without a module, so a test file imports
@@ -221,16 +224,25 @@ wrapping, revisions, details and close) for its one document; it opens no other 
 library and no other window, and it ignores open events.
 
 The terminal shows a placeholder on the alternate screen with the hidden cursor: the title, the
-reader's state and the keys. Document text reaches the terminal only through
-`TerminalText.printable`, which removes control, format and separator characters. The first
-line holds a random marker in concealed text. `TerminalAnchor` searches the accessibility text
-areas of running applications for the text area whose visible text contains the marker, first
-in the frontmost application, then in every application with a window on screen, and after the
-first match in that application only. It skips the subtrees of web areas, tables, outlines,
-lists, browsers and menus, visits at most 2500 nodes of an application per search and runs the
-search off the main thread. It names no terminal application. Accessibility access is required;
-a process that a trusted terminal starts inherits that access, and without it the placeholder
-says so and no window opens.
+reader's state and the keys. Document text and error lines reach the terminal only through
+`TerminalText`, which removes control, format and separator characters and bounds an error line.
+The first row holds a random marker in concealed text; the placeholder replaces its rows in
+place, so the first row shows a marker at every moment. `TerminalAnchor` searches the
+accessibility text areas of running applications for one whose visible text starts with the
+marker in its first row. It reads at most the first 512 characters of a text area's visible
+character range, never the rest of its text; a text area without a visible character range does
+not qualify. A search runs in rounds: over the application that last showed the marker while it
+runs (every eighth round over all of them), otherwise over the frontmost application and then
+every application with a window on screen. A round keeps its place between steps, leaves an
+application after 2500 nodes or two unanswered requests, and skips the subtrees of web areas,
+tables, outlines, lists, browsers and menus, so a slow or large application delays a round but
+never keeps it from the others. When a text area shows the marker, the process prints a new
+marker and accepts the element only if it shows the new one within 0.6 seconds; a copy of the
+screen elsewhere, such as captured output in another pane, never does, and the round continues
+behind it. While following, an element that misses the marker on three consecutive reads counts
+as gone. The anchor names no terminal application. Accessibility access is required; a process
+that a trusted terminal starts inherits that access, and without it the placeholder says so and
+no window opens.
 
 The reader window is a borderless, non-activating panel without a shadow that takes the text
 area's frame. It moves to the active Space, joins full-screen spaces and stays out of window
@@ -239,17 +251,29 @@ the active application, and the first click already acts on the page. While the 
 reader is active, the window floats; otherwise it sits at the normal level directly above the
 host's window, so other applications cover both. While another window of the host below the
 floating level lies over the pane, such as its command palette, the reader orders itself below
-that window. Drawing inside the host's own window, such as one of its floating panes over a
-tiled reader pane or another reader pane, stays under the reader: accessibility reports no
-stacking order inside a window. All accessibility and window-server
-requests run on one background queue, one step at a time, so a slow host never stalls the
-reader's window; a search stops after 0.4 seconds. The anchor reads the frame
-ten times a second and sixty times a second for a moment after a change or a terminal resize.
-The window hides when the text area disappears (for example, the host shows another tab), when
-the host's window is minimised, hidden, on another Space or not on screen, and behind a locked
-screen. A changed title of the host window or of the frontmost window starts the next search at
-once; otherwise searches repeat four times a second at first, then every second while the host
-runs and every three seconds while no host is known.
+that window. Content of the host's own window that lies over the pane, such as a floating pane
+over a tiled reader pane or another reader's pane, leaves a hole in the reader window: the hole
+is transparent, shows that content and passes clicks to the host. The anchor finds such content
+among the window's accessibility elements that overlap the pane outside the pane's own
+ancestors, and a hole takes the bounds of the element's children. When the pane's environment
+offers a stacking command (`docs/conventions/pane-stacking.md`), its reports decide which of
+those elements lie above the pane. Otherwise the host's accessibility hit test decides, which is
+right for content over a tiled pane but can order two overlapping floating panes wrongly: a
+host's hit test can return the first of two overlapping elements rather than the front one.
+When holes leave nothing of the pane, or the host keeps the pane's element but no longer lists
+it among its window's children (for example while another pane fills the window), the window
+hides.
+
+All accessibility and window-server requests run on one background queue, one step at a time,
+so a slow host never stalls the reader's window. A step starts no new request after 0.1 seconds;
+a request already waiting can take up to the 0.25-second messaging timeout. The anchor reads the
+frame ten times a second and sixty times a second for a moment after a change or a terminal
+resize, and looks for covering content four times a second, after a frame change and after each
+stacking report. The window hides when the text area disappears (for example, the host shows
+another tab), when the host's window is minimised, hidden, on another Space or not on screen,
+and behind a locked screen. A changed title of the host window or of the frontmost window starts
+the next round at once; otherwise rounds repeat four times a second at first, then every second
+while the host runs and every three seconds while no host is known.
 
 The window shows `ReaderView` with embedded chrome: a compact header with the outline control,
 title, provenance line, revision menu, view options, find, Copy Markdown, details, a control

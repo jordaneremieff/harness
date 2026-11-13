@@ -17,8 +17,10 @@ final class PaneHost: NSObject, NSWindowDelegate {
     let model: ReaderModel
     let state: ReadingStateStore
     private let terminal: PaneTerminal
-    private let anchor: TerminalAnchor
+    private let anchor = TerminalAnchor()
     private var window: PaneWindow!
+    private var content: PaneContentView!
+    private var hosting: NSHostingController<ReaderView>?
     private var placement: TerminalAnchor.Placement?
     private var ending = false
     private var observers: [NSObjectProtocol] = []
@@ -27,7 +29,6 @@ final class PaneHost: NSObject, NSWindowDelegate {
         self.model = model
         self.state = state
         self.terminal = terminal
-        self.anchor = TerminalAnchor(marker: "reader-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(12).lowercased())
     }
 
     func start() -> NSWindow {
@@ -44,6 +45,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
         terminal.start()
         draw()
         anchor.onChange = { [weak self] status in self?.apply(status) }
+        anchor.onMarker = { [weak self] in self?.draw() }
         anchor.start()
         let center = NSWorkspace.shared.notificationCenter
         observers.append(center.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
@@ -60,28 +62,38 @@ final class PaneHost: NSObject, NSWindowDelegate {
         let view = ReaderView(model: model, chrome: .embedded(close: { [weak self] in self?.end(status: 0) }, release: { [weak self] in self?.releaseFocus() }))
         let host = NSHostingController(rootView: view)
         host.sizingOptions = []
-        let window = PaneWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 480), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        window.contentViewController = host
+        hosting = host
+        let bounds = NSRect(x: 0, y: 0, width: 640, height: 480)
+        content = PaneContentView(frame: bounds)
+        host.view.frame = bounds
+        host.view.autoresizingMask = [.width, .height]
+        content.addSubview(host.view)
+        let window = PaneWindow(contentRect: bounds, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        window.contentView = content
+        window.isOpaque = false
+        window.backgroundColor = .clear
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
         window.becomesKeyOnlyIfNeeded = false
         window.hasShadow = false
         window.isMovable = false
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .ignoresCycle]
-        window.backgroundColor = .windowBackgroundColor
         window.delegate = self
         window.onCancel = { [weak self] in self?.releaseFocus() }
         return window
     }
 
+    /// Shows the window over the pane, with holes where other content of the terminal's window
+    /// lies over the pane, or hides it.
     private func apply(_ status: TerminalAnchor.Status) {
         switch status {
-        case .placed(let shown):
+        case .placed(let shown) where !shown.coveredEntirely:
             placement = shown
             if window.frame != shown.frame { window.setFrame(shown.frame, display: true) }
+            content.holes = shown.covers.map { $0.offsetBy(dx: -shown.frame.minX, dy: -shown.frame.minY) }
             if !window.isVisible { window.orderFrontRegardless() }
             order()
-        case .concealed, .searching, .untrusted:
+        case .placed, .concealed, .searching, .untrusted:
             placement = nil
             if window.isVisible { window.orderOut(nil) }
         }
@@ -146,8 +158,8 @@ final class PaneHost: NSObject, NSWindowDelegate {
         let title = model.snapshot.map { _ in model.displayTitle } ?? "Opening the document"
         var status: String
         switch anchor.status {
-        case .placed: status = "Shown in the reader window over this pane."
-        case .concealed: status = "The reader window is hidden while this pane is covered or not on screen."
+        case .placed(let shown) where !shown.coveredEntirely: status = "Shown in the reader window over this pane."
+        case .placed, .concealed: status = "The reader window is hidden while this pane is covered or not on screen."
         case .searching: status = "Looking for this pane on screen."
         case .untrusted: status = "This terminal cannot place the reader over its pane: the program has no accessibility access."
         }
@@ -176,6 +188,59 @@ final class PaneHost: NSObject, NSWindowDelegate {
             finish()
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { MainActor.assumeIsolated { finish() } }
+    }
+}
+
+/// The panel's content: the reader, with holes where other content of the terminal's window lies
+/// over the pane. A hole is transparent, so the content below shows through it, and the panel
+/// takes no clicks there.
+final class PaneContentView: NSView {
+    /// Rectangles in this view's coordinates.
+    var holes: [CGRect] = [] {
+        didSet { if holes != oldValue { updateMask() } }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    }
+
+    override func layout() {
+        super.layout()
+        updateMask()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        if holes.contains(where: { $0.contains(local) }) { return nil }
+        return super.hitTest(point)
+    }
+
+    private func updateMask() {
+        guard let layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard !holes.isEmpty else {
+            layer.mask = nil
+            return
+        }
+        let path = CGMutablePath()
+        path.addRect(bounds)
+        for hole in holes { path.addRect(hole) }
+        let mask = (layer.mask as? CAShapeLayer) ?? CAShapeLayer()
+        mask.frame = bounds
+        mask.fillRule = .evenOdd
+        mask.path = path
+        layer.mask = mask
     }
 }
 
@@ -292,8 +357,11 @@ final class PaneTerminal {
         lines += TerminalText.wrap(TerminalText.printable(status), width).map { "  \($0)" }
         lines.append("")
         lines += TerminalText.wrap(keys, width).map { "  \u{1B}[2m\($0)\u{1B}[22m" }
-        var text = "\u{1B}[0m\u{1B}[2J"
-        for (row, line) in lines.prefix(rows).enumerated() { text += "\u{1B}[\(row + 1);1H\(line)" }
+        // Each row is replaced in place, without clearing the screen first, so the first row
+        // shows a marker at every moment.
+        var text = "\u{1B}[0m"
+        for (row, line) in lines.prefix(rows).enumerated() { text += "\u{1B}[\(row + 1);1H\(line)\u{1B}[K" }
+        text += "\u{1B}[J"
         write(text)
     }
 
