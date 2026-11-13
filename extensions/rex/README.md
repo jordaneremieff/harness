@@ -163,13 +163,17 @@ For an owned interactive application, use `rex_terminal` with `op: "create"`,
 session or anchor block. `kind: "float"` opens a floating pane in front of the
 anchor block's window (`session.new_layer`); `bounds` sets its rectangle as
 `[x, y, width, height]` fractions of that window and defaults to a centred pane
-that leaves the layout around it visible. Creation preserves completed output.
-A new window, split or floating pane does not take focus unless the request sets
-`focus: true`; use that when the operator asked to see the work, such as a diff
-tab, a test run or a document. A new session cannot be shown this way; `focus`
-is refused there, and a client action such as `session.select` displays it.
-Save the returned target and effect record ID. Cleanup of a floating pane closes
-its block, and Rex removes the emptied floating layer.
+that leaves the layout around it visible. A created pane stays open after its
+program exits, so completed output stays readable. `keepOpen: false` closes the
+pane when its program exits successfully, for interactive programs such as
+viewers that the operator closes from inside; Rex keeps the pane open after a
+failure, so the error stays readable. A new window, split or floating pane does
+not take focus unless the request sets `focus: true`; use that when the operator
+asked to see the work, such as a diff tab, a test run or a document. A new
+session cannot be shown this way; `focus` is refused there, and a client action
+such as `session.select` displays it. Save the returned target and effect record
+ID. Cleanup of a floating pane closes its block, and Rex removes the emptied
+floating layer.
 
 Use `inspect` before application input. Deliver text with `input`; add keys such
 as `enter` when the application needs them. `observe: true` returns a subsequent

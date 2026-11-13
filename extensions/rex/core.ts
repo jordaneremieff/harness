@@ -45,6 +45,7 @@ export type RexRequest =
 			direction?: "right" | "left" | "above" | "below";
 			ratio?: number;
 			bounds?: number[];
+			keepOpen?: boolean;
 			focus?: boolean;
 	  })
 	| (RequestBase & {
@@ -1607,6 +1608,15 @@ function validateRelationship(expected: string | undefined, found: unknown, kind
 }
 
 type CreateRequest = Extract<RexRequest, { op: "create" }>;
+/**
+ * Rex keeps a terminal open after a failure that ends within this many milliseconds. The largest
+ * accepted value keeps every failure open, so a pane that closes on success still shows any error.
+ */
+const FAILURE_STAYS_OPEN_MS = 4294967295;
+/** By default a pane keeps completed output; `keepOpen: false` closes it when its program succeeds. */
+function exitOptions(keepOpen: boolean | undefined): Record<string, unknown> {
+	return keepOpen === false ? { on_completion: true, quick_exit_threshold_ms: FAILURE_STAYS_OPEN_MS } : { on_completion: false };
+}
 function createLayout(request: CreateRequest): Record<string, unknown> {
 	if (!boundedText(request.label, 128)) throw new Error("Use a Rex label of 1 to 128 characters.");
 	if (request.command !== undefined) validateCommand(request.command);
@@ -1625,7 +1635,7 @@ function createLayout(request: CreateRequest): Record<string, unknown> {
 				...(request.cwd ? { cwd: request.cwd } : {}),
 				...(request.shell ? { shell: request.shell } : {}),
 				...(request.shell === "none" ? { login: false } : {}),
-				exit: { on_completion: false },
+				exit: exitOptions(request.keepOpen),
 			},
 		},
 	};

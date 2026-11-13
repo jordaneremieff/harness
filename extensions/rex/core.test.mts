@@ -760,6 +760,18 @@ test("float creation opens an owned floating pane in the anchor block's window",
 	assert.equal(layers().length, 2);
 });
 
+test("keepOpen false closes a pane when its program succeeds and keeps every failure open", async () => {
+	const f = fixture();
+	f.transport.handler = (method) => (method === "session.new_layer" ? reply({ layer_id: "layer:55555555-5555-4555-8555-555555555555", block_ids: [block], revision: 7 }) : undefined);
+	await f.core.execute({ op: "create", kind: "float", label: "Viewer", command: ["node", "show.ts"], keepOpen: false, target: { session, block } }, { ...context, callId: "viewer" });
+	await f.core.execute({ op: "create", kind: "split", label: "Kept", keepOpen: true, target: { session, block } }, { ...context, callId: "kept" });
+	await f.core.execute({ op: "create", kind: "window", label: "Default", target: { session } }, { ...context, callId: "default" });
+	const exits = f.transport.calls
+		.filter((call) => ["session.new_layer", "session.new_split", "session.new_window"].includes(call.method ?? ""))
+		.map((call) => (call.data.layout as { block: { options: { exit: unknown } } }).block.options.exit);
+	assert.deepEqual(exits, [{ on_completion: true, quick_exit_threshold_ms: 4294967295 }, { on_completion: false }, { on_completion: false }]);
+});
+
 test("cleanup acknowledgement preserves released original and attempt claims without revival", async () => {
 	const f = fixture();
 	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
