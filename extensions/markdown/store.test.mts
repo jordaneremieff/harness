@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -121,6 +122,30 @@ test("collections isolate snapshots and recent listing applies its result limit 
 	await assert.rejects(store.get(snapshot.document.id), code("store-failure"));
 	const namesOnly = "md-eeeeeeeeeeeeeeeeeeee"; await mkdir(join(root, "snapshots", namesOnly)); assert.equal(await store.resolve("md-eeeeee"), namesOnly);
 	await assert.rejects(store.list({ limit: Number.NaN }), code("invalid"));
+}));
+test("a failed write removes its own staging directory and keeps the committed document", () => fixture(async (store, root) => {
+	const staging = async (path: string) => (await readdir(path)).filter((name) => name.startsWith(".tmp-"));
+	await assert.rejects(new MarkdownStore(root, (step) => { if (step === "revision") throw new Error("interrupted"); }).create(input()));
+	assert.deepEqual(await staging(join(root, "documents")), []);
+	const first = await store.create(input());
+	await mkdir(join(root, "documents", first.document.id, "revisions/2/occupied"), { recursive: true });
+	await assert.rejects(store.update(first.document.id, 1, input("second")));
+	assert.deepEqual(await staging(join(root, "documents", first.document.id, "revisions")), []);
+	assert.equal((await store.get(first.document.id)).source, first.source);
+}));
+test("a write removes staging directories older than one day and keeps newer ones and committed revisions", () => fixture(async (store, root) => {
+	const first = await store.create(input());
+	const old = [join(root, "documents", `.tmp-${randomUUID()}`), join(root, "snapshots", `.tmp-${randomUUID()}`), join(root, "documents", first.document.id, "revisions", `.tmp-${randomUUID()}`)];
+	const fresh = join(root, "documents", `.tmp-${randomUUID()}`);
+	for (const path of [...old, fresh]) { await mkdir(join(path, "revisions/1"), { recursive: true }); await writeFile(join(path, "revisions/1/source.md"), "left behind"); }
+	const lastWeek = new Date(Date.now() - 7 * 86400000);
+	for (const path of old) await utimes(path, lastWeek, lastWeek);
+	await utimes(join(root, "documents", first.document.id), lastWeek, lastWeek);
+	await utimes(join(root, "documents", first.document.id, "revisions/1"), lastWeek, lastWeek);
+	await store.update(first.document.id, 1, input("second"));
+	for (const path of old) await assert.rejects(stat(path), { code: "ENOENT" });
+	assert.equal((await stat(fresh)).isDirectory(), true);
+	assert.equal((await store.get(first.document.id, 1)).source, first.source); assert.equal((await store.get(first.document.id)).source, "second");
 }));
 test("a revision record larger than the reader's record limit is refused before any staging", () => fixture(async (store, root) => {
 	const items = Array.from({ length: 256 }, (_, i) => ({ kind: "image" as const, reference: `https://example.invalid/${i}/${"a".repeat(1100)}`, state: "external" as const }));

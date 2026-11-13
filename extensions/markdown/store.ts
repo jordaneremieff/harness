@@ -117,12 +117,27 @@ async function prepareRevision(base: string, dest: string, input: WriteInput, re
 		await rm(dest, { recursive: true, force: true });
 	} catch (error) { if (!absent(error)) throw error; }
 	const staging = join(base, "revisions", `.tmp-${randomUUID()}`);
-	await directory(staging);
-	await file(join(staging, "source.md"), input.source);
-	await file(join(staging, "revision.json"), JSON.stringify(revision));
-	for (const asset of input.assets ?? []) await retainAsset(staging, asset);
-	await rename(staging, dest);
+	try {
+		await directory(staging);
+		await file(join(staging, "source.md"), input.source);
+		await file(join(staging, "revision.json"), JSON.stringify(revision));
+		for (const asset of input.assets ?? []) await retainAsset(staging, asset);
+		await rename(staging, dest);
+	} catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
 	return revision;
+}
+
+async function pruneStagingIn(parent: string, cutoff: number): Promise<void> {
+	let entries: Awaited<ReturnType<typeof opendir>>;
+	try { entries = await opendir(parent); } catch (error) { if (absent(error)) return; throw error; }
+	let visited = 0;
+	for await (const entry of entries) {
+		if (++visited > LIMITS.listing) break;
+		if (entry.isDirectory() && /^\.tmp-[0-9a-f-]{36}$/.test(entry.name)) await removeIfOlder(join(parent, entry.name), cutoff);
+	}
+}
+async function removeIfOlder(path: string, cutoff: number): Promise<void> {
+	try { if ((await stat(path)).mtimeMs < cutoff) await rm(path, { recursive: true, force: true }); } catch (error) { if (!absent(error)) throw error; }
 }
 
 /** All writers, including index admission, share one process-safe store lock. Readers take no lock. */
@@ -296,21 +311,29 @@ export class MarkdownStore {
 		const plan = await this.publicationPlan(input, options);
 		const saved = await this.savedPublication(plan);
 		if (saved) return saved;
+		await this.pruneStaging(["documents", "snapshots"].map((name) => join(this.root, name)));
 		const id = plan.documentId;
 		const previous = await this.previousDocument(id, options);
 		const { document, revision } = records(input, plan, previous, options.kind);
 		if (Buffer.byteLength(JSON.stringify(revision)) > LIMITS.recordBytes) throw new StoreError("too-large", "Revision metadata exceeds 256 KiB.");
 		const number = plan.revision;
 		const target = this.path(id, document.kind);
+		if (previous) await this.pruneStaging([join(target, "revisions")]);
 		const base = previous ? target : join(this.root, collection(document.kind), `.tmp-${randomUUID()}`);
-		await directory(join(base, "revisions"));
-		const dest = join(base, "revisions", String(number));
-		const prepared = await prepareRevision(base, dest, input, revision, plan);
-		await this.checkpoint?.("revision");
-		await json(join(base, "document.json"), { ...document, title: prepared.title, updatedAt: prepared.createdAt, digest: prepared.digest, bytes: prepared.bytes });
-		if (!previous) await rename(base, target);
+		try {
+			await directory(join(base, "revisions"));
+			const dest = join(base, "revisions", String(number));
+			const prepared = await prepareRevision(base, dest, input, revision, plan);
+			await this.checkpoint?.("revision");
+			await json(join(base, "document.json"), { ...document, title: prepared.title, updatedAt: prepared.createdAt, digest: prepared.digest, bytes: prepared.bytes });
+			if (!previous) await rename(base, target);
+		} catch (error) { if (!previous) await rm(base, { recursive: true, force: true }); throw error; }
 		await this.checkpoint?.("pointer");
 		return { ...await this.get(id, number), created: !previous, replayed: false };
+	}
+	/** Removes staging directories that a terminated writer left; committed documents and revisions have other names. */
+	private async pruneStaging(parents: string[]): Promise<void> {
+		for (const parent of parents) await pruneStagingIn(parent, Date.now() - LIMITS.stagingAgeMs);
 	}
 	async pruneOpenRequests(olderThanMs = 86400000): Promise<number> {
 		if (!Number.isFinite(olderThanMs) || olderThanMs < 0) throw new StoreError("invalid", "Invalid request age.");
