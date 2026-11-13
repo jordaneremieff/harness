@@ -21,6 +21,32 @@ async function snapshot(transport: CliTransport, prefix: string[], session: stri
 	return { ...view, revision: view.revision };
 }
 
+/** Splits the event stream into lines. A line over the limit is dropped up to its end. */
+function eventLines(onLine: (line: Buffer) => void, onSkipped: () => void): (chunk: Buffer) => void {
+	let pending = Buffer.alloc(0);
+	let skipping = false;
+	const segment = (bytes: Buffer, complete: boolean) => {
+		if (!skipping && pending.length + bytes.length > MAX_EVENT_BYTES) {
+			skipping = true;
+			pending = Buffer.alloc(0);
+			onSkipped();
+		}
+		if (!skipping) pending = Buffer.concat([pending, bytes]);
+		if (!complete) return;
+		if (!skipping) onLine(pending);
+		skipping = false;
+		pending = Buffer.alloc(0);
+	};
+	return (chunk) => {
+		let offset = 0;
+		while (offset < chunk.length) {
+			const newline = chunk.indexOf(10, offset);
+			segment(chunk.subarray(offset, newline < 0 ? chunk.length : newline), newline >= 0);
+			offset = newline < 0 ? chunk.length : newline + 1;
+		}
+	};
+}
+
 function writeReport(report: string, signal: AbortSignal): Promise<void> {
 	return new Promise<void>((resolve) => {
 		const done = () => { signal.removeEventListener("abort", done); resolve(); };
@@ -45,6 +71,7 @@ export async function runPaneStacking(): Promise<void> {
 	const stop = () => {
 		if (stopped) return;
 		stopped = true;
+		if (retry) clearTimeout(retry);
 		abort.abort();
 		transport.dispose();
 		events.kill("SIGKILL");
@@ -55,12 +82,16 @@ export async function runPaneStacking(): Promise<void> {
 	let dirty = true;
 	let active: Promise<void> | undefined;
 	let lastReport: string | undefined;
+	let retryDelay = 0;
+	let retry: ReturnType<typeof setTimeout> | undefined;
 	const refresh = async () => {
 		while (dirty && !stopped) {
 			dirty = false;
 			const view = await snapshot(transport, prefix, session, abort.signal);
 			if (stopped) return;
-			if (view.revision < revision) { stop(); return; }
+			retryDelay = 0;
+			// A lower revision than one already seen comes from a restarted server; it is the
+			// current view all the same.
 			revision = view.revision;
 			if (requested <= revision) dirty = false;
 			const report = JSON.stringify(paneStacking(view, block));
@@ -70,9 +101,17 @@ export async function runPaneStacking(): Promise<void> {
 			}
 		}
 	};
+	// A failed or timed-out view call is tried again after one, two, then five seconds; the
+	// feed ends only with its input or its event stream.
+	const retryLater = () => {
+		if (stopped || retry) return;
+		dirty = true;
+		retryDelay = retryDelay === 0 ? 1000 : Math.min(retryDelay * 2, 5000);
+		retry = setTimeout(() => { retry = undefined; startRefresh(); }, retryDelay);
+	};
 	const startRefresh = () => {
-		if (active || stopped) return;
-		active = refresh().catch(stop).finally(() => { active = undefined; if (dirty && !stopped) startRefresh(); });
+		if (active || stopped || retry) return;
+		active = refresh().catch(retryLater).finally(() => { active = undefined; if (dirty && !stopped && !retry) startRefresh(); });
 	};
 	const line = (bytes: Buffer) => {
 		let value: Record<string, unknown>;
@@ -85,21 +124,9 @@ export async function runPaneStacking(): Promise<void> {
 		dirty = true;
 		startRefresh();
 	};
-	let pending = Buffer.alloc(0);
-	events.stdout.on("data", (chunk: Buffer) => {
-		if (stopped) return;
-		let offset = 0;
-		while (offset < chunk.length) {
-			const newline = chunk.indexOf(10, offset);
-			const end = newline < 0 ? chunk.length : newline;
-			if (pending.length + end - offset > MAX_EVENT_BYTES) { stop(); return; }
-			pending = Buffer.concat([pending, chunk.subarray(offset, end)]);
-			if (newline < 0) return;
-			line(pending);
-			pending = Buffer.alloc(0);
-			offset = newline + 1;
-		}
-	});
+	// A skipped line may have announced a change, so the view is read again; it never stops the feed.
+	const split = eventLines(line, () => { dirty = true; startRefresh(); });
+	events.stdout.on("data", (chunk: Buffer) => { if (!stopped) split(chunk); });
 	events.once("error", stop);
 	events.once("exit", stop);
 	process.stdin.once("end", stop);

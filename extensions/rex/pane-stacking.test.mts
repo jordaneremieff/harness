@@ -56,14 +56,14 @@ test("rectangles clamp to fractions, unknown layers act as floating, and coverag
 	}
 });
 
-async function helperFixture(t: test.TestContext) {
+async function helperFixture(t: test.TestContext, options: { failures?: number } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "rex-stacking-"));
 	const sockets = new Set<Socket>();
 	let events!: Socket;
 	let connected!: () => void;
 	const ready = new Promise<void>((resolve) => { connected = resolve; });
 	const calls: string[][] = [];
-	const state = { view: view(), hold: false, pending: [] as Socket[] };
+	const state = { view: view(), hold: false, pending: [] as Socket[], failures: options.failures ?? 0 };
 	const server = createServer((socket) => {
 		sockets.add(socket);
 		socket.once("close", () => sockets.delete(socket));
@@ -73,6 +73,7 @@ async function helperFixture(t: test.TestContext) {
 			else {
 				calls.push(message.args);
 				if (state.hold) state.pending.push(socket);
+				else if (state.failures > 0) { state.failures -= 1; socket.end("not a view"); }
 				else socket.end(JSON.stringify(state.view));
 				server.emit("view");
 			}
@@ -146,9 +147,24 @@ test("helper exits when the event source ends", { timeout: 10000 }, async (t) =>
 	assert.equal(f.stderr(), "");
 });
 
-test("helper bounds incomplete event lines and cancels an active view on stdin EOF", { timeout: 10000 }, async (t) => {
+test("helper retries a failed view and keeps its feed", { timeout: 10000 }, async (t) => {
+	const f = await helperFixture(t, { failures: 1 });
+	assert.equal(f.calls.length, 2);
+	assert.deepEqual(JSON.parse(f.output[0] ?? ""), paneStacking(f.state.view, "pane"));
+	f.child.stdin.end();
+	assert.deepEqual(await f.closed, [0, null]);
+});
+
+test("helper skips an oversized event line and cancels an active view on stdin EOF", { timeout: 10000 }, async (t) => {
 	const f = await helperFixture(t);
+	f.state.view = { ...view([layer("pane", full, "tiled")]), revision: 5 };
+	const changed = once(f.lines, "line");
 	f.events.write("x".repeat(65537));
+	f.events.write("\n");
+	f.event(5);
+	await changed;
+	assert.deepEqual(JSON.parse(f.output.at(-1) ?? ""), { version: 1, pane: full, above: [] });
+	f.child.stdin.end();
 	assert.deepEqual(await f.closed, [0, null]);
 	const second = await helperFixture(t);
 	second.state.hold = true;

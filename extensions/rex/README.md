@@ -219,8 +219,10 @@ account for zoom, and change only when the geometry changes.
 Each consumer costs one Rex events stream and one initial `session.view` call.
 A newer layout revision requests another `session.view`; concurrent events
 coalesce and revisions already covered by the current view require no call.
-The helper bounds event lines and snapshot output. It exits and terminates its
-children on standard-input EOF, event-source exit, signal or transport failure.
+The helper bounds event lines and snapshot output: it skips an event line over
+64 KiB and reads the view again, and it tries a failed or timed-out
+`session.view` call again after one, two and then five seconds. It exits and
+terminates its children on standard-input EOF, event-source exit or a signal.
 It performs no layout changes and stores no state.
 
 ## Read the most recent output
