@@ -175,14 +175,17 @@ such as `session.select` displays it. Save the returned target and effect record
 ID. Cleanup of a floating pane closes its block, and Rex removes the emptied
 floating layer.
 
-A pane can also host a Mac application window. Programs in Rex panes run under
+A pane program can also show its own Mac window over its pane; Rex does not
+embed it. Programs in Rex panes run under
 the Rex server, so they receive the accessibility and screen recording access
 that the operator granted to it (`server.apple.privacy_status` reports it), and
 the Mac client exposes each terminal as an accessibility text area with its
 screen text and frame. A program that places its own window over its pane
 through accessibility, such as a document reader, therefore runs like any other
 pane program: Rex owns the pane's place in the workspace, the program owns its
-window, and closing the pane ends the program.
+window, and closing the pane ends the program. Content that Rex draws over the
+pane, such as a floating pane, is drawn inside Rex's window; such a program
+learns about it from the pane stacking feed below and from accessibility.
 
 Use `inspect` before application input. Deliver text with `input`; add keys such
 as `enter` when the application needs them. `observe: true` returns a subsequent
