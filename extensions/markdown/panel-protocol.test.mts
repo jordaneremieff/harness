@@ -10,9 +10,9 @@ const snapshot = (text: string) => {
 	return value;
 };
 test("finite request union rejects malformed and extra data", () => {
-	for (const value of [null, {}, { op: "launch" }, { op: "recent", executable: "x" }, { op: "response", entryId: "42", offset: -1 }, { op: "response", entryId: "42", offset: 0.5 }, { op: "response", entryId: "42" }, { op: "published", cursor: 1 }]) assert.throws(() => readPanelRequest(value));
+	for (const value of [null, {}, { op: "launch" }, { op: "recent", executable: "x" }, { op: "response", entryId: "42", offset: -1 }, { op: "response", entryId: "42", offset: 0.5 }, { op: "response", entryId: "42" }, { op: "published", cursor: 1 }, { op: "published", cursor: "1" }]) assert.throws(() => readPanelRequest(value));
 	assert.deepEqual(readPanelRequest({ op: "recent" }), { op: "recent" });
-	assert.deepEqual(readPanelRequest({ op: "published", cursor: "next" }), { op: "published", cursor: "next" });
+	assert.deepEqual(readPanelRequest({ op: "published" }), { op: "published" });
 	assert.deepEqual(readPanelRequest({ op: "response", entryId: "42", offset: 0 }), { op: "response", entryId: "42", offset: 0 });
 });
 test("Unicode pages preserve surrogate pairs, combining marks and source part boundaries", async () => {

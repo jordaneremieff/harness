@@ -2,7 +2,7 @@ import { isAbsolute } from "node:path";
 import { SOURCE_BYTES, type Completeness, type RecentResponses, type ResponseOrigin, type ResponseSnapshot, responseDigest, responseText, validUnicode } from "./responses.ts";
 
 export const PAGE_BYTES = 256 * 1024;
-export type MarkdownRequest = { op: "recent" } | { op: "response"; entryId: string; offset: number } | { op: "published"; cursor?: string };
+export type MarkdownRequest = { op: "recent" } | { op: "response"; entryId: string; offset: number } | { op: "published" };
 export interface DocumentRow { id: string; title: string; revision: number; bytes: number; kind: "published" | "response" | "file"; digest: string; updatedAt: string }
 export interface ResponsePage {
 	op: "response";
@@ -19,7 +19,7 @@ export interface ResponsePage {
 	completeness: Completeness;
 	provenance: ResponseOrigin;
 }
-export type MarkdownAnswer = ({ op: "recent" } & RecentResponses) | ResponsePage | { op: "published"; rows: DocumentRow[]; root: string; storeId?: string; limited: boolean; nextCursor?: string };
+export type MarkdownAnswer = ({ op: "recent" } & RecentResponses) | ResponsePage | { op: "published"; rows: DocumentRow[]; root: string; storeId?: string; limited: boolean };
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const integer = (value: unknown, max = SOURCE_BYTES): value is number => Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= max;
 const timestamp = (value: unknown): boolean => value === undefined || (typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 8.64e15);
@@ -31,14 +31,14 @@ const origin = (value: unknown): value is ResponseOrigin => record(value) && ["o
 export function readPanelRequest(value: unknown): MarkdownRequest {
 	if (record(value)) {
 		if (value.op === "recent" && keys(value, ["op"])) return { op: "recent" };
-		if (value.op === "published" && keys(value, ["op", "cursor"]) && (value.cursor === undefined || text(value.cursor, 200))) return { op: "published", ...(value.cursor === undefined ? {} : { cursor: value.cursor }) };
+		if (value.op === "published" && keys(value, ["op"])) return { op: "published" };
 		if (value.op === "response" && keys(value, ["op", "entryId", "offset"]) && text(value.entryId, 200) && /^[1-9]\d*$/u.test(value.entryId) && Number.isSafeInteger(Number(value.entryId)) && integer(value.offset)) return { op: "response", entryId: value.entryId, offset: value.offset };
 	}
 	throw new Error("Invalid Markdown request; expected recent, response with entryId and offset, or published.");
 }
 function readListingAnswer(value: Record<string, unknown>): MarkdownAnswer | undefined {
 	if (value.op === "recent" && Array.isArray(value.rows) && value.rows.length <= 30 && value.rows.every((row) => record(row) && text(row.entryId, 200) && timestamp(row.timestamp) && typeof row.preview === "string" && row.preview.length <= 320 && integer(row.bytes, Number.MAX_SAFE_INTEGER) && text(row.stop, 100) && complete(row.completeness)) && (value.cutoff === null || text(value.cutoff, 200)) && integer(value.visited, 2000) && ["end", "visits", "results", "missing"].includes(String(value.stop))) return value as unknown as MarkdownAnswer;
-	if (value.op === "published" && Array.isArray(value.rows) && value.rows.length <= 2000 && value.rows.every((row) => record(row) && typeof row.id === "string" && /^md-[a-f0-9]{20}$/u.test(row.id) && text(row.title, 400) && integer(row.revision, Number.MAX_SAFE_INTEGER) && Number(row.revision) > 0 && integer(row.bytes) && ["published", "response", "file"].includes(String(row.kind)) && digest(row.digest) && text(row.updatedAt, 100)) && text(value.root, 4096) && isAbsolute(value.root) && (value.storeId === undefined ? value.rows.length === 0 : typeof value.storeId === "string" && /^[a-f0-9]{32}$/u.test(value.storeId)) && typeof value.limited === "boolean" && (value.nextCursor === undefined || text(value.nextCursor, 200))) return value as unknown as MarkdownAnswer;
+	if (value.op === "published" && Array.isArray(value.rows) && value.rows.length <= 2000 && value.rows.every((row) => record(row) && typeof row.id === "string" && /^md-[a-f0-9]{20}$/u.test(row.id) && text(row.title, 400) && integer(row.revision, Number.MAX_SAFE_INTEGER) && Number(row.revision) > 0 && integer(row.bytes) && ["published", "response", "file"].includes(String(row.kind)) && digest(row.digest) && text(row.updatedAt, 100)) && text(value.root, 4096) && isAbsolute(value.root) && (value.storeId === undefined ? value.rows.length === 0 : typeof value.storeId === "string" && /^[a-f0-9]{32}$/u.test(value.storeId)) && typeof value.limited === "boolean") return value as unknown as MarkdownAnswer;
 	return undefined;
 }
 export function readPanelAnswer(request: MarkdownRequest, value: unknown): MarkdownAnswer {

@@ -29,14 +29,11 @@ const line = (value: string) => value.replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 
 function nativeSource(call: MarkdownCommandCall): NativeSource {
 	return { durable: call.host.durable, conversation: call.conversation, storageId: call.host.storageId, cwd: call.host.cwd };
 }
-async function published(store: MarkdownStore, cursor?: string): Promise<Extract<MarkdownAnswer, { op: "published" }>> {
-	if (cursor !== undefined && !/^(0|[1-9]\d{0,3})$/u.test(cursor)) throw new Error("Invalid published cursor.");
-	const offset = Number(cursor ?? 0);
-	if (offset > 2000) throw new Error("Published cursor exceeds the list limit.");
+async function published(store: MarkdownStore): Promise<Extract<MarkdownAnswer, { op: "published" }>> {
 	const identity = await store.identity();
 	if (!identity) return { op: "published", rows: [], root: store.root, limited: false };
 	const result = await store.list({ kind: "published" });
-	return { op: "published", rows: result.documents.slice(offset), root: store.root, storeId: identity.storeId, limited: result.bounded };
+	return { op: "published", rows: result.documents, root: store.root, storeId: identity.storeId, limited: result.bounded };
 }
 /** Both text and structured command routes only read; origin grants no additional effect. */
 export async function runMarkdownCommand(call: MarkdownCommandCall): Promise<string | { text: string; data: JsonValue }> {
@@ -57,7 +54,7 @@ export async function runMarkdownCommand(call: MarkdownCommandCall): Promise<str
 	switch (request.op) {
 		case "recent": answer = { op: "recent", ...await recentNative(source, call.context) }; break;
 		case "response": answer = responsePage(await readNative(source, request.entryId, call.context), request.offset); break;
-		case "published": answer = await published(store, request.cursor); break;
+		case "published": answer = await published(store); break;
 	}
 	return { text: `Markdown ${answer.op}: bounded source data; no window or model turn started.`, data: json(answer) };
 }

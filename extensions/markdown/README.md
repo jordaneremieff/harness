@@ -82,10 +82,10 @@ The native contribution advertises `operator-panel.ts` and the `markdown` owner 
 ```ts
 { op: "recent" }
 { op: "response", entryId: string, offset: number }
-{ op: "published", cursor?: string }
+{ op: "published" }
 ```
 
-With no structured data, the command returns bounded text previews and published IDs. Structured calls validate the operation and fields; malformed requests fail. `recent` returns response rows with message timestamps, a captured cutoff, visited-entry count and stop reason. `response` returns at most 256 KiB of text with entry identity, UTF-16 offset/continuation, total characters and bytes, SHA-256 digest, source-part lengths, response timestamp, completeness and provenance. Offsets must be code-point boundaries. The client validates every page and the complete reassembled digest before saving. `published` returns bounded rows and the host's store root. A present store supplies its store ID; an absent store returns no rows and no store ID. Rows always require a store ID. An optional decimal cursor skips that many rows of the newly read bounded list; it is not a frozen-list token.
+With no structured data, the command returns bounded text previews and published IDs. Structured calls validate the operation and fields; malformed requests fail. `recent` returns response rows with message timestamps, a captured cutoff, visited-entry count and stop reason. `response` returns at most 256 KiB of text with entry identity, UTF-16 offset/continuation, total characters and bytes, SHA-256 digest, source-part lengths, response timestamp, completeness and provenance. Offsets must be code-point boundaries. The client validates every page and the complete reassembled digest before saving. `published` returns bounded rows and the host's store root. A present store supplies its store ID; an absent store returns no rows and no store ID. Rows always require a store ID.
 
 All owner command routes read source data without submitting conversation input or starting model work, regardless of caller origin. Reading an absent store creates no directories and takes no writer lock. The headless host never launches the reader. Importing the panel module registers nothing, emits nothing and opens no store.
 

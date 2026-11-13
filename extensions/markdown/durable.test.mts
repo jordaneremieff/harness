@@ -84,7 +84,7 @@ test("the real contribution publishes and serves text/data reads without a submi
 			["unknown version", { op: "recent", version: 2 }],
 			["malformed identity", { op: "response", entryId: 42, offset: 0 }],
 			["malformed offset", { op: "response", entryId: "42", offset: -1 }],
-			["oversized field", { op: "published", cursor: "1".repeat(201) }],
+			["unknown field", { op: "published", cursor: "1" }],
 		] as const).map(([label, data]) => assert.rejects(command.run({ ...call, data }), /Invalid Markdown request/u, label)));
 		const after = await conversation.entries({}, 100, undefined, context);
 		assert.deepEqual(after.items.map((entry) => entry.id), before.items.map((entry) => entry.id), "reads append no input, command or response entries");
