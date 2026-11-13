@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { getAgentDir, getMarkdownTheme, initTheme, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { type Component, decodeKittyPrintable, isKeyRelease, Markdown, matchesKey, ProcessTerminal, ScrollView, truncateToWidth, TuiAltScreen, VStack } from "@earendil-works/pi-tui";
 import { openStored } from "./reveal.ts";
+import { frameAppStatus } from "./frame-client.ts";
 import { readSettings } from "./settings.ts";
 import { MarkdownStore, type StoredDocument } from "./store.ts";
 
@@ -62,13 +63,14 @@ class Lines implements Component {
 }
 
 type KeyAction = "down" | "up" | "page-down" | "page-up" | "start" | "end" | "open" | "reload" | "close";
-/** Maps one key press to a view action; Page Up and Page Down belong to the alternate screen itself. */
+/** Maps one key press to a view action. */
 export function keyAction(data: string): KeyAction | undefined {
 	if (isKeyRelease(data)) return undefined;
 	if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) return "close";
 	if (matchesKey(data, "down")) return "down";
 	if (matchesKey(data, "up")) return "up";
-	if (matchesKey(data, "space")) return "page-down";
+	if (matchesKey(data, "space") || matchesKey(data, "pageDown")) return "page-down";
+	if (matchesKey(data, "pageUp")) return "page-up";
 	if (matchesKey(data, "home")) return "start";
 	if (matchesKey(data, "end")) return "end";
 	const character = decodeKittyPrintable(data) ?? (data.length === 1 ? data : undefined);
@@ -116,11 +118,13 @@ class DocumentScreen {
 	readonly scroll: ScrollView;
 	private stored: StoredDocument;
 	private status = "";
+	private readonly fallback: string;
 	private reloading = false;
 	private pending = false;
 	private render: () => void = () => {};
 	private readonly actions: Partial<Record<KeyAction, () => void>>;
-	constructor(root: string, store: MarkdownStore, stored: StoredDocument) {
+	constructor(root: string, store: MarkdownStore, stored: StoredDocument, fallback: string) {
+		this.fallback = fallback;
 		this.root = root;
 		this.store = store;
 		this.stored = stored;
@@ -165,7 +169,7 @@ class DocumentScreen {
 		if (this.closing.signal.aborted) return;
 		const heading = documentHeading(this.stored);
 		this.header.lines = [bold(heading.title), dim(heading.detail)];
-		this.footer.lines = [dim(this.status || SHOW_KEYS)];
+		this.footer.lines = [dim(this.status || `${this.fallback} ${SHOW_KEYS}`)];
 		this.render();
 	}
 	/** Loads the current revision; changes that arrive during a load run one more load. */
@@ -212,9 +216,22 @@ export async function runShow(options: { store?: string; document: string }): Pr
 	if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("The document view requires an interactive terminal.");
 	const root = storeRoot(options.store);
 	const store = new MarkdownStore(root);
-	const stored = await store.get(await store.resolve(options.document));
+	let stored = await store.get(await store.resolve(options.document));
 	initTheme(piTheme());
-	const screen = new DocumentScreen(root, store, stored);
+	const app = readSettings({ agentDir: getAgentDir() }).values.app;
+	let fallback = await frameAppStatus(app);
+	if (!fallback) {
+		const { probeGraphics, runGraphics } = await import("./show-graphics.ts");
+		const probe = await probeGraphics();
+		if (probe.closed) return;
+		fallback = probe.reason;
+		if (!fallback && probe.cell) {
+			fallback = await runGraphics(root, store, stored, app, probe.cell, probe.colors);
+			if (!fallback) return;
+			stored = await store.get(stored.document.id);
+		}
+	}
+	const screen = new DocumentScreen(root, store, stored, fallback ?? "Text view: terminal graphics are unavailable.");
 	const terminal = new ProcessTerminal();
 	const tui = new TuiAltScreen(terminal);
 	screen.attach(() => tui.requestRender());

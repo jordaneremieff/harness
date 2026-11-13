@@ -31,6 +31,11 @@ import { readSettings } from "../settings.ts";
 
 /** Version of the contract between openers and the app: open requests, store format, tool output. */
 export const BUILD_CONTRACT = 1;
+/**
+ * Version of the `--frames` viewport protocol that this build serves. It is separate from the
+ * contract above, so programs that only open documents keep working with any build of contract 1.
+ */
+export const FRAME_PROTOCOL = 1;
 export const BUNDLE_ID = "local.harness.markdown-reader";
 export const APP_NAME = "Markdown Reader.app";
 
@@ -240,6 +245,7 @@ function main(): void {
 		const terminalOrigin = embedTerminalOrigin(join(contents, "Resources"));
 		const build = {
 			contract: BUILD_CONTRACT,
+			frames: FRAME_PROTOCOL,
 			sourceDigest: digest,
 			builtAt: new Date().toISOString(),
 			swift: swiftVersion,

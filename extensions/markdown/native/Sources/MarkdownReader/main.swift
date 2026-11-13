@@ -7,5 +7,9 @@ let mode = LaunchMode.parse(Array(CommandLine.arguments.dropFirst()))
 let application = NSApplication.shared
 let delegate = AppDelegate(mode: mode)
 application.delegate = delegate
-application.setActivationPolicy(mode.isAccessory ? .accessory : .regular)
+if case .frames = mode {
+    if !application.setActivationPolicy(.prohibited) { application.setActivationPolicy(.accessory) }
+} else {
+    application.setActivationPolicy(mode.isAccessory ? .accessory : .regular)
+}
 application.run()

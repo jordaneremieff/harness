@@ -28,12 +28,15 @@ if that restoration also fails, the error reports both failures and the previous
 The bundle carries `Contents/Resources/build.json`:
 
 ```json
-{"contract": 1, "sourceDigest": "sha256:…", "builtAt": "…", "swift": "…", "store": "/…/markdown",
- "terminalOrigin": {"helper": "terminal-origin.ts", "node": "/opt/homebrew/bin/node"}}
+{"contract": 1, "frames": 1, "sourceDigest": "sha256:…", "builtAt": "…", "swift": "…",
+ "store": "/…/markdown", "terminalOrigin": {"helper": "terminal-origin.ts", "node": "/opt/homebrew/bin/node"}}
 ```
 
 Openers compare `contract` with the version they expect and name this command as the remedy for
-a missing or incompatible build. `store` is the value of the `markdown.dir` setting at build
+a missing or incompatible build. `contract` covers open requests, the store format and the
+parser output. `frames` is the version of the `--frames` protocol; the terminal view renders pages
+only when it matches, and otherwise shows text. Programs that only open documents ignore it, so
+Pi processes that started before a rebuild keep opening documents with the new build. `store` is the value of the `markdown.dir` setting at build
 time (`PI_MARKDOWN_DIR`, else `markdown.dir` in `harness.json`, else `<agent dir>/markdown`): the
 store folder that the library shows by default. Rebuild after you change that setting.
 `sourceDigest` covers the manifest, lockfile, sources, licence
@@ -58,7 +61,7 @@ HTML and unsafe links, images and asset containment, store reading against a fix
 format including symbolic links and scan bounds, open requests and their removal, the pinned
 digest, the reference inventory), `MacPlatformTests` (the pane helper runner against fake helper
 scripts: each outcome, a timeout, malformed output, refusal, an oversized origin and a helper that
-closes its input) and `ReaderFeatureTests` (the bounds of the reading-state file). Under the Command Line Tools
+closes its input) and `ReaderFeatureTests` (the bounds of the reading-state file, frame request validation and bounded line intake). Under the Command Line Tools
 the Testing framework is outside the default search path, so the script passes its directory.
 The tools also ship the `_Testing_Foundation` overlay without a module, so a test file imports
 `Testing` first and then the core with `@testable` (which re-exports Foundation), never
@@ -194,6 +197,75 @@ APP="<app>/Contents/MacOS/MarkdownReader"
 
 The app logs open, render, update, recovery and return events under the subsystem
 `local.harness.markdown-reader` (`log show --predicate 'subsystem == "local.harness.markdown-reader"'`).
+
+## Terminal viewport service
+
+`Contents/MacOS/MarkdownReader --frames` is a persistent JSON-lines service. Both standard input
+and standard output must be pipes or Unix sockets, not terminal handles or regular files.
+Standard output contains protocol messages only; diagnostics use standard error. The service
+uses prohibited activation where AppKit accepts it, with accessory activation as the fallback.
+It never orders its offscreen window onto the screen, activates the app or creates a Dock icon.
+Its reading state stays in memory. No open request is created or accepted.
+
+The first output line is:
+
+```json
+{"event":"ready","scale":2,"activationPolicy":"prohibited","visibleWindows":0,"directory":"/…/markdown-frames-…","pid":123}
+```
+
+`scale` is the main screen's backing scale, or 1 without a screen. `directory` names the private
+frame directory, for caller cleanup after forced termination. Each request uses a positive,
+JavaScript-safe integer `id`. Commands execute serially; consume each frame before the next
+command. Supported request shapes are:
+
+```text
+{id, op:"open", root, document, revision, digest, width, height, scale, appearance, textSize, background?}
+{id, op:"viewport", width, height, scale, appearance, textSize, background?}
+{id, op:"scroll", to? | by? | edge?}
+{id, op:"revision", revision, digest}
+{id, op:"frame"}
+```
+
+- `open` names an absolute store root, full `md-…` document ID, positive revision and
+  `sha256:` digest. The service owns one document, model and WebKit page until EOF; repeated
+  opens of that document use the existing model. Another document requires another process.
+- `width` and `height` are device pixels, each from 1 through 8192, with area at most
+  16777216 pixels. `scale` is a finite number from 1 through 4. WebKit receives the viewport
+  in points, each device dimension divided by `scale`.
+- `appearance` is `light` or `dark`. `textSize` is a `PageSettings.textSizes` index, not a
+  point size. The native default is index 4 (17 points); every open and viewport request
+  explicitly supplies the index. `background`, when present, is `#rrggbb`; omission restores
+  the native background for that appearance.
+- `scroll` requires exactly one of `to`, `by` or `edge`. `to` and `by` use device pixels;
+  `edge` is `start` or `end`. WebKit clamps the resulting position to the document.
+- `revision` uses `ReaderModel.open(revision:digest:origin:nil)`, with the existing loader,
+  renderer, asset resolution and passive-content rules. Resize, text size changes and revision
+  changes preserve the current block and offset, with the reader's heading and ratio fallbacks.
+  When the viewport starts at scroll position zero, the service keeps exact zero across resize
+  and revision changes, including the padding before the first block. Other reader views keep
+  their existing block restoration semantics. Pointer changes never replace the pinned revision automatically.
+- Input lines are at most 16384 bytes, excluding LF. An oversized line is discarded through
+  LF before the next line is read. An unterminated final line is also processed.
+
+Each command returns a viewport frame or an error:
+
+```text
+{id, ok:true, path, width, height, scrollY, documentHeight, scale, revision, digest, milliseconds}
+{id, ok:false, error}
+```
+
+`scrollY` and `documentHeight` use device pixels at the reported scale. `milliseconds` measures
+command work, including image conversion and file output, but excludes input wait time. A malformed
+line or unusable ID returns error ID 0; other errors retain the request ID. A failed revision
+request leaves the last good revision available to `frame`.
+
+Each file is exactly `width * height * 4` bytes: row-major RGBA, top row first, without a header
+or row padding. The viewport has an opaque page background. The file name contains
+`tty-graphics-protocol`; files use mode 0600 inside a fresh mode 0700 `markdown-frames-…`
+directory. The next command removes the previous file even when that command fails validation.
+A terminal that takes file ownership is free to remove it first. EOF closes the model and window
+and removes the directory. Forced process termination prevents native cleanup; the caller uses
+`ready.directory` for that case. Frame export snapshots only the viewport, never the full page.
 
 ## Headless core tool
 

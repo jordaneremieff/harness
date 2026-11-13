@@ -2,6 +2,8 @@ import Foundation
 
 enum LaunchMode {
     case application
+    /// Persistent, pipe-only viewport frame service with no visible window.
+    case frames
     /// Renders one document into a PNG image of the page.
     case exportImage(input: String, output: String, width: Double, maxHeight: Double, appearance: String?, textSize: Int?)
     /// Runs the fixed WebKit checks and prints one JSON report.
@@ -44,6 +46,9 @@ enum LaunchMode {
             }
         }
         switch first {
+        case "--frames":
+            guard arguments.count == 1 else { return .usage("--frames") }
+            return .frames
         case "--export-image":
             guard let output = options["out"], let input = positional.first else {
                 return .usage("--export-image --out <image.png> [--width 900] [--max-height 6000] [--appearance light|dark] [--text-size n] <file.md | open request>")

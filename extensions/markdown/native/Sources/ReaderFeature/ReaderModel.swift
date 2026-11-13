@@ -358,7 +358,7 @@ public final class ReaderModel {
         state.setPosition(position, for: reference)
     }
 
-    func capturePosition() async -> ReadingPosition? {
+    public func capturePosition() async -> ReadingPosition? {
         guard rendered != nil, !showingSource else { return nil }
         guard let value = try? await page.callJavaScript(PageScript.capturePosition, contentWorld: PageScript.world) as? [String: Any] else {
             return nil
@@ -372,7 +372,7 @@ public final class ReaderModel {
         )
     }
 
-    func restorePosition(_ position: ReadingPosition) async -> PositionRestore {
+    public func restorePosition(_ position: ReadingPosition) async -> PositionRestore {
         let arguments: [String: Any] = [
             "key": position.blockKey ?? "",
             "fraction": position.fraction,
@@ -381,6 +381,28 @@ public final class ReaderModel {
         ]
         let result = try? await page.callJavaScript(PageScript.restorePosition, arguments: arguments, contentWorld: PageScript.world) as? String
         return result.flatMap(PositionRestore.init(rawValue:)) ?? .none
+    }
+
+    /// Applies pipe-service presentation settings in the same isolated world as reading actions.
+    public func configureViewport(textSize: Int, background: String?) async throws {
+        settings = PageSettings(textSize: textSize, wrapCode: settings.wrapCode)
+        _ = try await page.callJavaScript(PageScript.configureViewport, arguments: [
+            "textSize": settings.textSize, "wrap": settings.wrapCode, "background": background ?? "",
+        ], contentWorld: PageScript.world)
+    }
+
+    /// Scroll coordinates and returned metrics use page points; the service converts device pixels.
+    public func scrollViewport(to: Double) async throws {
+        _ = try await page.callJavaScript("window.scrollTo({top: y, behavior: 'instant'}); return true;", arguments: ["y": to], contentWorld: PageScript.world)
+        await savePosition()
+    }
+
+    public func viewportMetrics() async throws -> (scrollY: Double, documentHeight: Double) {
+        guard let value = try await page.callJavaScript(PageScript.viewportMetrics, contentWorld: PageScript.world) as? [String: Double],
+              let y = value["scrollY"], let height = value["documentHeight"] else {
+            throw FrameProtocolError("page metrics unavailable")
+        }
+        return (y, height)
     }
 
     // MARK: - Reading actions
