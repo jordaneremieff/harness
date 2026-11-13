@@ -119,6 +119,15 @@ async function captureImage(reference: string, root: string | undefined, opener:
 		return { data, record: { kind: "image", reference, state: "retained", file: `assets/${assetDigest.slice(7)}.${media[1]}`, mediaType: media[0], bytes: data.length, digest: assetDigest } };
 	} catch (error) { return unavailable(reference, error instanceof StoreError && error.code === "too-large" ? "too-large" : "missing"); }
 }
+/** Metadata keeps at most the first 512 characters of a reference; the exact source keeps the whole destination. */
+const REFERENCE_CHARS = 512;
+function shortReference(reference: string): string { const characters = [...reference]; return characters.length > REFERENCE_CHARS ? characters.slice(0, REFERENCE_CHARS).join("") : reference; }
+/** The reader finds an image's item by its whole reference, so a retained image keeps it and a shortened reference never names another image. */
+function imageRecord(record: AssetRecord, destination: string, images: Set<string>): AssetRecord | undefined {
+	if (record.state === "retained") return record;
+	const reference = shortReference(record.reference);
+	return reference !== destination && images.has(reference) ? undefined : { ...record, reference };
+}
 function localLink(reference: string): boolean {
 	if (reference.startsWith("#") || /^(https?:|mailto:|\/\/)/i.test(reference)) return false;
 	return /^file:/i.test(reference) || !/^[a-z][a-z0-9+.-]*:/i.test(reference);
@@ -128,13 +137,15 @@ export async function captureReferences(inspection: ReferenceInspection | undefi
 	const canonicalRoot = root === undefined ? undefined : await realpath(root);
 	const destinations = [...inspection.images.map((reference) => ({ kind: "image" as const, reference })), ...inspection.links.filter(localLink).map((reference) => ({ kind: "link" as const, reference }))];
 	const references: ReferenceInventory = { state: "inspected", truncated: inspection.truncated, omitted: Math.max(0, destinations.length - 256), items: [] };
+	const images = new Set(inspection.images);
 	const assets: CapturedAsset[] = []; let total = 0;
 	for (const destination of destinations.slice(0, 256)) {
-		if (destination.kind === "link") { references.items.push({ ...destination, state: "local-only" }); continue; }
+		if (destination.kind === "link") { references.items.push({ ...destination, reference: shortReference(destination.reference), state: "local-only" }); continue; }
 		let asset = await captureImage(destination.reference, canonicalRoot, opener);
 		if (asset.data && (assets.length >= LIMITS.assetCount || total + asset.data.length > LIMITS.totalAssetBytes)) asset = unavailable(destination.reference, "limit");
 		if (asset.data) { total += asset.data.length; assets.push(asset); }
-		references.items.push(asset.record);
+		const record = imageRecord(asset.record, destination.reference, images);
+		if (record) references.items.push(record); else references.omitted++;
 	}
 	return { references, assets };
 }

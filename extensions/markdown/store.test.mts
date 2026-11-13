@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -121,6 +121,11 @@ test("collections isolate snapshots and recent listing applies its result limit 
 	await assert.rejects(store.get(snapshot.document.id), code("store-failure"));
 	const namesOnly = "md-eeeeeeeeeeeeeeeeeeee"; await mkdir(join(root, "snapshots", namesOnly)); assert.equal(await store.resolve("md-eeeeee"), namesOnly);
 	await assert.rejects(store.list({ limit: Number.NaN }), code("invalid"));
+}));
+test("a revision record larger than the reader's record limit is refused before any staging", () => fixture(async (store, root) => {
+	const items = Array.from({ length: 256 }, (_, i) => ({ kind: "image" as const, reference: `https://example.invalid/${i}/${"a".repeat(1100)}`, state: "external" as const }));
+	await assert.rejects(store.create({ ...input(), references: { state: "inspected", truncated: false, omitted: 0, items } }), code("too-large"));
+	assert.deepEqual(await readdir(join(root, "documents")), []);
 }));
 function worker(root: string, expression: string, expectedSignal?: NodeJS.Signals): Promise<string> {
 	const module = fileURLToPath(new URL("./store.ts", import.meta.url));

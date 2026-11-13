@@ -4,7 +4,7 @@ import { chmod, mkdir, open, opendir, rename, rm, stat } from "node:fs/promises"
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 
-export const LIMITS = { sourceBytes: 2 * 1024 * 1024, titleChars: 200, assetCount: 64, assetBytes: 8 * 1024 * 1024, totalAssetBytes: 32 * 1024 * 1024, listing: 2000 } as const;
+export const LIMITS = { sourceBytes: 2 * 1024 * 1024, titleChars: 200, assetCount: 64, assetBytes: 8 * 1024 * 1024, totalAssetBytes: 32 * 1024 * 1024, listing: 2000, recordBytes: 256 * 1024, stagingAgeMs: 86400000 } as const;
 export type DocumentKind = "published" | "response" | "file";
 export type Completeness = { state: "complete" | "partial"; reason?: "length" | "aborted" | "error" | "tool-use"; note?: string };
 export type ContentOrigin = { kind: "ordinary-response" | "native-response" | "file" | "tool"; host?: string; session?: string; conversation?: string; entry?: string; model?: string; path?: string; cwd?: string; capturedAt: string; parts?: { chars: number }[] };
@@ -299,6 +299,7 @@ export class MarkdownStore {
 		const id = plan.documentId;
 		const previous = await this.previousDocument(id, options);
 		const { document, revision } = records(input, plan, previous, options.kind);
+		if (Buffer.byteLength(JSON.stringify(revision)) > LIMITS.recordBytes) throw new StoreError("too-large", "Revision metadata exceeds 256 KiB.");
 		const number = plan.revision;
 		const target = this.path(id, document.kind);
 		const base = previous ? target : join(this.root, collection(document.kind), `.tmp-${randomUUID()}`);

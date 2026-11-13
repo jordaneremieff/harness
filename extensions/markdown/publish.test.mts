@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -101,6 +101,24 @@ test("parser inventory enforces item, retained count and total byte limits", () 
 	await writeFile(join(root, "small.png"), "image");
 	const count = await captureReferences({ version: 1, images: Array.from({ length: 65 }, (_, i) => `small.png?${i}`), links: [], truncated: false }, root);
 	assert.equal(count.assets.length, 64); assert.equal(count.references.items[64]?.reason, "limit");
+}));
+test("a publication with the maximum number of long external references stays within the reader's record limit", () => fixture(async (root, store) => {
+	const images = Array.from({ length: 300 }, (_, i) => `https://example.invalid/${i}/${"a".repeat(4000)}.png`);
+	const text = images.map((reference) => `![x](${reference})`).join("\n\n");
+	const outcome = success(await publish({ title: "Long references", text }, { cwd: root, store, ...await inspection(root, images) }));
+	const record = join(store.root, "documents", outcome.documentId, "revisions/1/revision.json");
+	const { size } = await stat(record); assert.ok(size < LIMITS.recordBytes, `${size} bytes`);
+	const stored = await store.get(outcome.documentId);
+	assert.equal(stored.source, text); assert.equal(stored.revision.references.items.length, 256); assert.equal(stored.revision.references.omitted, 44);
+	assert.equal(stored.revision.references.items[0]?.reference, images[0]?.slice(0, 512));
+}));
+test("metadata keeps a retained image's whole reference and never lets a shortened reference name another image", () => fixture(async (root) => {
+	await writeFile(join(root, "a.png"), "image");
+	const retained = `a.png?${"q".repeat(1000)}`; const prefix = "x".repeat(512); const long = `${prefix}${"y".repeat(100)}.png`; const link = `docs/${"l".repeat(1000)}.md`;
+	const captured = await captureReferences({ version: 1, images: [retained, long, prefix, `${"z".repeat(600)}.png`], links: [link], truncated: false }, root);
+	assert.deepEqual(captured.references.items.map((item) => [item.reference.length, item.state]), [[retained.length, "retained"], [512, "unavailable"], [512, "unavailable"], [512, "local-only"]]);
+	assert.equal(captured.references.items[0]?.reference, retained); assert.equal(captured.references.items[1]?.reference, prefix); assert.equal(captured.references.omitted, 1);
+	assert.equal(captured.references.items.filter((item) => item.reference === prefix).length, 1);
 }));
 test("reference inspection requires a compatible local build and records honest fallback", () => fixture(async (root, store) => {
 	const parser = await inspection(root, ["https://example.invalid/x.png", "//example.invalid/y", "data:image/png;base64,abcd", "custom:payload", "%xx.png", "a.png", "/etc/a.png"], ["#heading", "https://example.invalid/", "mailto:a@example.invalid", "file:other.md", "../spec.md", "custom:action"]);
