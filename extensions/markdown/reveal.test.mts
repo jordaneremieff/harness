@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, utimes, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { materializeAndReveal, readLaunchOrigin, revealNotice, revealSaved, saveResponse, selectStored, waitForAcceptance, type RevealRuntime } from "./reveal.ts";
+import { materializeAndReveal, openStored, readLaunchOrigin, revealNotice, revealSaved, saveResponse, selectStored, waitForAcceptance, type RevealRuntime } from "./reveal.ts";
 import { MarkdownStore } from "./store.ts";
 import { responseSnapshot } from "./responses.ts";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
@@ -145,6 +145,19 @@ test("origin capture starts alongside saving and both finish before the request"
 		assert.equal(revealNotice({ ...f.saved, state: "saved" }), `Selected ${f.saved.documentId.slice(0, 11)} revision 1. No window was opened.`);
 		assert.equal(revealNotice({ ...f.saved, newlySaved: true, state: "saved" }), `Saved ${f.saved.documentId.slice(0, 11)} revision 1. No window was opened.`);
 		assert.match(revealNotice({ ...f.saved, state: "not-confirmed", request: "unused" }), /did not confirm within 5 seconds\. If no window appeared, run node extensions\/markdown\/native\/build\.mts/u);
+	} finally { await f.cleanup(); }
+});
+test("a published row opens its own revision, refuses a changed digest and an unavailable root", async () => {
+	const f = await fixture();
+	try {
+		const listed = { revision: f.saved.revision, digest: f.saved.digest };
+		await f.store.update(f.saved.documentId, 1, { title: "Saved", source: "Newer revision", contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() } });
+		const pinned = await selectStored(f.store.root, f.saved.documentId, f.saved.storeId, listed);
+		assert.equal(pinned.revision, 1); assert.equal(pinned.digest, f.saved.digest); assert.equal(pinned.newlySaved, false);
+		assert.equal(await openStored(f.store.root, f.saved.documentId, new AbortController().signal, { gui: false, storeId: f.saved.storeId, pin: listed }), `Selected ${f.saved.documentId.slice(0, 11)} revision 1. No window was opened.`);
+		await assert.rejects(selectStored(f.store.root, f.saved.documentId, f.saved.storeId, { revision: 1, digest: `sha256:${"0".repeat(64)}` }), /The selected revision differs from the listed one\. No document was opened\./u);
+		await assert.rejects(selectStored(join(f.root, "absent-store"), f.saved.documentId, f.saved.storeId, listed), /not readable on this machine/u);
+		assert.deepEqual(await readdir(join(f.store.root, "opens")), []);
 	} finally { await f.cleanup(); }
 });
 test("response labels use the working directory and local response time, with capture time as fallback", async () => {

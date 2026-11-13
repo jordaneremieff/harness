@@ -14,6 +14,8 @@ const PACKAGE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const BUILD_REMEDY = "Run node extensions/markdown/native/build.mts with this client's Markdown app setting.";
 /** `newlySaved` is true only when this action wrote the revision; otherwise the document already existed. */
 export interface SavedDocument { root: string; storeId: string; documentId: string; revision: number; digest: string; newlySaved: boolean }
+/** The revision and digest of a listed row; the adapter opens that revision or nothing. */
+export interface PinnedRevision { revision: number; digest: string }
 export type LaunchOrigin = { version: 1; terminal: "Rex"; application: { bundleId: "com.superlogical.rex" }; exact?: Record<string, unknown> };
 export type RevealOutcome = SavedDocument & ({ state: "saved" } | { state: "accepted" | "not-confirmed"; request: string } | { state: "reveal-failed"; reason: "app-missing" | "app-incompatible" | "unsupported-platform" | "launch-failed"; remedy: string });
 /** Only tests replace the process runner; callers never supply an executable. */
@@ -64,7 +66,7 @@ async function storeIdentity(root: string): Promise<string> {
 function savedDocument(root: string, storeId: string, value: StoredDocument, newlySaved: boolean): SavedDocument {
 	return { root, storeId, documentId: value.document.id, revision: value.revision.revision, digest: value.revision.digest, newlySaved };
 }
-export async function selectStored(root: string, id: string, expectedStoreId?: string): Promise<SavedDocument> {
+export async function selectStored(root: string, id: string, expectedStoreId?: string, pin?: PinnedRevision): Promise<SavedDocument> {
 	const storeId = await storeIdentity(root);
 	if (expectedStoreId !== undefined && storeId !== expectedStoreId) throw new Error("The local store identity differs from the host's store. No document was opened.");
 	if (expectedStoreId !== undefined) {
@@ -75,8 +77,9 @@ export async function selectStored(root: string, id: string, expectedStoreId?: s
 		});
 		if (!directory?.isDirectory()) throw new Error("The published document is not locally available.");
 	}
-	const value = await new MarkdownStore(root).get(id);
+	const value = await new MarkdownStore(root).get(id, pin?.revision);
 	if (expectedStoreId !== undefined && value.document.kind !== "published") throw new Error("The host identity does not name a published document.");
+	if (pin && value.revision.digest !== pin.digest) throw new Error("The selected revision differs from the listed one. No document was opened.");
 	return savedDocument(root, storeId, value, false);
 }
 function responseTitle(response: ResponseSnapshot): string {
@@ -153,8 +156,8 @@ export async function openResponse(response: ResponseSnapshot, signal: AbortSign
 	const root = readSettings({ agentDir: getAgentDir() }).values.dir;
 	return revealNotice(await materializeAndReveal(() => saveResponse(response, root), signal, { gui }));
 }
-export async function openStored(root: string, id: string, signal: AbortSignal, options: { gui: boolean; storeId?: string }): Promise<string> {
-	return revealNotice(await materializeAndReveal(() => selectStored(root, id, options.storeId), signal, options));
+export async function openStored(root: string, id: string, signal: AbortSignal, options: { gui: boolean; storeId?: string; pin?: PinnedRevision }): Promise<string> {
+	return revealNotice(await materializeAndReveal(() => selectStored(root, id, options.storeId, options.pin), signal, options));
 }
 export function revealNotice(outcome: RevealOutcome): string {
 	const identity = `${outcome.documentId.slice(0, 11)} revision ${outcome.revision}`;

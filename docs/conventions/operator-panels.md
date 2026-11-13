@@ -344,10 +344,12 @@ The adapter runs only in the local operator client. It starts no model turn,
 sends no conversation input, and cannot control producer work. A headless host,
 publication tool, print process or RPC process never invokes it to launch a GUI.
 The owner command supplies data only. The adapter reads the client's own owner
-settings when the action runs; host settings never select the client's store or
-app. A store path from a remote producer is not
-proof of local access: the adapter checks the returned store identity and refuses
-an unavailable local store, rather than inventing a transfer path.
+settings when the action runs, and the app path always comes from those
+settings. For a document that the host lists from its own store, the host names
+that store root and its identity; the adapter opens that root only when a store
+with that identity is readable there. A store path from a remote producer is not
+proof of local access: the adapter refuses an unavailable local store, rather
+than inventing a transfer path.
 
 ## Verification
 

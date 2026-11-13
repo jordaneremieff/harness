@@ -21,13 +21,13 @@ export function panelOperations(host: PanelHost): MarkdownOperations {
 			if (target !== host.target.id) throw new Error("The selected conversation changed.");
 			return reveal.openResponse(response, signal);
 		}
-		const { id } = row.document;
+		const { id, revision, digest } = row.document;
 		const { root, storeId } = row;
 		if (!root || !storeId) throw new Error("The host did not supply a local store identity.");
 		const reveal = await import("./reveal.ts");
 		signal.throwIfAborted();
 		if (target !== host.target.id) throw new Error("The selected conversation changed.");
-		return reveal.openStored(root, id, signal, { gui: true, storeId });
+		return reveal.openStored(root, id, signal, { gui: true, storeId, pin: { revision, digest } });
 	};
 	return {
 		load: async (scope, signal) => {
