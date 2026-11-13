@@ -21,7 +21,12 @@ export type Compose = {
 	attachments?: { path: string; filename?: string; mimeType?: string }[];
 };
 
-export type PreparedAttachment = Snapshot & { filename: string; mimeType: string };
+export type PreparedAttachment = Snapshot & {
+	filename: string;
+	mimeType: string;
+	/** An attached message from `attachableMessage`; its bytes are written unencoded. */
+	rfc822?: boolean;
+};
 export type ReplyContext = {
 	gmailId: string;
 	rfcMessageId: string;
@@ -180,20 +185,82 @@ function replyHeaders(reply: ReplyContext | undefined): string[] {
 	return [header("In-Reply-To", reply.rfcMessageId), header("References", references)];
 }
 
-function mimeBody(headers: string[], text: string, attachments: PreparedAttachment[]): string {
+const MESSAGE_LINE_MAX = 998;
+
+/**
+ * A message prepared for attachment as message/rfc822, whose body permits only the 7bit and 8bit
+ * encodings (RFC 2046, section 5.2.1): line endings become CRLF, and the Bcc header is removed so a
+ * forward never discloses blind recipients. A message with a NUL byte or a line longer than 998
+ * bytes cannot travel unencoded and is refused. Latin-1 decoding keeps every byte unchanged.
+ */
+export function attachableMessage(raw: Buffer): Buffer {
+	const message = raw.toString("latin1").replaceAll(/\r\n|\r|\n/g, "\r\n");
+	const end = message.indexOf("\r\n\r\n");
+	if (end < 0) throw new GoogleError("UNSUPPORTED_MESSAGE", "The original message has no header terminator.");
+	const kept: string[] = [];
+	let blind = false;
+	for (const line of message.slice(0, end).split("\r\n")) {
+		if (!/^[ \t]/.test(line)) blind = /^bcc:/i.test(line);
+		if (!blind) kept.push(line);
+	}
+	const result = `${kept.join("\r\n")}${message.slice(end)}`;
+	if (result.includes("\0") || result.split("\r\n").some((line) => line.length > MESSAGE_LINE_MAX))
+		throw new GoogleError(
+			"UNSUPPORTED_MESSAGE",
+			"The original message has a NUL byte or a line longer than 998 bytes, so it cannot be attached.",
+		);
+	return Buffer.from(result, "latin1");
+}
+
+function attachmentPart(boundary: string, attachment: PreparedAttachment): Buffer {
+	const head = `--${boundary}\r\nContent-Type: ${attachment.mimeType}\r\n`;
+	const disposition = `Content-Disposition: attachment; ${filenameParameters(attachment.filename)}\r\n\r\n`;
+	if (!attachment.rfc822)
+		return Buffer.from(
+			`${head}Content-Transfer-Encoding: base64\r\n${disposition}${base64Lines(attachment.bytes)}\r\n`,
+			"utf8",
+		);
+	const encoding = attachment.bytes.every((byte) => byte < 0x80) ? "7bit" : "8bit";
+	return Buffer.concat([
+		Buffer.from(`${head}Content-Transfer-Encoding: ${encoding}\r\n${disposition}`, "utf8"),
+		attachment.bytes,
+		Buffer.from("\r\n", "utf8"),
+	]);
+}
+
+/** A boundary that occurs in no attached message, so an embedded message cannot end its part early. */
+function boundaryFor(attachments: PreparedAttachment[]): string {
+	let boundary: string;
+	do boundary = `pi-${randomUUID()}`;
+	while (attachments.some((attachment) => attachment.rfc822 && attachment.bytes.includes(`--${boundary}`)));
+	return boundary;
+}
+
+function mimeBody(headers: string[], text: string, attachments: PreparedAttachment[]): Buffer {
 	const encodedText = base64Lines(Buffer.from(text.replaceAll(/\r?\n/g, "\r\n"), "utf8"));
 	if (!attachments.length) {
-		return `${[...headers, "Content-Type: text/plain; charset=utf-8", "Content-Transfer-Encoding: base64"].join("\r\n")}\r\n\r\n${encodedText}\r\n`;
+		return Buffer.from(
+			`${[...headers, "Content-Type: text/plain; charset=utf-8", "Content-Transfer-Encoding: base64"].join("\r\n")}\r\n\r\n${encodedText}\r\n`,
+			"utf8",
+		);
 	}
-	const boundary = `pi-${randomUUID()}`;
+	const boundary = boundaryFor(attachments);
 	const parts = [
-		`--${boundary}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${encodedText}\r\n`,
-		...attachments.map(
-			(attachment) =>
-				`--${boundary}\r\nContent-Type: ${attachment.mimeType}\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; ${filenameParameters(attachment.filename)}\r\n\r\n${base64Lines(attachment.bytes)}\r\n`,
+		Buffer.from(
+			`--${boundary}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${encodedText}\r\n`,
+			"utf8",
 		),
+		...attachments.map((attachment) => attachmentPart(boundary, attachment)),
 	];
-	return `${[...headers, `Content-Type: multipart/mixed; boundary="${boundary}"`].join("\r\n")}\r\n\r\n${parts.join("\r\n")}\r\n--${boundary}--\r\n`;
+	const separator = Buffer.from("\r\n", "utf8");
+	return Buffer.concat([
+		Buffer.from(
+			`${[...headers, `Content-Type: multipart/mixed; boundary="${boundary}"`].join("\r\n")}\r\n\r\n`,
+			"utf8",
+		),
+		...parts.flatMap((part, index) => (index ? [separator, part] : [part])),
+		Buffer.from(`\r\n--${boundary}--\r\n`, "utf8"),
+	]);
 }
 
 export function buildMime(
@@ -220,7 +287,7 @@ export function buildMime(
 		"MIME-Version: 1.0",
 		...replyHeaders(reply),
 	];
-	const bytes = Buffer.from(mimeBody(headers, mail.text, attachments), "utf8");
+	const bytes = mimeBody(headers, mail.text, attachments);
 	if (bytes.length > COMPOSE_LIMITS.mimeBytes)
 		throw new GoogleError("SIZE_LIMIT", `Complete MIME exceeds ${COMPOSE_LIMITS.mimeBytes} bytes.`);
 	return {

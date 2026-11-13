@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { sha256 } from "./files.ts";
-import { buildMime, type PreparedAttachment } from "./mime.ts";
+import { attachableMessage, buildMime, type PreparedAttachment } from "./mime.ts";
 import { readSettings } from "./settings.ts";
 
 const ACCOUNT = "person@example.com";
@@ -75,4 +75,45 @@ test("settings: environment overrides, the default config directory and absolute
 	} finally {
 		await rm(agentDir, { recursive: true, force: true });
 	}
+});
+
+test("an attached message keeps its bytes unencoded, without Bcc, and refuses what cannot travel unencoded", () => {
+	const latin1 = Buffer.from([0x63, 0x61, 0x66, 0xe9]);
+	const raw = Buffer.concat([
+		Buffer.from("Subject: Note\nBCC: a@example.org,\n\tb@example.org\rTo: c@example.org\n\nBody ", "latin1"),
+		latin1,
+		Buffer.from("\n", "latin1"),
+	]);
+	const prepared = attachableMessage(raw);
+	assert.deepEqual(
+		prepared,
+		Buffer.concat([
+			Buffer.from("Subject: Note\r\nTo: c@example.org\r\n\r\nBody ", "latin1"),
+			latin1,
+			Buffer.from("\r\n", "latin1"),
+		]),
+	);
+	const mail = { to: ["friend@example.org"], subject: "Fwd: Note", text: "Attached" };
+	const message: PreparedAttachment = {
+		bytes: prepared,
+		sha256: sha256(prepared),
+		size: prepared.length,
+		name: "original-message.eml",
+		filename: "original-message.eml",
+		mimeType: "message/rfc822",
+		rfc822: true,
+	};
+	const built = buildMime(mail, ACCOUNT, [message]).bytes;
+	assert.ok(
+		built.includes(
+			Buffer.concat([
+				Buffer.from("Content-Transfer-Encoding: 8bit\r\n"),
+				Buffer.from("Content-Disposition: attachment; "),
+			]),
+		),
+	);
+	assert.ok(built.includes(prepared), "the attached message bytes are unchanged");
+	assert.throws(() => attachableMessage(Buffer.from("Subject: x\n\nNo\0here\n")), /NUL byte/);
+	assert.throws(() => attachableMessage(Buffer.from(`Subject: x\n\n${"a".repeat(999)}\n`)), /998 bytes/);
+	assert.throws(() => attachableMessage(Buffer.from("Subject: x\n")), /header terminator/);
 });

@@ -165,10 +165,13 @@ unparseable response).
 forwarded-message block with the original sender, date, subject and recipients,
 then the original `text/plain` body. It carries the original named attachments
 except inline images; `attachmentPartIds` selects other parts, and an empty list
-carries none. The forward starts its own thread. A source message with no
-`text/plain` body, or with a body that is not valid UTF-8, returns
-`UNSUPPORTED_MESSAGE` and sends nothing. The tool needs a Gmail read scope
-together with a send scope.
+carries none. A source message with no `text/plain` body, or with a body that
+is not valid UTF-8, is forwarded with the complete original attached as
+`original-message.eml` (`message/rfc822`). The attached copy keeps the HTML,
+inline images and files of the original and omits its `Bcc` header;
+`attachmentPartIds` is refused for such a message. An original over the
+attachment size limit returns `SIZE_LIMIT`. The forward starts its own thread.
+The tool needs a Gmail read scope together with a send scope.
 
 `accepted` means Gmail accepted the message, not that a recipient received it.
 The protection covers sends made through these tools only; a `gws` command run

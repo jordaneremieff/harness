@@ -12,6 +12,7 @@ import {
 } from "./files.ts";
 import { BackendError, type Operation, SCOPES, STDOUT_LIMITS } from "./gws.ts";
 import {
+	attachableMessage,
 	bareMessageId,
 	buildMime,
 	COMPOSE_LIMITS,
@@ -22,16 +23,7 @@ import {
 	replyContext,
 	rewriteRawMessage,
 } from "./mime.ts";
-import {
-	cleanText,
-	external,
-	failure,
-	GoogleError,
-	ok,
-	partial,
-	type Result,
-	TextBudget,
-} from "./result.ts";
+import { cleanText, external, failure, GoogleError, ok, partial, type Result, TextBudget } from "./result.ts";
 import { receipt, recordResult, SendLedger, type SendRecord } from "./send-ledger.ts";
 import type { ToolSpec } from "./tools.ts";
 
@@ -40,6 +32,7 @@ const Limit = (maximum: number, fallback: number) => opt(int({ minimum: 1, maxim
 const To = arr(str({ minLength: 1, maxLength: 320 }), { minItems: 1, maxItems: COMPOSE_LIMITS.recipients });
 const Copies = opt(arr(str({ minLength: 1, maxLength: 320 }), { maxItems: COMPOSE_LIMITS.recipients }));
 const MIME_TYPE = "^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$";
+const ORIGINAL_NAME = "original-message.eml";
 const ComposeSchema = obj({
 	to: To,
 	cc: Copies,
@@ -443,19 +436,38 @@ async function forwardedAttachments(
 	return result;
 }
 /** Only a text/plain body that decodes as UTF-8 is quoted, so a forward never carries a misdecoded body. */
-async function forwardedBody(operation: Operation, messageId: string, parts: Part[]): Promise<string> {
+async function quotableBody(operation: Operation, messageId: string, parts: Part[]): Promise<string | undefined> {
 	const body = parts.find((part) => part.mimeType === "text/plain" && !part.filename);
-	if (!body)
-		throw new GoogleError(
-			"UNSUPPORTED_MESSAGE",
-			"The message has no text/plain body part; gmail_forward forwards plain text only.",
-		);
+	if (!body) return undefined;
 	const bytes = await partBytes(operation, messageId, body);
 	try {
 		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 	} catch {
-		throw new GoogleError("UNSUPPORTED_MESSAGE", "The message body is not valid UTF-8 text.");
+		return undefined;
 	}
+}
+/** The complete original as one attachment, for a message without a quotable body: it keeps HTML, inline images and files. */
+async function originalMessage(
+	operation: Operation,
+	message: Record<string, unknown>,
+	messageId: string,
+): Promise<PreparedAttachment> {
+	if (typeof message.sizeEstimate === "number" && message.sizeEstimate > COMPOSE_LIMITS.attachmentBytes)
+		throw new GoogleError("SIZE_LIMIT", "The original message exceeds the attachment size limit.");
+	const response = await operation.call<Record<string, unknown>>("gmail", ["users", "messages", "get"], {
+		params: { userId: "me", id: messageId, format: "raw" },
+		stdoutLimit: STDOUT_LIMITS.rawDraft,
+	});
+	const bytes = attachableMessage(decodeBase64Url(text(response.raw), COMPOSE_LIMITS.attachmentBytes));
+	return {
+		bytes,
+		sha256: sha256(bytes),
+		size: bytes.length,
+		name: ORIGINAL_NAME,
+		filename: ORIGINAL_NAME,
+		mimeType: "message/rfc822",
+		rfc822: true,
+	};
 }
 function headerLine(value: string | undefined): string {
 	return (value ?? "")
@@ -472,6 +484,12 @@ async function prepareForward(
 	const parts = partsOf(message);
 	const headers = headersOf(message);
 	const subject = headerLine(headers.subject);
+	const body = await quotableBody(operation, args.messageId, parts);
+	if (body === undefined && args.attachmentPartIds !== undefined)
+		throw new GoogleError(
+			"INVALID_ARGUMENT",
+			"The message has no plain-text body, so the forward attaches the complete original; omit attachmentPartIds.",
+		);
 	const quoted = [
 		"---------- Forwarded message ---------",
 		`From: ${headerLine(headers.from)}`,
@@ -480,13 +498,12 @@ async function prepareForward(
 		`To: ${headerLine(headers.to)}`,
 		...(headers.cc ? [`Cc: ${headerLine(headers.cc)}`] : []),
 		"",
-		await forwardedBody(operation, args.messageId, parts),
+		body ?? `The original message is attached as ${ORIGINAL_NAME}.`,
 	].join("\n");
-	const attachments = await forwardedAttachments(
-		operation,
-		args.messageId,
-		forwardedParts(parts, args.attachmentPartIds),
-	);
+	const attachments =
+		body === undefined
+			? [await originalMessage(operation, message, args.messageId)]
+			: await forwardedAttachments(operation, args.messageId, forwardedParts(parts, args.attachmentPartIds));
 	return buildMime(
 		{
 			to: args.to,
@@ -945,7 +962,7 @@ export const gmailTools: ToolSpec[] = [
 		name: "gmail_forward",
 		label: "Gmail forward",
 		description:
-			"Forward one message as plain text once under a caller operation ID, with its attachments or a selected subset.",
+			"Forward one message once under a caller operation ID: its plain-text body with its attachments or a selected subset, or the complete original attached when it has no plain-text body.",
 		parameters: obj({
 			operationId: OperationId,
 			messageId: str({ minLength: 1, maxLength: 200 }),

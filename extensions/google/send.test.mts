@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { base64url, createFake, errorCode, methodCalls } from "./fake-gws.test-support.mts";
+import { base64url, createFake, errorCode, type FakeCall, methodCalls } from "./fake-gws.test-support.mts";
 import { SCOPES } from "./gws.ts";
 
 const MAIL = { to: ["friend@example.org"], subject: "Plan", text: "Hello" };
@@ -251,23 +251,84 @@ test("gmail_forward carries only the selected original parts", async () => {
 	}
 });
 
-test("gmail_forward refuses a message without a plain text body and a grant that cannot read it", async () => {
-	const htmlOnly = {
-		id: "src",
-		payload: {
-			mimeType: "text/html",
-			headers: SOURCE.payload.headers,
-			body: { size: 15, data: base64url("<p>Line one</p>") },
+const HTML_ONLY = {
+	id: "src",
+	sizeEstimate: 400,
+	payload: {
+		mimeType: "text/html",
+		headers: SOURCE.payload.headers,
+		body: { size: 23, data: base64url("<p>Café total: 12</p>") },
+	},
+};
+/** The stored original, with LF line endings, a folded Bcc header and an 8-bit body. */
+const RAW_ORIGINAL = [
+	"From: Ann <ann@example.org>",
+	"To: person@example.com",
+	"Bcc: hidden@example.org,",
+	" other@example.org",
+	"Subject: Report",
+	"MIME-Version: 1.0",
+	"Content-Type: text/html; charset=utf-8",
+	"",
+	"<p>Café total: 12</p>",
+	"",
+].join("\n");
+const RAW = { stdout: { id: "src", raw: base64url(RAW_ORIGINAL) } };
+
+function rawCalls(calls: FakeCall[]): FakeCall[] {
+	return methodCalls(calls, "gmail users messages get").filter(
+		(call) => JSON.parse(call.args[call.args.indexOf("--params") + 1]).format === "raw",
+	);
+}
+
+test("gmail_forward attaches the complete original once when the message has no plain-text body", async () => {
+	const fake = await createFake({
+		responses: {
+			"gmail users messages get src": [{ stdout: HTML_ONLY }, { stdout: HTML_ONLY }, RAW, { stdout: HTML_ONLY }, RAW],
+			[SEND]: { stdout: { id: "g9", threadId: "t9" } },
 		},
-	};
-	const fake = await forwardFake(htmlOnly);
+	});
+	try {
+		const selected = await fake.tool("gmail_forward", { operationId: "fw-5", ...FORWARD, attachmentPartIds: [] });
+		assert.equal(errorCode(selected), "INVALID_ARGUMENT");
+		assert.equal(rawCalls(await fake.calls()).length, 0);
+		const args = { operationId: "fw-6", ...FORWARD, text: "See the receipt" };
+		const first = await fake.tool("gmail_forward", args);
+		assert.equal(first.status, "ok", JSON.stringify(first));
+		const again = await fake.tool("gmail_forward", args);
+		assert.equal((again.data as { gmailMessageId?: string }).gmailMessageId, "g9");
+		const sends = methodCalls(await fake.calls(), SEND);
+		assert.equal(sends.length, 1);
+		const upload = sends[0].upload ?? "";
+		assert.match(upload, /\r\nSubject: Fwd: Report\r\n/);
+		assert.match(bodyText(upload), /^See the receipt\r\n\r\n---------- Forwarded message ---------\r\n/);
+		assert.match(bodyText(upload), /\r\nThe original message is attached as original-message\.eml\.$/);
+		assert.match(
+			upload,
+			/\r\nContent-Type: message\/rfc822\r\nContent-Transfer-Encoding: 8bit\r\nContent-Disposition: attachment; filename="original-message\.eml"/,
+		);
+		assert.ok(
+			upload.includes("\r\nTo: person@example.com\r\nSubject: Report\r\n"),
+			"the Bcc header and its folded line are kept",
+		);
+		assert.ok(upload.includes("\r\n\r\n<p>Café total: 12</p>\r\n"));
+		assert.doesNotMatch(upload, /hidden@example\.org|other@example\.org/);
+		assert.ok(!/[^\r]\n/.test(upload));
+	} finally {
+		await fake.cleanup();
+	}
+});
+
+test("gmail_forward refuses an original over the size limit and a grant that cannot read the message", async () => {
+	const fake = await forwardFake({ ...HTML_ONLY, sizeEstimate: 11 * 1024 * 1024 });
 	const sendOnly = await createFake({ scopes: [SCOPES.gmailSend], responses: { [SEND]: { stdout: { id: "g8" } } } });
 	try {
-		const refused = await fake.tool("gmail_forward", { operationId: "fw-5", ...FORWARD });
-		assert.equal(errorCode(refused), "UNSUPPORTED_MESSAGE");
-		assert.equal(errorCode(await fake.tool("gmail_operation_status", { operationId: "fw-5" })), "OPERATION_NOT_FOUND");
+		const large = await fake.tool("gmail_forward", { operationId: "fw-7", ...FORWARD });
+		assert.equal(errorCode(large), "SIZE_LIMIT");
+		assert.equal(errorCode(await fake.tool("gmail_operation_status", { operationId: "fw-7" })), "OPERATION_NOT_FOUND");
+		assert.equal(rawCalls(await fake.calls()).length, 0);
 		assert.equal(methodCalls(await fake.calls(), SEND).length, 0);
-		const unreadable = await sendOnly.tool("gmail_forward", { operationId: "fw-6", ...FORWARD });
+		const unreadable = await sendOnly.tool("gmail_forward", { operationId: "fw-8", ...FORWARD });
 		assert.equal(errorCode(unreadable), "SCOPE_REQUIRED");
 		assert.ok((unreadable.error as { requiredAnyOf?: string[] }).requiredAnyOf?.includes(SCOPES.gmailRead));
 		assert.equal(methodCalls(await sendOnly.calls(), SEND).length, 0);
