@@ -318,4 +318,16 @@ final class ModelTree: AccessibilityTree {
         #expect(FileManager.default.fileExists(atPath: marker.path))
         try? FileManager.default.removeItem(at: marker)
     }
+
+    @Test func forgetsTheReportWhenTheCommandEnds() async throws {
+        let script = #"printf '{"version":1,"pane":[0,0,1,1],"above":[]}\n'; sleep 0.5"#
+        let environment = ["PI_PANE_STACKING": String(data: try JSONSerialization.data(withJSONObject: ["/bin/sh", "-c", script]), encoding: .utf8)!]
+        let feed = try #require(StackingFeed.start(environment: environment))
+        for _ in 0 ..< 200 where feed.latest.report == nil { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(feed.latest.report == StackingReport(pane: CGRect(x: 0, y: 0, width: 1, height: 1), above: []))
+        // The command ends half a second after its report.
+        for _ in 0 ..< 300 where feed.latest.report != nil { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(feed.latest.report == nil)
+        #expect(feed.latest.generation == 2)
+    }
 }

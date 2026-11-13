@@ -76,6 +76,7 @@ public final class StackingFeed: @unchecked Sendable {
             let chunk = handle.availableData
             if chunk.isEmpty {
                 handle.readabilityHandler = nil
+                self?.ended()
                 return
             }
             self?.receive(chunk)
@@ -105,6 +106,17 @@ public final class StackingFeed: @unchecked Sendable {
         DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
             if process.isRunning { process.terminate() }
         }
+    }
+
+    /// The command ended: its last report no longer describes the pane, so the feed reports
+    /// nothing from now on and the anchor falls back to its own judgement.
+    private func ended() {
+        lock.lock()
+        let changed = report != nil
+        report = nil
+        if changed { generation += 1 }
+        lock.unlock()
+        if changed { onReport?() }
     }
 
     private func receive(_ chunk: Data) {
