@@ -29,8 +29,6 @@ struct CheckRunner {
     func run() async {
         let status: Int32
         switch mode {
-        case .frames:
-            status = await FrameService().run()
         case .exportImage(let input, let output, let width, let maxHeight, let appearance, let textSize):
             status = await exportImage(input: input, output: output, width: width, maxHeight: maxHeight, appearance: appearance, textSize: textSize)
         case .verify(let output):
@@ -45,7 +43,7 @@ struct CheckRunner {
         case .usage(let text):
             FileHandle.standardError.write(Data("usage: MarkdownReader \(text)\n".utf8))
             status = 2
-        case .application:
+        case .application, .pane:
             status = 0
         }
         exit(status)

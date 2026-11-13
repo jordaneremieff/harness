@@ -2,6 +2,8 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
+import { basename } from "node:path";
+import type { WriteInput } from "./store.ts";
 
 export const SOURCE_BYTES = 2 * 1024 * 1024;
 export const RESPONSE_VISITS = 2000;
@@ -68,6 +70,23 @@ export function responseRow(response: ResponseSnapshot): ResponseRow {
 	return { entryId: response.entryId, timestamp: response.timestamp, preview: Array.from(first).slice(0, 160).join(""), bytes: response.parts.reduce((sum, part) => sum + Buffer.byteLength(part), 2 * (response.parts.length - 1)), stop: response.stop, completeness: response.completeness };
 }
 export const validUnicode = (value: string): boolean => !/[\uD800-\uDFFF]/u.test(value);
+/** The response's label: the working directory's base name and the local time of the response. */
+export function responseTitle(response: ResponseSnapshot): string {
+	const date = new Date(response.timestamp ?? response.provenance.capturedAt);
+	const pad = (value: number) => String(value).padStart(2, "0");
+	const localTime = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+	const directory = basename(response.provenance.cwd ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ") || "workspace";
+	return `Response · ${Array.from(directory).slice(0, 170).join("")} · ${localTime}`;
+}
+/** One snapshot per response, whoever captures it: the source key names host kind, conversation and entry. */
+export function responseSnapshotWrite(response: ResponseSnapshot): { sourceKey: string; input: WriteInput } {
+	const origin = response.provenance;
+	const identity = origin.conversation === undefined ? origin.session : `${origin.session}:${origin.conversation}`;
+	return {
+		sourceKey: `response\0${origin.kind}\0${identity ?? ""}\0${response.entryId}`,
+		input: { title: responseTitle(response), source: responseText(response), contentOrigin: origin, completeness: response.completeness, references: { state: "uninspected", truncated: false, items: [], omitted: 0 } },
+	};
+}
 export type OrdinarySource = Pick<ExtensionContext["sessionManager"], "getEntry" | "getLeafId" | "getSessionId" | "getCwd">;
 function ordinaryResponse(source: OrdinarySource, entry: SessionEntry): ResponseSnapshot | undefined {
 	const id = entry.id;
@@ -91,6 +110,28 @@ export function recentOrdinary(source: OrdinarySource, options: { leaf?: string 
 		id = entry.parentId;
 	}
 	return { rows, cutoff, visited, stop: !id ? "end" : rows.length >= results ? "results" : "visits" };
+}
+/**
+ * The answer before the current request: the newest assistant response with text that precedes
+ * the newest user message on the branch ending at `leaf`.
+ */
+export function previousOrdinary(source: OrdinarySource, leaf: string | null = source.getLeafId()): ResponseSnapshot {
+	let id = leaf;
+	let passedRequest = false;
+	for (let visited = 0; id && visited < RESPONSE_VISITS; visited++) {
+		const entry = source.getEntry(id);
+		if (!entry) break;
+		if (!passedRequest) passedRequest = entry.type === "message" && entry.message.role === "user";
+		else {
+			const response = ordinaryResponse(source, entry);
+			if (response) {
+				responseText(response);
+				return response;
+			}
+		}
+		id = entry.parentId;
+	}
+	throw new Error("No earlier response with text is visible on this branch within the visit limit.");
 }
 /** Identity must be visible from the captured branch, not merely present in the session file. */
 export function readOrdinary(source: OrdinarySource, entryId: string, leaf: string | null): ResponseSnapshot {

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { hostname } from "node:os";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import { completeness, recentOrdinary, readOrdinary, responseSnapshot, responseText, SOURCE_BYTES, type OrdinarySource } from "./responses.ts";
+import { completeness, previousOrdinary, recentOrdinary, readOrdinary, responseSnapshot, responseText, SOURCE_BYTES, type OrdinarySource } from "./responses.ts";
 
 function fixture() {
 	const message = (id: string, parentId: string | null, text: string): SessionEntry => ({ type: "message", id, parentId, timestamp: "2026-01-01", message: fauxAssistantMessage(text, { timestamp: 1760000000000 }) });
@@ -83,4 +83,16 @@ test("over-limit source is refused, never silently cut", () => {
 	const response = responseSnapshot(fauxAssistantMessage("x".repeat(SOURCE_BYTES + 1)), "e", { kind: "ordinary-response" });
 	assert.ok(response);
 	assert.throws(() => responseText(response), /exceeds/u);
+});
+test("the previous answer is the newest response with text before the newest user message", () => {
+	const message = (id: string, parentId: string | null, text: string): SessionEntry => ({ type: "message", id, parentId, timestamp: "2026-01-01", message: fauxAssistantMessage(text, { timestamp: 1760000000000 }) });
+	const user = (id: string, parentId: string): SessionEntry => ({ type: "message", id, parentId, timestamp: "2026-01-01", message: { role: "user", content: "request", timestamp: 1 } });
+	const entries = new Map<string, SessionEntry>([
+		["a", message("a", null, "Older answer")], ["u1", user("u1", "a")], ["b", message("b", "u1", "The long answer")],
+		["u2", user("u2", "b")], ["c", message("c", "u2", "Opening it now")],
+	]);
+	const source: OrdinarySource = { getEntry: (id) => entries.get(id), getLeafId: () => "c", getSessionId: () => "synthetic", getCwd: () => "/project" };
+	assert.equal(responseText(previousOrdinary(source)), "The long answer");
+	assert.equal(responseText(previousOrdinary(source, "u1")), "Older answer");
+	assert.throws(() => previousOrdinary(source, "a"), /No earlier response/u);
 });

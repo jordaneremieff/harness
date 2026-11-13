@@ -43,6 +43,37 @@ export async function recentNative(source: NativeSource, context: Context, optio
 	} while (cursor && visited < visits);
 	return { rows, cutoff: cutoff === undefined ? null : String(cutoff), visited, stop: cursor ? "visits" : "end" };
 }
+/**
+ * The answer before the current request: the newest assistant response with text that precedes
+ * the newest user entry of the conversation.
+ */
+export async function previousNative(source: NativeSource & { durable: Pick<typeof Durable, "AssistantEntry" | "UserEntry"> }, context: Context): Promise<ResponseSnapshot> {
+	let cursor: Durable.Cursor | undefined;
+	let cutoff: Durable.EntryId | undefined;
+	let visited = 0;
+	let passedRequest = false;
+	do {
+		context.abortSignal?.throwIfAborted();
+		const page = await source.conversation.entries({ order: "descending", ...(cutoff === undefined ? {} : { maxEntryId: cutoff }) }, Math.min(50, RESPONSE_VISITS - visited), cursor, context);
+		context.abortSignal?.throwIfAborted();
+		cutoff ??= page.items[0]?.id;
+		visited += page.items.length;
+		for (const entry of page.items) {
+			if (!passedRequest) {
+				passedRequest = source.durable.UserEntry.is(entry);
+				continue;
+			}
+			const response = snapshot(source, entry);
+			if (response) {
+				responseText(response);
+				return response;
+			}
+		}
+		cursor = page.next;
+		if (!page.items.length && cursor) throw new Error("Native history returned an empty continuation page.");
+	} while (cursor && visited < RESPONSE_VISITS);
+	throw new Error("No earlier response with text is visible in this conversation within the visit limit.");
+}
 export async function readNative(source: NativeSource, entryId: string, context: Context): Promise<ResponseSnapshot> {
 	if (!/^[1-9]\d*$/u.test(entryId) || !Number.isSafeInteger(Number(entryId))) throw new Error("Invalid native entry identity.");
 	const id = Number(entryId) as Durable.EntryId;

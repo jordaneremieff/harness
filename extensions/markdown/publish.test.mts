@@ -13,7 +13,7 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { captureReferences, inspectReferences, fileSnapshotInput, createNativePublishTool, createPublishTool, invocationDigest, publish, type PublishOutcome, type PublishInput } from "./publish.ts";
 import { LIMITS, MarkdownStore, type PublicationPlan } from "./store.ts";
-import { showCommand } from "./show.ts";
+import { paneCommand, PANE_MODE } from "./pane-command.ts";
 const scratch = tmpdir();
 async function fixture(run: (root: string, store: MarkdownStore) => Promise<void>) { const root = await mkdtemp(join(scratch, "markdown-publish-")); try { await run(root, new MarkdownStore(join(root, "store"))); } finally { await rm(root, { recursive: true, force: true }); } }
 async function inspection(root: string, images: string[] = [], links: string[] = [], truncated = false) {
@@ -162,8 +162,8 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 	assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /No window opened\. The operator opens it from the Markdown view under Published \(in the agent view, under Owner views\)\. In an ordinary Pi session, \/markdown md-[a-f0-9]{20} also opens it\./u);
 	assert.ok(tool.outputSchema);
 	const first = success(result.details);
-	assert.deepEqual(first.show, showCommand(store.root, first.documentId));
-	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(`\nTo show it to the operator, run this command in a terminal pane that closes when the command exits: ${JSON.stringify(first.show)}. In that pane, o opens the native reader and q closes the pane.`)); assert.equal(first.provenance.session, "first"); assert.equal(first.provenance.model, "faux/faux-1"); assert.ok(first.provenance.host);
+	assert.equal(first.show, undefined);
+	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith("\nIt cannot be shown in a terminal pane: No reader app is configured. Build it with node extensions/markdown/native/build.mts.")); assert.equal(first.provenance.session, "first"); assert.equal(first.provenance.model, "faux/faux-1"); assert.ok(first.provenance.host);
 	session = "second";
 	const updated = await tool.execute("next", { title: "Updated", text: "other", document: first.documentId.slice(0, 12), expectedRevision: 1 }, undefined, undefined, context);
 	assert.equal(success(updated.details).provenance.session, "second"); assert.equal(success(updated.details).revision, 2);
@@ -286,4 +286,38 @@ test("native model and codemode calls share outcomes, prefixes and explicit reus
 		assert.ok(created && returned); assert.equal(created.documentId, returned.documentId);
 		assert.equal(created.created, true); assert.equal(created.replayed, false); assert.equal(returned.replayed, true);
 	} finally { await first.close(context); sandbox.close(); }
+}));
+
+test("the show command runs the installed reader's pane mode only when the build declares it", () => fixture(async (root, store) => {
+	const app = join(root, "Reader.app");
+	assert.deepEqual(paneCommand(app, store.root, "md-0123456789abcdef0123"), { showUnavailable: `The reader app is not installed at ${app}. Build it with node extensions/markdown/native/build.mts.` });
+	await mkdir(join(app, "Contents", "Resources"), { recursive: true });
+	await writeFile(join(app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1 }));
+	assert.match((paneCommand(app, store.root, "md-0123456789abcdef0123") as { showUnavailable: string }).showUnavailable, /cannot show documents in a pane/u);
+	await writeFile(join(app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1, pane: PANE_MODE }));
+	assert.deepEqual(paneCommand(app, store.root, "md-0123456789abcdef0123"), { show: [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", store.root, "md-0123456789abcdef0123"] });
+	const tool = createPublishTool({ store, cwd: root, app });
+	const context = { cwd: root, sessionManager: { getSessionId: () => "s" } } as never;
+	const result = await tool.execute("call", { title: "Shown", text: "# exact" }, undefined, undefined, context);
+	const outcome = success(result.details);
+	assert.deepEqual(outcome.show, [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", store.root, outcome.documentId]);
+	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(`run this command as the program of a new split or floating terminal pane that closes when its program ends: ${JSON.stringify(outcome.show)}. The reader window sits over that pane and follows new revisions of this document; q in the pane or the reader's close button ends it.`));
+}));
+
+test("a response snapshot saves the earlier answer exactly, once per response", () => fixture(async (root, store) => {
+	const assistant = (id: string, parentId: string | null, text: string) => ({ type: "message", id, parentId, timestamp: "2026-01-01", message: { role: "assistant", content: [{ type: "text", text }], provider: "faux", model: "faux-1", api: "faux", usage: {}, stopReason: "stop", timestamp: 1760000000000 } });
+	const entries = new Map<string, unknown>([["a", assistant("a", null, "## The long answer\n\nExact *text*.")], ["u", { type: "message", id: "u", parentId: "a", timestamp: "2026-01-01", message: { role: "user", content: "show it", timestamp: 1 } }], ["b", assistant("b", "u", "Opening it")]]);
+	const sessionManager = { getEntry: (id: string) => entries.get(id), getLeafId: () => "b", getSessionId: () => "session", getCwd: () => root };
+	const tool = createPublishTool({ store, cwd: root });
+	const context = { cwd: root, sessionManager } as never;
+	const first = success((await tool.execute("one", { response: "previous" }, undefined, undefined, context)).details);
+	assert.equal(first.kind, "response"); assert.equal(first.created, true); assert.match(first.title, /^Response · /u);
+	assert.equal((await store.get(first.documentId)).source, "## The long answer\n\nExact *text*.");
+	const again = success((await tool.execute("two", { response: "previous" }, undefined, undefined, context)).details);
+	assert.equal(again.documentId, first.documentId); assert.equal(again.revision, 1);
+	for (const params of [{ response: "previous", title: "Mine" }, { response: "previous", text: "other" }, { response: "previous", document: first.documentId, expectedRevision: 1 }]) {
+		const refused = (await tool.execute("bad", params as never, undefined, undefined, context)).details as PublishOutcome;
+		assert.equal(refused.ok, false);
+		assert.equal(refused.ok ? "" : refused.error.code, "invalid");
+	}
 }));

@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readSettings } from "./settings.ts";
 import { MarkdownStore, type StoredDocument } from "./store.ts";
-import { responseText, type ResponseSnapshot } from "./responses.ts";
+import { responseSnapshotWrite, type ResponseSnapshot } from "./responses.ts";
 
 const execute = promisify(execFile);
 const PACKAGE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -84,19 +84,10 @@ export async function selectStored(root: string, id: string, expectedStoreId?: s
 	if (pin && value.revision.digest !== pin.digest) throw new Error("The selected revision differs from the listed one. No document was opened.");
 	return savedDocument(root, storeId, value, false);
 }
-function responseTitle(response: ResponseSnapshot): string {
-	const date = new Date(response.timestamp ?? response.provenance.capturedAt);
-	const pad = (value: number) => String(value).padStart(2, "0");
-	const localTime = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-	const directory = basename(response.provenance.cwd ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ") || "workspace";
-	return `Response · ${Array.from(directory).slice(0, 170).join("")} · ${localTime}`;
-}
 export async function saveResponse(response: ResponseSnapshot, root: string): Promise<SavedDocument> {
 	const store = new MarkdownStore(root);
-	const origin = response.provenance;
-	const identity = origin.conversation === undefined ? origin.session : `${origin.session}:${origin.conversation}`;
-	const sourceKey = `response\0${origin.kind}\0${identity ?? ""}\0${response.entryId}`;
-	const result = await store.snapshot(sourceKey, "response", { title: responseTitle(response), source: responseText(response), contentOrigin: origin, completeness: response.completeness, references: { state: "uninspected", truncated: false, items: [], omitted: 0 } });
+	const { sourceKey, input } = responseSnapshotWrite(response);
+	const result = await store.snapshot(sourceKey, "response", input);
 	return savedDocument(root, await storeIdentity(root), result, !result.replayed);
 }
 /** Saving and origin capture overlap; only their completed results reach the open request. */

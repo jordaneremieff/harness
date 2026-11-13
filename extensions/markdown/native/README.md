@@ -5,7 +5,12 @@ published documents and file snapshots. It also opens plain `.md` files in place
 the document store and never writes documents; its only change inside a store is the removal of
 an open request it accepted. Its own reading state (positions, recent documents, known store
 folders, text size) lives in `~/Library/Application Support/Markdown Reader/` and is bounded;
-trimming it never touches a stored document.
+trimming it never touches a stored document. The application and every [pane mode](#pane-mode)
+reader share that state: each process records the entries it changed since its last save, a
+save takes an exclusive lock on `reading-state.lock`, applies only those changes to the file's
+current state and replaces the file, and an opening reads the file again before it restores a
+position. A changed position yields only to one in the file saved at least a second later,
+because the file keeps whole seconds.
 
 Requirements: macOS 26 or later and Swift 6.2 (the Command Line Tools are enough). SwiftUI's
 `WebView` and `WebKit.WebPage` need macOS 26.
@@ -28,15 +33,17 @@ if that restoration also fails, the error reports both failures and the previous
 The bundle carries `Contents/Resources/build.json`:
 
 ```json
-{"contract": 1, "frames": 1, "sourceDigest": "sha256:…", "builtAt": "…", "swift": "…",
+{"contract": 1, "pane": 1, "sourceDigest": "sha256:…", "builtAt": "…", "swift": "…",
  "store": "/…/markdown", "terminalOrigin": {"helper": "terminal-origin.ts", "node": "/opt/homebrew/bin/node"}}
 ```
 
 Openers compare `contract` with the version they expect and name this command as the remedy for
 a missing or incompatible build. `contract` covers open requests, the store format and the
-parser output. `frames` is the version of the `--frames` protocol; the terminal view renders pages
-only when it matches, and otherwise shows text. Programs that only open documents ignore it, so
-Pi processes that started before a rebuild keep opening documents with the new build. `store` is the value of the `markdown.dir` setting at build
+parser output. `pane` is the version of [pane mode](#pane-mode); the publication tool offers a
+pane command only when it matches, and otherwise names this build command. Programs that only
+open documents ignore it, so Pi processes that started before a rebuild keep opening documents
+with the new build. An unknown `--` option ends the app with a usage error, so a caller that
+expects a newer mode never starts the library application instead. `store` is the value of the `markdown.dir` setting at build
 time (`PI_MARKDOWN_DIR`, else `markdown.dir` in `harness.json`, else `<agent dir>/markdown`): the
 store folder that the library shows by default. Rebuild after you change that setting.
 `sourceDigest` covers the manifest, lockfile, sources, licence
@@ -61,7 +68,9 @@ HTML and unsafe links, images and asset containment, store reading against a fix
 format including symbolic links and scan bounds, open requests and their removal, the pinned
 digest, the reference inventory), `MacPlatformTests` (the pane helper runner against fake helper
 scripts: each outcome, a timeout, malformed output, refusal, an oversized origin and a helper that
-closes its input) and `ReaderFeatureTests` (the bounds of the reading-state file, frame request validation and bounded line intake). Under the Command Line Tools
+closes its input; the pane reader's coordinate conversion, window matching and printable
+placeholder text) and `ReaderFeatureTests` (the bounds of the reading-state file and the merging
+of saves from several reader processes). Under the Command Line Tools
 the Testing framework is outside the default search path, so the script passes its directory.
 The tools also ship the `_Testing_Foundation` overlay without a module, so a test file imports
 `Testing` first and then the core with `@testable` (which re-exports Foundation), never
@@ -198,77 +207,69 @@ APP="<app>/Contents/MacOS/MarkdownReader"
 The app logs open, render, update, recovery and return events under the subsystem
 `local.harness.markdown-reader` (`log show --predicate 'subsystem == "local.harness.markdown-reader"'`).
 
-## Terminal viewport service
+## Pane mode
 
-`Contents/MacOS/MarkdownReader --frames` is a persistent JSON-lines service. Both standard input
-and standard output must be pipes or Unix sockets, not terminal handles or regular files.
-Standard output contains protocol messages only; diagnostics use standard error. The service
-uses prohibited activation where AppKit accepts it, with accessory activation as the fallback.
-It never orders its offscreen window onto the screen, activates the app or creates a Dock icon.
-Its reading state stays in memory. No open request is created or accepted.
+`Contents/MacOS/MarkdownReader --pane --store <store directory> <document ID>` shows one stored
+document in a reader window over the terminal pane that runs the program. It is the program of
+that pane for as long as the reader stays open. Standard input and output must be a terminal.
+The process checks the store and the document first; a wrong argument ends it with one line on
+standard error and a nonzero status, before the terminal changes.
 
-The first output line is:
+The process uses accessory activation: no Dock icon and no visible menu bar. Its menu supplies
+the key equivalents of the reader (copy, select all, find, text size, outline, source, code
+wrapping, revisions, details and close) for its one document; it opens no other document, no
+library and no other window, and it ignores open events.
 
-```json
-{"event":"ready","scale":2,"activationPolicy":"prohibited","visibleWindows":0,"directory":"/…/markdown-frames-…","pid":123}
-```
+The terminal shows a placeholder on the alternate screen with the hidden cursor: the title, the
+reader's state and the keys. Document text reaches the terminal only through
+`TerminalText.printable`, which removes control, format and separator characters. The first
+line holds a random marker in concealed text. `TerminalAnchor` searches the accessibility text
+areas of running applications for the text area whose visible text contains the marker, first
+in the frontmost application, then in every application with a window on screen, and after the
+first match in that application only. It skips the subtrees of web areas, tables, outlines,
+lists, browsers and menus, visits at most 2500 nodes of an application per search and runs the
+search off the main thread. It names no terminal application. Accessibility access is required;
+a process that a trusted terminal starts inherits that access, and without it the placeholder
+says so and no window opens.
 
-`scale` is the main screen's backing scale, or 1 without a screen. `directory` names the private
-frame directory, for caller cleanup after forced termination. Each request uses a positive,
-JavaScript-safe integer `id`. Commands execute serially; consume each frame before the next
-command. Supported request shapes are:
+The reader window is a borderless, non-activating panel without a shadow that takes the text
+area's frame. It moves to the active Space, joins full-screen spaces and stays out of window
+cycling. A click on it gives it the keyboard without activating the reader, so the host stays
+the active application, and the first click already acts on the page. While the host or the
+reader is active, the window floats; otherwise it sits at the normal level directly above the
+host's window, so other applications cover both. While another window of the host below the
+floating level lies over the pane, such as its command palette, the reader orders itself below
+that window. Inside the host's window, the reader hides while another of the host's terminals
+lies over its pane: a smaller text area that the pane's frame holds for at least half of that
+text area's own area, such as a floating pane over a tiled reader pane; a larger one is a
+terminal that the reader floats over. Other drawing inside the host's window, such as a popover
+that is not a separate window, stays under the reader. All accessibility and window-server
+requests run on one background queue, one step at a time, so a slow host never stalls the
+reader's window; a search stops after 0.4 seconds. The anchor reads the frame
+ten times a second and sixty times a second for a moment after a change or a terminal resize.
+The window hides when the text area disappears (for example, the host shows another tab), when
+the host's window is minimised, hidden, on another Space or not on screen, and behind a locked
+screen. A changed title of the host window or of the frontmost window starts the next search at
+once; otherwise searches repeat four times a second at first, then every second while the host
+runs and every three seconds while no host is known.
 
-```text
-{id, op:"open", root, document, revision, digest, width, height, scale, appearance, textSize, background?}
-{id, op:"viewport", width, height, scale, appearance, textSize, background?}
-{id, op:"scroll", to? | by? | edge?}
-{id, op:"revision", revision, digest}
-{id, op:"frame"}
-```
+The window shows `ReaderView` with embedded chrome: a compact header with the outline control,
+title, provenance line, revision menu, view options, find, Copy Markdown, details, a control
+that returns the keyboard to the host and a close control. Escape outside a text field also
+returns the keyboard to the host. Pane mode follows new revisions: the model's `followsLatest`
+loads a revision as soon as the pointer watcher sees it, with the reader's block, heading and
+ratio restoration, and a failed load keeps the shown revision with a warning. While text is
+selected or the find bar is open, the update notice waits for the reader's choice instead.
 
-- `open` names an absolute store root, full `md-…` document ID, positive revision and
-  `sha256:` digest. The service owns one document, model and WebKit page until EOF; repeated
-  opens of that document use the existing model. Another document requires another process.
-- `width` and `height` are device pixels, each from 1 through 8192, with area at most
-  16777216 pixels. `scale` is a finite number from 1 through 4. WebKit receives the viewport
-  in points, each device dimension divided by `scale`.
-- `appearance` is `light` or `dark`. `textSize` is a `PageSettings.textSizes` index, not a
-  point size. The native default is index 4 (17 points); every open and viewport request
-  explicitly supplies the index. `background`, when present, is `#rrggbb`; omission restores
-  the native background for that appearance.
-- `scroll` requires exactly one of `to`, `by` or `edge`. `to` and `by` use device pixels;
-  `edge` is `start` or `end`. WebKit clamps the resulting position to the document.
-- `revision` uses `ReaderModel.open(revision:digest:origin:nil)`, with the existing loader,
-  renderer, asset resolution and passive-content rules. Resize, text size changes and revision
-  changes preserve the current block and offset, with the reader's heading and ratio fallbacks.
-  When the viewport starts at scroll position zero, the service keeps exact zero across resize
-  and revision changes, including the padding before the first block. Other reader views keep
-  their existing block restoration semantics. Pointer changes never replace the pinned revision automatically.
-- Input lines are at most 16384 bytes, excluding LF. An oversized line is discarded through
-  LF before the next line is read. An unterminated final line is also processed.
-
-Each command returns a viewport frame or an error:
-
-```text
-{id, ok:true, path, width, height, scrollY, documentHeight, scale, revision, digest, milliseconds}
-{id, ok:false, error}
-```
-
-`scrollY` and `documentHeight` use device pixels at the reported scale. `milliseconds` measures
-command work, including image conversion and file output, but excludes input wait time. A malformed
-line or unusable ID returns error ID 0; other errors retain the request ID. A failed revision
-request leaves the last good revision available to `frame`.
-
-Each file is exactly `width * height * 4` bytes: row-major RGBA, top row first, without a header
-or row padding. When `background` is present, every opaque pixel of exactly that colour is fully
-transparent, so a terminal draws its own background around the content, including any window
-translucency; antialiased edges and surfaces such as code blocks stay opaque. Without
-`background`, the viewport has the reader's opaque page background. The file name contains
-`tty-graphics-protocol`; files use mode 0600 inside a fresh mode 0700 `markdown-frames-…`
-directory. The next command removes the previous file even when that command fails validation.
-A terminal that takes file ownership is free to remove it first. EOF closes the model and window
-and removes the directory. Forced process termination prevents native cleanup; the caller uses
-`ready.directory` for that case. Frame export snapshots only the viewport, never the full page.
+Keys typed into the pane's terminal: `q`, Ctrl-C or Ctrl-D close the reader; any other key
+gives the reader window the keyboard. Closing the reader by key, close control, Command-W, a
+termination signal or an interruption signal saves the reading position, restores the terminal
+and ends with status 0. A hang-up signal or the end of input ends it the same way without
+writing to the terminal. The final position capture gets one second; after that the last saved
+position stands. The placeholder places each line by row and stops at the last row, so a short
+pane keeps the marker on screen. The document, its revisions and
+the reading position never depend on the process: opening the document again restores the
+saved position.
 
 ## Headless core tool
 
@@ -284,8 +285,8 @@ reference inventory, so there is one Markdown parser.
 | --- | --- | --- |
 | `MarkdownCore` | store records and reading, identities, open requests, asset resolution, rendering through cmark-gfm, page template and stylesheet | Foundation, CryptoKit, cmark |
 | `ReaderFeature` | the reader view and per-window reading state, reading-state store, library view | SwiftUI, WebKit |
-| `MacPlatform` | pasteboard, browser hand-off, Finder reveal, pane helper runner, Rex activation | AppKit |
-| `MarkdownReader` | application entry: windows, menus, open intake, check modes | AppKit, SwiftUI |
+| `MacPlatform` | pasteboard, browser hand-off, Finder reveal, pane helper runner, Rex activation, terminal anchor and printable terminal text | AppKit, Accessibility |
+| `MarkdownReader` | application entry: windows, menus, open intake, pane mode, check modes | AppKit, SwiftUI |
 | `markdown-core` | headless reference inventory | MarkdownCore only |
 
 The reader feature receives platform effects as a small `ReaderPlatform` value and does not

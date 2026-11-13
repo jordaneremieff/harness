@@ -70,7 +70,7 @@ export function markdownContribution(source: string, bus: SettingsBus, stopFacto
 			const settings = readSettings({ agentDir: host.agentDir }).values;
 			return host.durable.defineExtension({
 				name: "markdown",
-				tools: [createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId }, { store: new MarkdownStore(settings.dir), app: settings.app })],
+				tools: [createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store: new MarkdownStore(settings.dir), app: settings.app })],
 				sections: [host.durable.section("markdown", () => "Use markdown_publish for an explicitly requested document or a deliverable meant for sustained reading. Publication saves silently. Existing assistant responses are already readable through the operator's Markdown view; do not publish every reply.")],
 			});
 		},

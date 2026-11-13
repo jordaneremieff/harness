@@ -2,8 +2,9 @@ import Foundation
 
 enum LaunchMode {
     case application
-    /// Persistent, pipe-only viewport frame service with no visible window.
-    case frames
+    /// Shows one stored document in a reader window over the terminal pane that runs the
+    /// program, for as long as the pane and the reader stay open.
+    case pane(store: String, document: String)
     /// Renders one document into a PNG image of the page.
     case exportImage(input: String, output: String, width: Double, maxHeight: Double, appearance: String?, textSize: Int?)
     /// Runs the fixed WebKit checks and prints one JSON report.
@@ -17,7 +18,7 @@ enum LaunchMode {
     case returnCheck(request: String)
     case usage(String)
 
-    /// Check modes show no Dock icon; presentation shows a normal window.
+    /// Check and pane modes show no Dock icon; presentation shows a normal window.
     var isAccessory: Bool {
         switch self {
         case .application, .present: false
@@ -26,8 +27,10 @@ enum LaunchMode {
     }
 
     var isCheck: Bool {
-        if case .application = self { return false }
-        return true
+        switch self {
+        case .application, .pane: false
+        default: true
+        }
     }
 
     static func parse(_ arguments: [String]) -> LaunchMode {
@@ -46,9 +49,11 @@ enum LaunchMode {
             }
         }
         switch first {
-        case "--frames":
-            guard arguments.count == 1 else { return .usage("--frames") }
-            return .frames
+        case "--pane":
+            guard let store = options["store"], positional.count == 1, let document = positional.first else {
+                return .usage("--pane --store <store directory> <document ID>")
+            }
+            return .pane(store: store, document: document)
         case "--export-image":
             guard let output = options["out"], let input = positional.first else {
                 return .usage("--export-image --out <image.png> [--width 900] [--max-height 6000] [--appearance light|dark] [--text-size n] <file.md | open request>")
@@ -84,7 +89,9 @@ enum LaunchMode {
             guard !positional.isEmpty else { return .usage("--measure [--sizes a,b,c] [--out report.json] <corpus.md>...") }
             return .measure(corpus: positional, sizes: sizes, output: options["out"])
         default:
-            return .application
+            // An unknown option is an error, so that a caller that expects a newer mode never
+            // starts the library application in its place.
+            return .usage("unknown option \(first); options: --pane, --present, --export-image, --verify, --measure, --return-check")
         }
     }
 }

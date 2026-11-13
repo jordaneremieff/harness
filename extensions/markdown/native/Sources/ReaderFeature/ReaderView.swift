@@ -2,14 +2,25 @@ import MarkdownCore
 import SwiftUI
 import WebKit
 
+/// Where the reader's controls sit.
+public enum ReaderChrome {
+    /// A titled window: the controls sit in the window toolbar.
+    case window
+    /// A borderless window inside another application's layout: the controls sit in a compact
+    /// header. `close` ends the reader; `release` gives the keyboard back to that application.
+    case embedded(close: () -> Void, release: () -> Void)
+}
+
 /// The reader for one document. It holds no global state and can be placed in any window.
 public struct ReaderView: View {
     @Bindable var model: ReaderModel
+    let chrome: ReaderChrome
     @FocusState private var findFocused: Bool
     @State private var width: CGFloat = 900
 
-    public init(model: ReaderModel) {
+    public init(model: ReaderModel, chrome: ReaderChrome = .window) {
         self.model = model
+        self.chrome = chrome
     }
 
     private var outlineShown: Bool {
@@ -24,7 +35,10 @@ public struct ReaderView: View {
                 Divider()
             }
             VStack(spacing: 0) {
-                DocumentHeader(model: model)
+                switch chrome {
+                case .window: DocumentHeader(model: model)
+                case .embedded(let close, let release): EmbeddedHeader(model: model, close: close, release: release)
+                }
                 banners
                 if model.findVisible { findBar }
                 content
@@ -174,39 +188,8 @@ public struct ReaderView: View {
                 .disabled(model.rendered?.outline.isEmpty ?? true)
         }
         ToolbarItemGroup(placement: .primaryAction) {
-            if let snapshot = model.snapshot, snapshot.revisions.count > 1 {
-                Menu {
-                    ForEach(snapshot.revisions.reversed(), id: \.self) { revision in
-                        Button {
-                            Task { await model.showRevision(revision) }
-                        } label: {
-                            if revision == snapshot.revision {
-                                Label(revisionLabel(revision, latest: model.latestRevision), systemImage: "checkmark")
-                            } else {
-                                Text(revisionLabel(revision, latest: model.latestRevision))
-                            }
-                        }
-                    }
-                    if snapshot.olderRevisionsUnlisted {
-                        Divider()
-                        Text("Older revisions are not listed")
-                    }
-                } label: {
-                    Label("Revision \(snapshot.revision ?? 0)", systemImage: "clock.arrow.circlepath")
-                }
-                .help("Choose a revision")
-            }
-            Menu {
-                Button("Bigger Text") { model.changeTextSize(by: 1) }
-                Button("Smaller Text") { model.changeTextSize(by: -1) }
-                Button("Actual Size") { model.resetTextSize() }
-                Divider()
-                Toggle("Wrap Code Lines", isOn: Binding(get: { model.settings.wrapCode }, set: { _ in model.toggleWrap() }))
-                Toggle("Show Source", isOn: Binding(get: { model.showingSource }, set: { _ in Task { await model.toggleSource() } }))
-            } label: {
-                Label("View Options", systemImage: "textformat.size")
-            }
-            .help("Text size, code wrapping and source")
+            RevisionMenu(model: model)
+            ViewOptionsMenu(model: model)
             Button { model.showFind() } label: { Label("Find", systemImage: "magnifyingglass") }
                 .help("Find (⌘F)")
             Button { model.copyMarkdown() } label: { Label("Copy Markdown", systemImage: "doc.on.doc") }
@@ -219,8 +202,110 @@ public struct ReaderView: View {
         }
     }
 
-    private func revisionLabel(_ revision: Int, latest: Int?) -> String {
-        revision == latest ? "Revision \(revision) (latest)" : "Revision \(revision)"
+}
+
+struct RevisionMenu: View {
+    @Bindable var model: ReaderModel
+
+    var body: some View {
+        if let snapshot = model.snapshot, snapshot.revisions.count > 1 {
+            Menu {
+                ForEach(snapshot.revisions.reversed(), id: \.self) { revision in
+                    Button {
+                        Task { await model.showRevision(revision) }
+                    } label: {
+                        if revision == snapshot.revision {
+                            Label(label(revision), systemImage: "checkmark")
+                        } else {
+                            Text(label(revision))
+                        }
+                    }
+                }
+                if snapshot.olderRevisionsUnlisted {
+                    Divider()
+                    Text("Older revisions are not listed")
+                }
+            } label: {
+                Label("Revision \(snapshot.revision ?? 0)", systemImage: "clock.arrow.circlepath")
+            }
+            .help("Choose a revision")
+        }
+    }
+
+    private func label(_ revision: Int) -> String {
+        revision == model.latestRevision ? "Revision \(revision) (latest)" : "Revision \(revision)"
+    }
+}
+
+struct ViewOptionsMenu: View {
+    @Bindable var model: ReaderModel
+
+    var body: some View {
+        Menu {
+            Button("Bigger Text") { model.changeTextSize(by: 1) }
+            Button("Smaller Text") { model.changeTextSize(by: -1) }
+            Button("Actual Size") { model.resetTextSize() }
+            Divider()
+            Toggle("Wrap Code Lines", isOn: Binding(get: { model.settings.wrapCode }, set: { _ in model.toggleWrap() }))
+            Toggle("Show Source", isOn: Binding(get: { model.showingSource }, set: { _ in Task { await model.toggleSource() } }))
+        } label: {
+            Label("View Options", systemImage: "textformat.size")
+        }
+        .help("Text size, code wrapping and source")
+    }
+}
+
+/// The compact header of an embedded reader: the title, one line of provenance and the reader's
+/// controls, which a borderless window has no toolbar for.
+struct EmbeddedHeader: View {
+    @Bindable var model: ReaderModel
+    let close: () -> Void
+    let release: () -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Button { model.outlineVisible.toggle() } label: { Label("Outline", systemImage: "sidebar.left") }
+                .help("Show or hide the outline (⌃⌘S)")
+                .disabled(model.rendered?.outline.isEmpty ?? true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.snapshot == nil ? "Opening…" : model.displayTitle)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let snapshot = model.snapshot {
+                    Text(Provenance.summary(snapshot, rendered: model.rendered, latestRevision: model.latestRevision))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .padding(.leading, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            RevisionMenu(model: model)
+            ViewOptionsMenu(model: model)
+            Button { model.showFind() } label: { Label("Find", systemImage: "magnifyingglass") }
+                .help("Find (⌘F)")
+            Button { model.copyMarkdown() } label: { Label("Copy Markdown", systemImage: "doc.on.doc") }
+                .help("Copy the Markdown source (⇧⌘C)")
+                .disabled(model.snapshot == nil)
+            Button { model.detailsVisible.toggle() } label: { Label("Document Details", systemImage: "info.circle") }
+                .help("Show document details (⌘I)")
+                .popover(isPresented: $model.detailsVisible, arrowEdge: .bottom) { DetailsView(model: model) }
+            Button { release() } label: { Label("Return to Terminal", systemImage: "terminal") }
+                .help("Give the keyboard back to the terminal (Esc)")
+            Button { close() } label: { Label("Close", systemImage: "xmark") }
+                .help("Close the reader (⌘W)")
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.borderless)
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .controlSize(.regular)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 

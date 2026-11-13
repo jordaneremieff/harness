@@ -81,6 +81,10 @@ public final class ReaderModel {
     }
     public var pendingExternalURL: URL?
     public var detailsVisible = false
+    /// When set, a newer revision replaces the shown one at the same reading position as soon as
+    /// the reader sees it, unless text is selected or the find bar is open: then, as without
+    /// this setting, an update notice waits for the reader's choice.
+    public var followsLatest = false
     public var settings: PageSettings {
         didSet {
             guard settings != oldValue else { return }
@@ -127,7 +131,7 @@ public final class ReaderModel {
         }
     }
 
-    /// Shows the latest revision; the reader never does this by itself.
+    /// Shows the latest revision. Without `followsLatest` the reader never does this by itself.
     public func refresh() async {
         await load(revision: nil, restore: .current)
     }
@@ -149,7 +153,9 @@ public final class ReaderModel {
         case current
     }
 
-    func load(revision: Int?, pinnedDigest: String? = nil, restore: RestoreMode) async {
+    /// `automatic` marks a load that the reader started by itself to follow a new revision: it
+    /// gives way when reading interaction started while it prepared the revision.
+    func load(revision: Int?, pinnedDigest: String? = nil, restore: RestoreMode, automatic: Bool = false) async {
         generation += 1
         let token = generation
         loadPending = true
@@ -157,7 +163,9 @@ public final class ReaderModel {
         let started = Date()
         var position: ReadingPosition?
         switch restore {
-        case .saved: position = state.position(for: reference)
+        case .saved:
+            state.reload()
+            position = state.position(for: reference)
         case .current: position = await capturePosition()
         }
         let reference = self.reference
@@ -180,6 +188,8 @@ public final class ReaderModel {
         case .failure(let error):
             fail(String(describing: error))
         case .success(let prepared):
+            if automatic, await interacting() { return }
+            guard token == generation, !closed else { return }
             let previousRevision = snapshot?.revision
             guard await install(prepared, position: position, token: token, started: started) else { return }
             if case .current = restore, previousRevision != nil, previousRevision != prepared.snapshot.revision {
@@ -336,6 +346,7 @@ public final class ReaderModel {
             latestRevision = latest
             update = .revision(latest)
             readerLog.notice("update available \(self.reference.key, privacy: .public) revision=\(latest, privacy: .public)")
+            if followsLatest, await !interacting() { await load(revision: nil, restore: .current, automatic: true) }
         case .file:
             if marker != snapshot.digest { update = .fileChanged }
         }
@@ -358,7 +369,7 @@ public final class ReaderModel {
         state.setPosition(position, for: reference)
     }
 
-    public func capturePosition() async -> ReadingPosition? {
+    func capturePosition() async -> ReadingPosition? {
         guard rendered != nil, !showingSource else { return nil }
         guard let value = try? await page.callJavaScript(PageScript.capturePosition, contentWorld: PageScript.world) as? [String: Any] else {
             return nil
@@ -372,7 +383,7 @@ public final class ReaderModel {
         )
     }
 
-    public func restorePosition(_ position: ReadingPosition) async -> PositionRestore {
+    func restorePosition(_ position: ReadingPosition) async -> PositionRestore {
         let arguments: [String: Any] = [
             "key": position.blockKey ?? "",
             "fraction": position.fraction,
@@ -381,28 +392,6 @@ public final class ReaderModel {
         ]
         let result = try? await page.callJavaScript(PageScript.restorePosition, arguments: arguments, contentWorld: PageScript.world) as? String
         return result.flatMap(PositionRestore.init(rawValue:)) ?? .none
-    }
-
-    /// Applies pipe-service presentation settings in the same isolated world as reading actions.
-    public func configureViewport(textSize: Int, background: String?) async throws {
-        settings = PageSettings(textSize: textSize, wrapCode: settings.wrapCode)
-        _ = try await page.callJavaScript(PageScript.configureViewport, arguments: [
-            "textSize": settings.textSize, "wrap": settings.wrapCode, "background": background ?? "",
-        ], contentWorld: PageScript.world)
-    }
-
-    /// Scroll coordinates and returned metrics use page points; the service converts device pixels.
-    public func scrollViewport(to: Double) async throws {
-        _ = try await page.callJavaScript("window.scrollTo({top: y, behavior: 'instant'}); return true;", arguments: ["y": to], contentWorld: PageScript.world)
-        await savePosition()
-    }
-
-    public func viewportMetrics() async throws -> (scrollY: Double, documentHeight: Double) {
-        guard let value = try await page.callJavaScript(PageScript.viewportMetrics, contentWorld: PageScript.world) as? [String: Double],
-              let y = value["scrollY"], let height = value["documentHeight"] else {
-            throw FrameProtocolError("page metrics unavailable")
-        }
-        return (y, height)
     }
 
     // MARK: - Reading actions
@@ -424,6 +413,13 @@ public final class ReaderModel {
 
     public func selectedText() async -> String {
         (try? await page.callJavaScript(PageScript.selectionText, contentWorld: PageScript.world) as? String) ?? ""
+    }
+
+    /// Whether the reader is in the middle of something that a page replacement would undo: a
+    /// text selection or an open find bar.
+    func interacting() async -> Bool {
+        if findVisible { return true }
+        return !(await selectedText()).isEmpty
     }
 
     public func showFind() {

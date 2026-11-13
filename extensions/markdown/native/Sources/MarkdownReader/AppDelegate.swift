@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private(set) var windows: WindowManager!
     private var openedAtLaunch = false
     private let recentMenu = NSMenu(title: "Open Recent")
+    private var paneHost: PaneHost?
 
     init(mode: LaunchMode) {
         self.mode = mode
@@ -43,10 +44,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let state = ReadingStateStore(directory: mode.isCheck ? nil : Self.stateDirectory())
         let platform = mode.isCheck ? CheckRunner.platform() : MacPlatform.operations()
         windows = WindowManager(state: state, platform: platform, defaultRoots: mode.isCheck ? [] : Self.defaultRoots())
-        if !mode.isAccessory { NSApp.mainMenu = buildMenu() }
+        if case .pane = mode {
+            NSApp.mainMenu = buildMenu(pane: true)
+        } else if !mode.isAccessory {
+            NSApp.mainMenu = buildMenu(pane: false)
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if case .pane(let store, let document) = mode {
+            startPane(store: store, document: document)
+            return
+        }
         if mode.isCheck {
             Task { await CheckRunner(mode: mode, windows: windows).run() }
             return
@@ -61,7 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if case .frames = mode { return false }
+        if case .pane = mode { return false }
         if !flag { showLibrary(nil) }
         return true
     }
@@ -71,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        if case .pane = mode { return }
         guard !mode.isCheck else { return }
         openedAtLaunch = true
         for url in urls { intake(url) }
@@ -106,6 +116,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 showError("The reader could not open \(url.lastPathComponent).", detail: error.description)
             }
         }
+    }
+
+    /// Pane mode: checks the store and the document before the terminal changes, so that a wrong
+    /// argument ends with one error line and a nonzero status in the pane.
+    private func startPane(store root: String, document: String) {
+        guard let terminal = PaneTerminal() else {
+            FileHandle.standardError.write(Data("Markdown Reader: --pane needs a terminal on standard input and output.\n".utf8))
+            exit(2)
+        }
+        let reference: DocumentReference
+        do {
+            let store = try DirectoryStore(root: URL(fileURLWithPath: root))
+            _ = try store.document(document)
+            reference = .stored(root: FileAccess.canonicalPath(root), storeId: store.storeId, document: document)
+        } catch {
+            FileHandle.standardError.write(Data("Markdown Reader: \(document) cannot be shown: \(error)\n".utf8))
+            exit(1)
+        }
+        let model = ReaderModel(reference: reference, platform: windows.platform, state: windows.state)
+        let host = PaneHost(model: model, state: windows.state, terminal: terminal)
+        paneHost = host
+        windows.adopt(host.start(), model: model)
     }
 
     private func showError(_ message: String, detail: String) {
@@ -234,9 +266,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         return holder
     }
 
-    private func buildMenu() -> NSMenu {
+    /// The menu bar. A pane reader has no visible menu bar; its menu supplies key equivalents for
+    /// its one document, without opening other documents or windows.
+    private func buildMenu(pane: Bool) -> NSMenu {
         let main = NSMenu()
         let name = "Markdown Reader"
+        if pane {
+            main.addItem(submenu(name, [standard("Close Reader", #selector(NSWindow.performClose(_:)), "q")]))
+            main.addItem(submenu("File", [standard("Close", #selector(NSWindow.performClose(_:)), "w")]))
+            main.addItem(editMenu())
+            main.addItem(viewMenu(fullScreen: false))
+            main.addItem(documentMenu(returnItem: false))
+            return main
+        }
         main.addItem(submenu(name, [
             standard("About \(name)", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""),
             .separator(),
@@ -257,37 +299,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             standard("Close", #selector(NSWindow.performClose(_:)), "w"),
             item("Show in Finder", #selector(revealDocument(_:)), "r", [.command, .option]),
         ]))
-        main.addItem(submenu("Edit", [
-            standard("Copy", #selector(NSText.copy(_:)), "c"),
-            item("Copy Markdown", #selector(copyMarkdown(_:)), "c", [.command, .shift]),
-            standard("Select All", #selector(NSText.selectAll(_:)), "a"),
-            .separator(),
-            submenu("Find", [
-                item("Find…", #selector(showFind(_:)), "f"),
-                item("Find Next", #selector(findNext(_:)), "g"),
-                item("Find Previous", #selector(findPrevious(_:)), "g", [.command, .shift]),
-            ]),
-        ]))
-        main.addItem(submenu("View", [
-            item("Show Outline", #selector(toggleOutline(_:)), "s", [.command, .control]),
-            item("Show Source", #selector(toggleSource(_:)), "u", [.command, .option]),
-            item("Wrap Code Lines", #selector(toggleWrap(_:)), "l", [.command, .option]),
-            .separator(),
-            item("Bigger Text", #selector(biggerText(_:)), "="),
-            item("Smaller Text", #selector(smallerText(_:)), "-"),
-            item("Actual Size", #selector(actualSize(_:)), "0"),
-            .separator(),
-            standard("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]),
-        ]))
-        main.addItem(submenu("Document", [
-            item("Show Latest Revision", #selector(refreshDocument(_:)), "r"),
-            item("Older Revision", #selector(olderRevision(_:)), "[", [.command, .option]),
-            item("Newer Revision", #selector(newerRevision(_:)), "]", [.command, .option]),
-            .separator(),
-            item("Document Details", #selector(showDetails(_:)), "i"),
-            .separator(),
-            item("Return to Terminal", #selector(returnToTerminal(_:)), "r", [.command, .shift]),
-        ]))
+        main.addItem(editMenu())
+        main.addItem(viewMenu(fullScreen: true))
+        main.addItem(documentMenu(returnItem: true))
         let windowMenu = submenu("Window", [
             standard("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
             standard("Zoom", #selector(NSWindow.performZoom(_:))),
@@ -297,5 +311,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         main.addItem(windowMenu)
         NSApp.windowsMenu = windowMenu.submenu
         return main
+    }
+
+    private func editMenu() -> NSMenuItem {
+        submenu("Edit", [
+            standard("Copy", #selector(NSText.copy(_:)), "c"),
+            item("Copy Markdown", #selector(copyMarkdown(_:)), "c", [.command, .shift]),
+            standard("Select All", #selector(NSText.selectAll(_:)), "a"),
+            .separator(),
+            submenu("Find", [
+                item("Find…", #selector(showFind(_:)), "f"),
+                item("Find Next", #selector(findNext(_:)), "g"),
+                item("Find Previous", #selector(findPrevious(_:)), "g", [.command, .shift]),
+            ]),
+        ])
+    }
+
+    private func viewMenu(fullScreen: Bool) -> NSMenuItem {
+        var items = [
+            item("Show Outline", #selector(toggleOutline(_:)), "s", [.command, .control]),
+            item("Show Source", #selector(toggleSource(_:)), "u", [.command, .option]),
+            item("Wrap Code Lines", #selector(toggleWrap(_:)), "l", [.command, .option]),
+            .separator(),
+            item("Bigger Text", #selector(biggerText(_:)), "="),
+            item("Smaller Text", #selector(smallerText(_:)), "-"),
+            item("Actual Size", #selector(actualSize(_:)), "0"),
+        ]
+        if fullScreen {
+            items += [.separator(), standard("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control])]
+        }
+        return submenu("View", items)
+    }
+
+    private func documentMenu(returnItem: Bool) -> NSMenuItem {
+        var items = [
+            item("Show Latest Revision", #selector(refreshDocument(_:)), "r"),
+            item("Older Revision", #selector(olderRevision(_:)), "[", [.command, .option]),
+            item("Newer Revision", #selector(newerRevision(_:)), "]", [.command, .option]),
+            .separator(),
+            item("Document Details", #selector(showDetails(_:)), "i"),
+        ]
+        if returnItem {
+            items += [.separator(), item("Return to Terminal", #selector(returnToTerminal(_:)), "r", [.command, .shift])]
+        }
+        return submenu("Document", items)
     }
 }

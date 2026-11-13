@@ -7,37 +7,44 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import { arr, obj, str, opt, int, bool, lit, union, type Static } from "@earendil-works/pi-schema";
 import { toolDisplay } from "./display.ts";
-import { showCommand } from "./show.ts";
+import type { Context } from "@earendil-works/chord/context";
+import { previousNative } from "./native-responses.ts";
+import { paneCommand } from "./pane-command.ts";
+import { previousOrdinary, responseSnapshotWrite, type ResponseSnapshot } from "./responses.ts";
 import { digest, LIMITS, type MarkdownStore, StoreError, validateInput, type AssetRecord, type CapturedAsset, type ContentOrigin, type ErrorCode, type PublicationPlan, type ReferenceInventory, type WriteInput, type WriteResult } from "./store.ts";
 
 export const PublishParameters = obj({
-	title: str({ minLength: 1, maxLength: 200, description: "One-line document title." }),
-	text: opt(str({ description: "Exact Markdown source. Supply text or file, not both." })),
+	title: opt(str({ minLength: 1, maxLength: 200, description: "One-line document title. Required with text or file." })),
+	text: opt(str({ description: "Exact Markdown source. Supply one of text, file or response." })),
 	file: opt(str({ minLength: 1, description: "Explicit local UTF-8 source path, relative to the working directory or absolute. The source file stays unchanged." })),
+	response: opt(lit("previous", { description: "Save the exact earlier answer instead of new text: the newest assistant response with text before the newest user message. Takes no title, document, expectedRevision or reuseKey." })),
 	document: opt(str({ description: "Stable ID of a published document to update." })),
 	expectedRevision: opt(int({ minimum: 1 })),
 	reuseKey: opt(str({ minLength: 1, maxLength: 256, description: "Explicit request identity. Equal input reuses the first publication; different input conflicts." })),
 }, { open: false });
 export type PublishInput = Static<typeof PublishParameters>;
-export type PublishOutcome = { ok: true; documentId: string; revision: number; digest: string; bytes: number; title: string; kind: "published"; created: boolean; replayed: boolean; selfContained?: boolean; references: { state: "inspected" | "uninspected"; retained: number; embedded: number; external: number; unavailable: number; localLinks: number }; provenance: ContentOrigin; open: string; show: string[] } | { ok: false; error: { code: ErrorCode; message: string; currentRevision?: number; currentDigest?: string } };
+export type PublishOutcome = { ok: true; documentId: string; revision: number; digest: string; bytes: number; title: string; kind: "published" | "response"; created: boolean; replayed: boolean; selfContained?: boolean; references: { state: "inspected" | "uninspected"; retained: number; embedded: number; external: number; unavailable: number; localLinks: number }; provenance: ContentOrigin; open: string; show?: string[]; showUnavailable?: string } | { ok: false; error: { code: ErrorCode; message: string; currentRevision?: number; currentDigest?: string } };
 const OriginSchema = obj({ kind: str(), capturedAt: str() }, { open: true });
 export const PublishOutcomeSchema = union([
-	obj({ ok: lit(true), documentId: str(), revision: int(), digest: str(), bytes: int(), title: str(), kind: lit("published"), created: bool(), replayed: bool(), selfContained: opt(bool()), references: obj({ state: union([lit("inspected"), lit("uninspected")]), retained: int(), embedded: int(), external: int(), unavailable: int(), localLinks: int() }), provenance: OriginSchema, open: str(), show: arr(str()) }),
+	obj({ ok: lit(true), documentId: str(), revision: int(), digest: str(), bytes: int(), title: str(), kind: union([lit("published"), lit("response")]), created: bool(), replayed: bool(), selfContained: opt(bool()), references: obj({ state: union([lit("inspected"), lit("uninspected")]), retained: int(), embedded: int(), external: int(), unavailable: int(), localLinks: int() }), provenance: OriginSchema, open: str(), show: opt(arr(str())), showUnavailable: opt(str()) }),
 	obj({ ok: lit(false), error: obj({ code: union(["invalid", "too-large", "not-found", "conflict", "replay-conflict", "file-unreadable", "store-failure"].map((code) => lit(code))), message: str(), currentRevision: opt(int()), currentDigest: opt(str()) }) }),
 ]);
 const REMEDY = "Reference inspection unavailable. Build with node extensions/markdown/native/build.mts.";
-const DESCRIPTION = "Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Publish requested documents or long deliverables, not every reply. The result's show command displays the document in a terminal: when the operator should read it now, run that command in one terminal pane beside the operator, such as a split or floating pane that closes when the command exits. Open one pane for each document, not one for each update.";
+const DESCRIPTION = "Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Publish requested documents or long deliverables, not every reply. When the operator should read a document now, run the result's show command as the program of one new split or floating terminal pane beside the operator, in a pane that closes when its program ends: the native reader window then sits over that pane, with real selection, copying, find, links and scrolling. An open reader follows new revisions of its document, so publish a correction as an update to the same document instead of opening another pane. To show a stored document again later, run the same command with that document's ID: the reader returns to the saved reading position. To show an earlier answer exactly, use response \"previous\" instead of retyping it. To explain something visually, write an SVG or PNG diagram beside a Markdown file, reference it with a relative image link, and publish the file: the revision keeps the image.";
 export type ReferenceRunner = (tool: string, source: string) => Promise<string>;
 export type InspectionOptions = { app?: string; runner?: ReferenceRunner; toolPath?: string };
-export type PublishOptions = InspectionOptions & { store: MarkdownStore; cwd: string; provenance?: Partial<ContentOrigin>; plan?: PublicationPlan };
+export type PublishOptions = InspectionOptions & { store: MarkdownStore; cwd: string; provenance?: Partial<ContentOrigin>; plan?: PublicationPlan; previousResponse?: () => Promise<ResponseSnapshot> };
 export type ReferenceInspection = { version: 1; images: string[]; links: string[]; truncated: boolean };
 
-function validateParameters(value: PublishInput): void {
+/** Checks a publication's parameters and returns its title. */
+function validateParameters(value: PublishInput): string {
 	if (!value || typeof value !== "object" || typeof value.title !== "string") throw new StoreError("invalid", "A title and one source are required.");
+	if (value.response !== undefined) throw new StoreError("invalid", "Supply exactly one of text, file or response.");
 	if ((typeof value.text === "string") === (typeof value.file === "string")) throw new StoreError("invalid", "Supply exactly one of text or file.");
 	if ((value.document === undefined) !== (value.expectedRevision === undefined)) throw new StoreError("invalid", "Updates require document and expectedRevision together.");
 	if (value.expectedRevision !== undefined && (!Number.isSafeInteger(value.expectedRevision) || value.expectedRevision < 1)) throw new StoreError("invalid", "Expected revision must be a positive integer.");
 	if (value.reuseKey !== undefined && (typeof value.reuseKey !== "string" || !value.reuseKey || value.reuseKey.length > 256 || /[\p{Cc}\p{Cf}\ud800-\udfff]/u.test(value.reuseKey))) throw new StoreError("invalid", "Reuse key must be nonempty text of at most 256 characters.");
+	return value.title;
 }
 export function invocationDigest(params: PublishInput, cwd: string): string {
 	return digest(JSON.stringify({ title: params.title, ...(params.file === undefined ? { text: params.text } : { file: resolve(cwd, params.file) }), ...(params.document === undefined ? {} : { document: params.document, expectedRevision: params.expectedRevision }), ...(params.reuseKey === undefined ? {} : { reuseKey: params.reuseKey }) }));
@@ -161,25 +168,35 @@ export async function fileSnapshotInput(path: string, options: InspectionOptions
 	return { title: basename(resolved), source, contentOrigin: { kind: "file", path: resolved, cwd: options.cwd, capturedAt: new Date().toISOString() }, ...captured };
 }
 export async function preparePublication(params: PublishInput, options: PublishOptions): Promise<WriteInput> {
-	validateParameters(params);
+	const title = validateParameters(params);
 	let input: WriteInput;
 	if (params.file !== undefined) input = await fileSnapshotInput(params.file, options);
 	else {
-		input = { title: params.title, source: params.text ?? "", contentOrigin: { kind: "tool", capturedAt: new Date().toISOString(), cwd: options.cwd } };
+		input = { title, source: params.text ?? "", contentOrigin: { kind: "tool", capturedAt: new Date().toISOString(), cwd: options.cwd } };
 		validateInput(input);
 		if (!input.source.trim()) throw new StoreError("invalid", "Publication source must not be empty.");
 		Object.assign(input, await captureReferences(await inspectReferences(input.source, options)));
 	}
 	if (!input.source.trim()) throw new StoreError("invalid", "Publication source must not be empty.");
-	input.title = params.title;
+	input.title = title;
 	input.contentOrigin = { ...options.provenance, ...input.contentOrigin, host: hostname() };
 	input.invocationDigest = invocationDigest(params, options.cwd);
 	validateInput(input);
 	return input;
 }
-export function publicationOutcome(result: WriteResult, root: string): PublishOutcome {
+/** Saves the earlier answer exactly as a response snapshot; the same response always names the same snapshot. */
+async function snapshotPrevious(params: PublishInput, options: PublishOptions): Promise<PublishOutcome> {
+	if (params.text !== undefined || params.file !== undefined) throw new StoreError("invalid", "Supply exactly one of text, file or response.");
+	if (params.title !== undefined || params.document !== undefined || params.expectedRevision !== undefined || params.reuseKey !== undefined) throw new StoreError("invalid", "A response snapshot takes no title, document, expectedRevision or reuseKey.");
+	if (!options.previousResponse) throw new StoreError("invalid", "This host cannot read earlier responses.");
+	let response: ResponseSnapshot;
+	try { response = await options.previousResponse(); } catch (error) { throw new StoreError("not-found", error instanceof Error ? error.message : String(error)); }
+	const { sourceKey, input } = responseSnapshotWrite(response);
+	return publicationOutcome(await options.store.snapshot(sourceKey, "response", input), options.store.root, options.app);
+}
+export function publicationOutcome(result: WriteResult, root: string, app: string | undefined): PublishOutcome {
 	const { revision } = result; const items = revision.references.items;
-	return { ok: true, documentId: revision.document, revision: revision.revision, digest: revision.digest, bytes: revision.bytes, title: revision.title, kind: "published", created: result.created, replayed: result.replayed, ...(revision.selfContained === undefined ? {} : { selfContained: revision.selfContained }), references: { state: revision.references.state, retained: items.filter((item) => item.state === "retained").length, embedded: items.filter((item) => item.state === "embedded").length, external: items.filter((item) => item.state === "external").length, unavailable: items.filter((item) => item.state === "unavailable").length, localLinks: items.filter((item) => item.state === "local-only").length }, provenance: revision.contentOrigin, open: `/markdown ${revision.document}`, show: showCommand(root, revision.document) };
+	return { ok: true, documentId: revision.document, revision: revision.revision, digest: revision.digest, bytes: revision.bytes, title: revision.title, kind: result.document.kind === "response" ? "response" : "published", created: result.created, replayed: result.replayed, ...(revision.selfContained === undefined ? {} : { selfContained: revision.selfContained }), references: { state: revision.references.state, retained: items.filter((item) => item.state === "retained").length, embedded: items.filter((item) => item.state === "embedded").length, external: items.filter((item) => item.state === "external").length, unavailable: items.filter((item) => item.state === "unavailable").length, localLinks: items.filter((item) => item.state === "local-only").length }, provenance: revision.contentOrigin, open: `/markdown ${revision.document}`, ...paneCommand(app, root, revision.document) };
 }
 function failure(error: unknown): PublishOutcome {
 	if (!(error instanceof StoreError)) return { ok: false, error: { code: "store-failure", message: "Private document store is unavailable." } };
@@ -194,8 +211,8 @@ async function normaliseInvocation(params: PublishInput, store: MarkdownStore, r
 	return { ...params, document: stored.document.id };
 }
 async function save(params: PublishInput, input: WriteInput, options: PublishOptions): Promise<PublishOutcome> {
-	if (params.document) return publicationOutcome(await options.store.update(params.document, params.expectedRevision ?? 0, input, { plan: options.plan, reuseKey: params.reuseKey }), options.store.root);
-	return publicationOutcome(await options.store.create(input, { plan: options.plan, reuseKey: params.reuseKey }), options.store.root);
+	if (params.document) return publicationOutcome(await options.store.update(params.document, params.expectedRevision ?? 0, input, { plan: options.plan, reuseKey: params.reuseKey }), options.store.root, options.app);
+	return publicationOutcome(await options.store.create(input, { plan: options.plan, reuseKey: params.reuseKey }), options.store.root, options.app);
 }
 async function savedPlan(store: MarkdownStore, plan: PublicationPlan): Promise<WriteResult | undefined> {
 	try {
@@ -211,48 +228,65 @@ async function previousPlan(params: PublishInput, options: PublishOptions): Prom
 }
 export async function publish(params: PublishInput, options: PublishOptions): Promise<PublishOutcome> {
 	try {
+		if (params?.response !== undefined) return await snapshotPrevious(params, options);
 		params = await normaliseInvocation(params, options.store);
 		const plan = await previousPlan(params, options);
 		const saved = plan ? await savedPlan(options.store, plan) : undefined;
-		if (saved) return publicationOutcome(saved, options.store.root);
+		if (saved) return publicationOutcome(saved, options.store.root, options.app);
 		return await save(params, await preparePublication(params, options), { ...options, plan });
 	} catch (error) { return failure(error); }
 }
 /** An attached agent terminal sends slash text to the conversation, so the receipt names the view first. */
-function openingRoute(documentId: string): string {
-	return `The operator opens it from the Markdown view under Published (in the agent view, under Owner views). In an ordinary Pi session, /markdown ${documentId} also opens it.`;
+function openingRoute(outcome: Extract<PublishOutcome, { ok: true }>): string {
+	if (outcome.kind === "response") return `In an ordinary Pi session, /markdown ${outcome.documentId} opens it.`;
+	return `The operator opens it from the Markdown view under Published (in the agent view, under Owner views). In an ordinary Pi session, /markdown ${outcome.documentId} also opens it.`;
 }
 export function publicationText(outcome: PublishOutcome): string {
 	if (!outcome.ok) return `Markdown publication failed (${outcome.error.code}): ${outcome.error.message}`;
-	return `Saved ${outcome.documentId}, revision ${outcome.revision}, ${outcome.bytes} bytes.\nNo window opened. ${openingRoute(outcome.documentId)}${outcome.references.state === "uninspected" ? ` ${REMEDY}` : ""}\nTo show it to the operator, run this command in a terminal pane that closes when the command exits: ${JSON.stringify(outcome.show)}. In that pane, o opens the native reader and q closes the pane.`;
+	return `Saved ${outcome.documentId}, revision ${outcome.revision}, ${outcome.bytes} bytes.\nNo window opened. ${openingRoute(outcome)}${outcome.references.state === "uninspected" ? ` ${REMEDY}` : ""}\n${showText(outcome)}`;
+}
+function showText(outcome: Extract<PublishOutcome, { ok: true }>): string {
+	if (!outcome.show) return `It cannot be shown in a terminal pane: ${outcome.showUnavailable ?? "no reader command is available."}`;
+	return `To show it to the operator now, run this command as the program of a new split or floating terminal pane that closes when its program ends: ${JSON.stringify(outcome.show)}. The reader window sits over that pane and follows new revisions of this document; q in the pane or the reader's close button ends it.`;
 }
 export function createPublishTool(options: Omit<PublishOptions, "cwd"> & { cwd?: string }): ToolDefinition<typeof PublishParameters, PublishOutcome> {
 	const presentation = toolDisplay().tools[0];
-	return { ...presentation, name: "markdown_publish", label: "Markdown Publish", description: DESCRIPTION, promptSnippet: "Save an exact Markdown document for the native reader; its show command displays it in a terminal pane.", parameters: PublishParameters, outputSchema: PublishOutcomeSchema, async execute(_id, params, _signal, _update, context) {
-		const outcome = await publish(params as PublishInput, { ...options, cwd: context.cwd, provenance: { ...options.provenance, session: context.sessionManager.getSessionId(), ...(context.model ? { model: `${context.model.provider}/${context.model.id}` } : {}) } });
+	return { ...presentation, name: "markdown_publish", label: "Markdown Publish", description: DESCRIPTION, promptSnippet: "Save an exact Markdown document for the native reader; its show command puts the reader over a terminal pane.", parameters: PublishParameters, outputSchema: PublishOutcomeSchema, async execute(_id, params, _signal, _update, context) {
+		const outcome = await publish(params as PublishInput, { ...options, cwd: context.cwd, provenance: { ...options.provenance, session: context.sessionManager.getSessionId(), ...(context.model ? { model: `${context.model.provider}/${context.model.id}` } : {}) }, previousResponse: async () => previousOrdinary(context.sessionManager) });
 		return { content: [{ type: "text", text: publicationText(outcome) }], details: outcome, structuredContent: outcome, isError: !outcome.ok };
 	} };
 }
-export function createNativePublishTool(host: { durable: typeof Durable; cwd: string; storageId?: string }, options: Omit<PublishOptions, "cwd" | "plan">): Durable.ToolRegistration<typeof PublishParameters, Durable.JsonObject> {
+type NativeHost = { durable: typeof Durable; cwd: string; storageId?: string; harness?: Pick<Durable.Harness, "conversation"> };
+export function createNativePublishTool(host: NativeHost, options: Omit<PublishOptions, "cwd" | "plan">): Durable.ToolRegistration<typeof PublishParameters, Durable.JsonObject> {
 	return host.durable.defineTool({ name: "markdown_publish", description: DESCRIPTION, parameters: PublishParameters, structuredOutputSchema: PublishOutcomeSchema, replay: "safe", async execute(params, api, context) {
-		let outcome: PublishOutcome;
 		try {
-			const remembered = await api.memo<PublicationPlan>("markdown.publication", context);
-			params = await normaliseInvocation(params, options.store, remembered);
-			const cwd = api.env?.cwd ?? host.cwd;
-			const previous = await previousPlan(params, { ...options, cwd, plan: remembered });
-			if (previous) await api.memo("markdown.publication", previous, context);
-			const saved = previous ? await savedPlan(options.store, previous) : undefined;
-			if (saved) outcome = publicationOutcome(saved, options.store.root);
-			else {
-				const agent = await api.agent(context);
-				const local = { ...options, cwd, provenance: { ...options.provenance, session: host.storageId, conversation: String(api.conversationId), ...(agent.model ? { model: `${agent.model.provider}/${agent.model.modelId}` } : {}) } };
-				const input = await preparePublication(params, local);
-				const candidate = await options.store.preparePlan(input, { document: params.document, expectedRevision: params.expectedRevision, reuseKey: params.reuseKey });
-				const plan = await api.memo("markdown.publication", previous ?? candidate, context);
-				outcome = await save(params, input, { ...local, plan });
-			}
-		} catch (error) { outcome = failure(error); }
-		return { output: [{ type: "text", text: publicationText(outcome) }], structuredOutput: outcome, details: outcome, isError: !outcome.ok };
+			if (params?.response !== undefined) return nativeResult(await snapshotPrevious(params, { ...options, cwd: api.env?.cwd ?? host.cwd, previousResponse: () => nativePrevious(host, api, context) }));
+			return nativeResult(await nativePublication(params, api, context, host, options));
+		} catch (error) { return nativeResult(failure(error)); }
 	} });
+}
+/** A native publication memoises its random plan in the tool task before the document write. */
+async function nativePublication(params: PublishInput, api: Durable.ToolExecutionApi, context: Context, host: NativeHost, options: Omit<PublishOptions, "cwd" | "plan">): Promise<PublishOutcome> {
+	const remembered = await api.memo<PublicationPlan>("markdown.publication", context);
+	params = await normaliseInvocation(params, options.store, remembered);
+	const cwd = api.env?.cwd ?? host.cwd;
+	const previous = await previousPlan(params, { ...options, cwd, plan: remembered });
+	if (previous) await api.memo("markdown.publication", previous, context);
+	const saved = previous ? await savedPlan(options.store, previous) : undefined;
+	if (saved) return publicationOutcome(saved, options.store.root, options.app);
+	const agent = await api.agent(context);
+	const local = { ...options, cwd, provenance: { ...options.provenance, session: host.storageId, conversation: String(api.conversationId), ...(agent.model ? { model: `${agent.model.provider}/${agent.model.modelId}` } : {}) } };
+	const input = await preparePublication(params, local);
+	const candidate = await options.store.preparePlan(input, { document: params.document, expectedRevision: params.expectedRevision, reuseKey: params.reuseKey });
+	const plan = await api.memo("markdown.publication", previous ?? candidate, context);
+	return await save(params, input, { ...local, plan });
+}
+function nativeResult(outcome: PublishOutcome) {
+	return { output: [{ type: "text" as const, text: publicationText(outcome) }], structuredOutput: outcome, details: outcome, isError: !outcome.ok };
+}
+/** The earlier answer in the calling native conversation. */
+async function nativePrevious(host: NativeHost, api: Pick<Durable.ToolExecutionApi, "conversationId" | "env">, context: Context): Promise<ResponseSnapshot> {
+	const conversation = await host.harness?.conversation(api.conversationId, context);
+	if (!conversation) throw new Error("The calling conversation is not readable.");
+	return previousNative({ conversation, durable: host.durable, storageId: host.storageId ?? "", cwd: api.env?.cwd ?? host.cwd }, context);
 }

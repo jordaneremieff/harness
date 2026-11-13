@@ -36,6 +36,12 @@ final class WindowManager: NSObject, NSWindowDelegate {
         readers[reference.key]?.model
     }
 
+    /// Lists a window that another owner created and closes, such as the pane reader's window, so
+    /// that menu actions reach its model.
+    func adopt(_ window: NSWindow, model: ReaderModel) {
+        readers[model.reference.key] = Reader(window: window, model: model)
+    }
+
     /// `digest` is the digest of an accepted open request, which the open's load must find.
     @discardableResult
     func open(_ reference: DocumentReference, revision: Int?, digest: String? = nil, origin: LaunchOrigin?) -> ReaderModel {

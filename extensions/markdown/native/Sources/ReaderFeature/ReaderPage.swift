@@ -85,7 +85,10 @@ enum NavigationRequest {
         let scheme = url.scheme?.lowercased() ?? ""
         switch scheme {
         case "about":
-            if url.fragment != nil, !expectingLoad { return .sameDocument }
+            // WebKit sometimes reports an in-page link of the about:blank document with its number
+            // sign percent-encoded, as about:blank%23<anchor>.
+            let fragment = url.fragment ?? url.absoluteString.removingPercentEncoding.flatMap { URL(string: $0)?.fragment }
+            if fragment != nil, !expectingLoad { return .sameDocument }
             return expectingLoad ? .documentLoad : .blocked(url)
         case MarkdownRenderer.actionScheme:
             let parts = url.absoluteString.dropFirst(scheme.count + 1).split(separator: "/")
@@ -192,23 +195,6 @@ enum PageScript {
     """
 
     static let selectionText = "return String(window.getSelection());"
-
-    static let viewportMetrics = """
-    const root = document.scrollingElement || document.documentElement;
-    return {scrollY: window.scrollY, documentHeight: root.scrollHeight};
-    """
-
-    static let configureViewport = """
-    document.documentElement.dataset.ts = String(textSize);
-    document.documentElement.dataset.wrap = wrap ? "1" : "0";
-    if (background) document.documentElement.style.setProperty('--background', background);
-    else document.documentElement.style.removeProperty('--background');
-    // Disable scroll animation for deterministic viewport requests.
-    document.documentElement.style.scrollBehavior = 'auto';
-    await document.fonts.ready;
-    await Promise.all(Array.from(document.images, image => image.decode().catch(() => {})));
-    return document.documentElement.getBoundingClientRect().height;
-    """
 
     static let applySettings = """
     document.documentElement.dataset.ts = String(textSize);
