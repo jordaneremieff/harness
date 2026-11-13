@@ -81,7 +81,11 @@ test("headless commands notify without session messages or stdout and resolve bo
 				assert.equal(notify.mock.calls.at(-1)?.arguments[0], `Selected ${id.slice(0, 11)} revision 1. No window was opened.`);
 			}
 		}
-		assert.equal(notify.mock.callCount(), 7);
+		for (const word of ["help", "Recent", "md-xyz"]) {
+			await handler(word, context("json"));
+			assert.deepEqual(notify.mock.calls.at(-1)?.arguments, ["Usage: /markdown recent | published | <id> | file <path>", "error"]);
+		}
+		assert.equal(notify.mock.callCount(), 10);
 		assert.equal(messages.mock.callCount(), 0);
 		assert.equal(stdout.mock.callCount(), 0);
 	} finally {

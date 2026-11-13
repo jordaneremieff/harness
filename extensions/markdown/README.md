@@ -68,6 +68,7 @@ Limits: source 2 MiB UTF-8; title 200 Unicode code points on one line (joined em
 - `/markdown published` lists deliberately published documents, newest change first, with the short ID, revision and age.
 - `/markdown <id or unique prefix>` opens a stored document. Prefixes require at least six characters.
 - `/markdown file <path>` captures an explicit local file encoded as UTF-8 and opens its snapshot. Paths resolve against the session working directory; a leading `~` names the home directory. Double quotes around the whole path are optional.
+- Any other argument answers with the usage `recent | published | <id> | file <path>`.
 
 The Markdown destination uses the shared operator frame. Enter or the Read control opens the selected item; `l` reads the latest response, `n` selects Recent responses, and `p` selects Published. `/` filters the list. The footer and More menu use the same actions as the keys. Selection and preview never reveal an app.
 

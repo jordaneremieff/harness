@@ -13,6 +13,7 @@ import type { MarkdownOperations, MarkdownScope, MarkdownViewState } from "./ope
 
 const OWNER = fileURLToPath(import.meta.url);
 const localSettings = () => readSettings({ agentDir: getAgentDir() }).values;
+const USAGE = "Usage: /markdown recent | published | <id> | file <path>";
 const clean = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 500);
 export function markdownCompletions(prefix: string) {
 	return ["recent", "published", "file"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
@@ -133,6 +134,7 @@ export default function markdown(pi: ExtensionAPI): void {
 			let result: string;
 			if (!value) result = await operations.latest(signal);
 			else if (value === "file" || value.startsWith("file ")) result = await openFile(ctx, value.slice(4).trim().replace(/^"(.*)"$/u, "$1"), signal);
+			else if (!/^md-[0-9a-f]{1,20}$/u.test(value)) throw new Error(USAGE);
 			else {
 				const reveal = await import("./reveal.ts");
 				signal.throwIfAborted();
