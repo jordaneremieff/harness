@@ -175,6 +175,15 @@ such as `session.select` displays it. Save the returned target and effect record
 ID. Cleanup of a floating pane closes its block, and Rex removes the emptied
 floating layer.
 
+A pane can also host a Mac application window. Programs in Rex panes run under
+the Rex server, so they receive the accessibility and screen recording access
+that the operator granted to it (`server.apple.privacy_status` reports it), and
+the Mac client exposes each terminal as an accessibility text area with its
+screen text and frame. A program that places its own window over its pane
+through accessibility, such as a document reader, therefore runs like any other
+pane program: Rex owns the pane's place in the workspace, the program owns its
+window, and closing the pane ends the program.
+
 Use `inspect` before application input. Deliver text with `input`; add keys such
 as `enter` when the application needs them. `observe: true` returns a subsequent
 bounded observation. The agent interprets prompts, modes, errors and results.
