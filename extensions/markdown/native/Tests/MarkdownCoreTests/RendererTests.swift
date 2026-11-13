@@ -134,6 +134,19 @@ private func render(_ source: String, resolver: AssetResolving = NoAssetResolver
         #expect(rendered.body.contains("<span class=\"lang\">code</span>"))
     }
 
+    @Test func pureCRLFCodeCopyKeepsInternalLineEndings() {
+        let source = "```text\r\nfirst\r\n\tsecond  \r\n\r\nlast\r\n```\r\n"
+        #expect(render(source).codeBlocks.first?.literal == "first\r\n\tsecond  \r\n\r\nlast")
+        let nested = "> ```text\r\n> first\r\n> second\r\n> ```\r\n"
+        #expect(render(nested).codeBlocks.first?.literal == "first\r\nsecond")
+        #expect(render("---\r\na: 1\r\nb: 2\r\n---\r\n").codeBlocks.first?.literal == "a: 1\r\nb: 2")
+    }
+
+    @Test func mixedLineEndingsCopyAsLF() {
+        #expect(render("```text\r\nfirst\r\nsecond\n```\r\n").codeBlocks.first?.literal == "first\nsecond")
+        #expect(render("text\r\n\n```text\r\nfirst\r\nsecond\r\n```\r\n").codeBlocks.first?.literal == "first\nsecond")
+    }
+
     @Test func malformedAndUnknownFencesStayVisible() {
         let rendered = render("```mermaid\ngraph TD\n```\n\n```\nnever closed\n# not a heading\n")
         #expect(rendered.codeBlocks.map(\.info) == ["mermaid", ""])

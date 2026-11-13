@@ -11,7 +11,7 @@ public struct OutlineEntry: Sendable, Equatable, Identifiable, Hashable {
 
 public struct CodeBlock: Sendable, Equatable {
     public var info: String
-    /// The code exactly as written between the fences, without the final line break.
+    /// Parsed code without the final line break; uniformly CRLF sources retain CRLF internally.
     public var literal: String
 }
 
@@ -61,11 +61,13 @@ public enum MarkdownRenderer {
     public static let assetScheme = "reader-asset"
 
     public static func render(_ source: String, resolver: AssetResolving, nonce: String = newNonce()) -> RenderedDocument {
-        var context = Context(resolver: resolver, nonce: nonce)
+        let withoutCRLF = source.replacingOccurrences(of: "\r\n", with: "")
+        let codeLineEnding = source.contains("\r\n") && !withoutCRLF.contains("\r") && !withoutCRLF.contains("\n") ? "\r\n" : "\n"
+        var context = Context(resolver: resolver, nonce: nonce, codeLineEnding: codeLineEnding)
         let (frontMatter, body) = splitFrontMatter(source)
         var html = ""
         if let frontMatter {
-            context.codeBlocks.append(CodeBlock(info: "front matter", literal: frontMatter))
+            context.codeBlocks.append(CodeBlock(info: "front matter", literal: frontMatter.replacingOccurrences(of: "\n", with: codeLineEnding)))
             html += "<div class=\"blk\" data-key=\"front-matter\">"
                 + codeFigure(index: 0, label: "Front matter", literal: frontMatter, nonce: nonce)
                 + "</div>\n"
@@ -97,6 +99,7 @@ public enum MarkdownRenderer {
     struct Context {
         let resolver: AssetResolving
         let nonce: String
+        let codeLineEnding: String
         var outline: [OutlineEntry] = []
         var usedAnchors: Set<String> = []
         /// The next numeric suffix to try for each anchor base.
@@ -111,9 +114,10 @@ public enum MarkdownRenderer {
         var blockCount = 0
         var leadingBlock: (text: String, isHeading: Bool)?
 
-        init(resolver: AssetResolving, nonce: String) {
+        init(resolver: AssetResolving, nonce: String, codeLineEnding: String) {
             self.resolver = resolver
             self.nonce = nonce
+            self.codeLineEnding = codeLineEnding
         }
     }
 
@@ -231,6 +235,7 @@ public enum MarkdownRenderer {
             case CMARK_NODE_CODE_BLOCK:
                 var literal = string(cmark_node_get_literal(node))
                 if literal.hasSuffix("\n") { literal.removeLast() }
+                literal = literal.replacingOccurrences(of: "\n", with: context.codeLineEnding)
                 context.codeBlocks.append(CodeBlock(info: string(cmark_node_get_fence_info(node)), literal: literal))
                 work.append(.code(node, index: context.codeBlocks.count - 1))
             case CMARK_NODE_HTML_BLOCK:
@@ -466,7 +471,7 @@ public enum MarkdownRenderer {
     /// as a rule and a heading.
     static func splitFrontMatter(_ source: String) -> (String?, String) {
         guard source.hasPrefix("---\n") || source.hasPrefix("---\r\n") else { return (nil, source) }
-        var lines = source.split(separator: "\n", maxSplits: 400, omittingEmptySubsequences: false)
+        var lines = source.split(maxSplits: 400, omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" })
         guard lines.count > 2 else { return (nil, source) }
         lines.removeFirst()
         var front: [Substring] = []

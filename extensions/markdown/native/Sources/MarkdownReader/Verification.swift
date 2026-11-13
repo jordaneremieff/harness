@@ -26,6 +26,7 @@ struct Verification {
         do {
             let store = try VerifyStore(root: workspace.appendingPathComponent("store"))
             let context = Context(windows: windows, workspace: workspace, store: store)
+            checks.append(await context.codeLineEndings(keep: &keep))
             checks.append(await context.tableColumnWidths(keep: &keep))
             checks.append(await context.contentScript(keep: &keep))
             checks.append(await context.remoteLoads(keep: &keep))
@@ -298,6 +299,17 @@ struct Context {
         } catch {
             return .init(name: "find-moves-selection", pass: false, detail: String(describing: error))
         }
+    }
+
+    func codeLineEndings(keep: inout [NSWindow]) async -> Verification.Check {
+        do {
+            let source = "```text\r\nfirst\r\nsecond\r\n```\r\n"
+            let model = try await openFile("crlf-copy.md", source, keep: &keep)
+            model.copyCode(0)
+            let copied = CheckRunner.checkPasteboard.string(forType: .string) ?? ""
+            let pass = copied == "first\r\nsecond" && model.snapshot?.source == source
+            return .init(name: "code-copy-crlf", pass: pass, detail: "source retained exactly: \(model.snapshot?.source == source); copy UTF8: \(Array(copied.utf8))")
+        } catch { return .init(name: "code-copy-crlf", pass: false, detail: String(describing: error)) }
     }
 
     func tableColumnWidths(keep: inout [NSWindow]) async -> Verification.Check {
