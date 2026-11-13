@@ -100,6 +100,17 @@ let docC = "md-00000000001111111111"
         #expect(throws: StoreError.invalidIdentifier("md-ABCDEF0123456789abcd")) { try reader.document("md-ABCDEF0123456789abcd") }
     }
 
+    @Test func oversizedRecordNamesItsFileAndLimit() throws {
+        let store = try FixtureStore()
+        defer { store.remove() }
+        let dir = try store.addRevision(docA, revision: 1, source: "small")
+        let bytes = Limits.recordBytes + 1
+        try Data(repeating: 0x20, count: bytes).write(to: dir.appendingPathComponent("revision.json"))
+        let expected = StoreError.tooLarge(name: "revision.json", bytes: bytes, limit: Limits.recordBytes)
+        #expect(throws: expected) { try DirectoryStore(root: store.root).loadRevision(docA) }
+        #expect(expected.description == "revision.json has \(bytes) bytes; the limit is \(Limits.recordBytes).")
+    }
+
     @Test func refusesOtherVersionsAndNonStores() throws {
         let store = try FixtureStore()
         defer { store.remove() }
@@ -206,7 +217,7 @@ let docC = "md-00000000001111111111"
         let store = try FixtureStore()
         defer { store.remove() }
         try store.addRevision(docA, revision: 1, source: String(repeating: "x", count: Limits.sourceBytes + 1))
-        #expect(throws: StoreError.tooLarge(Limits.sourceBytes + 1)) { try DirectoryStore(root: store.root).loadRevision(docA) }
+        #expect(throws: StoreError.tooLarge(name: "source.md", bytes: Limits.sourceBytes + 1, limit: Limits.sourceBytes)) { try DirectoryStore(root: store.root).loadRevision(docA) }
     }
 }
 

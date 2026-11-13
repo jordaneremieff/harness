@@ -19,7 +19,7 @@ public enum StoreError: Error, Equatable, Sendable, CustomStringConvertible {
     case invalidIdentifier(String)
     case notFound(String)
     case outsideStore
-    case tooLarge(Int)
+    case tooLarge(name: String, bytes: Int, limit: Int)
     case notUTF8
     case digestMismatch
     /// The revision on disk no longer carries the digest that the accepted open request pinned.
@@ -33,7 +33,7 @@ public enum StoreError: Error, Equatable, Sendable, CustomStringConvertible {
         case .invalidIdentifier(let value): "Invalid document identifier: \(value)"
         case .notFound(let what): "Not found: \(what)"
         case .outsideStore: "The path resolves outside the store."
-        case .tooLarge(let bytes): "The source has \(bytes) bytes; the limit is \(Limits.sourceBytes)."
+        case .tooLarge(let name, let bytes, let limit): "\(name) has \(bytes) bytes; the limit is \(limit)."
         case .notUTF8: "The source is not valid UTF-8."
         case .digestMismatch: "The source bytes do not match the recorded digest."
         case .pinnedDigestMismatch(let revision): "Revision \(revision) changed after the open request was accepted; the reader does not show it."
@@ -289,7 +289,7 @@ public enum FileAccess {
         } catch {
             throw StoreError.unreadable("\(name): \(error.localizedDescription)")
         }
-        guard data.count <= limit else { throw StoreError.tooLarge(max(Int(info.st_size), data.count)) }
+        guard data.count <= limit else { throw StoreError.tooLarge(name: name, bytes: max(Int(info.st_size), data.count), limit: limit) }
         return (data, FileIdentity(info))
     }
 }
