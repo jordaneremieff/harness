@@ -163,7 +163,7 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 	assert.ok(tool.outputSchema);
 	const first = success(result.details);
 	assert.deepEqual(first.show, showCommand(store.root, first.documentId));
-	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(`\nTo show it to the operator in a terminal pane, run this command there: ${JSON.stringify(first.show)}. In that pane, o opens the native reader.`)); assert.equal(first.provenance.session, "first"); assert.equal(first.provenance.model, "faux/faux-1"); assert.ok(first.provenance.host);
+	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(`\nTo show it to the operator, run this command in a terminal pane that closes when the command exits: ${JSON.stringify(first.show)}. In that pane, o opens the native reader and q closes the pane.`)); assert.equal(first.provenance.session, "first"); assert.equal(first.provenance.model, "faux/faux-1"); assert.ok(first.provenance.host);
 	session = "second";
 	const updated = await tool.execute("next", { title: "Updated", text: "other", document: first.documentId.slice(0, 12), expectedRevision: 1 }, undefined, undefined, context);
 	assert.equal(success(updated.details).provenance.session, "second"); assert.equal(success(updated.details).revision, 2);

@@ -26,7 +26,7 @@ export const PublishOutcomeSchema = union([
 	obj({ ok: lit(false), error: obj({ code: union(["invalid", "too-large", "not-found", "conflict", "replay-conflict", "file-unreadable", "store-failure"].map((code) => lit(code))), message: str(), currentRevision: opt(int()), currentDigest: opt(str()) }) }),
 ]);
 const REMEDY = "Reference inspection unavailable. Build with node extensions/markdown/native/build.mts.";
-const DESCRIPTION = "Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Publish requested documents or long deliverables, not every reply. The result's show command displays the document in a terminal: when the operator should read it now, run that command in one terminal pane beside the operator, such as a split or floating pane. Open one pane for each document, not one for each update.";
+const DESCRIPTION = "Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Publish requested documents or long deliverables, not every reply. The result's show command displays the document in a terminal: when the operator should read it now, run that command in one terminal pane beside the operator, such as a split or floating pane that closes when the command exits. Open one pane for each document, not one for each update.";
 export type ReferenceRunner = (tool: string, source: string) => Promise<string>;
 export type InspectionOptions = { app?: string; runner?: ReferenceRunner; toolPath?: string };
 export type PublishOptions = InspectionOptions & { store: MarkdownStore; cwd: string; provenance?: Partial<ContentOrigin>; plan?: PublicationPlan };
@@ -224,7 +224,7 @@ function openingRoute(documentId: string): string {
 }
 export function publicationText(outcome: PublishOutcome): string {
 	if (!outcome.ok) return `Markdown publication failed (${outcome.error.code}): ${outcome.error.message}`;
-	return `Saved ${outcome.documentId}, revision ${outcome.revision}, ${outcome.bytes} bytes.\nNo window opened. ${openingRoute(outcome.documentId)}${outcome.references.state === "uninspected" ? ` ${REMEDY}` : ""}\nTo show it to the operator in a terminal pane, run this command there: ${JSON.stringify(outcome.show)}. In that pane, o opens the native reader.`;
+	return `Saved ${outcome.documentId}, revision ${outcome.revision}, ${outcome.bytes} bytes.\nNo window opened. ${openingRoute(outcome.documentId)}${outcome.references.state === "uninspected" ? ` ${REMEDY}` : ""}\nTo show it to the operator, run this command in a terminal pane that closes when the command exits: ${JSON.stringify(outcome.show)}. In that pane, o opens the native reader and q closes the pane.`;
 }
 export function createPublishTool(options: Omit<PublishOptions, "cwd"> & { cwd?: string }): ToolDefinition<typeof PublishParameters, PublishOutcome> {
 	const presentation = toolDisplay().tools[0];
