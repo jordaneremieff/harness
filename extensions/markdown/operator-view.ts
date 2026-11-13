@@ -21,11 +21,14 @@ export function markdownView(host: ViewHost, operations: MarkdownOperations, sta
 	let generation = 0;
 	let effect: AbortController | undefined;
 	let busy = false;
+	/** True while a list replaces the rows; a selection that moves because rows arrived is not the operator's change. */
+	let listing = false;
 	const cancel = () => { effect?.abort(); effect = undefined; busy = false; };
 	host.signal.addEventListener("abort", cancel, { once: true });
 	const filter = () => {
 		const query = state.query.toLocaleLowerCase();
-		browser.setItems(rows.filter((row) => `${identity(row)} ${label(row)}`.toLocaleLowerCase().includes(query)), state.selected);
+		listing = true;
+		try { browser.setItems(rows.filter((row) => `${identity(row)} ${label(row)}`.toLocaleLowerCase().includes(query)), state.selected); } finally { listing = false; }
 		host.requestRender();
 	};
 	const load = async (scope: MarkdownScope) => {
@@ -99,7 +102,7 @@ export function markdownView(host: ViewHost, operations: MarkdownOperations, sta
 		empty: () => "No documents or responses in this list.",
 		onSelect: (row) => {
 			const key = row ? identity(row) : undefined;
-			if (key !== state.selected) cancel();
+			if (!listing && key !== state.selected) cancel();
 			state.selected = key;
 		},
 	});

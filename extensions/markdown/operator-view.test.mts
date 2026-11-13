@@ -63,3 +63,34 @@ test("a published row shows the short stable ID, the revision and the age of its
 	assert.match(screen, /md-01234567 · r3 · 2h {2}Release notes/u);
 	f.controller.abort();
 });
+test("Read latest pressed before the first list arrives completes", async () => {
+	let finishLoad: () => void = () => {};
+	let received: AbortSignal | undefined;
+	let finishRead: () => void = () => {};
+	const f = fixture({ load: () => new Promise((resolve) => { finishLoad = () => resolve({ rows: [row("one"), row("two")], coverage: "responses" }); }), read: async () => "read", latest: async (signal) => { received = signal; await new Promise<void>((resolve) => { finishRead = resolve; }); return "latest opened"; } });
+	await tick();
+	action(f.view, "latest");
+	finishLoad(); await tick(); await tick();
+	assert.equal(received?.aborted, false, "the arriving list keeps the read");
+	finishRead(); await tick();
+	assert.ok(f.notices.includes("latest opened"));
+	f.controller.abort();
+});
+for (const [change, apply] of [
+	["a row change", (view: OperatorView) => { view.handleInput("\u001b[B"); }],
+	["a scope change", (view: OperatorView) => action(view, "published")],
+	["a query change", (view: OperatorView) => { view.handleInput("/"); view.handleInput("t"); }],
+	["a closed view", (_view: OperatorView, controller: AbortController) => controller.abort()],
+] as const) test(`${change} withdraws Read latest`, async () => {
+	let received: AbortSignal | undefined;
+	let finishRead: () => void = () => {};
+	const f = fixture({ load: async () => ({ rows: [row("one"), row("two")], coverage: "responses" }), read: async () => "read", latest: async (signal) => { received = signal; await new Promise<void>((resolve) => { finishRead = resolve; }); return "late latest"; } });
+	await tick();
+	f.view.render(120, 24);
+	action(f.view, "latest");
+	apply(f.view, f.controller);
+	assert.equal(received?.aborted, true);
+	finishRead(); await tick();
+	assert.ok(!f.notices.includes("late latest"));
+	f.controller.abort();
+});
