@@ -72,9 +72,15 @@ hyphens>`:
 - `clear` when it is cancelled, since cancellation is the caller's own act.
 
 Each record carries the title `Background job` and one message line made only
-from the job record: outcome, exit code, whole minutes elapsed, and whether the
-completion message was sent to the conversation, for example
-`Background job failed · exit 1 · 3 min · result sent to the conversation`.
+from the job record: outcome, exit code, whole minutes elapsed, and what happened
+to the completion message. While no run is active, Pi adds that message to the
+conversation at once (`result added to the conversation`). During a run it waits
+in Pi's follow-up queue (`completion queued for the conversation`), and an
+operator abort can still discard it there before the agent reads it; no public
+Pi hook reports that later outcome. If the completion message cannot be sent,
+the record settles without that clause and an interactive session shows an
+error notice instead of ending the process. For example:
+`Background job failed · exit 1 · 3 min · result added to the conversation`.
 Records never contain the command, its output, prompts, or model text, because
 a terminal can forward them to notifications and other devices. Messages are
 at most 160 characters, with control characters replaced by spaces.
@@ -82,15 +88,18 @@ at most 160 characters, with control characters replaced by spaces.
 The session keeps at most eight settled records: when a newer job settles past
 that bound, the oldest settled record is cleared. On `session_shutdown`, the
 records of jobs that still run are cleared, because shutdown cancels them;
-settled records stay, as the protocol keeps `done` and `error` after the
-process exits. Records are written to standard output only in the TUI, only
+settled records stay for the terminal to show until it clears them. Records
+are written to standard output only in the TUI, only
 when standard output is a terminal, and never when `PI_PROGRAM_STATUS=0`, the
 switch that also turns off Pi's own reports. Print, JSON, and RPC modes and
 Durable agent conversations write none. Unlike Pi core, the extension does not
 query the terminal for protocol support first. When Pi's terminal layer stops
 after it reported its own status, for example on suspend or exit, it clears
 every record on the terminal, job records included, so a resumed session shows
-only jobs that change state afterwards.
+only jobs that change state afterwards, and settled job records do not outlast
+Pi's exit there. Extensions receive no event when Pi's terminal layer stops for
+an external editor, so a job that settles while that editor owns the terminal
+still writes its record; the record has no visible width.
 
 ### Agent conversations on Pi Durable
 

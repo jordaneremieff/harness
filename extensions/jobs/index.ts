@@ -9,7 +9,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { arr, bool, int, nul, num, obj, opt, str, type Schema, type Static, union } from "@earendil-works/pi-schema";
-import { createJobActivity } from "./activity.ts";
+import { createJobActivity, type Delivery } from "./activity.ts";
 import { commandPreview, completionContent, completionTail, displayText, JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./completion.ts";
 import { createJobsContribution } from "./durable.ts";
 import { toolDisplay } from "./display.ts";
@@ -129,16 +129,35 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 	assert(native.outputSchema, "Native Bash must declare its output schema.");
 	let closed = false;
 	let lastRunAborted = false;
+	let runActive = false;
 
-	/** One message per settled finite job; explicit cancellation and shutdown settle quietly. Returns whether it sent one. */
-	function deliverCompletion(job: JobSnapshot, command: string): boolean {
-		if (closed || job.status === "cancelled") return false;
+	/**
+	 * One message per settled finite job; explicit cancellation and shutdown settle quietly. Returns what
+	 * happened to the message: added at once while no run is active, or queued behind the active run.
+	 */
+	function deliverCompletion(job: JobSnapshot, command: string): Delivery | undefined {
+		if (closed || job.status === "cancelled") return undefined;
 		const details: JobCompletionDetails = { job, command, tail: completionTail((cursor) => manager.logs(job.id, cursor)) };
+		const delivery: Delivery = runActive ? "queued" : "added";
 		pi.sendMessage(
 			{ customType: JOB_COMPLETION_MESSAGE, content: completionContent(details), display: true, details },
 			{ deliverAs: "followUp", triggerTurn: !lastRunAborted },
 		);
-		return true;
+		return delivery;
+	}
+
+	/** Delivers the completion and settles the job's activity even when delivery fails. */
+	function settleJob(settled: JobSnapshot, preview: string, ctx: ExtensionContext): void {
+		let delivery: Delivery | undefined;
+		try {
+			delivery = deliverCompletion(settled, preview);
+		} catch (error) {
+			// A rejection here would end the Pi process; the operator learns of the lost completion instead.
+			if (ctx.hasUI) ctx.ui.notify(`Job ${settled.id} settled, but its completion message could not be sent: ${error instanceof Error ? error.message : String(error)}`, "error");
+		} finally {
+			if (settled.status === "cancelled") activity.cancel(settled);
+			else activity.settle(settled, delivery);
+		}
 	}
 
 	pi.registerTool({
@@ -183,11 +202,7 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 			if (!job) throw new Error("The command job was not accepted.");
 			const preview = commandPreview(params.command);
 			activity.start(job, ctx);
-			void manager.wait(job.id).then((settled) => {
-				const delivered = deliverCompletion(settled, preview);
-				if (settled.status === "cancelled") activity.cancel(settled);
-				else activity.settle(settled, delivered);
-			});
+			void manager.wait(job.id).then((settled) => settleJob(settled, preview, ctx));
 			return textResult({ job });
 		},
 	});
@@ -228,10 +243,12 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 
 	pi.on("agent_start", async () => {
 		lastRunAborted = false;
+		runActive = true;
 	});
 	// After an operator abort, a settled job is recorded for the next turn instead of restarting work.
 	pi.on("agent_settled", async (event) => {
 		lastRunAborted = event.aborted;
+		runActive = false;
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		closed = true;

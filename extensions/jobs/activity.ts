@@ -71,8 +71,18 @@ export function elapsedText(startedAt: number, endedAt: number): string {
 	return minutes < 1 ? "< 1 min" : `${minutes} min`;
 }
 
+/**
+ * What happened to the completion message: added to the conversation while no run was active, or queued
+ * behind an active run, where an operator abort can still discard it before the agent reads it.
+ */
+export type Delivery = "added" | "queued";
+const DELIVERY_TEXT: Record<Delivery, string> = {
+	added: "result added to the conversation",
+	queued: "completion queued for the conversation",
+};
+
 /** The settled record's message, made only from the job record and the delivery fact. */
-export function settledMessage(job: CompletionJob, delivered: boolean): string {
+export function settledMessage(job: CompletionJob, delivery?: Delivery): string {
 	const elapsed = job.endedAt === undefined ? undefined : elapsedText(job.startedAt, job.endedAt);
 	const parts: string[] = [];
 	if (job.status === "timed_out") parts.push(elapsed === undefined ? "Background job timed out" : `Background job timed out after ${elapsed}`);
@@ -82,7 +92,7 @@ export function settledMessage(job: CompletionJob, delivered: boolean): string {
 		if (typeof job.exitCode === "number") parts.push(`exit ${job.exitCode}`);
 		if (elapsed !== undefined) parts.push(elapsed);
 	}
-	if (delivered) parts.push("result sent to the conversation");
+	if (delivery) parts.push(DELIVERY_TEXT[delivery]);
 	return parts.join(" · ");
 }
 
@@ -129,12 +139,12 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 			if (id) write({ id, state: "working", title: RECORD_TITLE, msg: "Background job running" });
 			showFooter();
 		},
-		settle(job: CompletionJob, delivered: boolean): void {
+		settle(job: CompletionJob, delivery?: Delivery): void {
 			if (closed || !running.has(job.id)) return;
 			const id = running.get(job.id);
 			running.delete(job.id);
 			if (id) {
-				write({ id, state: job.status === "succeeded" ? "done" : "error", title: RECORD_TITLE, msg: settledMessage(job, delivered) });
+				write({ id, state: job.status === "succeeded" ? "done" : "error", title: RECORD_TITLE, msg: settledMessage(job, delivery) });
 				settled.push(id);
 				while (settled.length > ACTIVITY_LIMITS.settledRecords) write({ id: settled.shift() as string, state: "clear" });
 			}
@@ -147,7 +157,7 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 			if (id) write({ id, state: "clear" });
 			showFooter();
 		},
-		/** Clears records of jobs that still run; settled records stay, as the protocol keeps them after exit. */
+		/** Clears records of jobs that still run; settled records stay for the terminal to show or clear. */
 		shutdown(ctx?: FooterContext): void {
 			if (closed) return;
 			closed = true;

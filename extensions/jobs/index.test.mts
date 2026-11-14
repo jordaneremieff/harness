@@ -63,7 +63,9 @@ class TestPi {
 		assert.ok(["agent_start", "agent_settled", "session_shutdown"].includes(name), `unexpected event ${name}`);
 		this.#handlers.set(name, handler);
 	}
+	failSend = false;
 	sendMessage(message: SentMessage["message"], options?: SentMessage["options"]) {
+		if (this.failSend) throw new Error("send failed");
 		this.sent.push({ message, options });
 	}
 	tool(name: string): Tool {
@@ -106,7 +108,7 @@ function textOf(result: Result): string {
 	assert.ok(text !== undefined, "text content present");
 	return text;
 }
-function setup(cwd = root, trusted = false, terminal?: { writes: string[]; statuses: Array<[string, string | undefined]> }) {
+function setup(cwd = root, trusted = false, terminal?: { writes: string[]; statuses: Array<[string, string | undefined]>; notices?: string[] }) {
 	const pi = new TestPi();
 	const activity = terminal
 		? createJobActivity({ write: (text) => terminal.writes.push(text), isTTY: () => true, env: () => ({}) })
@@ -117,7 +119,7 @@ function setup(cwd = root, trusted = false, terminal?: { writes: string[]; statu
 		isProjectTrusted: () => trusted,
 		mode: terminal ? "tui" : "print",
 		hasUI: terminal !== undefined,
-		ui: { setStatus: (key: string, text: string | undefined) => terminal?.statuses.push([key, text]) },
+		ui: { setStatus: (key: string, text: string | undefined) => terminal?.statuses.push([key, text]), notify: (text: string) => terminal?.notices?.push(text) },
 		model: { provider: "fixture", id: "deterministic" },
 		thinkingLevel: "low",
 		sessionManager: { getSessionId: () => "job-session", getSessionFile: () => undefined },
@@ -339,7 +341,7 @@ describe("Command Jobs adapter", () => {
 			assert.equal(terminal.writes[0], formatStatusRecord({ id, state: "working", title: "Background job", msg: "Background job running" }));
 			assert.equal(
 				terminal.writes[1],
-				formatStatusRecord({ id, state: "error", title: "Background job", msg: "Background job failed · exit 3 · < 1 min · result sent to the conversation" }),
+				formatStatusRecord({ id, state: "error", title: "Background job", msg: "Background job failed · exit 3 · < 1 min · result added to the conversation" }),
 			);
 			assert.deepEqual(terminal.statuses.at(-1), ["jobs", undefined]);
 			assert.ok(!terminal.writes.join("").includes(Buffer.from("hidden").toString("base64")));
@@ -354,6 +356,42 @@ describe("Command Jobs adapter", () => {
 			await pi.shutdown();
 			assert.equal(terminal.writes.at(-1), formatStatusRecord({ id: recordId(running.id) as string, state: "clear" }));
 			assert.equal(terminal.writes.filter((text) => text.includes("state=clear")).length, 2);
+		} finally {
+			await pi.shutdown();
+		}
+	});
+
+	it("settles the terminal record and the footer when the completion message cannot be sent", async () => {
+		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]>, notices: [] as string[] };
+		const { pi, call } = setup(root, false, terminal);
+		try {
+			pi.failSend = true;
+			const job = jobOf(await call("bash", { command: "printf done", background: true }));
+			await settled(call, job.id);
+			await delay(10);
+			assert.equal(
+				terminal.writes.at(-1),
+				formatStatusRecord({ id: recordId(job.id) as string, state: "done", title: "Background job", msg: "Background job succeeded · exit 0 · < 1 min" }),
+			);
+			assert.deepEqual(terminal.statuses.at(-1), ["jobs", undefined]);
+			assert.match(terminal.notices[0] ?? "", /completion message could not be sent: send failed/);
+		} finally {
+			await pi.shutdown();
+		}
+	});
+
+	it("reports a completion that waits behind an active run as queued, not added", async () => {
+		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]> };
+		const { pi, call } = setup(root, false, terminal);
+		try {
+			await pi.emit("agent_start", { type: "agent_start" });
+			const job = jobOf(await call("bash", { command: "printf done", background: true }));
+			await completion(pi, job.id);
+			await delay(0);
+			assert.equal(
+				terminal.writes.at(-1),
+				formatStatusRecord({ id: recordId(job.id) as string, state: "done", title: "Background job", msg: "Background job succeeded · exit 0 · < 1 min · completion queued for the conversation" }),
+			);
 		} finally {
 			await pi.shutdown();
 		}
