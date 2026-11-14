@@ -301,7 +301,7 @@ no Durable documents.
 
 | Tool | Replay class | Reason |
 |---|---|---|
-| `clipboard_copy` | unsafe | A rerun overwrites newer clipboard content and appends a duplicate archive record. |
+| `clipboard_copy` | unsafe | A rerun overwrites newer clipboard content and, unless `archive` is `false`, appends a duplicate archive record. |
 | `clipboard_paste` | safe | A rerun only reads the clipboard. |
 | `clipboard_list` | safe | A rerun only reads the archive. |
 | `clipboard_get` | safe | A rerun only reads the archive. |

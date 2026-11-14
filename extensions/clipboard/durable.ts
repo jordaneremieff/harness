@@ -10,7 +10,7 @@
  * Replay classification: paste, list, and get only read the clipboard or the
  * archive, so a rerun after process loss repeats no external effect. Copy and
  * restore write the clipboard, so a rerun would overwrite newer clipboard
- * content; copy also appends an archive record.
+ * content; an archived copy also appends an archive record.
  *
  * The ordinary tools expose presentation details but no structured content, so
  * the native tools map content to output and keep the details object.
