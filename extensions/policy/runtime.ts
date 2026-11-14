@@ -368,11 +368,14 @@ export class PolicyRuntime {
 	 */
 	private recordingChanged(health: TelemetryHealth): void {
 		try {
-			const notice = this.telemetryNotices.next(health);
 			const ctx = this.noticeContext;
-			if (!notice || !ctx) return;
+			if (!ctx) return;
+			// A stale context throws here, before the notice is spent.
+			const hasUI = ctx.hasUI;
+			const notice = this.telemetryNotices.next(health);
+			if (!notice) return;
 			const text = terminalSafe(notice.text);
-			if (ctx.hasUI) ctx.ui.notify(text, notice.level);
+			if (hasUI) ctx.ui.notify(text, notice.level);
 			else process.stderr.write(`${text}\n`);
 		} catch {
 			/* Reporting has no policy authority. */
