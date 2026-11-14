@@ -1135,7 +1135,15 @@ function recordingLine(recording: TelemetryRecording): string {
 	if (recording.writer.scope === "unavailable")
 		return "Recording: unknown. This host exposes no writer health; losses of every writer are unknown.";
 	const health = recording.writer.health;
-	return `Recording: ${recording.status}. This process's writer since its start: ${health.state}; lost records ${health.lostRecords}; lost bytes ${health.lostBytes}. Losses of other writers and earlier processes are unknown; complete parsing of retained files does not prove complete recording.`;
+	const uncertain =
+		health.uncertainRecords === undefined
+			? ""
+			: `; records whose batch failed after bytes may have reached storage ${health.uncertainRecords} (${health.uncertainBytes ?? 0} bytes; each may be absent, torn, or present)`;
+	const recovery =
+		health.recovery === undefined
+			? ""
+			: `; stops ${health.recovery.stops}, resumes ${health.recovery.resumes}, stale locks taken over ${health.recovery.staleLocks}`;
+	return `Recording: ${recording.status}. This process's writer since its start: ${health.state}; lost records ${health.lostRecords}; lost bytes ${health.lostBytes}${uncertain}${recovery}. Losses of other writers and earlier processes are unknown; complete parsing of retained files does not prove complete recording.`;
 }
 function continuationLine(summary: TelemetrySummary): string {
 	const continuation = summary.continuation;

@@ -740,6 +740,14 @@ describe("policy telemetry recording evidence", () => {
 		assert.equal(lossy.recording.status, "incomplete");
 		assert.match(formatTelemetry(lossy), /Recording: incomplete\. This process's writer since its start: pressure; lost records 2/);
 		assert.match(formatTelemetry(none), /Recording: unknown\. This host exposes no writer health/);
+		const resumed = await readTelemetry(dir, DAY, DAY, {
+			health: { state: "ok", lostRecords: 0, lostBytes: 0, uncertainRecords: 3, uncertainBytes: 400, recovery: { stops: 1, resumes: 1, staleLocks: 1 } },
+		});
+		assert.equal(resumed.recording.status, "unknown", "a batch that may have reached storage leaves recording unknown, not lost");
+		assert.match(
+			formatTelemetry(resumed),
+			/records whose batch failed after bytes may have reached storage 3 \(400 bytes; each may be absent, torn, or present\); stops 1, resumes 1, stale locks taken over 1\./,
+		);
 	});
 });
 
