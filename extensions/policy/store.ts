@@ -16,6 +16,7 @@ import {
 	TELEMETRY_QUEUE_RECORDS,
 	TelemetryAcquisitionExpiredError,
 	type TelemetryHealth,
+	type TelemetryLockHolder,
 	TelemetryLockBusyError,
 	type TelemetryRetention,
 	type TelemetryWriter,
@@ -119,12 +120,24 @@ export class PolicyWriter implements TelemetryWriter {
 		const firstLoss = !this.lossSignalled && this.currentHealth.lostRecords > 0;
 		if (this.currentHealth.state === state && !firstLoss) return;
 		if (this.currentHealth.lostRecords > 0) this.lossSignalled = true;
-		this.currentHealth = { ...this.currentHealth, state, ...(reason === undefined ? {} : { reason }) };
+		const { lock: _lock, ...rest } = this.currentHealth;
+		this.currentHealth = {
+			...(state === "pressure" ? this.currentHealth : rest),
+			state,
+			...(reason === undefined ? {} : { reason }),
+		};
 		try {
 			this.onStateChange(this.health());
 		} catch {
 			// Reporting has no persistence authority.
 		}
+	}
+
+	/** Keep the latest held-lock evidence for the health view; recovery clears it. */
+	private noteLock(holder: TelemetryLockHolder | undefined): void {
+		if (this.currentHealth.state === "failed") return;
+		const { lock: _lock, ...rest } = this.currentHealth;
+		this.currentHealth = holder ? { ...rest, lock: holder } : rest;
 	}
 
 	private fail(reason: string): void {
@@ -216,6 +229,7 @@ export class PolicyWriter implements TelemetryWriter {
 			} catch (error) {
 				if (error instanceof TelemetryAcquisitionExpiredError) return "dropped";
 				if (!(error instanceof TelemetryLockBusyError)) throw error;
+				this.noteLock(error.holder);
 				this.state("pressure");
 				if (!this.discardQueued) await this.backoff(started);
 			}
@@ -253,6 +267,16 @@ export class PolicyWriter implements TelemetryWriter {
 	}
 }
 
+function lockAdvice(lock: TelemetryLockHolder | undefined): string {
+	const path = lock?.path ?? `telemetry/${TELEMETRY_LOCK_FILE}`;
+	const age = lock ? ` for ${Math.round(lock.ageMs / 1000)} s` : "";
+	if (lock?.pid !== undefined && lock.running === false)
+		return `The lock ${path} in the policy directory belongs to process ${lock.pid}, which is not running on this host. If Policy health still names that process, remove that file to restore telemetry.`;
+	if (lock?.pid !== undefined && lock.running === true)
+		return `Process ${lock.pid} has held ${path} in the policy directory${age}.`;
+	return `If drops continue, another writer holds ${path} in the policy directory${age}, or a stopped process left it.`;
+}
+
 export interface TelemetryNotice {
 	readonly level: "warning" | "error";
 	readonly text: string;
@@ -282,7 +306,7 @@ export class TelemetryNotices {
 		this.lossReported = true;
 		return {
 			level: "warning",
-			text: `[policy] Telemetry dropped ${health.lostRecords} record(s) under write pressure. Rules still apply. If drops continue, another writer holds telemetry/${TELEMETRY_LOCK_FILE} in the policy directory, or a stopped process left it; Policy health shows the current counts.`,
+			text: `[policy] Telemetry dropped ${health.lostRecords} record(s) under write pressure. Rules still apply. ${lockAdvice(health.lock)} Policy health shows the current counts.`,
 		};
 	}
 }

@@ -1696,7 +1696,10 @@ the policy directory.
   not held-lock contention or a permanent failure; no retention or append occurs.
   Policy never removes a lock because of its age;
   if a process stopped while holding it, stop all policy writers before removing
-  `.telemetry-lock` by hand.
+  `.telemetry-lock` by hand. A writer notes its process ID and host name in
+  the lock after it acquires it. Older writers create an empty lock and never
+  read the note, so the note changes no lock behaviour. A writer that waits on a
+  held lock reads the note (at most 256 bytes) as evidence only.
 - **Queue.** The writer holds at most 512 accepted records and 4 MiB of serialised
   records, including an in-flight or retry batch. Each record is serialised once
   at admission; later changes to the caller's object do not alter those bytes.
@@ -1773,7 +1776,13 @@ once more at its first loss while pressure persists, not once per refused
 record. Each writer reports that first loss once and its permanent failure
 once; later counts stay in the `health` view. The loss notice names
 `telemetry/.telemetry-lock` in the policy directory, because a lock that stays
-held makes every batch drop (see Lock above). An ordinary
+held makes every batch drop (see Lock above). While contention keeps the writer
+in pressure, the `health` snapshot adds `lock`: the path relative to the
+policy directory, `ageMs` since the lock last changed, and the noted `pid`.
+When the note names this host, `running` tells whether that process exists.
+The notice says that a lock whose process is not running can be removed. It
+says nothing more about a running owner or an empty lock from an older writer.
+Recovery removes `lock` from the snapshot. An ordinary
 session delivers these notices through its UI (`ctx.ui.notify`), never by
 writing to the terminal directly, because a TUI owns that terminal and a direct
 write paints over the editor. A session without UI writes them to stderr, and a

@@ -6,6 +6,7 @@
 
 import { constants } from "node:fs";
 import { chmod, type FileHandle, lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { PolicyRecord } from "./record.ts";
@@ -24,6 +25,8 @@ export const TELEMETRY_DEFAULT_MAX_AGE_DAYS = 30;
 
 const LOCK_WAIT_MS = 500;
 const LOCK_RETRY_MS = 25;
+/** Bounds the owner note read from a held lock; the note this module writes is far smaller. */
+const LOCK_NOTE_BYTES = 256;
 const DAY_MS = 86_400_000;
 const SEGMENT_NAME = /^(\d{4}-\d{2}-\d{2})\.(\d{6})\.jsonl$/;
 
@@ -44,6 +47,8 @@ export interface TelemetryHealth {
 	readonly lostRecords: number;
 	readonly lostBytes: number;
 	readonly reason?: string;
+	/** Evidence about the held lock while the writer is in pressure from lock contention. */
+	readonly lock?: TelemetryLockHolder;
 }
 
 export interface TelemetryWriter {
@@ -52,11 +57,28 @@ export interface TelemetryWriter {
 	close(): Promise<void>;
 }
 
+/**
+ * Evidence about a held telemetry lock. A writer of this module notes its process in the lock
+ * after it acquires it; a lock without that note comes from an older writer, or from a writer
+ * between creation and note. The note is diagnostic only: no writer removes a lock because of it.
+ */
+export interface TelemetryLockHolder {
+	/** Lock path relative to the policy directory. */
+	readonly path: string;
+	/** Time since the lock file last changed. */
+	readonly ageMs: number;
+	readonly pid?: number;
+	/** Whether the noted process runs on this host; absent when the lock names no process here. */
+	readonly running?: boolean;
+}
+
 /** Acquisition exhausted its wait on a safe held lock, before retention or append. */
 export class TelemetryLockBusyError extends Error {
-	constructor(path: string) {
+	readonly holder?: TelemetryLockHolder;
+	constructor(path: string, holder?: TelemetryLockHolder) {
 		super(`policy telemetry lock remains held at ${path}`);
 		this.name = "TelemetryLockBusyError";
+		if (holder) this.holder = holder;
 	}
 }
 
@@ -261,7 +283,7 @@ async function acquireLock(
 	let contended = false;
 	for (;;) {
 		if (performance.now() >= deadline) {
-			if (contended) throw new TelemetryLockBusyError(path);
+			if (contended) throw new TelemetryLockBusyError(path, await lockHolder(path));
 			throw new TelemetryAcquisitionExpiredError(path);
 		}
 		const handle = await tryCreateLock(path);
@@ -269,8 +291,59 @@ async function acquireLock(
 		if (!(await inspectLock(path, hooks))) continue;
 		contended = true;
 		const remaining = deadline - performance.now();
-		if (remaining <= 0) throw new TelemetryLockBusyError(path);
+		if (remaining <= 0) throw new TelemetryLockBusyError(path, await lockHolder(path));
 		await delay(Math.min(LOCK_RETRY_MS, remaining));
+	}
+}
+
+function processRunning(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException)?.code === "EPERM";
+	}
+}
+
+/** Read a held lock's owner note without following links; any doubt yields less evidence, not an error. */
+async function lockHolder(path: string): Promise<TelemetryLockHolder | undefined> {
+	const relative = `${TELEMETRY_DIRECTORY}/${TELEMETRY_LOCK_FILE}`;
+	let handle: FileHandle | undefined;
+	try {
+		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
+		handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | noFollow);
+		const info = await handle.stat();
+		if (!info.isFile()) return undefined;
+		const holder: { path: string; ageMs: number; pid?: number; running?: boolean } = {
+			path: relative,
+			ageMs: Math.max(0, Math.round(Date.now() - info.mtimeMs)),
+		};
+		const buffer = Buffer.alloc(LOCK_NOTE_BYTES);
+		const { bytesRead } = await handle.read(buffer, 0, LOCK_NOTE_BYTES, 0);
+		let note: { pid?: unknown; host?: unknown } = {};
+		try {
+			note = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8")) as typeof note;
+		} catch {
+			// An older writer's lock is empty; its age remains evidence.
+		}
+		if (typeof note.pid === "number" && Number.isSafeInteger(note.pid) && note.pid > 0) {
+			holder.pid = note.pid;
+			if (note.host === hostname()) holder.running = processRunning(note.pid);
+		}
+		return holder;
+	} catch {
+		return undefined;
+	} finally {
+		await handle?.close().catch(() => {});
+	}
+}
+
+/** Note the owning process in a lock this writer holds. Older writers neither read nor need it. */
+async function noteLockOwner(handle: FileHandle): Promise<void> {
+	try {
+		await handle.write(`${JSON.stringify({ pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString() })}\n`, 0);
+	} catch {
+		// The note is diagnostic; a lock without it remains a valid lock.
 	}
 }
 
@@ -522,6 +595,7 @@ export async function appendSerializedTelemetryRecords(
 	let failure: unknown;
 	try {
 		if (!(await handle.stat()).isFile()) throw new Error(`policy telemetry lock is not a regular file: ${lockPath}`);
+		await noteLockOwner(handle);
 		await appendUnderLock(policyDir, groups, bounded, hooks);
 	} catch (error) {
 		failure = error;

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { PolicyRecord } from "./record.ts";
@@ -10,6 +11,7 @@ import {
 	appendSerializedTelemetryRecords,
 	localDate,
 	serializeTelemetryRecord,
+	type TelemetryHealth,
 	TelemetryLockBusyError,
 	TELEMETRY_BATCH_BYTES,
 	TELEMETRY_BATCH_RECORDS,
@@ -471,7 +473,9 @@ describe("PolicyWriter", () => {
 		const kept = { ...entry(), callId: "retained-next-batch" };
 		assert.equal(writer.enqueue(kept), true);
 		await delay(2150);
-		assert.deepEqual(writer.health(), { state: "pressure", lostRecords: 1, lostBytes: serializeTelemetryRecord(row).bytes });
+		const { lock: heldLock, ...health } = writer.health();
+		assert.deepEqual(health, { state: "pressure", lostRecords: 1, lostBytes: serializeTelemetryRecord(row).bytes });
+		assert.equal(heldLock?.path, "telemetry/.telemetry-lock", "an empty lock from an older writer still reports its path and age");
 		await unlink(lock);
 		const later = { ...entry(), callId: "later" };
 		assert.equal(writer.enqueue(later), true);
@@ -656,7 +660,9 @@ describe("PolicyWriter", () => {
 		await writer.close();
 		const elapsed = performance.now() - started;
 		assert.ok(elapsed >= 1900 && elapsed < 2800, `close took ${elapsed} ms`);
-		assert.deepEqual(writer.health(), { state: "pressure", lostRecords: 100, lostBytes: serializeTelemetryRecord(row).bytes * 100 });
+		const { lock: heldLock, ...health } = writer.health();
+		assert.deepEqual(health, { state: "pressure", lostRecords: 100, lostBytes: serializeTelemetryRecord(row).bytes * 100 });
+		assert.equal(heldLock?.path, "telemetry/.telemetry-lock", "an empty lock from an older writer still reports its path and age");
 		assert.deepEqual(states, ["pressure", "pressure"], "the first dropped batch signals once under unchanged pressure");
 		const stopped = calls;
 		await unlink(lock);
@@ -686,5 +692,64 @@ describe("TelemetryNotices", () => {
 		assert.equal(failure?.level, "error");
 		assert.match(failure?.text ?? "", /persistence stopped: disk unavailable/);
 		assert.equal(notices.next({ state: "failed", lostRecords: 6, lostBytes: 288, reason: "disk unavailable" }), undefined);
+	});
+});
+
+describe("telemetry lock owner evidence", () => {
+	async function heldLock(t: TestContext, note: string): Promise<string> {
+		const dir = await policyDir(t);
+		await mkdir(join(dir, "telemetry"), { recursive: true, mode: 0o700 });
+		await writeFile(join(dir, "telemetry", ".telemetry-lock"), note, { mode: 0o600 });
+		return dir;
+	}
+
+	async function dropUnderHeldLock(dir: string) {
+		const changes: TelemetryHealth[] = [];
+		const writer = new PolicyWriter(dir, (health) => changes.push(health));
+		assert.equal(writer.enqueue(record("2026-09-03T10:00:00.000Z")), true);
+		await writer.close();
+		return { health: writer.health(), notice: new TelemetryNotices(), changes };
+	}
+
+	it("notes its own process in the lock while it appends", async (t) => {
+		const dir = await policyDir(t);
+		let note: unknown;
+		await appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record("2026-09-03T10:00:00.000Z"))], undefined, {
+			hooks: { afterInventory: async () => { note = JSON.parse(await readFile(join(dir, "telemetry", ".telemetry-lock"), "utf8")); } },
+		});
+		assert.equal((note as { pid: number }).pid, process.pid);
+		assert.equal((note as { host: string }).host, hostname());
+		await assert.rejects(stat(join(dir, "telemetry", ".telemetry-lock")), /ENOENT/);
+	});
+
+	it("names a stopped owner and how to restore telemetry", async (t) => {
+		const stopped = spawnSync(process.execPath, ["-e", ""]).pid;
+		const dir = await heldLock(t, `${JSON.stringify({ pid: stopped, host: hostname(), acquiredAt: "2026-09-03T09:00:00.000Z" })}\n`);
+		const { health, notice, changes } = await dropUnderHeldLock(dir);
+		assert.equal(health.state, "pressure");
+		assert.equal(health.lostRecords, 1);
+		assert.deepEqual({ ...health.lock, ageMs: 0 }, { path: "telemetry/.telemetry-lock", ageMs: 0, pid: stopped, running: false });
+		const warning = changes.map((change) => notice.next(change)).find(Boolean);
+		assert.match(warning?.text ?? "", new RegExp(`belongs to process ${stopped}, which is not running on this host\\. If Policy health still names that process, remove that file`));
+		await stat(join(dir, "telemetry", ".telemetry-lock"));
+	});
+
+	it("reports a running owner without advising removal", async (t) => {
+		const dir = await heldLock(t, `${JSON.stringify({ pid: process.pid, host: hostname() })}\n`);
+		const { health, notice, changes } = await dropUnderHeldLock(dir);
+		assert.equal(health.lock?.running, true);
+		const warning = changes.map((change) => notice.next(change)).find(Boolean);
+		assert.match(warning?.text ?? "", new RegExp(`Process ${process.pid} has held telemetry/\\.telemetry-lock in the policy directory for \\d+ s\\.`));
+		assert.doesNotMatch(warning?.text ?? "", /remove/);
+	});
+
+	it("keeps an older writer's empty lock as an owner it cannot name", async (t) => {
+		const dir = await heldLock(t, "");
+		const { health, notice, changes } = await dropUnderHeldLock(dir);
+		assert.equal(health.lock?.path, "telemetry/.telemetry-lock");
+		assert.equal(health.lock?.pid, undefined);
+		assert.equal(health.lock?.running, undefined);
+		const warning = changes.map((change) => notice.next(change)).find(Boolean);
+		assert.match(warning?.text ?? "", /If drops continue, another writer holds telemetry\/\.telemetry-lock in the policy directory for \d+ s, or a stopped process left it\./);
 	});
 });
