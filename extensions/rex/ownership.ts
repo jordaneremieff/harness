@@ -144,7 +144,9 @@ export function beginOwnership(state: OwnershipState, record: OwnershipRecord, m
 		);
 	}
 	if (next.records.length >= maxRecords)
-		throw new Error("Rex ownership record limit reached. Forget closed records before more effects.");
+		throw new Error(
+			'Rex ownership record limit reached. List retained records with rex_owned {"op":"owned"}, then forget each closed, released, or confirmed record without resources with rex_owned {"op":"cleanup","recordId":"<recordId>","forget":true}. Reconcile or release other records first.',
+		);
 	next.records.push(record);
 	return validateOwnershipState(next, maxRecords);
 }

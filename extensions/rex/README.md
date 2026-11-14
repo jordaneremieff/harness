@@ -188,7 +188,9 @@ pane, such as a floating pane, is drawn inside Rex's window; such a program
 learns about it from the pane stacking feed below and from accessibility.
 
 Use `inspect` before application input. Deliver text with `input`; add keys such
-as `enter` when the application needs them. `observe: true` returns a subsequent
+as `enter` when the application needs them. Keys use Rex key binding syntax: a
+key name with modifiers joined by `+`, such as `ctrl+c` or `shift+left`. Rex
+rejects other notations such as `C-c`. `observe: true` returns a subsequent
 bounded observation. The agent interprets prompts, modes, errors and results.
 Queued input is not application completion. Control-C is application input, not
 an observer cancellation or proof that the program stopped.
@@ -583,8 +585,10 @@ target stops cleanup before effect admission; reconcile the record before retryi
 It closes exact owned blocks, not unrelated blocks in their parent session.
 Empty parent sessions/windows are not automatically closed. Unknown
 cleanup outcomes require inspection before another close. `forget: true` removes
-a closed record. Ownership storage is bounded; a full store rejects new effects
-before execution rather than silently discarding open claims. Regular effect
+a closed or released record, or a confirmed record without resources. Ownership
+storage is bounded; a full store rejects new effects before execution rather
+than silently discarding open claims. That refusal names the `rex_owned` calls
+that list the retained records and forget the eligible ones. Regular effect
 admission reserves capacity for owned cleanup.
 
 Tool cancellation, ordinary session change, shutdown or native host shutdown

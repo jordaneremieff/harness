@@ -32,7 +32,9 @@ test("ownership reducers preserve caller state, reject duplicate calls and enfor
 	assert.equal(first.records[0]?.phase, "pending");
 	assert.equal(changed.records[0]?.phase, "unknown");
 	const full = beginOwnership(changed, record("second"), 2);
-	assert.throws(() => beginOwnership(full, record("third"), 2), /record limit/);
+	assert.throws(() => beginOwnership(full, record("third"), 2), {
+		message: 'Rex ownership record limit reached. List retained records with rex_owned {"op":"owned"}, then forget each closed, released, or confirmed record without resources with rex_owned {"op":"cleanup","recordId":"<recordId>","forget":true}. Reconcile or release other records first.',
+	});
 });
 
 test("ownership validation rejects malformed resource identities rather than repairing records", () => {

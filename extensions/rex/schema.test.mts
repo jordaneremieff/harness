@@ -51,6 +51,11 @@ test("the provider declaration accepts exactly the union of its operation shapes
 	assert.deepEqual(toolSpecs.find((spec) => spec.name === "rex_native")?.parameters.required, ["op", "kind"]);
 });
 
+test("the terminal declaration states the key syntax that input accepts", () => {
+	const keys = toolSpecs.find((spec) => spec.name === "rex_terminal")?.parameters.properties.keys;
+	assert.match(String(keys?.description), /modifiers joined by \+.*enter, ctrl\+c or shift\+left/u);
+});
+
 test("runtime validation enforces each operation shape", () => {
 	const session = "session:00000000-0000-0000-0000-000000000001";
 	const accepted: Array<[keyof typeof requestVariants, unknown]> = [
