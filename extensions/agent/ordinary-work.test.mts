@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { ORDINARY_CONTINUE_TEXT, ORDINARY_NOTE_CHARS, ORDINARY_WORK_DESCRIPTION, OrdinaryWorkParams, registerOrdinaryWork } from "./ordinary-work.ts";
+import { ORDINARY_CONTINUE_TEXT, ORDINARY_NOTE_CHARS, ORDINARY_TEXT_ANSWER, ORDINARY_WORK_DESCRIPTION, OrdinaryWorkParams, registerOrdinaryWork } from "./ordinary-work.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { ordinaryWorkCard } from "./tool-cards.ts";
 
@@ -13,7 +13,7 @@ function only<T extends object>(members: T, name: string): T {
 	return new Proxy(members, { get: (target, key) => { if (key in target) return target[key as keyof T]; throw new Error(`${name} must not use ${String(key)}`); } });
 }
 
-function fixture() {
+function fixture(mode = "tui") {
 	let tool: ToolDefinition | undefined;
 	const card = ordinaryWorkCard();
 	registerOrdinaryWork(only({ registerTool: (definition: ToolDefinition) => { tool = definition; } }, "the registration") as unknown as ExtensionAPI, card);
@@ -21,9 +21,21 @@ function fixture() {
 	const registered = tool;
 	assert.equal(registered.renderCall, card.renderCall, "the registered renderers are the caller's card references");
 	assert.equal(registered.renderResult, card.renderResult);
-	const context = only({}, "the tool") as unknown as ExtensionContext;
+	const context = only({ mode }, "the tool") as unknown as ExtensionContext;
 	return { tool: registered, run: (input: unknown) => registered.execute("call", input as never, undefined, undefined, context as never) };
 }
+
+it("continues a print or JSON run to a text answer, because its output is its last text message", async () => {
+	const note = "The review finished; its findings are in the answer above.";
+	for (const mode of ["print", "json"]) {
+		const result = await fixture(mode).run({ action: "continue", note });
+		assert.notEqual(result.terminate, true, mode);
+		assert.deepEqual(result.content, [{ type: "text", text: ORDINARY_TEXT_ANSWER }], mode);
+		assert.deepEqual(result.details, { action: "continue", note }, mode);
+	}
+	for (const mode of ["tui", "rpc"]) assert.equal((await fixture(mode).run({ action: "continue", note })).terminate, true, mode);
+	assert.match(ORDINARY_TEXT_ANSWER, /complete final answer/u);
+});
 
 it("ends the turn in continue and keeps the note nowhere outside the call", async () => {
 	const f = fixture();

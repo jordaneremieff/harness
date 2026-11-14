@@ -1851,6 +1851,13 @@ that call is the only call of its tool batch, so a turn that needs nothing
 from the operator ends without a chat line. A queued steer or follow-up still
 starts the next request. The tool needs no UI.
 
+Print and JSON runs (`pi -p`, `pi --mode json`) answer with their last text
+message, and no person reads a card there. In those modes `continue` does not
+end the turn: its result asks for a text message that states the complete final
+answer again. Otherwise a follow-up that arrives after the answer, such as the
+completion of a background job that the run started, would end the run with an
+empty answer while the real answer stays only in the session file.
+
 The card of the call in the transcript is the only display of the note. It
 shows `agent_work`, then the note with collapsed white space, wrapped on at
 most three lines; an expanded card shows the complete note. The tool stores

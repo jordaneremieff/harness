@@ -28,6 +28,13 @@ export type OrdinaryWorkDetails = Static<typeof OrdinaryWorkOutputSchema>;
 
 export const ORDINARY_CONTINUE_TEXT = "The state note is shown to the operator. The turn ends here: write no chat text.";
 
+/**
+ * Print and JSON runs answer with their last text message, and no person reads the card there. A turn that
+ * ended in the tool call would leave that answer empty, for example after a follow-up message that arrived
+ * once the answer was written, so the turn continues to a text answer instead.
+ */
+export const ORDINARY_TEXT_ANSWER = "This run has no operator view, and its output is its last text message. Write no state note: end the turn with a text message that states your complete final answer, including any result that you already wrote before this turn.";
+
 /** Register the ordinary `agent_work`. The caller owns `card`, so the registered renderers are the same references that it publishes for display. */
 export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool">, card: AgentToolCard): void {
 	pi.registerTool({
@@ -37,9 +44,10 @@ export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool">, car
 		promptSnippet: "End a turn that needs nothing from the operator with one state note and no chat text",
 		parameters: OrdinaryWorkParams,
 		outputSchema: OrdinaryWorkOutputSchema,
-		async execute(_callId, input: Static<typeof OrdinaryWorkParams>) {
+		async execute(_callId, input: Static<typeof OrdinaryWorkParams>, _signal, _update, ctx) {
 			if (!matchesSchema(OrdinaryWorkParams, input)) throw new Error("agent_work takes action continue and a note");
 			const details: OrdinaryWorkDetails = { action: "continue", note: input.note };
+			if (ctx.mode === "print" || ctx.mode === "json") return { content: [{ type: "text", text: ORDINARY_TEXT_ANSWER }], details, structuredContent: details };
 			return { content: [{ type: "text", text: ORDINARY_CONTINUE_TEXT }], details, structuredContent: details, terminate: true };
 		},
 		renderCall: card.renderCall,
