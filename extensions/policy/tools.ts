@@ -34,6 +34,7 @@ import {
 import type { PolicyMode } from "./mode.ts";
 import { capText, terminalSafe } from "./panel.ts";
 import { toolDisplayRecord } from "./display.ts";
+import type { TelemetryRequest, TelemetrySummary } from "./telemetry.ts";
 import { PROPOSAL_CONDITION_GRAMMAR, ProposalConditionSchema, ProposalProgramSchema } from "./program.ts";
 import {
 	contentRevision,
@@ -332,7 +333,7 @@ export interface ToolDeps {
 	actionControl?(params: ActionControl, ctx: PolicyToolContext): unknown | Promise<unknown>;
 	resetRevision?(id: string): string | Promise<string>;
 	reset?(id: string, reason: string, revision: string): void | Promise<void>;
-	telemetry?(from: string, to: string): Promise<unknown>;
+	telemetry?(request: TelemetryRequest): Promise<TelemetrySummary>;
 	inspect?(view: PolicyInspectionView, params: Record<string, unknown>, ctx?: PolicyToolContext): Promise<unknown>;
 }
 

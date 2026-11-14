@@ -41,7 +41,7 @@
  * at-most-once: a newly applied completion writes one record after its state
  * commit.
  */
-import { bool, lit, num, obj, str, type Schema, type Static } from "@earendil-works/pi-schema";
+import { bool, lit, num, obj, str, type Static } from "@earendil-works/pi-schema";
 import { randomUUID } from "node:crypto";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { ActionApprovals, actionAuthority, type ActionBinding, type ActionControl, sameActionInput } from "./action-approval.ts";
@@ -54,18 +54,16 @@ import type { Message, ToolCall } from "@earendil-works/pi-ai";
 import { authoringGuide, checkDraft, type DraftCheckContext } from "./authoring.ts";
 import { captureFor, ruleScopeMatches } from "./classify.ts";
 import {
-	applyControl,
-	controlResult,
+	controlToolResult,
 	POLICY_CONTROL_DESCRIPTION,
+	PolicyControlOutput,
 	PolicyControlParams,
-	previewControl,
 	validateControl,
 } from "./control.ts";
 import { isOwnedInput, ownInput, prepareSchema, snapshotData, UNKNOWN } from "./data.ts";
 import {
 	makeRuleAudit,
 	PolicyMutationCancelledError,
-	MAX_RULE_EVENT_BYTES,
 	proposalRevision,
 	RuleRegistry,
 	ruleAbsenceMessage,
@@ -132,7 +130,7 @@ import { ObservationState, type StatePin, type StateView } from "./state.ts";
 import { createObservationClock } from "./observation-clock.ts";
 import { PolicyWriter, TelemetryNotices } from "./store.ts";
 import type { AppendTelemetry, TelemetryHealth, TelemetryRetention } from "./telemetry-files.ts";
-import { formatTelemetry, readTelemetry } from "./telemetry.ts";
+import { readTelemetryPage } from "./telemetry.ts";
 import {
 	approvalReadback,
 	boundedInspection,
@@ -533,7 +531,7 @@ export async function createPolicyDurableExtension(
 		deferred: true,
 		replay: "unsafe",
 		execute: (args, api, context) => runtime.executeControl(args, api, context),
-		structuredOutputSchema: ({ type: "object", patternProperties: { "^.*$": {} } } as Schema<Record<string, unknown>>),
+		structuredOutputSchema: PolicyControlOutput,
 	});
 
 	return defineExtension({
@@ -2045,17 +2043,10 @@ class DurablePolicyRuntime {
 			model: agent.model ? { provider: agent.model.provider, id: agent.model.modelId } : null,
 			sessionManager: { getSessionId: () => this.sessionLabel(surface.conversationId) },
 		};
-		const value =
-			"authorization" in params
-				? await applyControl(deps, params, toolContext, context.abortSignal)
-				: await previewControl(deps, params, toolContext);
-		const result = controlResult(
-			value,
-			params.operation === "inspect" ? MAX_RULE_EVENT_BYTES * 6 + 4096 : 48 * 1024,
-		);
+		const result = await controlToolResult(deps, params, toolContext, context.abortSignal);
 		return {
 			output: result.content,
-			structuredOutput: result.details as JsonValue,
+			structuredOutput: result.structuredContent as JsonValue,
 			details: result.details as Durable.JsonObject,
 		};
 	}
@@ -2152,7 +2143,7 @@ class DurablePolicyRuntime {
 			actionControl: (params) => this.actionControl(params, surface, context),
 			resetRevision: (id) => this.resetRevision(id, surface, context),
 			reset: (id, reason, revision) => this.resetObservation(id, reason, revision, surface, context),
-			telemetry: async (from, to) => ({ report: formatTelemetry(await readTelemetry(this.dir, from, to)) }),
+			telemetry: (request) => readTelemetryPage(this.dir, request, { health: this.writer.health() }),
 			inspect: (view, params) => this.inspect(view, params, surface, context),
 		};
 	}

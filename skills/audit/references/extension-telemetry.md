@@ -60,10 +60,20 @@ Start with these local public surfaces where present; verify their current
 README and defining source under the owning repository's `extensions/<name>/`
 (`../../../extensions/` relative to this reference):
 
-- **Policy:** `/policy telemetry FROM TO` summarizes retained writer-local
-  calendar segments under `<policy dir>/telemetry/`. Its calendar is not a UTC
-  timestamp filter. Segments are bounded by the configured byte and age budgets
-  and by segment size, so the report covers only what retention kept; read
+- **Policy:** `policy_control` with `operation: "telemetry"` returns one
+  structured page of retained segments under `<policy dir>/telemetry/`, with
+  readable report text beside it; read the page fields, not the text. Select
+  inclusive writer-local day files with `from`/`to`, or a half-open event-time
+  window with `since`/`until` instants that carry an explicit zone. Day files are
+  not UTC days. Repeat the same selection with `cursor` until
+  `continuation.nextCursor` is null, add counts across pages, and treat the chain
+  as complete retained-file evidence only when every page has `coverage.pageStatus`
+  complete. A vanished or changed cursor segment and removed older segments stay
+  explicit. `recording` gives this process's writer health with its scope; other
+  writers' and earlier processes' losses stay unknown, so complete parsing does
+  not prove complete recording. `/policy telemetry FROM TO [CURSOR]` gives the
+  same pages as text. Segments are bounded by the configured byte and age budgets
+  and by segment size, so the evidence covers only what retention kept; read
   `policy/telemetry.ts` for reader caps, `policy/telemetry-files.ts` for
   retention and inventory bounds, and `policy/record.ts`, `policy/runtime.ts`,
   and `policy/store.ts` for fields and writer boundaries. Check whether

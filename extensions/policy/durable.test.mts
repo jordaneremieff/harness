@@ -495,7 +495,8 @@ const rules = await tools.policy_rules({ view: "rules" });
 const proposal = await tools.policy_propose(${JSON.stringify(proposeArgs)});
 const approved = await tools.policy_approve({ proposalId: proposal.proposalId, proposalRevision: proposal.proposalRevision, effect: "exact", authorization: "The fixture operator approved this exact proposal." });
 const control = await tools.policy_control({ operation: "mode" });
-text({ rules: rules.rules, pending: proposal.state, approved: approved.decision, mode: control.mode });
+const telemetry = await tools.policy_control({ operation: "telemetry", since: "2026-01-01T09:00:00+11:00", until: "2026-01-01T10:00:00+11:00" });
+text({ rules: rules.rules, pending: proposal.state, approved: approved.decision, mode: control.mode, telemetry: { kind: telemetry.selection.kind, sinceUtc: telemetry.selection.sinceUtc, writer: telemetry.recording.writer.scope, next: telemetry.continuation.nextCursor } });
 try { await tools.policy_approve({ proposalId: proposal.proposalId, proposalRevision: proposal.proposalRevision, effect: "exact", authorization: "The fixture operator approved this exact proposal." }); }
 catch (error) { text(String(error)); }
 ` }), { stopReason: "toolUse" }),
@@ -507,11 +508,31 @@ catch (error) { text(String(error)); }
 		assert.match(textOf(result), /"pending":\s*"pending"/);
 		assert.match(textOf(result), /"approved":\s*"approved"/);
 		assert.match(textOf(result), /"mode":\s*"observe"/);
+		assert.match(textOf(result), /"kind":\s*"instants",\s*"sinceUtc":\s*"2025-12-31T22:00:00.000Z",\s*"writer":\s*"this-process-since-start",\s*"next":\s*null/);
 		assert.match(textOf(result), /No pending proposal with that ID/);
 		assert.equal((await toolResults(fixture.root, "policy_rules")).length, 0);
 	} finally {
 		await fixture.close();
 		await sandbox.close();
+	}
+});
+
+test("native telemetry control gives the model readable text and keeps the structured page", async () => {
+	const fixture = await openFixture();
+	try {
+		await submit(fixture, [
+			fauxAssistantMessage(fauxToolCall("policy_control", { operation: "telemetry", from: "2026-01-01", to: "2026-01-02" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("reported"),
+		], "report telemetry");
+		const result = (await toolResults(fixture.root, "policy_control")).at(-1);
+		assert.equal(result?.isError, false);
+		assert.match(textOf(result), /^Policy telemetry: 2026-01-01 through 2026-01-02 \(inclusive writer-local calendar day files\)/);
+		assert.match(textOf(result), /Recording: unknown\. This process's writer since its start: ok/);
+		const details = detailsOf(result) as { selection?: { kind?: string }; coverage?: { days?: unknown[] } } | undefined;
+		assert.equal(details?.selection?.kind, "dates");
+		assert.equal(details?.coverage?.days?.length, 2);
+	} finally {
+		await fixture.close();
 	}
 });
 

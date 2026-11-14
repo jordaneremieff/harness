@@ -523,7 +523,23 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				from: "2026-01-01",
 				to: "2026-01-01",
 			});
-			assert.ok(telemetry.content.length);
+			assert.match(telemetry.content[0].text, /^Policy telemetry: 2026-01-01 through 2026-01-01 /);
+			assert.equal(telemetry.structuredContent.selection.kind, "dates");
+			assert.equal(telemetry.structuredContent.recording.writer.scope, "this-process-since-start");
+			assert.equal(telemetry.structuredContent.continuation.nextCursor, null);
+			assert.deepEqual(telemetry.details, telemetry.structuredContent);
+			const instants = await f.invoke("policy_control", {
+				operation: "telemetry",
+				since: "2026-01-01T09:00:00+11:00",
+				until: "2026-01-01T10:00:00+11:00",
+			});
+			assert.equal(instants.structuredContent.selection.untilUtc, "2025-12-31T23:00:00.000Z");
+			await assert.rejects(
+				f.invoke("policy_control", { operation: "telemetry", from: "2026-01-01", to: "2026-01-01", since: "2026-01-01T09:00:00Z" }),
+				/Invalid policy control fields/,
+			);
+			const inspected = await f.invoke("policy_control", { operation: "mode" });
+			assert.deepEqual(inspected.structuredContent, inspected.details);
 			await f.telemetry();
 			assert.deepEqual(f.errors, []);
 		} finally {

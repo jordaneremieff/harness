@@ -27,7 +27,7 @@ import type { PolicyOperations, PolicyResult, PolicyViewState } from "./operator
 import { effectiveState, selectableForAction, type SessionRuleAudit } from "./rule.ts";
 import { LoadingView, openOperatorFrame, publishOperatorViews, type OperatorView, type ViewHost } from "../../operator-ui/registration.ts";
 import { PolicyRuntime } from "./runtime.ts";
-import { formatTelemetry, readTelemetry } from "./telemetry.ts";
+import { formatTelemetry, readTelemetryPage } from "./telemetry.ts";
 import {
 	boundedInspection,
 	formatCatalog,
@@ -63,7 +63,7 @@ const POLICY_USAGE = [
 	"  /policy reset <id|--all> <reason...>          Start a new observation period",
 	"  /policy data list|show <name>|set <JSON>|remove <name> <revision>",
 	"  /policy data set-file <JSON>                 Review and import one complete local data file",
-	"  /policy telemetry <from> <to>                Summarize retained segments (YYYY-MM-DD, inclusive)",
+	"  /policy telemetry <from> <to> [cursor]       Summarize retained segments (YYYY-MM-DD, inclusive)",
 	"  /policy mode                                Report the session mode",
 	"  /policy help                                Show this usage",
 ].join("\n");
@@ -358,11 +358,16 @@ async function policyTelemetryVerb(
 	ctx: ExtensionCommandContext,
 	parts: string[],
 ): Promise<void> {
-	if (parts.length !== 2) {
-		env.output(ctx, "Usage: /policy telemetry <from YYYY-MM-DD> <to YYYY-MM-DD> (inclusive, at most 31 days)", true);
+	if (parts.length !== 2 && parts.length !== 3) {
+		env.output(
+			ctx,
+			"Usage: /policy telemetry <from YYYY-MM-DD> <to YYYY-MM-DD> [cursor] (inclusive, at most 31 days)",
+			true,
+		);
 		return;
 	}
-	env.output(ctx, formatTelemetry(await readTelemetry(env.dir, parts[0], parts[1])));
+	const request = { from: parts[0], to: parts[1], ...(parts[2] === undefined ? {} : { cursor: parts[2] }) };
+	env.output(ctx, formatTelemetry(await readTelemetryPage(env.dir, request, { health: env.runtime.telemetryHealth() })));
 }
 
 function policyHelpVerb(env: PolicyCommandEnv, ctx: ExtensionCommandContext): void {
@@ -985,7 +990,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		actionControl: (params, ctx) => runtime.actionControl(params, ctx as ExtensionContext),
 		resetRevision: (id) => runtime.resetRevision(id),
 		reset: (id, reason, revision) => runtime.reset(id === "--all" ? undefined : [id], reason, revision),
-		telemetry: async (from, to) => ({ report: formatTelemetry(await readTelemetry(dir, from, to)) }),
+		telemetry: (request) => readTelemetryPage(dir, request, { health: runtime.telemetryHealth() }),
 		inspect: (view, params, ctx) => runtime.inspect(view, params, ctx as ExtensionContext),
 	}, registerTool);
 	publish();

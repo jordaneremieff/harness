@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, rename, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
@@ -8,7 +8,15 @@ import type { PolicyRecord } from "./record.ts";
 import { appendRecord } from "./store.ts";
 import { localDate, TELEMETRY_INVENTORY_ENTRIES } from "./telemetry-files.ts";
 import { telemetryDecisionRows } from "./runtime.ts";
-import { formatTelemetry, readTelemetry, TELEMETRY_LIMITS } from "./telemetry.ts";
+import {
+	formatTelemetry,
+	readTelemetry,
+	readTelemetryPage,
+	TELEMETRY_LIMITS,
+	type TelemetryRequest,
+	type TelemetrySummary,
+	telemetryInstant,
+} from "./telemetry.ts";
 
 const DAY = "2026-09-03";
 function fixture(overrides: Partial<PolicyRecord> = {}): PolicyRecord {
@@ -66,6 +74,21 @@ function segment(dir: string, day: string, ordinal = 1): string {
 async function records(dir: string, values: unknown[], day = DAY, ordinal = 1): Promise<void> {
 	await writeFile(segment(dir, day, ordinal), values.map((value) => `${JSON.stringify(value)}\n`).join(""));
 }
+/** Follow every cursor of one selection; each page must stay within the page byte bound. */
+async function allPages(dir: string, request: TelemetryRequest, limit = 16): Promise<TelemetrySummary[]> {
+	const pages: TelemetrySummary[] = [];
+	let cursor: string | null | undefined;
+	do {
+		const page = await readTelemetryPage(dir, cursor ? { ...request, cursor } : request);
+		assert.ok(page.coverage.bytesRead <= TELEMETRY_LIMITS.bytes);
+		pages.push(page);
+		cursor = page.continuation.nextCursor;
+	} while (cursor && pages.length < limit);
+	assert.equal(cursor, null, "the selection is exhausted within the test bound");
+	return pages;
+}
+const total = (pages: TelemetrySummary[], pick: (page: TelemetrySummary) => number) =>
+	pages.reduce((sum, page) => sum + pick(page), 0);
 
 function accounting(summary: Awaited<ReturnType<typeof readTelemetry>>): void {
 	assert.equal(
@@ -83,7 +106,10 @@ function accounting(summary: Awaited<ReturnType<typeof readTelemetry>>): void {
 	assert.equal(summary.denials.confirmed, summary.denials.withRuleAttribution + summary.denials.withoutRuleAttribution);
 	assert.equal(
 		summary.coverage.completeLines,
-		summary.records + summary.coverage.malformedLines + summary.coverage.oversizedLines,
+		summary.records +
+			summary.coverage.malformedLines +
+			summary.coverage.oversizedLines +
+			summary.coverage.outsideWindowLines,
 	);
 	const tools = [...summary.tools, summary.otherTools];
 	assert.equal(
@@ -323,17 +349,27 @@ describe("policy telemetry aggregation", () => {
 });
 
 describe("policy telemetry input and filesystem bounds", () => {
-	it("selects denials before a saturated line budget, then newest records", async (t) => {
+	it("keeps the newest records at a saturated line budget and continues to the older denial", async (t) => {
 		const dir = await directory(t);
 		await writeFile(segment(dir, DAY),
 			`${JSON.stringify(fixture({ outcome: "denied", policy: policy([evalRow("deny-first")]) }))}\n${"null\n".repeat(TELEMETRY_LIMITS.lines)}${JSON.stringify(fixture({ tool: "newest" }))}\n`);
 		const result = await readTelemetry(dir, DAY, DAY);
-		assert.equal(result.denials.withRuleAttribution, 1);
+		assert.equal(result.denials.confirmed, 0);
 		assert.equal(result.tools.find((row) => row.name === "newest")?.records, 1);
 		assert.equal(result.coverage.completeLines, TELEMETRY_LIMITS.lines);
-		assert.ok(result.coverage.days[0].unprocessedBytes > 0);
-		assert.equal(result.coverage.order, "newest-days-tail-denials-first");
+		assert.equal(result.coverage.order, "newest-first-contiguous");
+		assert.ok(result.coverage.days[0].issues.includes("line-limit"));
+		assert.ok(result.continuation.nextCursor);
 		accounting(result);
+		const next = await readTelemetryPage(dir, { from: DAY, to: DAY, cursor: result.continuation.nextCursor });
+		assert.equal(next.continuation.page, "resumed");
+		assert.equal(next.continuation.position, "resumed");
+		assert.equal(next.denials.withRuleAttribution, 1);
+		assert.equal(next.coverage.malformedLines, 1);
+		assert.equal(next.continuation.nextCursor, null);
+		assert.equal(next.coverage.days[0].segments[0].startOffset, 0);
+		assert.equal(next.coverage.days[0].segments[0].endOffset, result.coverage.days[0].segments[0].startOffset);
+		accounting(next);
 	});
 
 	it("rejects invalid dates, unordered ranges, excessive ranges, and invalid paths", async () => {
@@ -494,22 +530,21 @@ describe("policy telemetry input and filesystem bounds", () => {
 		accounting(result);
 	});
 
-	it("enforces per-file and total byte limits with explicit skipped days", async (t) => {
+	it("stops a page at the byte bound and names the days it did not reach", async (t) => {
 		const dir = await directory(t);
-		const content = `${"x".repeat(TELEMETRY_LIMITS.segmentBytes)}\n${JSON.stringify(fixture({ outcome: "denied" }))}\n`;
-		await writeFile(segment(dir, DAY), content);
-		await writeFile(segment(dir, "2026-09-04"), content);
-		await records(dir, [fixture()], "2026-09-05");
+		const line = `${JSON.stringify(fixture({ captured: "p".repeat(200 * 1024) }))}\n`;
+		await writeFile(segment(dir, "2026-09-05"), line.repeat(Math.ceil(TELEMETRY_LIMITS.bytes / line.length) + 4));
+		await records(dir, [fixture({ outcome: "denied" })], "2026-09-04");
+		await records(dir, [fixture()], DAY);
 		const result = await readTelemetry(dir, DAY, "2026-09-05");
 		assert.equal(result.coverage.bytesRead, TELEMETRY_LIMITS.bytes);
-		assert.equal(result.records, 3);
-		assert.equal(result.denials.confirmed, 2);
-		assert.equal(result.coverage.cutoffLines, 2);
 		assert.deepEqual(result.coverage.days.map((day) => day.day), ["2026-09-05", "2026-09-04", DAY]);
-		assert.equal(result.coverage.days[1].bytesRead, TELEMETRY_LIMITS.segmentBytes);
-		assert.ok(result.coverage.days[1].issues.includes("segment-byte-limit"));
-		assert.ok(result.coverage.days[2].issues.includes("total-byte-limit"));
-		assert.ok((result.coverage.days[2].segments[0].startOffset ?? 0) > 0);
+		assert.ok(result.coverage.days[0].issues.includes("total-byte-limit"));
+		assert.ok((result.coverage.days[0].segments[0].startOffset ?? 0) > 0);
+		assert.deepEqual(result.coverage.days.slice(1).map((day) => [day.status, day.segmentsNotReached]), [["skipped", 1], ["skipped", 1]]);
+		assert.equal(result.coverage.status, "partial");
+		assert.equal(result.coverage.pageStatus, "complete");
+		assert.equal(result.denials.confirmed, 0);
 		accounting(result);
 	});
 
@@ -521,10 +556,190 @@ describe("policy telemetry input and filesystem bounds", () => {
 		assert.equal(result.records, 2);
 		assert.equal(result.coverage.completeLines, TELEMETRY_LIMITS.lines);
 		assert.equal(result.coverage.malformedLines, TELEMETRY_LIMITS.lines - 2);
-		assert.ok(result.coverage.days[1].unprocessedBytes > 0);
+		assert.ok((result.coverage.days[1].segments[0].bytesNotRead ?? 0) > 0);
 		assert.ok(result.coverage.days[1].issues.includes("line-limit"));
 		assert.equal(result.coverage.days[0].status, "complete");
 		accounting(result);
+	});
+});
+
+describe("policy telemetry continuation", () => {
+	it("covers every record once across pages, earlier bytes, and older segments", async (t) => {
+		const dir = await directory(t);
+		const big = Array.from({ length: 60 }, (_, n) => fixture({ tool: `big${n % 3}`, captured: "p".repeat(200 * 1024) }));
+		await records(dir, big, DAY, 1);
+		await records(dir, [fixture({ tool: "second" }), fixture({ outcome: "denied" })], DAY, 2);
+		await records(dir, [fixture({ tool: "older" })], "2026-09-02");
+		const pages = await allPages(dir, { from: "2026-09-02", to: DAY });
+		assert.ok(pages.length >= 2);
+		assert.equal(total(pages, (page) => page.records), 63);
+		assert.equal(total(pages, (page) => page.denials.confirmed), 1);
+		assert.equal(total(pages, (page) => page.coverage.malformedLines + page.coverage.oversizedLines), 0);
+		assert.deepEqual(pages.map((page) => page.continuation.page), ["first", ...pages.slice(1).map(() => "resumed")]);
+		for (const page of pages) {
+			assert.equal(page.coverage.pageStatus, "complete");
+			accounting(page);
+		}
+		assert.deepEqual(pages.slice(0, -1).map((page) => page.coverage.status), pages.slice(0, -1).map(() => "partial"));
+		assert.equal(pages.at(-1)?.coverage.status, "complete");
+		assert.deepEqual(pages.at(-1)?.coverage.days.map((day) => day.status), ["complete", "complete"]);
+		const covered = pages.flatMap((page) => page.coverage.days.flatMap((day) => day.segments.filter((row) => row.name.endsWith(".000001.jsonl") && row.name.startsWith(DAY))));
+		assert.equal(covered[0].endOffset, covered[0].size);
+		for (let index = 1; index < covered.length; index++) assert.equal(covered[index].endOffset, covered[index - 1].startOffset);
+		assert.equal(covered.at(-1)?.startOffset, 0);
+	});
+
+	it("crosses one line longer than a page as a single oversized line", async (t) => {
+		const dir = await directory(t);
+		await writeFile(
+			segment(dir, DAY),
+			`${JSON.stringify(fixture({ tool: "before" }))}\n${"x".repeat(TELEMETRY_LIMITS.bytes + 1024 * 1024)}\n${JSON.stringify(fixture({ tool: "after" }))}\n`,
+		);
+		const pages = await allPages(dir, { from: DAY, to: DAY });
+		assert.equal(pages.length, 3);
+		assert.equal(total(pages, (page) => page.records), 2);
+		assert.equal(total(pages, (page) => page.coverage.oversizedLines), 1);
+		assert.deepEqual(pages.map((page) => page.tools.map((row) => row.name)), [["after"], [], ["before"]]);
+	});
+
+	it("reports a vanished or replaced cursor segment and continues with older segments", async (t) => {
+		for (const change of ["vanished", "changed"] as const) {
+			const dir = await directory(t);
+			const line = `${JSON.stringify(fixture({ captured: "p".repeat(200 * 1024) }))}\n`;
+			await writeFile(segment(dir, DAY, 2), line.repeat(Math.ceil(TELEMETRY_LIMITS.bytes / line.length) + 4));
+			await records(dir, [fixture({ tool: "older" })], DAY, 1);
+			const first = await readTelemetry(dir, DAY, DAY);
+			assert.ok(first.continuation.nextCursor);
+			if (change === "vanished") await unlink(segment(dir, DAY, 2));
+			else {
+				await writeFile(`${segment(dir, DAY, 2)}.new`, line.repeat(64));
+				await rename(`${segment(dir, DAY, 2)}.new`, segment(dir, DAY, 2));
+			}
+			const next = await readTelemetryPage(dir, { from: DAY, to: DAY, cursor: first.continuation.nextCursor });
+			assert.equal(next.continuation.position, change);
+			assert.equal(next.continuation.olderSegments, "retained");
+			const [lost, older] = next.coverage.days[0].segments;
+			assert.equal(lost.status, change === "vanished" ? "missing" : "unavailable");
+			assert.deepEqual(lost.issues, [change === "vanished" ? "missing" : "source-changed"]);
+			assert.equal(lost.bytesNotRead, first.coverage.days[0].segments[0].startOffset);
+			assert.equal(older.status, "complete");
+			assert.deepEqual(next.tools.map((row) => row.name), ["older"]);
+			assert.equal(next.coverage.pageStatus, "partial");
+			assert.equal(next.continuation.nextCursor, null);
+		}
+	});
+
+	it("reports retention removal of the oldest first-page segment", async (t) => {
+		const dir = await directory(t);
+		const line = `${JSON.stringify(fixture({ captured: "p".repeat(200 * 1024) }))}\n`;
+		await writeFile(segment(dir, DAY, 2), line.repeat(Math.ceil(TELEMETRY_LIMITS.bytes / line.length) + 4));
+		await records(dir, [fixture()], DAY, 1);
+		const first = await readTelemetry(dir, DAY, DAY);
+		await unlink(segment(dir, DAY, 1));
+		const next = await readTelemetryPage(dir, { from: DAY, to: DAY, cursor: first.continuation.nextCursor ?? "" });
+		assert.equal(next.continuation.position, "resumed");
+		assert.equal(next.continuation.olderSegments, "removed");
+		assert.equal(next.coverage.pageStatus, "partial");
+		assert.match(formatTelemetry(next), /oldest first-page segment removed/);
+	});
+
+	it("binds a cursor to its selection and directory and refuses malformed cursors", async (t) => {
+		const dir = await directory(t);
+		const line = `${JSON.stringify(fixture({ captured: "p".repeat(200 * 1024) }))}\n`;
+		await writeFile(segment(dir, DAY), line.repeat(Math.ceil(TELEMETRY_LIMITS.bytes / line.length) + 4));
+		const cursor = (await readTelemetry(dir, DAY, DAY)).continuation.nextCursor ?? "";
+		const other = await directory(t);
+		for (const [path, request] of [
+			[dir, { from: "2026-09-02", to: DAY, cursor }],
+			[other, { from: DAY, to: DAY, cursor }],
+			[dir, { since: "2026-09-03T00:00:00Z", until: "2026-09-04T00:00:00Z", cursor }],
+		] as const)
+			await assert.rejects(readTelemetryPage(path, request), /another selection/);
+		for (const bad of ["", "!", "x".repeat(TELEMETRY_LIMITS.cursorChars + 1), Buffer.from("{\"v\":2}").toString("base64url")])
+			await assert.rejects(readTelemetryPage(dir, { from: DAY, to: DAY, cursor: bad }), /malformed/);
+	});
+});
+
+describe("policy telemetry instants", () => {
+	it("matches recorded instants in a half-open interval across covering writer-local day files", async (t) => {
+		const dir = await directory(t);
+		await records(dir, [
+			fixture({ tool: "early", at: "2026-09-02T22:59:59.999Z" }),
+			fixture({ tool: "inside", at: "2026-09-02T23:00:00.000Z" }),
+		], "2026-09-03");
+		await records(dir, [fixture({ tool: "inside", at: "2026-09-03T00:30:00.000Z" }), fixture({ tool: "end", at: "2026-09-03T01:00:00.000Z" })], "2026-09-02");
+		await records(dir, [fixture({ tool: "inside", at: "2026-09-03T00:59:00.000Z" })], "2026-09-01");
+		const result = await readTelemetryPage(dir, { since: "2026-09-03T10:00:00+11:00", until: "2026-09-03T12:00:00+11:00" });
+		assert.deepEqual(result.selection, {
+			kind: "instants",
+			since: "2026-09-03T10:00:00+11:00",
+			until: "2026-09-03T12:00:00+11:00",
+			sinceUtc: "2026-09-02T23:00:00.000Z",
+			untilUtc: "2026-09-03T01:00:00.000Z",
+			end: "exclusive",
+			dayFiles: { from: "2026-09-02", to: "2026-09-03", offsets: "utc-12:00-to-utc+14:00" },
+			segmentsModifiedBeforeSince: "excluded",
+		});
+		assert.deepEqual([result.from, result.to], ["2026-09-02", "2026-09-03"]);
+		assert.deepEqual(result.tools.map((row) => [row.name, row.records]), [["inside", 2]]);
+		assert.equal(result.coverage.outsideWindowLines, 2);
+		assert.equal(result.coverage.status, "complete");
+		accounting(result);
+		const wide = await readTelemetryPage(dir, { since: "2026-09-02T23:00:00Z", until: "2026-09-05T00:00:00Z" });
+		assert.equal(wide.coverage.days.find((day) => day.day === "2026-09-05")?.status, "missing");
+		assert.equal(wide.coverage.status, "complete", "an absent covering day file is not a gap");
+		assert.match(formatTelemetry(result), /recorded instants from 2026-09-02T23:00:00.000Z up to 2026-09-03T01:00:00.000Z \(exclusive/);
+	});
+
+	it("excludes segments last modified before the start instant without reading them", async (t) => {
+		const dir = await directory(t);
+		await records(dir, [fixture({ at: "2026-09-03T01:00:00.000Z" })], DAY, 1);
+		await records(dir, [fixture({ tool: "later", at: "2026-09-03T05:00:00.000Z" })], DAY, 2);
+		const old = new Date("2026-09-03T02:00:00.000Z");
+		await utimes(segment(dir, DAY, 1), old, old);
+		const result = await readTelemetryPage(dir, { since: "2026-09-03T04:00:00Z", until: "2026-09-03T06:00:00Z" });
+		const [newer, excluded] = result.coverage.days.find((day) => day.day === DAY)?.segments ?? [];
+		assert.equal(newer.status, "complete");
+		assert.deepEqual([excluded.status, excluded.bytesRead, excluded.issues], ["excluded", 0, []]);
+		assert.deepEqual(result.tools.map((row) => row.name), ["later"]);
+		assert.equal(result.coverage.status, "complete");
+	});
+
+	it("requires explicit zones, valid calendar times, one selection, and a bounded ordered interval", async () => {
+		assert.equal(telemetryInstant("2026-09-03T10:00:00.5-03:30"), Date.parse("2026-09-03T13:30:00.500Z"));
+		for (const [since, until] of [
+			["2026-09-03T10:00:00", "2026-09-03T11:00:00Z"],
+			["2026-02-30T10:00:00Z", "2026-03-01T00:00:00Z"],
+			["2026-09-03T24:00:00Z", "2026-09-04T01:00:00Z"],
+			["2026-09-03T10:00:00+14:30", "2026-09-04T01:00:00Z"],
+			["2026-09-03T10:00:00Z", "2026-09-03T10:00:00Z"],
+			["2026-09-03T10:00:00Z", "2026-10-03T10:00:00Z"],
+		])
+			await assert.rejects(readTelemetryPage("/unused", { since, until }), RangeError);
+		await assert.rejects(
+			readTelemetryPage("/unused", { from: DAY, to: DAY, since: "2026-09-03T10:00:00Z", until: "2026-09-03T11:00:00Z" } as TelemetryRequest),
+			/exactly one selection/,
+		);
+	});
+});
+
+describe("policy telemetry recording evidence", () => {
+	it("joins this writer's health with its scope and never claims complete recording", async (t) => {
+		const dir = await directory(t);
+		await records(dir, [fixture()]);
+		const none = await readTelemetry(dir, DAY, DAY);
+		assert.deepEqual(none.recording, { status: "unknown", writer: { scope: "unavailable" }, otherWriters: "unknown" });
+		const clean = await readTelemetry(dir, DAY, DAY, { health: { state: "ok", lostRecords: 0, lostBytes: 0 } });
+		assert.deepEqual(clean.recording, {
+			status: "unknown",
+			writer: { scope: "this-process-since-start", health: { state: "ok", lostRecords: 0, lostBytes: 0 } },
+			otherWriters: "unknown",
+		});
+		assert.equal(clean.coverage.status, "complete");
+		const lossy = await readTelemetry(dir, DAY, DAY, { health: { state: "pressure", lostRecords: 2, lostBytes: 900, reason: "lock busy" } });
+		assert.equal(lossy.recording.status, "incomplete");
+		assert.match(formatTelemetry(lossy), /Recording: incomplete\. This process's writer since its start: pressure; lost records 2/);
+		assert.match(formatTelemetry(none), /Recording: unknown\. This host exposes no writer health/);
 	});
 });
 
@@ -577,6 +792,26 @@ describe("policy telemetry text", () => {
 			denialEvaluations: Number.MAX_SAFE_INTEGER,
 			deniedCalls: Number.MAX_SAFE_INTEGER,
 		}));
+		result.otherRules = { ...result.rules[0], id: "(other rules)" };
+		result.otherTools = { ...result.tools[0], name: "(other tools)" };
+		result.continuation.nextCursor = "c".repeat(TELEMETRY_LIMITS.cursorChars);
+		const row = {
+			name: "2026-09-01.999999.jsonl",
+			ordinal: 999_999,
+			status: "partial" as const,
+			bytesRead: TELEMETRY_LIMITS.bytes,
+			size: Number.MAX_SAFE_INTEGER,
+			startOffset: Number.MAX_SAFE_INTEGER,
+			endOffset: Number.MAX_SAFE_INTEGER,
+			bytesNotRead: Number.MAX_SAFE_INTEGER,
+			issues: ["source-changed", "total-byte-limit", "incomplete-line", "malformed-line", "oversized-line", "read-error"] as const,
+		};
+		for (const day of result.coverage.days) {
+			day.segmentsNotReached = Number.MAX_SAFE_INTEGER;
+			day.issues = [...row.issues, "segment-limit", "line-limit"];
+		}
+		result.coverage.days[0].segments = Array.from({ length: TELEMETRY_LIMITS.segments + 1 }, () => ({ ...row, issues: [...row.issues] }));
+		assert.ok(Buffer.byteLength(JSON.stringify(result)) <= TELEMETRY_LIMITS.structuredBytes);
 		const text = formatTelemetry(result);
 		assert.ok(Buffer.byteLength(text) <= TELEMETRY_LIMITS.outputBytes);
 		assert.match(text, /Output omits \d+ tool rows and [1-9]\d* rule rows/);

@@ -1248,6 +1248,11 @@ export class PolicyRuntime {
 		};
 	}
 
+	/** This process's telemetry writer health since its start. */
+	telemetryHealth(): TelemetryHealth {
+		return this.writer.health();
+	}
+
 	private inspectHealth(snapshot: RuleSnapshot): unknown {
 		return {
 			authority: snapshot.health,

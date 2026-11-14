@@ -1,12 +1,14 @@
 /** Context-authorized controls over the same registry and runtime as operator commands. */
 import { compile, obj, opt, str, type Schema, type Static, union } from "@earendil-works/pi-schema";
 import { resolve } from "node:path";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { normalizeDataArtifact, readDataArtifact, safeJson } from "./data-import.ts";
 import { toolDisplayRecord } from "./display.ts";
 import { MAX_RULE_EVENT_BYTES, makeRuleAudit, PolicyMutationCancelledError, proposalRevision, ruleAbsenceMessage, targetIdentity } from "./local-rules.ts";
 import { contentRevision, effectiveEffect, effectiveState, type OperatorRuleAudit } from "./rule.ts";
+import { formatTelemetry, TELEMETRY_CURSOR_PATTERN, TELEMETRY_INSTANT_PATTERN, type TelemetrySummary } from "./telemetry.ts";
 import type { PolicyToolContext, ToolDeps } from "./tools.ts";
 
 const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
@@ -18,6 +20,9 @@ const Authorization = str({ minLength: 1, maxLength: 1000 });
 const Path = str({ minLength: 1, maxLength: 4096 });
 const Selection: Schema<string> = { ...union([Id, StringEnum(["--all"])]), type: "string" };
 const ActionId = str({ minLength: 36, maxLength: 36, pattern: "^[0-9a-fA-F-]{36}$" });
+const TelemetryDate = str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" });
+const TelemetryInstant = str({ maxLength: 40, pattern: TELEMETRY_INSTANT_PATTERN });
+const TelemetryCursor = str({ minLength: 1, maxLength: 1024, pattern: TELEMETRY_CURSOR_PATTERN });
 const Artifact = obj(
 	{
 		data: { type: "object", patternProperties: { "^.*$": {} }, maxProperties: 12 } as Schema<Record<string, unknown>>,
@@ -37,10 +42,12 @@ const variants = [
 	obj({ operation: StringLiteral("data-preview"), path: { ...Path } }),
 	obj({ operation: StringLiteral("reset-preview"), id: { ...Selection } }),
 	obj({ operation: StringLiteral("mode") }),
+	obj({ operation: StringLiteral("telemetry"), from: { ...TelemetryDate }, to: { ...TelemetryDate }, cursor: opt(TelemetryCursor) }),
 	obj({
 		operation: StringLiteral("telemetry"),
-		from: str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
-		to: str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+		since: { ...TelemetryInstant },
+		until: { ...TelemetryInstant },
+		cursor: opt(TelemetryCursor),
 	}),
 	obj({ operation: StringLiteral("reject"), proposalId: { ...ActionId }, ...authority }),
 	obj({ operation: StringEnum(["disable", "enable", "retire"]), id: { ...Id }, ...authority, ...reason }),
@@ -70,8 +77,11 @@ export const PolicyControlParams = obj(
 		effect: opt(StringEnum(["steer", "block"])),
 		artifact: opt(Artifact),
 		path: opt(Path),
-		from: opt(str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
-		to: opt(str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
+		from: opt(TelemetryDate),
+		to: opt(TelemetryDate),
+		since: opt(TelemetryInstant),
+		until: opt(TelemetryInstant),
+		cursor: opt(TelemetryCursor),
 	},
 	{
 		open: false,
@@ -80,13 +90,39 @@ export const PolicyControlParams = obj(
 	},
 );
 
+/** Schema of every control result's structured value: the same object that `details` carries. */
+export const PolicyControlOutput: Schema<Record<string, unknown>> = { type: "object", patternProperties: { "^.*$": {} } };
+
 export function controlResult(value: unknown, limit = 48 * 1024) {
 	const text = safeJson(value);
 	if (Buffer.byteLength(text) > limit)
 		throw new Error(
 			"Complete control result exceeds the output bound; inspect one target or the complete named source file.",
 		);
-	return { content: [{ type: "text" as const, text }], details: value };
+	return { content: [{ type: "text" as const, text }], details: value, structuredContent: value };
+}
+
+/** Readable report text for the model, with the structured page as details and structured content. */
+export function telemetryResult(summary: TelemetrySummary) {
+	return { content: [{ type: "text" as const, text: formatTelemetry(summary) }], details: summary, structuredContent: summary };
+}
+
+/** One control call as an ordinary or native tool result. */
+export async function controlToolResult(
+	deps: ToolDeps,
+	params: Input,
+	ctx: PolicyToolContext,
+	signal?: AbortSignal,
+) {
+	if (params.operation === "telemetry") {
+		if (!deps.telemetry) throw new Error("Policy telemetry is unavailable in this host");
+		const { operation: _operation, ...request } = params;
+		return telemetryResult(await deps.telemetry(request));
+	}
+	return controlResult(
+		"authorization" in params ? await applyControl(deps, params, ctx, signal) : await previewControl(deps, params, ctx),
+		params.operation === "inspect" ? MAX_RULE_EVENT_BYTES * 6 + 4096 : 48 * 1024,
+	);
 }
 
 async function artifactFor(params: { artifact?: unknown; path?: string }, ctx: PolicyToolContext) {
@@ -144,10 +180,6 @@ export async function previewControl(deps: ToolDeps, params: Input, ctx: PolicyT
 			mode: deps.getMode?.() ?? "unavailable",
 			boundary: "Session mode comes from startup configuration; controls do not change it.",
 		};
-	if (params.operation === "telemetry") {
-		if (!deps.telemetry) throw new Error("Policy telemetry is unavailable in this host");
-		return deps.telemetry(params.from, params.to);
-	}
 	if (params.operation === "import-preview") return deps.registry.planImport(params.selection);
 	if (params.operation === "data-preview") return previewData(deps, params, ctx);
 	if (params.operation === "reset-preview") {
@@ -255,7 +287,7 @@ export function validateControl(params: unknown): asserts params is Input {
 }
 
 export const POLICY_CONTROL_DESCRIPTION =
-	"Inspect and control policy through contextual operator decisions. Read operations: actions (bounded pending exact actions), action-inspect (complete actionId target), inspect (complete stored rule and control revision, or pending proposal if no rule exists; use policy_rules for a pending replacement/disable/retire), import-preview (selection: rule ID or --all), data-preview (complete explicit artifact or local path), reset-preview (id or --all), mode, telemetry (inclusive from/to dates). Mutations: action-approve/action-reject (actionId, inspected revision, authorization for one exact action), reject (exact proposalId), disable/enable/retire/effect (id, reason), reset (id or --all, reason), import (selection), data-set (artifact), data-set-file (path), data-remove (name). Every mutation requires revision from the corresponding inspection and authorization explaining the operator decision. For reject use proposalRevision; data-remove uses the binding revision from policy_rules. Rule revisions bind full state including overrides; data-set binds the complete normalized artifact and prior binding revision. Preparation never authorizes mutation. No mode setter, arbitrary command execution, or proposal approval: use policy_approve for approval.";
+	"Inspect and control policy through contextual operator decisions. Read operations: actions (bounded pending exact actions), action-inspect (complete actionId target), inspect (complete stored rule and control revision, or pending proposal if no rule exists; use policy_rules for a pending replacement/disable/retire), import-preview (selection: rule ID or --all), data-preview (complete explicit artifact or local path), reset-preview (id or --all), mode, telemetry (inclusive writer-local from/to day files, or since/until instants with Z or an explicit offset, half-open; returns readable text plus the structured page; repeat the same selection with nextCursor until it is null to reach older bytes). Mutations: action-approve/action-reject (actionId, inspected revision, authorization for one exact action), reject (exact proposalId), disable/enable/retire/effect (id, reason), reset (id or --all, reason), import (selection), data-set (artifact), data-set-file (path), data-remove (name). Every mutation requires revision from the corresponding inspection and authorization explaining the operator decision. For reject use proposalRevision; data-remove uses the binding revision from policy_rules. Rule revisions bind full state including overrides; data-set binds the complete normalized artifact and prior binding revision. Preparation never authorizes mutation. No mode setter, arbitrary command execution, or proposal approval: use policy_approve for approval.";
 
 export function registerControlTool(pi: Pick<ExtensionAPI, "registerTool">, deps: ToolDeps): void {
 	pi.registerTool({
@@ -272,14 +304,13 @@ export function registerControlTool(pi: Pick<ExtensionAPI, "registerTool">, deps
 			"Inspect the complete target before mutation. After a stale refusal, reassess the operator decision against fresh evidence; do not silently substitute a new proposal or revision. For large file data, read the complete named source when data-preview reports complete:false. Report actual state and mode, not presumed enforcement.",
 		],
 		parameters: PolicyControlParams,
+		outputSchema: PolicyControlOutput,
 		async execute(_call, params: Static<typeof PolicyControlParams>, signal, _update, ctx) {
 			if (signal?.aborted) throw new PolicyMutationCancelledError();
 			validateControl(params);
 			if (params.operation !== "mode" && params.operation !== "telemetry") await deps.loadRegistry(ctx);
-			return controlResult(
-				"authorization" in params ? await applyControl(deps, params, ctx, signal) : await previewControl(deps, params, ctx),
-				params.operation === "inspect" ? MAX_RULE_EVENT_BYTES * 6 + 4096 : 48 * 1024,
-			);
+			const result = await controlToolResult(deps, params, ctx, signal);
+			return { ...result, structuredContent: result.structuredContent as JsonObject };
 		},
 	});
 }

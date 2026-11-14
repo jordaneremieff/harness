@@ -1121,7 +1121,14 @@ combinations and prohibited extra fields are checked again before any operation:
 | `reset-preview` | `id` | Reset `revision`; target is one rule ID or `--all` |
 | `reset` | `id`, `reason`, `revision`, `authorization` | `reset-preview` |
 | `mode` | None | Reports startup-selected mode; no live mode setter |
-| `telemetry` | `from`, `to` | Inclusive local-day range, with the same bounded reader as the command |
+| `telemetry` | `from` and `to`, or `since` and `until`; optional `cursor` | One page from the bounded reader of the command; see [Date-bounded telemetry](#date-bounded-telemetry) |
+
+Every operation returns its value as `details` and as structured content for
+scripts: `structuredContent` under an open object `outputSchema` in ordinary Pi,
+and `structuredOutput` in Durable agents. Model text is that value as JSON,
+except for `telemetry`, whose model text is the readable report and whose
+structured value is the complete bounded page. Scripts read the page fields
+directly and never parse the report.
 
 Preparation operations never authorize a mutation. Proposal submission and
 approval remain `policy_propose` and `policy_approve`. `policy_rules` retains
@@ -1247,7 +1254,7 @@ to text in every collapsed value.
 /policy effect <selectable-rule-id> <steer|block> <reason...>
 /policy retire <rule-id> <reason...>
 /policy mode
-/policy telemetry <from YYYY-MM-DD> <to YYYY-MM-DD>
+/policy telemetry <from YYYY-MM-DD> <to YYYY-MM-DD> [cursor]
 /policy capabilities
 /policy state
 /policy health
@@ -1308,16 +1315,59 @@ decision facts and does not make an otherwise complete read partial.
 It reads existing files only. It neither seeds a missing rule registry nor
 creates telemetry files, aggregate stores, background work, or retention changes.
 
-[telemetry.ts](telemetry.ts) defines date, byte, line, metadata, group, and output
-limits. Reads proceed newest day first and, within a day, newest segment first. Each
-segment contributes its tail. Coverage names the selected byte range, unread bytes,
-and issues of every segment. An incomplete inventory, a segment that retention removes
-during a read, and an unsafe entry all make the report partial evidence. Within each
-bounded snapshot, denials precede other records, with newest records first in
-each group. The report names the selected byte ranges, unread bytes, unprocessed
-bytes, malformed lines, and skipped days. Denials outside those byte snapshots
-remain unknown. Every missing, unreadable, changed, or partially read day stays
-visible. Counts describe accepted records within those
+`policy_control` with `operation: "telemetry"` reads the same files with one of
+two selections:
+
+- `from` and `to` name inclusive writer-local day files, as in the command.
+- `since` and `until` name a half-open interval of instants. Each needs seconds
+  and an explicit zone, `Z` or `+HH:MM`/`-HH:MM`, for example
+  `2026-11-14T09:00:00+11:00`. The reader selects every day file that a writer
+  at any UTC offset from -12:00 to +14:00 could use for that interval, and it
+  keeps only records whose recorded `at` instant satisfies
+  `since <= at < until`. An absent day file of such a selection is not a gap,
+  because no writer with that offset need exist. A segment last modified before
+  `since` cannot hold a matching record and is excluded without a read; a
+  wall-clock step backwards can defeat that exclusion. The structured
+  `selection` names the request, its UTC form, and the covering day files; it
+  never relabels day files as UTC days.
+
+One call returns one page. A page reads segments newest first and contiguously:
+newest day, newest segment, newest byte first, until the selection ends or a page
+limit stops it. [telemetry.ts](telemetry.ts) defines date, byte, line, segment,
+metadata, group, output, structured-output, and cursor limits. When a page stops
+before the oldest selected byte, `continuation.nextCursor` names the exact place.
+Repeat the same selection with `cursor` until `nextCursor` is null; the command
+accepts the cursor as its third argument. A cursor binds the selection and the
+policy directory, the segment name, its file identity, and the covered offset.
+The next page continues below that offset, so no record is counted twice and a
+line cut at a page boundary is read whole on the next page. A line longer than
+a page is counted once as oversized. `continuation.position` reports `vanished`
+when the cursor's segment no longer exists and `changed` when a different file
+now has its name; both keep a segment row with the bytes left unread, then the
+page continues with older segments. `continuation.olderSegments` reports whether
+the oldest segment of the first page still exists. Retention removes the oldest
+segments first, so `removed` means that the chain lost retained evidence.
+
+Pages are per-segment snapshots. Bytes appended to a segment after its first
+visit, and segments that appear above the cursor, are outside the chain.
+`coverage.days` lists the selected days from the page's start position. Each
+segment row gives the covered byte range `[startOffset, endOffset)`, the earlier
+bytes left for later pages, and its issues; each day counts segments the page did
+not reach. `coverage.pageStatus` judges only the bytes this page covered: page
+limits that a cursor continues are not gaps there. `coverage.status` is also
+partial while a next page remains. The chain is complete evidence of retained
+files only when every page has `pageStatus` complete and the last page has no
+cursor. Counts describe one page; add them across pages. An incomplete
+inventory, a vanished or changed segment, an unsafe entry, an unreadable or
+malformed line, and a missing day of a date selection all make the evidence
+partial. Denials in bytes that no page covered remain unknown.
+
+`recording` joins the writer evidence that the host has. Its `writer` is this
+process's telemetry writer health since its start, with that scope stated, or
+`unavailable`. Losses of other writers and of earlier processes are unknown, so
+`recording.status` is `incomplete` when this writer reports a loss or failure,
+and `unknown` otherwise; it is never complete. Complete parsing of retained files
+does not prove complete recording. Counts describe accepted records within those
 bounds, not all live activity or lost writes. Error classes are the recorded
 text inference, not proof of the error's cause. Denial attribution uses recorded
 input decisions, not matched rule names. A call with several denying rules

@@ -83,7 +83,7 @@ describe("appendRecord", () => {
 		assert.equal(summary.coverage.completeLines, 2);
 		assert.equal(summary.coverage.days[0].status, "complete");
 		assert.equal(summary.coverage.status, "partial", "records without outcome evidence do not establish complete telemetry");
-		assert.equal(summary.coverage.days[0].unprocessedBytes, 0);
+		assert.equal(summary.coverage.days[0].segments[0].bytesNotRead, 0);
 	});
 
 	it("never creates or touches root-level day files", async (t) => {
