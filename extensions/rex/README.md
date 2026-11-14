@@ -209,7 +209,7 @@ including panes of other agents and of the operator, never move. A created pane 
 for a moment that needs the operator:
 a run that settles (`agent_settled`) with an answer, which is a last model message with
 text, or with an error, and a dialog that starts waiting (`ui_prompt_start`). A run that
-ends quietly in a tool call, such as a state note while background work continues, and a
+ends quietly in a tool call, such as a turn that only waits for background work, and a
 run that the operator aborts leave the arrangement alone: a quiet settlement does not show
 that the work finished, and nothing waits there to be read.
 
@@ -233,8 +233,10 @@ conversation is not in its window's tiled layout, every pane waits. The first mo
 pane takes half of the conversation's space, beside it when the conversation's pixels
 are at least as wide as tall and below it otherwise. Later panes, also at later
 moments, stack in the space of the last moved pane while it stays tiled in the window,
-so the conversation keeps its share. A move changes no focus: a pane that had focus
-keeps it in its new place, and the extension never takes focus for a dialog.
+so the conversation keeps its share. A move changes no focus: Rex moves focus with a
+block only when that block had the focus of its window (`rex api describe
+session.move_block`), and the pane with focus is never moved. The extension never takes
+focus for a dialog.
 
 Each move follows its own view, with no other request between them: the extension reads
 the terminal size first, then reads the view again before every move. When the window's
@@ -245,8 +247,10 @@ the short time between the latest view and the move can still lose to that move.
 
 A failed read changes nothing, so every pane keeps waiting for the next moment. A move
 that Rex refuses or does not answer counts as made only when the next view shows the
-pane tiled. Otherwise the pane waits for a later moment, the other panes of the decision
-still move, and after three failed moves the pane stays where it is. Failures report one
+pane tiled beside the conversation; that view settles it even when it also stops the
+decision, and a view that cannot be read counts the move as failed. Otherwise the pane
+waits for a later moment, the other panes of the decision still move, and after three
+failed moves the pane stays where it is. Failures report one
 warning per extension runtime. No timer or poll repeats a decision.
 
 The extension acts only when inherited `REX_SESSION` and `REX_BLOCK` name a block

@@ -317,6 +317,46 @@ test("a move without an answer counts once a view shows the pane tiled", async (
 	await keeper.shutdown();
 });
 
+test("an unconfirmed move is settled from the next view also when that view stops the decision", async () => {
+	const rex = new FakeRex([["block:reader", READER], ["block:probe", PROBE]]);
+	rex.moveFailures.set("block:reader", ["timeout"]);
+	const keeper = keeperFor(rex);
+	const { ctx } = context();
+	keeper.start(ctx);
+	keeper.floated([{ blockId: "block:reader", bounds: READER }, { blockId: "block:probe", bounds: PROBE }]);
+	let views = 0;
+	rex.hold = (method) => {
+		if (method === "session.view" && ++views === 2) rex.zoomed = CONVERSATION;
+		return undefined;
+	};
+	await decide(keeper, ctx);
+	assert.deepEqual(rex.moves().map((move) => move.block_id), ["block:reader"], "the zoom stops the decision");
+	rex.hold = undefined;
+	rex.zoomed = undefined;
+	rex.calls.length = 0;
+	await decide(keeper, ctx);
+	assert.deepEqual(rex.moves().map((move) => [move.block_id, move.anchor_block_id, move.direction]), [["block:probe", "block:reader", "vertical"]], "the move that Rex made counts, so the next pane stacks beside it");
+	await keeper.shutdown();
+});
+
+test("a refused move whose next view fails still counts toward the bound", async () => {
+	const rex = new FakeRex([["block:reader", READER]]);
+	rex.moveFailures.set("block:reader", Array.from({ length: MAX_FAILED_MOVES + 1 }, () => "exit" as const));
+	const keeper = keeperFor(rex);
+	const { ctx } = context();
+	keeper.start(ctx);
+	keeper.floated([{ blockId: "block:reader", bounds: READER }]);
+	rex.hold = (method) => {
+		if (method === "session.move_block") rex.failViews = 1;
+		return undefined;
+	};
+	await decide(keeper, ctx);
+	rex.hold = undefined;
+	for (let moment = 1; moment < MAX_FAILED_MOVES + 1; moment++) await decide(keeper, ctx);
+	assert.equal(rex.moves().length, MAX_FAILED_MOVES);
+	await keeper.shutdown();
+});
+
 test("a pane that Rex refuses to move stays after a bounded number of moments", async () => {
 	const rex = new FakeRex([["block:reader", READER]]);
 	rex.moveFailures.set("block:reader", Array.from({ length: MAX_FAILED_MOVES + 1 }, () => "exit" as const));

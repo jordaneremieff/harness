@@ -183,7 +183,8 @@ function textOf(content: unknown): boolean {
 
 /**
  * Whether a settled run left something for the operator: its last model message is an answer with text
- * or an error. A run that ended in a tool call, such as a quiet state note, or that was aborted, did not.
+ * or an error. A run that ended in a tool call, such as a quiet turn while background work continues, or that
+ * was aborted, did not.
  */
 export function runAnswered(branch: readonly unknown[], aborted: boolean): boolean {
 	if (aborted) return false;
@@ -316,11 +317,12 @@ class Keeper implements ConversationKeeper {
 		let before: { window: ConversationWindow; moved: string } | undefined;
 		let unconfirmed: Attempt | undefined;
 		for (;;) {
-			const view = await this.api(ctx, transport, signal, "session.view", { session_id: sessionId });
+			const view = await this.view(ctx, transport, signal, sessionId, unconfirmed);
+			// An unconfirmed move is settled from this view before anything else decides, also when the decision stops.
+			if (unconfirmed) this.reconcile(unconfirmed, blockId, view);
+			unconfirmed = undefined;
 			const window = conversationWindow(view, blockId);
 			if (!window || disturbed(before, window)) return;
-			if (unconfirmed) this.reconcile(unconfirmed, blockId, window);
-			unconfirmed = undefined;
 			const next = this.next(view, window, attempted);
 			if (next === undefined) return;
 			attempted.add(next);
@@ -346,14 +348,25 @@ class Keeper implements ConversationKeeper {
 		return next;
 	}
 
-	/** A move that failed or got no answer counts as made only when the new view shows the pane tiled. */
-	private reconcile(attempt: Attempt, conversationBlockId: string, window: ConversationWindow): void {
-		if (window.tiled.has(attempt.paneId)) {
-			this.dock(conversationBlockId, attempt);
-			return;
+	/** The view; when it cannot be read after a move that Rex did not confirm, that move counts as failed. */
+	private async view(ctx: ExtensionContext, transport: RexTransport, signal: AbortSignal, sessionId: string, unconfirmed: Attempt | undefined): Promise<unknown> {
+		try {
+			return await this.api(ctx, transport, signal, "session.view", { session_id: sessionId });
+		} catch (error) {
+			if (unconfirmed) this.failed(unconfirmed.paneId);
+			throw error;
 		}
-		const waiting = this.pending.get(attempt.paneId);
-		if (waiting && ++waiting.failures >= MAX_FAILED_MOVES) this.pending.delete(attempt.paneId);
+	}
+
+	/** A move that failed or got no answer counts as made only when the view shows the pane tiled beside the conversation. */
+	private reconcile(attempt: Attempt, conversationBlockId: string, view: unknown): void {
+		if (tiledWith(view, conversationBlockId, attempt.paneId)) this.dock(conversationBlockId, attempt);
+		else this.failed(attempt.paneId);
+	}
+
+	private failed(paneId: string): void {
+		const waiting = this.pending.get(paneId);
+		if (waiting && ++waiting.failures >= MAX_FAILED_MOVES) this.pending.delete(paneId);
 	}
 
 	/** Beside the pane that this keeper docked last when it is still tiled here, otherwise beside the conversation. */
@@ -396,6 +409,13 @@ class Keeper implements ConversationKeeper {
 		const detail = (error instanceof Error ? error.message : String(error)).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 300);
 		ctx.ui.notify(`Rex could not move a floating pane off this conversation: ${detail || "Unknown error"}`, "warning");
 	}
+}
+
+/** Whether the pane is in the tiled layer of the conversation's window, whatever that window's zoom. */
+function tiledWith(view: unknown, conversationBlockId: string, paneId: string): boolean {
+	const window = windows(view).find((candidate) => holds(candidate, conversationBlockId));
+	const tiledLayer = window ? layersOf(window).map(object).find((layer) => layer.kind === "tiled") : undefined;
+	return leaves(tiledLayer?.layout).some((leaf) => leaf.blockId === paneId);
 }
 
 /**
