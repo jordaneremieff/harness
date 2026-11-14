@@ -202,10 +202,21 @@ need not stop.
 
 ## Pane stacking feed
 
-Every pane created with a `command` receives `PI_PANE_STACKING` through an
-`/usr/bin/env` command wrapper. Panes without a command remain unchanged. The
-value is a JSON argument array `[absoluteNodeExecutable, absoluteHelperPath]`,
-using the running Node executable and this slice's `pane-stacking.mts` helper.
+A pane created with a `command` receives `PI_PANE_STACKING` only when the
+selected server endpoint is a local Unix socket and both the Node executable
+and this slice's `pane-stacking.mts` helper are available. Network endpoints do
+not establish shared local files, even for loopback addresses, so they receive
+no offer. Panes without a command remain unchanged. An absent offer leaves the
+original command unchanged.
+
+The offer uses an `/usr/bin/env` command wrapper because the terminal flavor's
+block options have no environment field. Its value is a JSON argument array
+`[absoluteNodeExecutable, absoluteHelperPath]`. The executable is the first
+executable `node` file in an absolute PATH directory, without resolving symbolic
+links; the running Node executable is the fallback. The search considers at
+most 256 PATH entries. The helper must be a readable file. Its path remains
+valid while its package snapshot directory exists. Activation does not remove
+old snapshots automatically; removing one invalidates offers that reference it.
 This implements the package-level
 [pane stacking contract](../../docs/conventions/pane-stacking.md).
 
@@ -221,9 +232,14 @@ A newer layout revision requests another `session.view`; concurrent events
 coalesce and revisions already covered by the current view require no call.
 The helper bounds event lines and snapshot output: it skips an event line over
 64 KiB and reads the view again, and it tries a failed or timed-out
-`session.view` call again after one, two and then five seconds. It exits and
-terminates its children on standard-input EOF, event-source exit or a signal.
-It performs no layout changes and stores no state.
+`session.view` call again after one, two, four and then every five seconds.
+When its event stream exits or fails, it reconnects after one, two, four and
+then every five seconds, and reads the view again after each start. A stream
+that stays open for at least five seconds resets that reconnect backoff. Each
+new connection resets revision tracking so a restarted server's lower revisions
+remain visible. Standard-input EOF or a signal ends the helper and terminates
+its children, including during retry or reconnect backoff. It performs no layout
+changes and stores no state.
 
 ## Read the most recent output
 

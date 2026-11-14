@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRexBudget, type BudgetClock } from "./deadline.ts";
 import { validateRequest } from "./schema.ts";
-import { boundResult, resultByteLimit, RexCore } from "./core.ts";
+import { boundResult, paneStackingCommand, resultByteLimit, RexCore } from "./core.ts";
 import type { RexCallContext, RexResult } from "./core.ts";
 import { changeOwnership, initialOwnershipState, validateOwnershipState } from "./ownership.ts";
 import type { OwnershipState, OwnershipStore } from "./ownership.ts";
@@ -164,6 +167,37 @@ test("creation retains pending intent before its external effect and refuses sam
 	assert.equal(replay.ok, false);
 	assert.match(replay.error ?? "", /do not replay/);
 	assert.equal(f.transport.calls.filter((call) => call.method === "session.create").length, 1);
+});
+
+test("stacking offers use an unresolved absolute PATH executable and omit unavailable files or network hosts", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "rex-offer-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const node = join(root, "node");
+	const helper = join(root, "helper.mts");
+	await writeFile(node, "executable", { mode: 0o700 });
+	await writeFile(helper, "helper");
+	const local = { endpoint: "unix:///local.sock", hostId: "local", instanceId: "instance", selection: "local" };
+	assert.deepEqual(paneStackingCommand(local, { PATH: `relative:${root}` }, "/missing/node", helper), [node, helper]);
+	assert.deepEqual(paneStackingCommand(local, { PATH: "/missing" }, process.execPath, helper), [process.execPath, helper]);
+	assert.equal(paneStackingCommand(local, {}, "/missing/node", helper), undefined);
+	assert.equal(paneStackingCommand(local, { PATH: root }, process.execPath, join(root, "missing.mts")), undefined);
+	assert.equal(paneStackingCommand(local, { PATH: root }, process.execPath, root), undefined);
+	for (const endpoint of ["tcp://remote:1234", "tcp://127.0.0.1:1234", "unix://remote/path"]) {
+		assert.equal(paneStackingCommand({ ...local, endpoint }, { PATH: root }, process.execPath, helper), undefined);
+	}
+});
+
+test("network pane creation preserves the command without a stacking offer", async () => {
+	const f = fixture();
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = (args, call) => args.includes("whoami")
+		? Promise.resolve(reply({ endpoint: "tcp://remote:1234", host_id: "remote", instance_id: "instance" })) : run(args, call);
+	const command = ["node", "server.mjs"];
+	const response = await f.core.execute({ op: "create", kind: "session", label: "remote", command }, context);
+	assert.equal(response.outcome, "created");
+	const creation = f.transport.calls.find((call) => call.method === "session.create");
+	const windows = creation?.data.initial_windows as Array<{ layout: { block: { options: Record<string, unknown> } } }>;
+	assert.deepEqual(windows[0]?.layout.block.options.command, command);
 });
 
 test("unacknowledged creation remains unknown and never retries automatically", async () => {

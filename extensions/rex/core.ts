@@ -1,3 +1,5 @@
+import { accessSync, constants, statSync } from "node:fs";
+import { delimiter, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	beginOwnership,
@@ -570,7 +572,8 @@ export class RexCore {
 		target: ResolvedTarget,
 		context: RexCallContext,
 	): Promise<RexResult> {
-		const { method, args } = creationCall(request, target);
+		const offer = request.command ? paneStackingCommand(target.server, this.env) : undefined;
+		const { method, args } = creationCall(request, target, offer);
 		const response = await this.effect(
 			request,
 			target,
@@ -1618,7 +1621,28 @@ const FAILURE_STAYS_OPEN_MS = 4294967295;
 function exitOptions(keepOpen: boolean | undefined): Record<string, unknown> {
 	return keepOpen === false ? { on_completion: true, quick_exit_threshold_ms: FAILURE_STAYS_OPEN_MS } : { on_completion: false };
 }
-function createLayout(request: CreateRequest): Record<string, unknown> {
+/** A Unix socket endpoint runs on this machine; network endpoints do not establish file access. */
+export function paneStackingCommand(
+	server: ServerRef,
+	env: Readonly<Record<string, string | undefined>>,
+	runtime = process.execPath,
+	helper = fileURLToPath(new URL("./pane-stacking.mts", import.meta.url)),
+): string[] | undefined {
+	if (!server.endpoint.startsWith("unix:///")) return undefined;
+	const available = (path: string, mode: number) => {
+		try { accessSync(path, mode); return statSync(path).isFile(); } catch { return false; }
+	};
+	if (!isAbsolute(helper) || !available(helper, constants.R_OK)) return undefined;
+	// Keep PATH entries unresolved so a package manager's stable launcher survives upgrades.
+	const directories = (env.PATH ?? "").split(delimiter).slice(0, 256);
+	const node = directories.filter(isAbsolute).map((directory) => join(directory, "node"))
+		.find((candidate) => available(candidate, constants.X_OK)) ?? runtime;
+	return isAbsolute(node) && available(node, constants.X_OK) ? [node, helper] : undefined;
+}
+function paneCommand(command: string[], offer?: string[]): string[] {
+	return offer ? ["/usr/bin/env", `PI_PANE_STACKING=${JSON.stringify(offer)}`, ...command] : command;
+}
+function createLayout(request: CreateRequest, offer?: string[]): Record<string, unknown> {
 	if (!boundedText(request.label, 128)) throw new Error("Use a Rex label of 1 to 128 characters.");
 	if (request.command !== undefined) validateCommand(request.command);
 	if (request.cwd !== undefined && (!boundedText(request.cwd, 4096) || !request.cwd.startsWith("/")))
@@ -1632,7 +1656,7 @@ function createLayout(request: CreateRequest): Record<string, unknown> {
 			flavor: "com.superlogical.terminal.shell",
 			label: request.label,
 			options: {
-				...(request.command ? { command: ["/usr/bin/env", `PI_PANE_STACKING=${JSON.stringify([process.execPath, fileURLToPath(new URL("./pane-stacking.mts", import.meta.url))])}`, ...request.command] } : {}),
+				...(request.command ? { command: paneCommand(request.command, offer) } : {}),
 				...(request.cwd ? { cwd: request.cwd } : {}),
 				...(request.shell ? { shell: request.shell } : {}),
 				...(request.shell === "none" ? { login: false } : {}),
@@ -1650,8 +1674,9 @@ function validateCommand(command: string[]): void {
 function creationCall(
 	request: CreateRequest,
 	target: ResolvedTarget,
+	offer?: string[],
 ): { method: string; args: Record<string, unknown> } {
-	const layout = createLayout(request);
+	const layout = createLayout(request, offer);
 	if (request.kind === "session")
 		return {
 			method: "session.create",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,7 +56,7 @@ test("rectangles clamp to fractions, unknown layers act as floating, and coverag
 	}
 });
 
-async function helperFixture(t: test.TestContext, options: { failures?: number } = {}) {
+async function helperFixture(t: test.TestContext, options: { failures?: number; eventExitCode?: number } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "rex-stacking-"));
 	const sockets = new Set<Socket>();
 	let events!: Socket;
@@ -69,7 +69,7 @@ async function helperFixture(t: test.TestContext, options: { failures?: number }
 		socket.once("close", () => sockets.delete(socket));
 		socket.once("data", (data) => {
 			const message = JSON.parse(data.toString());
-			if (message.kind === "events") { events = socket; connected(); }
+			if (message.kind === "events") { events = socket; connected(); server.emit("events", socket); }
 			else {
 				calls.push(message.args);
 				if (state.hold) state.pending.push(socket);
@@ -88,7 +88,7 @@ const args = process.argv.slice(2);
 const streaming = args.includes('events');
 const socket = net.connect(process.env.STACKING_SOCKET, () => socket.write(JSON.stringify({kind: streaming ? 'events' : 'view', args})));
 socket.on('data', data => process.stdout.write(data));
-socket.on('end', () => process.exit(0));
+socket.on('end', () => process.exit(streaming ? ${options.eventExitCode ?? 0} : 0));
 `, { mode: 0o755 });
 	const child = spawn(process.execPath, [fileURLToPath(new URL("./pane-stacking.mts", import.meta.url))], {
 		env: { ...process.env, REX_SESSION: "session:test", REX_BLOCK: "pane", REX_SERVER: "unix:///test", REX_BIN_DIR: root, STACKING_SOCKET: socketPath },
@@ -110,7 +110,7 @@ socket.on('end', () => process.exit(0));
 	await ready;
 	if (!output.length) await once(lines, "line");
 	return {
-		state, calls, output, events, lines, child, closed, server,
+		root, state, calls, output, get events() { return events; }, lines, child, closed, server,
 		stderr: () => stderr,
 		event(revision: number) { events.write(`${JSON.stringify({ payload: { event: { type: "session_view_changed", payload: { revision } } } })}\n`); },
 	};
@@ -140,11 +140,102 @@ test("helper emits only changed reports, ignores old revisions and exits on stdi
 	assert.equal(f.stderr(), "");
 });
 
-test("helper exits when the event source ends", { timeout: 10000 }, async (t) => {
+test("helper reconnects after event exit, refreshes a restarted revision and receives new events", { timeout: 10000 }, async (t) => {
 	const f = await helperFixture(t);
+	f.state.view = { ...view([layer("pane", overlap)]), revision: 8 };
+	const oldReport = once(f.lines, "line");
+	f.event(8);
+	await oldReport;
+	f.state.view = { ...view([layer("pane", full, "tiled")]), revision: 1 };
+	const connected = once(f.server, "events");
+	const refreshed = once(f.lines, "line");
+	f.events.write('{"incomplete":');
 	f.events.end();
+	await connected;
+	await refreshed;
+	assert.deepEqual(JSON.parse(f.output.at(-1) ?? ""), { version: 1, pane: full, above: [] });
+	f.state.view = { ...view(), revision: 2 };
+	const updated = once(f.lines, "line");
+	f.event(2);
+	await updated;
+	assert.deepEqual(JSON.parse(f.output.at(-1) ?? ""), paneStacking(f.state.view, "pane"));
+	f.child.stdin.end();
 	assert.deepEqual(await f.closed, [0, null]);
 	assert.equal(f.stderr(), "");
+});
+
+test("a lower recovered view clears old pending revisions without an event reconnect", { timeout: 10000 }, async (t) => {
+	const f = await helperFixture(t);
+	f.state.view = { ...view([layer("pane", overlap)]), revision: 8 };
+	let changed = once(f.lines, "line");
+	f.event(8);
+	await changed;
+	f.state.view = { ...view([layer("pane", full, "tiled")]), revision: 1 };
+	changed = once(f.lines, "line");
+	f.events.write(`${"x".repeat(65537)}\n`);
+	await changed;
+	f.state.view = { ...view(), revision: 2 };
+	changed = once(f.lines, "line");
+	f.event(2);
+	await changed;
+	assert.deepEqual(JSON.parse(f.output.at(-1) ?? ""), paneStacking(f.state.view, "pane"));
+	f.child.stdin.end();
+	assert.deepEqual(await f.closed, [0, null]);
+});
+
+test("failed event streams reconnect with one, two, four and five second backoff", { timeout: 20000 }, async (t) => {
+	const f = await helperFixture(t, { eventExitCode: 1 });
+	for (const delay of [1000, 2000, 4000, 5000]) {
+		const connected = once(f.server, "events");
+		const started = performance.now();
+		f.events.end();
+		await connected;
+		assert.ok(performance.now() - started >= delay - 50, `reconnect waits at least ${delay} ms`);
+	}
+	f.child.stdin.end();
+	assert.deepEqual(await f.closed, [0, null]);
+	assert.equal(f.stderr(), "");
+});
+
+test("helper retries an event spawn error and resumes after the executable returns", { timeout: 10000 }, async (t) => {
+	const f = await helperFixture(t);
+	const executable = join(f.root, "rex");
+	const disabled = join(f.root, "disabled-rex");
+	await rename(executable, disabled);
+	const connected = once(f.server, "events");
+	const started = performance.now();
+	f.events.end();
+	let timer: ReturnType<typeof setTimeout>;
+	const restored = new Promise<void>((resolve, reject) => {
+		timer = setTimeout(() => { rename(disabled, executable).then(resolve, reject); }, 1500);
+	});
+	t.after(() => clearTimeout(timer));
+	await Promise.all([connected, restored]);
+	assert.ok(performance.now() - started >= 2950, "the absent executable uses the second reconnect interval");
+	f.child.stdin.end();
+	assert.deepEqual(await f.closed, [0, null]);
+	assert.equal(f.stderr(), "");
+});
+
+test("helper exits at input EOF during event reconnect backoff", { timeout: 10000 }, async (t) => {
+	const f = await helperFixture(t);
+	const disconnected = once(f.events, "close");
+	f.events.end();
+	await disconnected;
+	f.child.stdin.end();
+	assert.deepEqual(await f.closed, [0, null]);
+	assert.equal(f.stderr(), "");
+});
+
+test("helper terminates its event child on interrupt, termination and hangup signals", { timeout: 10000 }, async (t) => {
+	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+		const f = await helperFixture(t);
+		const disconnected = once(f.events, "close");
+		f.child.kill(signal);
+		assert.deepEqual(await f.closed, [0, null]);
+		await disconnected;
+		assert.equal(f.stderr(), "");
+	}
 });
 
 test("helper retries a failed view and keeps its feed", { timeout: 10000 }, async (t) => {

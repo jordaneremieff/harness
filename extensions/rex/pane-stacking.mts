@@ -63,7 +63,15 @@ export async function runPaneStacking(): Promise<void> {
 	const executable = process.env.REX_BIN_DIR ? join(process.env.REX_BIN_DIR, "rex") : "rex";
 	const prefix = ["--autostart=false", "--color=never", ...(process.env.REX_SERVER ? ["--server", process.env.REX_SERVER] : [])];
 	const transport = new CliTransport(executable);
-	const events = spawn(executable, [...prefix, "events", "-s", session, "--json"], { stdio: ["ignore", "pipe", "ignore"] });
+	let events: ReturnType<typeof spawn> | undefined;
+	let reconnect: ReturnType<typeof setTimeout> | undefined;
+	let reconnectDelay = 0;
+	let epoch = 0;
+	const killEvents = () => {
+		if (!events?.pid) return;
+		try { process.kill(-events.pid, "SIGKILL"); } catch { events.kill("SIGKILL"); }
+		events.stdout?.destroy();
+	};
 	let stopped = false;
 	let finish!: () => void;
 	const ended = new Promise<void>((resolve) => { finish = resolve; });
@@ -72,9 +80,10 @@ export async function runPaneStacking(): Promise<void> {
 		if (stopped) return;
 		stopped = true;
 		if (retry) clearTimeout(retry);
+		if (reconnect) clearTimeout(reconnect);
 		abort.abort();
 		transport.dispose();
-		events.kill("SIGKILL");
+		killEvents();
 		finish();
 	};
 	let revision = -1;
@@ -84,25 +93,29 @@ export async function runPaneStacking(): Promise<void> {
 	let lastReport: string | undefined;
 	let retryDelay = 0;
 	let retry: ReturnType<typeof setTimeout> | undefined;
+	const publishView = async (view: Record<string, unknown> & { revision: number }) => {
+		retryDelay = 0;
+		// A restarted server's lower view supersedes pending revisions from the old server.
+		if (view.revision < revision) requested = -1;
+		revision = view.revision;
+		if (requested <= revision) dirty = false;
+		const report = JSON.stringify(paneStacking(view, block));
+		if (report !== lastReport) {
+			lastReport = report;
+			await writeReport(report, abort.signal);
+		}
+	};
 	const refresh = async () => {
 		while (dirty && !stopped) {
 			dirty = false;
+			const startedEpoch = epoch;
 			const view = await snapshot(transport, prefix, session, abort.signal);
 			if (stopped) return;
-			retryDelay = 0;
-			// A lower revision than one already seen comes from a restarted server; it is the
-			// current view all the same.
-			revision = view.revision;
-			if (requested <= revision) dirty = false;
-			const report = JSON.stringify(paneStacking(view, block));
-			if (report !== lastReport) {
-				lastReport = report;
-				await writeReport(report, abort.signal);
-			}
+			if (startedEpoch !== epoch) { dirty = true; continue; }
+			await publishView(view);
 		}
 	};
-	// A failed or timed-out view call is tried again after one, two, then five seconds; the
-	// feed ends only with its input or its event stream.
+	// Failed view calls retry after one, two, four, then five seconds until input ends.
 	const retryLater = () => {
 		if (stopped || retry) return;
 		dirty = true;
@@ -124,20 +137,45 @@ export async function runPaneStacking(): Promise<void> {
 		dirty = true;
 		startRefresh();
 	};
-	// A skipped line may have announced a change, so the view is read again; it never stops the feed.
-	const split = eventLines(line, () => { dirty = true; startRefresh(); });
-	events.stdout.on("data", (chunk: Buffer) => { if (!stopped) split(chunk); });
-	events.once("error", stop);
-	events.once("exit", stop);
+	const connect = () => {
+		if (stopped) return;
+		const child = spawn(executable, [...prefix, "events", "-s", session, "--json"], {
+			detached: true, stdio: ["ignore", "pipe", "ignore"],
+		});
+		events = child;
+		const started = performance.now();
+		let ended = false;
+		const disconnected = () => {
+			if (ended || stopped) return;
+			ended = true;
+			killEvents();
+			if (performance.now() - started >= 5000) reconnectDelay = 0;
+			reconnectDelay = reconnectDelay === 0 ? 1000 : Math.min(reconnectDelay * 2, 5000);
+			reconnect = setTimeout(() => { reconnect = undefined; connect(); }, reconnectDelay);
+		};
+		child.once("spawn", () => {
+			if (stopped) { killEvents(); return; }
+			epoch++;
+			revision = requested = -1;
+			dirty = true;
+			startRefresh();
+		});
+		// Each connection owns its line buffer; an incomplete old line never joins a new stream.
+		const split = eventLines(line, () => { dirty = true; startRefresh(); });
+		child.stdout.on("data", (chunk: Buffer) => { if (!stopped && !ended) split(chunk); });
+		child.once("error", disconnected);
+		child.once("exit", disconnected);
+	};
 	process.stdin.once("end", stop);
 	process.stdin.once("error", stop);
 	process.stdout.once("error", stop);
 	process.once("SIGINT", stop);
 	process.once("SIGTERM", stop);
+	process.once("SIGHUP", stop);
 	process.once("exit", stop);
 	process.stdin.resume();
 	if (process.stdin.readableEnded || process.stdin.destroyed) stop();
-	startRefresh();
+	connect();
 	await ended;
 	await active;
 	process.stdin.pause();
@@ -146,6 +184,7 @@ export async function runPaneStacking(): Promise<void> {
 	process.stdout.removeListener("error", stop);
 	process.removeListener("SIGINT", stop);
 	process.removeListener("SIGTERM", stop);
+	process.removeListener("SIGHUP", stop);
 	process.removeListener("exit", stop);
 }
 
