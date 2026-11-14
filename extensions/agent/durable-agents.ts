@@ -24,6 +24,7 @@ import { agentRunControlDoc } from "./run-control-state.ts";
 import { storageStatusPageInput, validateStatusSelectors } from "./storage-status.ts";
 import { agentChildrenDoc, type AgentChild } from "./children.ts";
 import { captureProviderRecovery, linkProviderRecovery } from "./provider-block.ts";
+import { MODEL_CHOICE_TOOL_NAMES, processProviderBlockNotes, renderProviderBlockSection } from "./provider-block-notes.ts";
 import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
 import { forgetFailedAdmission, recordInputProvenance } from "./awaited-results.ts";
 import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
@@ -1924,6 +1925,13 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		}
 	});
 
+	// Model choices happen in conversations that can spawn, place or configure agents; others carry no section.
+	const providerBlocks = durable.section("agent-provider-blocks", (input) => {
+		if (!input.agent.tools.some((tool) => MODEL_CHOICE_TOOL_NAMES.has(tool.name))) return undefined;
+		try { return renderProviderBlockSection(processProviderBlockNotes(), Date.now()); }
+		catch { return undefined; }
+	});
+
 	return durable.defineExtension({
 		name: "agent",
 		tasks: [Anchor, Reporter, TimerTask],
@@ -1948,6 +1956,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			resetTool,
 			collaborateTool,
 		].map(exposedControl),
-		sections: [guidance, efforts, preferences],
+		sections: [guidance, efforts, preferences, providerBlocks],
 	});
 }

@@ -11,6 +11,7 @@ import { createAssistantMessageEventStream, isContextOverflow, isRetryableAssist
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureRegistry, hostOptions, scriptedRuntime, fixtureProvider, fixtureModelId } from "./durable-host-fixture.mts";
 import { ProviderModels } from "./provider-models.ts";
+import { PROVIDER_BLOCK_NOTES_KEY, processProviderBlockNotes } from "./provider-block-notes.ts";
 import { isProviderExhaustion, captureProviderAttempt, retainProviderBlock, readProviderBlock, ProviderControlDoc, retainDeferredAttempt, readDeferredAttempt } from "./provider-block.ts";
 import { isProviderContentRefusal, PROVIDER_BLOCK_ERROR, STALE_PROVIDER_ERROR, ProviderBlockFactSchema } from "./provider-block-facts.ts";
 import { safeProviderError } from "./primary-observation.ts";
@@ -67,6 +68,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, messages = [
 
 it("replaces terminal raw text, keeps stream/result agreement and partial usage, and makes zero calls while blocked", async (t) => {
 	const { host, models, adapter, model, sessionId } = await fixture(t);
+	delete (globalThis as unknown as Record<PropertyKey, unknown>)[PROVIDER_BLOCK_NOTES_KEY];
 	const raw = "Weekly usage limit reached: token limit exceeded; reset 2026-10-11 00:00; api_key=sk-abcdefghijklmnopqrstuv";
 	let calls = 0;
 	const original = { ...answerMessage("partial progress"), stopReason: "error" as const, errorMessage: raw };
@@ -84,11 +86,29 @@ it("replaces terminal raw text, keeps stream/result agreement and partial usage,
 	assert.deepEqual(result.content, original.content); assert.deepEqual(result.usage, original.usage); assert.equal(original.errorMessage, raw);
 	const block = await host.harness.commit((tx) => readProviderBlock(tx, 1 as ConversationId), BACKGROUND_CONTEXT);
 	assert.ok(block); assert.equal(matchesSchema(ProviderBlockFactSchema, block), true); assert.equal(block.errorRedacted, true); assert.match(block.error, /reset 2026-10-11 00:00/u);
+	const notes = processProviderBlockNotes().current(Date.now());
+	assert.deepEqual(notes.map((note) => [note.provider, note.timestamp]), [[block.model.provider, block.timestamp]], "the committed block becomes this host's note");
+	assert.match(notes[0].evidence, /\[credential redacted\]$/u); assert.doesNotMatch(notes[0].evidence, /abcdefghijkl/u);
 	const repeated = await adapter.models.completeSimple(model, context, { sessionId });
 	assert.equal(repeated.errorMessage, PROVIDER_BLOCK_ERROR);
 	assert.equal(isContextOverflow(repeated), false); assert.equal(isRetryableAssistantError(repeated), false);
 	assert.deepEqual(await host.harness.commit((tx) => readProviderBlock(tx, 1 as ConversationId), BACKGROUND_CONTEXT), block);
 	assert.equal(calls, 1); assert.deepEqual(context, before);
+	assert.equal(processProviderBlockNotes().current(Date.now()).length, 1, "a reused block adds no note");
+});
+
+it("keeps the provider block result when the process notes cannot be read", async (t) => {
+	const { models, adapter, model, sessionId } = await fixture(t);
+	const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+	const previous = globals[PROVIDER_BLOCK_NOTES_KEY];
+	globals[PROVIDER_BLOCK_NOTES_KEY] = { get version(): never { throw new Error("unreadable notes"); } };
+	t.after(() => { globals[PROVIDER_BLOCK_NOTES_KEY] = previous; });
+	models.streamSimple = () => {
+		const stream = createAssistantMessageEventStream();
+		stream.push({ type: "error", reason: "error", error: { ...answerMessage(), stopReason: "error" as const, errorMessage: "weekly usage limit reached" } }); stream.end(); return stream;
+	};
+	const result = await adapter.models.completeSimple(model, { messages: [] }, { sessionId });
+	assert.equal(result.errorMessage, PROVIDER_BLOCK_ERROR);
 });
 
 it("explicit same-model recovery invalidates pinned dispatch and old-epoch failures", async (t) => {

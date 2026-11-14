@@ -1,9 +1,10 @@
 /**
- * Provider blocks that results delivered to this ordinary Pi process carried. A
- * later model choice for the same provider can then see the earlier refusal,
- * its time and the provider's own text before another task fails the same way.
- * The notes live in this process only and describe past refusals, never current
- * provider state.
+ * Provider blocks that this process observed: in an ordinary Pi process, the
+ * blocks that delivered results carried; in a native host, the blocks that its
+ * own conversations retained. A later model choice for the same provider can then
+ * see the earlier refusal, its time and the provider's own text before another
+ * task fails the same way. The notes live in this process only and describe past
+ * refusals, never current provider state.
  */
 
 import { matchesSchema } from "./schema-check.ts";
@@ -13,6 +14,8 @@ export const PROVIDER_BLOCK_NOTE_LIMIT = 8;
 export const PROVIDER_BLOCK_NOTE_TEXT_LIMIT = 300;
 export const PROVIDER_BLOCK_NOTE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const PROVIDER_BLOCK_SECTION_BYTES = 4096;
+/** The largest time that a JavaScript Date represents. */
+const MAX_TIME_MS = 8.64e15;
 
 export interface ProviderBlockNote {
 	readonly provider: string;
@@ -29,7 +32,7 @@ function plain(value: string, limit: number): string {
 
 function noteOf(block: ProviderBlockFact): ProviderBlockNote | undefined {
 	const provider = plain(block.model.provider, 128);
-	if (provider === "" || !Number.isFinite(block.timestamp) || block.timestamp <= 0) return undefined;
+	if (provider === "" || !Number.isFinite(block.timestamp) || block.timestamp <= 0 || block.timestamp > MAX_TIME_MS) return undefined;
 	const markers = `${block.errorRedacted ? " [credential redacted]" : ""}${block.errorTruncated ? " [truncated]" : ""}`;
 	return {
 		provider,
@@ -40,18 +43,32 @@ function noteOf(block: ProviderBlockFact): ProviderBlockNote | undefined {
 	};
 }
 
+function isNote(value: unknown): value is ProviderBlockNote {
+	const note = value as Partial<Record<keyof ProviderBlockNote, unknown>> | null | undefined;
+	return typeof note === "object" && note !== null && typeof note.provider === "string" && typeof note.modelId === "string"
+		&& typeof note.timestamp === "number" && note.timestamp > 0 && note.timestamp <= MAX_TIME_MS && typeof note.evidence === "string" && typeof note.conversationId === "string";
+}
+
 /** The newest block per provider; at most `PROVIDER_BLOCK_NOTE_LIMIT` providers, the oldest leaving first. */
 export class ProviderBlockNotes {
-	private readonly notes = new Map<string, ProviderBlockNote>();
+	/** Entries are checked on every read, because a process-wide store can hold values that other code wrote. */
+	private readonly notes: Map<string, unknown>;
+	constructor(notes: Map<string, unknown> = new Map()) {
+		this.notes = notes;
+	}
 
 	/** Records the block of one delivered result's details; anything else is ignored. */
 	observe(details: unknown): boolean {
-		const block = (details as { providerBlock?: unknown } | null | undefined)?.providerBlock;
+		return this.observeBlock((details as { providerBlock?: unknown } | null | undefined)?.providerBlock);
+	}
+
+	/** Records one provider block fact; anything else is ignored. */
+	observeBlock(block: unknown): boolean {
 		if (block === undefined || !matchesSchema(ProviderBlockFactSchema, block)) return false;
 		const note = noteOf(block);
 		if (note === undefined) return false;
 		const known = this.notes.get(note.provider);
-		if (known !== undefined && known.timestamp >= note.timestamp) return false;
+		if (isNote(known) && known.timestamp >= note.timestamp) return false;
 		this.notes.delete(note.provider);
 		this.notes.set(note.provider, note);
 		while (this.notes.size > PROVIDER_BLOCK_NOTE_LIMIT) this.notes.delete(this.notes.keys().next().value as string);
@@ -60,7 +77,7 @@ export class ProviderBlockNotes {
 
 	/** Notes newer than the age limit, newest first. */
 	current(now: number): ProviderBlockNote[] {
-		return [...this.notes.values()].filter((note) => now - note.timestamp <= PROVIDER_BLOCK_NOTE_AGE_MS).sort((a, b) => b.timestamp - a.timestamp);
+		return [...this.notes.values()].filter(isNote).filter((note) => now - note.timestamp <= PROVIDER_BLOCK_NOTE_AGE_MS).sort((a, b) => b.timestamp - a.timestamp);
 	}
 
 	forProvider(provider: string, now: number): ProviderBlockNote | undefined {
@@ -70,6 +87,23 @@ export class ProviderBlockNotes {
 	clear(): void {
 		this.notes.clear();
 	}
+}
+
+/** Process-global key shared by a native host's provider routing and the agent contribution it installs. */
+export const PROVIDER_BLOCK_NOTES_KEY = Symbol.for("pi.agent.provider-block-notes");
+
+/**
+ * The notes of this process. The provider routing that retains a block and the
+ * contribution that renders the prompt section can load as separate module
+ * instances, so they share one plain map under a process-global key. A value of
+ * another shape under that key is left in place and yields notes of this caller only.
+ */
+export function processProviderBlockNotes(): ProviderBlockNotes {
+	const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+	if (globals[PROVIDER_BLOCK_NOTES_KEY] === undefined) globals[PROVIDER_BLOCK_NOTES_KEY] = { version: 1, notes: new Map<string, unknown>() };
+	const store = globals[PROVIDER_BLOCK_NOTES_KEY] as { version?: unknown; notes?: unknown } | null;
+	const shared = typeof store === "object" && store !== null && store.version === 1 && store.notes instanceof Map;
+	return new ProviderBlockNotes(shared ? store.notes as Map<string, unknown> : new Map());
 }
 
 function age(ms: number): string {
@@ -89,7 +123,7 @@ function line(note: ProviderBlockNote, now?: number): string {
 export function renderProviderBlockSection(notes: ProviderBlockNotes, now: number): string | undefined {
 	const current = notes.current(now);
 	if (current.length === 0) return undefined;
-	const head = "Provider limits that refused agent work whose results this Pi process received. Each line is past evidence with its receive time in UTC and the provider's own text, not current provider state. One provider's limit can cover all of its models.";
+	const head = "Provider limits that refused agent work that this process observed. Each line is past evidence with its receive time in UTC and the provider's own text, not current provider state. One provider's limit can cover all of its models.";
 	const tail = "Before you choose a model on one of these providers, weigh this evidence against the operator's route and budget preferences. Choose deliberately; nothing substitutes automatically.";
 	const lines: string[] = [];
 	let bytes = Buffer.byteLength(head) + Buffer.byteLength(tail) + 128;
@@ -116,12 +150,12 @@ export function outcomeProvider(value: unknown): string | undefined {
 	return typeof provider === "string" && provider !== "" ? provider : undefined;
 }
 
-/** Tools whose outcome reports the model that a choice selected. */
-const MODEL_CHOICE_TOOLS = new Set(["agent_spawn", "agent_place", "agent_configure"]);
+/** Tools that choose an agent model; their outcome reports the selected model. */
+export const MODEL_CHOICE_TOOL_NAMES: ReadonlySet<string> = new Set(["agent_spawn", "agent_place", "agent_configure"]);
 
 /** Adds the receipt sentence to a model-choice tool result when its selected provider has a current note. */
 export function appendProviderBlockReceipt(tool: string, content: Array<{ type: string }>, value: unknown, notes: ProviderBlockNotes, now: number): void {
-	if (!MODEL_CHOICE_TOOLS.has(tool)) return;
+	if (!MODEL_CHOICE_TOOL_NAMES.has(tool)) return;
 	const provider = outcomeProvider(value);
 	const text = provider === undefined ? undefined : providerBlockReceiptText(notes, provider, now);
 	if (text !== undefined) content.push({ type: "text", text } as { type: "text"; text: string });

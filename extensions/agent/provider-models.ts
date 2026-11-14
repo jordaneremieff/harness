@@ -6,7 +6,8 @@ import { canonicalIdentity } from "./native-identity.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { associateProviderBlock, captureProviderAttempt, isProviderExhaustion, providerAttemptCurrent, retainProviderBlock, readProviderAttemptBlock, retainDeferredAttempt, readDeferredAttempt, type ProviderAttempt } from "./provider-block.ts";
-import { PROVIDER_BLOCK_ERROR, STALE_PROVIDER_ERROR } from "./provider-block-facts.ts";
+import { PROVIDER_BLOCK_ERROR, STALE_PROVIDER_ERROR, type ProviderBlockFact } from "./provider-block-facts.ts";
+import { processProviderBlockNotes } from "./provider-block-notes.ts";
 
 const STATE_ERROR = "Agent host: provider state failure; inspect retained state.";
 function failure(model: Model<Api>, errorMessage: string, timestamp: number): AssistantMessage {
@@ -112,15 +113,23 @@ export class ProviderModels {
 		}, BACKGROUND_CONTEXT);
 	}
 	private async terminal(attempt: ProviderAttempt, original: AssistantMessage): Promise<AssistantMessage> {
-		return this.harness().commit(async (tx) => {
+		let retained: ProviderBlockFact | undefined;
+		const message = await this.harness().commit(async (tx): Promise<AssistantMessage> => {
+			retained = undefined;
 			if (!await providerAttemptCurrent(tx, attempt)) return { ...original, stopReason: "error", errorMessage: STALE_PROVIDER_ERROR };
 			if (original.stopReason === "error" && isProviderExhaustion(original.errorMessage ?? "", attempt.model.provider)) {
-				const retained = await retainProviderBlock(tx, attempt, original.errorMessage ?? "", this.storageId, this.now());
+				retained = await retainProviderBlock(tx, attempt, original.errorMessage ?? "", this.storageId, this.now());
 				return { ...original, stopReason: "error", errorMessage: retained === undefined ? STALE_PROVIDER_ERROR : PROVIDER_BLOCK_ERROR };
 			}
 			if (original.deferred !== undefined) await retainDeferredAttempt(tx, attempt, original.deferred);
 			return original;
 		}, BACKGROUND_CONTEXT);
+		// Only a committed block becomes a note for later model choices in this host; a note never changes this result.
+		if (retained !== undefined) {
+			try { processProviderBlockNotes().observeBlock(retained); }
+			catch { /* The note is advisory evidence. */ }
+		}
+		return message;
 	}
 	private async consume(output: AssistantMessageEventStream, model: Model<Api>, attempt: ProviderAttempt, stream: AssistantMessageEventStream): Promise<void> {
 		let partial: AssistantMessage | undefined;

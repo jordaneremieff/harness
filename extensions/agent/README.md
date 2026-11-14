@@ -2126,6 +2126,25 @@ the provider text, refuses the choice, selects a model or clears a note; a
 newer block for the same provider replaces it. Source:
 `provider-block-notes.ts` and `ordinary-entry.ts`.
 
+A native host keeps the same notes for the blocks that its own conversations
+retain. The provider routing records a block after the commit that retains it;
+a refusal that reuses a retained block adds nothing. Agents that a native
+coordinator spawns without a handle in its working directory share its storage
+and therefore its host, so the coordinator's next turn shows the refusal of a
+squad member. The same `agent-provider-blocks` section, with the same bounds and
+byte stability, appears in each conversation of that host whose tools include
+`agent_spawn`, `agent_place` or `agent_configure`; other conversations carry no
+section. The routing and the contribution share the notes through one
+process-global value, `Symbol.for("pi.agent.provider-block-notes")`, holding
+`{ version: 1, notes }`; each read checks every entry, and any other value,
+`null` included, stays in place and is not used. Recording a note never changes
+the provider result, and a section that cannot render is omitted. A host
+restart starts without notes. An
+agent in another storage, such as one with a handle or another working
+directory, runs in its own host, and its refusal does not reach the
+coordinator's notes. Native results carry no receipt line. Source:
+`provider-models.ts` (`terminal`) and `durable-agents.ts`.
+
 Unknown provider-limit wording does not depend on the exhaustion classifier.
 For each observed native generation retry burst, the host retains attempt evidence
 without sending start or per-attempt reports. Failure retains one ordinary end

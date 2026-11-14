@@ -6,8 +6,10 @@ import {
 	outcomeProvider,
 	PROVIDER_BLOCK_NOTE_AGE_MS,
 	PROVIDER_BLOCK_NOTE_LIMIT,
+	PROVIDER_BLOCK_NOTES_KEY,
 	PROVIDER_BLOCK_SECTION_BYTES,
 	ProviderBlockNotes,
+	processProviderBlockNotes,
 	providerBlockReceiptText,
 	renderProviderBlockSection,
 } from "./provider-block-notes.ts";
@@ -126,4 +128,31 @@ it("bounds the section in bytes and says how many older notes it omits", () => {
 	const shown = section.split("\n").filter((text) => text.startsWith("- ")).length;
 	assert.ok(shown >= 1 && shown < PROVIDER_BLOCK_NOTE_LIMIT);
 	assert.match(section, new RegExp(`${PROVIDER_BLOCK_NOTE_LIMIT - shown} older notes? (is|are) omitted by the size bound`));
+});
+
+it("shares one process-wide store between callers and ignores entries of another shape", () => {
+	const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+	const previous = globals[PROVIDER_BLOCK_NOTES_KEY];
+	try {
+		delete globals[PROVIDER_BLOCK_NOTES_KEY];
+		assert.equal(processProviderBlockNotes().observeBlock(block("alpha", "a-1", NOW - 60_000)), true);
+		assert.equal(processProviderBlockNotes().forProvider("alpha", NOW)?.modelId, "a-1", "a second caller reads the same notes");
+		const store = globals[PROVIDER_BLOCK_NOTES_KEY] as { notes: Map<string, unknown> };
+		store.notes.set("beta", { provider: "beta", timestamp: "not a number" });
+		assert.deepEqual(processProviderBlockNotes().current(NOW).map((note) => note.provider), ["alpha"], "a malformed entry is ignored");
+		assert.equal(processProviderBlockNotes().observeBlock({ blockId: "x" }), false);
+		store.notes.set("delta", { provider: "delta", modelId: "d", timestamp: 9e15, evidence: "e", conversationId: "c" });
+		assert.equal(renderProviderBlockSection(processProviderBlockNotes(), NOW)?.includes("delta"), false, "a time outside the Date range is ignored");
+		globals[PROVIDER_BLOCK_NOTES_KEY] = null;
+		assert.deepEqual(processProviderBlockNotes().current(NOW), [], "a null value is not used");
+		assert.equal(globals[PROVIDER_BLOCK_NOTES_KEY], null, "and stays in place");
+		globals[PROVIDER_BLOCK_NOTES_KEY] = { version: 2, notes: "other" };
+		const local = processProviderBlockNotes();
+		assert.equal(local.observeBlock(block("gamma", "g", NOW)), true);
+		assert.deepEqual(globals[PROVIDER_BLOCK_NOTES_KEY], { version: 2, notes: "other" }, "a value of another shape stays in place");
+		assert.deepEqual(processProviderBlockNotes().current(NOW), [], "another caller does not see that caller's local notes");
+	} finally {
+		if (previous === undefined) delete globals[PROVIDER_BLOCK_NOTES_KEY];
+		else globals[PROVIDER_BLOCK_NOTES_KEY] = previous;
+	}
 });
