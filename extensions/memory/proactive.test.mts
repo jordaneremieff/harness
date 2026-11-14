@@ -78,6 +78,7 @@ test("long input recall keeps repeated topic terms and drops incidental vocabula
 	const incidental = "amber cobalt quartz violet";
 	assert.equal(recallCandidate(incidental, scan.notes)?.slug, "portable-amber-cobalt-quartz-violet-cedar");
 	const line = (text: string, from: number) => text.indexOf("\n", from);
+	// A single mention falls to both the repetition rule and the 48-word bound here; the next test isolates the rule.
 	const once = `${broadLog.slice(0, line(broadLog, 1500))}\n${incidental}${broadLog.slice(line(broadLog, 1500))}`;
 	assert.ok(once.length > 2000);
 	assert.equal(recallCandidate(once, scan.notes), undefined);
@@ -110,7 +111,7 @@ test("long input extraction counts repeated words from a bounded opening of very
 	const beyond = `${" ".repeat(32768)}${topic}`;
 	assert.equal(recallCandidate(beyond, scan.notes), undefined);
 	assert.equal(recallCandidate(`${beyond}\n${filler}`, scan.notes), undefined);
-	const cut = `cobalt quartz amber cobalt quartz${" ".repeat(32730)}ambers violet`;
+	const cut = `cobalt quartz amber cobalt quartz${" ".repeat(32730)}ambers`;
 	assert.equal(cut.slice(32763, 32768), "amber");
 	assert.equal(recallCandidate(cut, scan.notes), undefined);
 	assert.equal(
