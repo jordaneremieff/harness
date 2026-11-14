@@ -32,7 +32,7 @@ another.
 | `browser_tabs` | `inspect` | Installed version, running processes, configured access, and Automation permission per browser; with `browser`, the windows and tabs of one process |
 | `browser_inspect` | `inspect` | Bounded extraction from one tab: `summary`, `text`, `elements`, `html`, or `network` |
 | `browser_capture` | `inspect` | Image of the live window that shows the tab |
-| `browser_act` | `interact` | One action: `click`, `fill`, `select`, `check`, `uncheck`, `press`, `submit`, `focus`, `scroll`, or `navigate`, then an optional postcondition wait |
+| `browser_act` | `interact` | One action on an inspected element: `click`, `fill`, `select`, `check`, `uncheck`, `press`, `submit`, `focus`, `scroll`, or `navigate`, then an optional postcondition wait |
 | `browser_evaluate` | `interact` | One JavaScript expression, with promise results awaited in the same call |
 
 The extension offers tools for the access configured when it loads: none
@@ -145,6 +145,30 @@ the selected element itself. Redaction does not guarantee that page markup
 holds no secret. Views are bounded by `maxChars`, `limit`, and `offset`, and
 report `nextOffset` for continuation.
 
+Every element that inspection describes carries a `ref`: the elements in the
+`elements` view, the focused element and open dialogs in `summary`, the
+candidates of an ambiguous selector, and the element that a `browser_act` result
+reports. A ref has the form `<document token>:<number>`; the token is the
+`page.doc` of the document that issued it. The page world of that document
+keeps the element itself with the identity that inspection reported: tag,
+`role`, input or button `type`, accessible name, and link target. The name of a
+field (input, textarea, select, or editable element) comes from its label,
+`aria-label`, or placeholder, never from its value or content, so filling a
+field keeps its ref. Inspecting the same unchanged element again returns the
+same ref; an element whose identity changed receives a new ref, and its old ref
+keeps the old identity. In the `elements` view and among ambiguous-selector
+candidates, elements that share a name (one Archive button per row) also carry
+`context`: up to 100 characters of text from the nearest ancestor that says
+more than the name, such as the row, so the ref of the intended element can be
+chosen from one inspection.
+
+The page world keeps the newest 500 refs; a ref that inspection reports again
+becomes the newest. Each inspection, action, and wait read first releases
+elements that have left the page and keeps only their identity for the
+refusal. A new document starts with no refs, so a navigation or reload ends every ref of the
+previous document. Refs, like the other records, live in the isolated world and
+are invisible to page scripts.
+
 The `network` view and every `browser_act` result report HTTP statuses from
 the page's Resource Timing entries. Status `0` or `null` means the browser did
 not expose the status to the page (for example a cross-origin response without
@@ -152,16 +176,50 @@ timing permission). The tools do not invent a status they cannot observe.
 
 ## Actions and outcomes
 
-`browser_act` resolves one element by CSS selector. A selector that matches
-several elements refuses with candidates unless `index` selects one. Hidden or
-disabled elements refuse. The action is scheduled in a new page task, so a
-JavaScript dialog opened by a page handler blocks later reads, not the
-dispatch. Each result keeps these layers apart:
+`browser_act` takes the element as `ref`, from inspection, or as `selector`, a
+CSS selector for deliberate low-level use; it refuses both together or neither.
+A ref reaches only the element it names. Before anything runs, the page checks
+that the ref belongs to the current document, that the document still holds
+it, that the element is still in the page, and that its identity is unchanged.
+Otherwise the action refuses with `blocked.reason: "stale-reference"` and one
+`cause`:
+
+| Cause | Meaning |
+|---|---|
+| `other-document` | The tab navigated or reloaded since the inspection, or the ref came from another tab. |
+| `not-retained` | Newer inspections displaced the ref, or this document never issued it. |
+| `detached` | The page removed or replaced the element. |
+| `repurposed` | The element's role, name, type, or link target changed; `inspected` and `current` show both identities. |
+
+The tool never looks for a replacement: a page with several matching controls,
+such as one Archive button per row, would make that a guess. Inspect again and
+choose the element from the fresh result. A selector, by contrast, is resolved
+again when the action runs, so a positional selector from an earlier inspection
+(`li:nth-of-type(2) > button`) reaches whatever element holds that position
+now. A selector that matches several elements refuses with candidates, each
+with a ref, unless `index` selects one. Hidden or disabled elements refuse in
+both modes.
+
+Page code can run between the action reply and the task that dispatches the
+action. That task repeats the attachment and identity checks for a ref and,
+when they fail, dispatches nothing: the page record reads `not-dispatched` with
+the `cause`, the wait ends at that read, and the result status is
+`stale-reference`.
+
+The identity check covers the element itself, not its surroundings. A page that
+reuses one element for different content without changing that element's role,
+name, type, or link target (for example a virtualized list that recycles rows)
+passes the check; a `waitFor` condition that names the intended outcome shows
+whether the action reached it.
+
+The action is scheduled in a new page task, so a JavaScript dialog opened by a
+page handler blocks later reads, not the dispatch. Each result keeps these
+layers apart:
 
 | Layer | Field | Meaning |
 |---|---|---|
 | Transport | `transport` | Whether Apple Events delivered the request and answered. |
-| Dispatch | `dispatch.status` | `dispatched`, `failed`, `not-needed`, `unknown`, or `not-dispatched`. Dispatch is not a task result. |
+| Dispatch | `dispatch.status` | `dispatched`, `failed`, `not-needed`, `unknown`, or `not-dispatched` (the request did not reach the page, or the page withheld an action whose referenced element changed). Dispatch is not a task result. |
 | Application | `application` | Page identity, document replacement, navigation status, and HTTP statuses observed after the action. A 401 or 500 stays here; it is not a transport failure. |
 | Observation | `observation` | Present when a read after the dispatch could not answer: `status: "failed"`, `phase: "read-after-dispatch"`, `kind`, and the reason. |
 | Goal | `postcondition.status` | `verified` when every `waitFor` check held, `failed` when the wait ended without it, `unknown` without a condition, after cancellation, or when a read could not establish the outcome. |
@@ -327,7 +385,9 @@ calls of one of them, runs them one at a time.
   `session.ts` builds discovery requests and maps Apple Events failures.
 - `jxa.ts` is the JavaScript for Automation program; `osa.ts` runs it with a
   deadline and cancellation.
-- `page.ts` builds the page-side scripts.
+- `page.ts` builds the page-side scripts, including the element references.
+- `page-fixture.mts` is the page stand-in for tests: a small DOM, the selectors
+  and events the scripts use, and one isolated world per document.
 - `settings.ts` reads `browser.access`.
 
 ```bash
@@ -338,5 +398,8 @@ npm run typecheck && npm run lint && npm run check
 
 The tests use fake Apple Events replies, run page scripts against a small
 fake DOM in a Node sandbox, and run the JXA program against a stand-in
-scripting object model; they do not contact a browser. Browser behaviour itself needs a live
-run against the selected application, with its permissions granted.
+scripting object model; they do not contact a browser. The reference tests run
+inspection and actions through `browserInspect` and `browserAct` over the page
+stand-in, then reorder, replace, remove, relabel, and navigate the page.
+Browser behaviour itself needs a live run against the selected application,
+with its permissions granted.

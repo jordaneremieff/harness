@@ -2,8 +2,9 @@
  * Page-side scripts. Chromium runs `execute javascript` in an isolated JavaScript
  * world of the tab's main frame: the script shares the DOM, storage, cookies, and
  * network identity with the page but not its JavaScript globals. State that a
- * later call reads (pending evaluations, scheduled actions, the document token)
- * lives in that world and disappears when the document is replaced.
+ * later call reads (pending evaluations, scheduled actions, element references,
+ * the document token) lives in that world and disappears when the document is
+ * replaced.
  *
  * Every script is one expression that returns a JSON string, so Apple Events
  * carries text and the extension parses one envelope.
@@ -45,6 +46,19 @@ const expectOrigin = ${literal(expectOrigin)};
 if (expectOrigin !== null && location.origin !== expectOrigin) return JSON.stringify({ kind: "origin-mismatch", page: page() });`;
 }
 
+/**
+ * Element references retained per document. A reference holds the element itself
+ * and the identity that inspection reported, so an action reaches the inspected
+ * element or refuses; it never resolves a selector again. The newest
+ * `REF_LIMIT` references are kept, a reference that inspection reports again
+ * becomes the newest, and a detached element is released at the next script that
+ * reads the references, leaving its identity for the refusal.
+ */
+export const REF_LIMIT = 500;
+
+/** `<document token>:<number>`; the token comes from the document's page world. */
+export const REF_PATTERN = "^[0-9a-z-]{1,40}:[1-9][0-9]{0,8}$";
+
 const HELPERS = `
 const clip = (value, limit) => { const s = String(value == null ? "" : value); return s.length > limit ? s.slice(0, limit) : s; };
 const squash = (value) => String(value == null ? "" : value).replace(/\\s+/g, " ").trim();
@@ -59,7 +73,7 @@ const sensitive = (el) => {
   const autocomplete = (el.getAttribute("autocomplete") || "").toLowerCase();
   return type === "password" || type === "hidden" || /(^|\\s)(cc-[a-z-]+|one-time-code|current-password|new-password)(\\s|$)/.test(autocomplete);
 };
-const accName = (el) => {
+const labelName = (el) => {
   const aria = el.getAttribute("aria-label");
   if (aria && squash(aria)) return squash(aria);
   const by = el.getAttribute("aria-labelledby");
@@ -67,7 +81,52 @@ const accName = (el) => {
   if (el.labels && el.labels.length) { const t = squash(Array.from(el.labels).map((l) => l.innerText).join(" ")); if (t) return t; }
   for (const attr of ["placeholder", "title", "alt"]) { const v = el.getAttribute(attr); if (v && squash(v)) return squash(v); }
   if (el instanceof HTMLInputElement && ["button", "submit", "reset"].includes(el.type)) return squash(el.value);
-  return squash(el.innerText != null ? el.innerText : el.textContent);
+  return null;
+};
+const accName = (el) => {
+  const label = labelName(el);
+  return label !== null ? label : squash(el.innerText != null ? el.innerText : el.textContent);
+};
+const editable = (el) => el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement || el.isContentEditable === true;
+// What inspection reported about the element's purpose. Values, checked state, and
+// the content of an editable field change through ordinary use, so they are not part of it.
+const identity = (el) => ({
+  tag: el.localName,
+  role: el.getAttribute("role"),
+  type: (el instanceof HTMLInputElement || el instanceof HTMLButtonElement) && el.type ? el.type : null,
+  name: clip(editable(el) ? labelName(el) || "" : accName(el), 120),
+  href: el instanceof HTMLAnchorElement && el.href ? clip(el.href, 300) : null,
+});
+const identityKey = (value) => JSON.stringify([value.tag, value.role, value.type, value.name, value.href]);
+const attached = (el) => Boolean(el) && el.isConnected === true && el.ownerDocument === document;
+const R = S.refs || (S.refs = { seq: 0, byRef: new Map(), byEl: new WeakMap() });
+for (const record of R.byRef.values()) if (record.el !== null && !attached(record.el)) record.el = null;
+const refFor = (el) => {
+  const now = identity(el);
+  const key = identityKey(now);
+  const known = R.byEl.get(el);
+  const record = known === undefined ? undefined : R.byRef.get(known);
+  if (record && record.el === el && record.key === key) {
+    R.byRef.delete(known);
+    R.byRef.set(known, record);
+    return S.doc + ":" + known;
+  }
+  const n = ++R.seq;
+  while (R.byRef.size >= ${REF_LIMIT}) R.byRef.delete(R.byRef.keys().next().value);
+  R.byRef.set(n, { el, key, identity: now });
+  R.byEl.set(el, n);
+  return S.doc + ":" + n;
+};
+// Resolves a reference to its retained element, or names why the reference no longer reaches it.
+const resolveRef = (ref) => {
+  const at = ref.lastIndexOf(":");
+  if (at < 1 || ref.slice(0, at) !== S.doc) return { cause: "other-document" };
+  const record = R.byRef.get(Number(ref.slice(at + 1)));
+  if (!record) return { cause: "not-retained" };
+  if (!attached(record.el)) { record.el = null; return { cause: "detached", inspected: record.identity }; }
+  const now = identity(record.el);
+  if (identityKey(now) !== record.key) return { cause: "repurposed", inspected: record.identity, current: now };
+  return { el: record.el, record };
 };
 const unique = (selector) => { try { return document.querySelectorAll(selector).length === 1; } catch (e) { return false; } };
 const cssPath = (el) => {
@@ -90,7 +149,7 @@ const cssPath = (el) => {
   return parts.join(" > ");
 };
 const describe = (el) => {
-  const out = { selector: cssPath(el), tag: el.localName, role: el.getAttribute("role"), name: clip(accName(el), 120), visible: isVisible(el) };
+  const out = { ref: refFor(el), selector: cssPath(el), tag: el.localName, role: el.getAttribute("role"), name: clip(accName(el), 120), visible: isVisible(el) };
   if ((el instanceof HTMLInputElement || el instanceof HTMLButtonElement) && el.type) out.type = el.type;
   if ("disabled" in el) out.disabled = Boolean(el.disabled);
   if (el instanceof HTMLAnchorElement && el.href) out.href = clip(el.href, 300);
@@ -99,6 +158,22 @@ const describe = (el) => {
   }
   if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) out.checked = el.checked;
   return out;
+};
+// Text of the nearest ancestor that says more than the element's own name, such as the row of a per-row button.
+const contextOf = (el, name) => {
+  for (let node = el.parentElement, depth = 0; node && node !== document.body && node !== document.documentElement && depth < 8; node = node.parentElement, depth++) {
+    const text = squash(node.innerText);
+    if (text && text !== name) return clip(text, 100);
+  }
+  return null;
+};
+// Describes elements; one whose name another of them shares also carries its context to tell them apart.
+const describeAll = (elements) => {
+  const described = elements.map(describe);
+  const counts = new Map();
+  for (const item of described) counts.set(item.name, (counts.get(item.name) || 0) + 1);
+  described.forEach((item, i) => { if (counts.get(item.name) > 1) { const context = contextOf(elements[i], item.name); if (context !== null) item.context = context; } });
+  return described;
 };
 const INTERACTIVE = "a[href], button, input, select, textarea, summary, [role=button], [role=link], [role=checkbox], [role=radio], [role=tab], [role=menuitem], [role=switch], [role=option], [role=combobox], [contenteditable=''], [contenteditable=true], [tabindex]:not([tabindex='-1'])";
 const select = (selector) => { try { return { nodes: Array.from(document.querySelectorAll(selector)) }; } catch (e) { return { error: clip(e && e.message, 300) }; } };
@@ -145,7 +220,7 @@ if (O.view === "summary") {
   view = window_(String(root.innerText || "").replace(/\\n{3,}/g, "\\n\\n"));
 } else if (O.view === "elements") {
   const all = Array.from(root.querySelectorAll(INTERACTIVE)).filter(isVisible);
-  view = { total: all.length, offset: O.offset, elements: all.slice(O.offset, O.offset + O.limit).map(describe), nextOffset: O.offset + O.limit < all.length ? O.offset + O.limit : null };
+  view = { total: all.length, offset: O.offset, elements: describeAll(all.slice(O.offset, O.offset + O.limit)), nextOffset: O.offset + O.limit < all.length ? O.offset + O.limit : null };
 } else if (O.view === "html") {
   const copy = root.cloneNode(true);
   const under = (selector) => (copy.querySelectorAll ? Array.from(copy.querySelectorAll(selector)) : []);
@@ -179,10 +254,12 @@ return JSON.stringify({ kind: "ok", page: page(), matched, view });`,
 	);
 }
 
+/** An element action names its target by `ref` from inspection, or by `selector` (with `index`) for low-level use. */
 export interface ActionSpec {
 	id: string;
 	type: ElementAction;
-	selector: string;
+	ref: string | null;
+	selector: string | null;
 	index: number | null;
 	value: string | null;
 	key: string | null;
@@ -192,18 +269,40 @@ export interface ActionSpec {
  * Resolves one element and schedules the action in a new task, then returns at once.
  * A JavaScript dialog opened by a page handler therefore blocks later reads, not
  * this reply. A later `pollScript` reports whether the action ran.
+ *
+ * A reference reaches only its retained element, after the document, attachment,
+ * and identity checks; the scheduled task repeats the attachment and identity
+ * checks immediately before it dispatches, and records `not-dispatched` when they
+ * fail. A selector is resolved again in the current document.
  */
 export function actionScript(expectOrigin: string, spec: ActionSpec): string {
 	return script(
 		expectOrigin,
 		`const A = ${literal(spec)};
-const found = select(A.selector);
-if (found.error) return JSON.stringify({ kind: "bad-selector", message: found.error, page: page() });
-const nodes = found.nodes;
-if (nodes.length === 0) return JSON.stringify({ kind: "not-found", matched: 0, page: page() });
-if (nodes.length > 1 && A.index === null) return JSON.stringify({ kind: "ambiguous", matched: nodes.length, candidates: nodes.slice(0, 5).map(describe), page: page() });
-const el = nodes[A.index === null ? 0 : A.index];
-if (!el) return JSON.stringify({ kind: "not-found", matched: nodes.length, page: page() });
+let el;
+let held = null;
+if (A.ref !== null) {
+  const resolved = resolveRef(A.ref);
+  if (!resolved.el) return JSON.stringify({ kind: "stale-reference", ref: A.ref, cause: resolved.cause, inspected: resolved.inspected || null, current: resolved.current || null, page: page() });
+  el = resolved.el;
+  held = resolved.record;
+} else {
+  const found = select(A.selector);
+  if (found.error) return JSON.stringify({ kind: "bad-selector", message: found.error, page: page() });
+  const nodes = found.nodes;
+  if (nodes.length === 0) return JSON.stringify({ kind: "not-found", matched: 0, page: page() });
+  if (nodes.length > 1 && A.index === null) return JSON.stringify({ kind: "ambiguous", matched: nodes.length, candidates: describeAll(nodes.slice(0, 5)), page: page() });
+  el = nodes[A.index === null ? 0 : A.index];
+  if (!el) return JSON.stringify({ kind: "not-found", matched: nodes.length, page: page() });
+}
+// The reference check, repeated in the dispatch task because page code can run between this reply and that task.
+const changed = () => {
+  if (held === null) return null;
+  if (!attached(el)) return { cause: "detached", message: "The referenced element left the page before the action ran." };
+  const now = identity(el);
+  if (identityKey(now) !== held.key) return { cause: "repurposed", message: "The referenced element changed its role, name, type, or link target before the action ran.", current: now };
+  return null;
+};
 const refuse = (reason) => JSON.stringify({ kind: "not-actionable", reason, element: describe(el), page: page() });
 const isInput = el instanceof HTMLInputElement;
 if ("disabled" in el && el.disabled) return refuse("The element is disabled.");
@@ -278,13 +377,15 @@ const mark = performance.timeOrigin + performance.now();
 const channel = new MessageChannel();
 channel.port1.onmessage = () => {
   channel.port1.close();
+  const change = changed();
+  if (change) { entry.state = "not-dispatched"; entry.error = { name: "StaleReference", ...change }; entry.at = performance.timeOrigin + performance.now(); return; }
   entry.state = "running";
   try { perform(); entry.state = "dispatched"; }
   catch (e) { entry.state = "failed"; entry.error = { name: e && e.name ? String(e.name) : null, message: clip(e && e.message ? e.message : e, 500) }; }
   entry.at = performance.timeOrigin + performance.now();
 };
 channel.port2.postMessage(0);
-return JSON.stringify({ kind: "scheduled", element: describe(el), matched: nodes.length, mark, page: page() });`,
+return JSON.stringify({ kind: "scheduled", element: describe(el), mark, page: page() });`,
 	);
 }
 

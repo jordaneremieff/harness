@@ -4,6 +4,7 @@ import { createContext, runInContext, Script } from "node:vm";
 import { syntaxError } from "./operations.ts";
 import {
 	ACTION_TYPES,
+	type ActionSpec,
 	actionScript,
 	type ElementAction,
 	evaluationForgetScript,
@@ -12,7 +13,10 @@ import {
 	INSPECT_VIEWS,
 	inspectScript,
 	pollScript,
+	REF_LIMIT,
+	REF_PATTERN,
 } from "./page.ts";
+import { type FakePage, fakePage, type FakeElement as PageElement } from "./page-fixture.mts";
 
 const ORIGIN = "https://a.example";
 
@@ -282,16 +286,21 @@ it("every generated page script parses", () => {
 	}
 	const elementActions = ACTION_TYPES.filter((type): type is ElementAction => type !== "navigate");
 	for (const type of elementActions) {
-		new Script(
-			actionScript(ORIGIN, {
-				id: "action-1",
-				type,
-				selector: "#target",
-				index: null,
-				value: type === "fill" || type === "select" ? "value" : null,
-				key: type === "press" ? "Enter" : null,
-			}),
-		);
+		for (const target of [
+			{ ref: null, selector: "#target" },
+			{ ref: "doc-1:3", selector: null },
+		]) {
+			new Script(
+				actionScript(ORIGIN, {
+					id: "action-1",
+					type,
+					...target,
+					index: null,
+					value: type === "fill" || type === "select" ? "value" : null,
+					key: type === "press" ? "Enter" : null,
+				}),
+			);
+		}
 	}
 	new Script(pollScript("action-1", { selector: "#done" }, 1000));
 	new Script(pollScript(null, null, null));
@@ -444,4 +453,284 @@ it("syntaxError accepts valid expressions and rejects invalid ones", () => {
 	const problem = syntaxError("1 +");
 	assert.equal(typeof problem, "string");
 	assert.notEqual(problem, null);
+});
+
+/* ------------------------------------------------------- element references */
+
+const PAGE_URL = `${ORIGIN}/inbox`;
+
+type Envelope = Record<string, unknown>;
+
+function inspectElements(page: FakePage, options: { offset?: number; limit?: number } = {}): Envelope {
+	const script = inspectScript(ORIGIN, {
+		view: "elements",
+		selector: null,
+		offset: options.offset ?? 0,
+		limit: options.limit ?? 60,
+		maxChars: 2000,
+	});
+	return JSON.parse(page.run(script)) as Envelope;
+}
+
+function elementsOf(envelope: Envelope): Array<Record<string, unknown>> {
+	const elements = obj(envelope.view).elements;
+	return Array.isArray(elements) ? elements.map(obj) : [];
+}
+
+let actionCount = 0;
+
+/** Runs one action script, then the page task it scheduled; returns the reply and the recorded action state. */
+function act(page: FakePage, target: Partial<ActionSpec>): { reply: Envelope; record: Envelope | null } {
+	const id = `action-${++actionCount}`;
+	const spec: ActionSpec = {
+		id,
+		type: "click",
+		ref: null,
+		selector: null,
+		index: null,
+		value: null,
+		key: null,
+		...target,
+	};
+	const reply = JSON.parse(page.run(actionScript(ORIGIN, spec))) as Envelope;
+	page.runTasks();
+	const polled = JSON.parse(page.run(pollScript(id, null, null))) as Envelope;
+	return { reply, record: polled.action ? obj(polled.action) : null };
+}
+
+/** Three inbox rows, each with a title and an Archive button that has the same accessible name. */
+function inbox(page: FakePage): { list: PageElement; rows: PageElement[]; buttons: PageElement[] } {
+	const d = page.document;
+	const rows = ["Alpha", "Bravo", "Charlie"].map((title) =>
+		d.create("li", {}, d.create("span", {}, title), d.create("button", { type: "button" }, "Archive")),
+	);
+	const list = d.create("ul", {}, ...rows);
+	d.body.append(list);
+	return { list, rows, buttons: rows.map((row) => row.children[1]) };
+}
+
+function clicks(page: FakePage, element: PageElement): number {
+	return page.document.count(element, "click");
+}
+
+it("issues document-qualified element references and repeats them for an unchanged element", () => {
+	const page = fakePage(PAGE_URL);
+	inbox(page);
+	const first = inspectElements(page);
+	const doc = String(obj(first.page).doc);
+	const refs = elementsOf(first).map((element) => String(element.ref));
+	assert.equal(refs.length, 3);
+	assert.equal(new Set(refs).size, 3);
+	for (const ref of refs) {
+		assert.match(ref, new RegExp(REF_PATTERN));
+		assert.equal(ref.startsWith(`${doc}:`), true);
+	}
+	assert.deepEqual(
+		elementsOf(inspectElements(page)).map((element) => element.ref),
+		refs,
+	);
+	assert.equal(elementsOf(first)[1].selector, "body > ul > li:nth-of-type(2) > button");
+	assert.deepEqual(
+		elementsOf(first).map((element) => element.context),
+		["Alpha Archive", "Bravo Archive", "Charlie Archive"],
+		"elements that share a name carry the text of their row",
+	);
+});
+
+it("acts on the inspected element after the list reorders, where the old positional selector reaches another row", () => {
+	const page = fakePage(PAGE_URL);
+	const { list, rows, buttons } = inbox(page);
+	const bravo = elementsOf(inspectElements(page))[1];
+	list.prepend(rows[2]);
+
+	const bySelector = act(page, { selector: String(bravo.selector) });
+	assert.equal(bySelector.reply.kind, "scheduled");
+	assert.equal(clicks(page, buttons[0]), 1, "the old positional selector clicked Alpha's button");
+	assert.equal(clicks(page, buttons[1]), 0);
+
+	const byRef = act(page, { ref: String(bravo.ref) });
+	assert.equal(byRef.reply.kind, "scheduled");
+	assert.equal(obj(byRef.reply.element).ref, bravo.ref);
+	assert.equal(obj(byRef.record).state, "dispatched");
+	assert.equal(clicks(page, buttons[1]), 1, "the ref clicked Bravo's button");
+	assert.equal(clicks(page, buttons[0]), 1);
+});
+
+it("refuses a replaced element by ref while the old positional selector clicks the replacement", () => {
+	const page = fakePage(PAGE_URL);
+	const { buttons } = inbox(page);
+	const bravo = elementsOf(inspectElements(page))[1];
+	const replacement = page.document.create("button", { type: "button" }, "Archive");
+	buttons[1].replaceWith(replacement);
+
+	const byRef = act(page, { ref: String(bravo.ref) });
+	assert.equal(byRef.reply.kind, "stale-reference");
+	assert.equal(byRef.reply.cause, "detached");
+	assert.deepEqual(obj(byRef.reply.inspected), {
+		tag: "button",
+		role: null,
+		type: "button",
+		name: "Archive",
+		href: null,
+	});
+	assert.equal(byRef.record, null, "no action was scheduled");
+	assert.equal(page.document.events.length, 0, "nothing was dispatched to any element");
+
+	act(page, { selector: String(bravo.selector) });
+	assert.equal(clicks(page, replacement), 1, "the old positional selector clicked the replacement");
+	assert.equal(clicks(page, buttons[1]), 0);
+});
+
+it("refuses a detached element by ref and releases it from the page world", () => {
+	const page = fakePage(PAGE_URL);
+	const { rows, buttons } = inbox(page);
+	const bravo = elementsOf(inspectElements(page))[1];
+	rows[1].remove();
+
+	const byRef = act(page, { ref: String(bravo.ref) });
+	assert.equal(byRef.reply.kind, "stale-reference");
+	assert.equal(byRef.reply.cause, "detached");
+	assert.equal(page.document.events.length, 0);
+	const n = Number(String(bravo.ref).split(":")[1]);
+	assert.equal(page.world(`globalThis.__piBrowser.refs.byRef.get(${n}).el`), null);
+
+	act(page, { selector: String(bravo.selector) });
+	assert.equal(clicks(page, buttons[2]), 1, "the old positional selector clicked Charlie's button");
+});
+
+it("refuses a repurposed element and gives the same element a new ref on the next inspection", () => {
+	const page = fakePage(PAGE_URL);
+	const { buttons } = inbox(page);
+	const bravo = elementsOf(inspectElements(page))[1];
+	buttons[1].textContent = "Delete forever";
+
+	const stale = act(page, { ref: String(bravo.ref) });
+	assert.equal(stale.reply.kind, "stale-reference");
+	assert.equal(stale.reply.cause, "repurposed");
+	assert.equal(obj(stale.reply.inspected).name, "Archive");
+	assert.equal(obj(stale.reply.current).name, "Delete forever");
+	assert.equal(page.document.events.length, 0);
+
+	const fresh = elementsOf(inspectElements(page))[1];
+	assert.equal(fresh.name, "Delete forever");
+	assert.notEqual(fresh.ref, bravo.ref);
+	assert.equal(act(page, { ref: String(bravo.ref) }).reply.cause, "repurposed", "the old ref keeps the old identity");
+	assert.equal(obj(act(page, { ref: String(fresh.ref) }).record).state, "dispatched");
+	assert.equal(clicks(page, buttons[1]), 1);
+});
+
+it("refuses a ref from the previous document after a same-origin navigation", () => {
+	const page = fakePage(PAGE_URL);
+	inbox(page);
+	const before = elementsOf(inspectElements(page));
+	const next = page.navigate(`${ORIGIN}/inbox?page=2`);
+	const { buttons } = inbox(page);
+	const after = elementsOf(inspectElements(page));
+	assert.notEqual(String(after[1].ref).split(":")[0], String(before[1].ref).split(":")[0]);
+	assert.equal(
+		String(after[1].ref).split(":")[1],
+		String(before[1].ref).split(":")[1],
+		"the new document numbers its refs anew",
+	);
+
+	const stale = act(page, { ref: String(before[1].ref) });
+	assert.equal(stale.reply.kind, "stale-reference");
+	assert.equal(stale.reply.cause, "other-document");
+	assert.equal(next.events.length, 0);
+	assert.equal(obj(act(page, { ref: String(after[1].ref) }).record).state, "dispatched");
+	assert.equal(clicks(page, buttons[1]), 1);
+});
+
+it("records not-dispatched when the referenced element changes between the reply and the dispatch task", () => {
+	let change: (() => void) | null = null;
+	const page = fakePage(PAGE_URL, {
+		beforeTasks: () => {
+			change?.();
+			change = null;
+		},
+	});
+	const { buttons } = inbox(page);
+	const refs = elementsOf(inspectElements(page)).map((element) => String(element.ref));
+	const replacement = page.document.create("button", { type: "button" }, "Archive");
+
+	change = () => buttons[1].replaceWith(replacement);
+	const detached = act(page, { ref: refs[1] });
+	assert.equal(detached.reply.kind, "scheduled");
+	assert.equal(obj(detached.record).state, "not-dispatched");
+	assert.equal(obj(obj(detached.record).error).name, "StaleReference");
+	assert.equal(obj(obj(detached.record).error).cause, "detached");
+
+	change = () => {
+		buttons[2].textContent = "Delete";
+	};
+	const repurposed = act(page, { ref: refs[2] });
+	assert.equal(obj(repurposed.record).state, "not-dispatched");
+	assert.equal(obj(obj(repurposed.record).error).cause, "repurposed");
+	assert.equal(page.document.events.length, 0, "no element received an event");
+});
+
+it("keeps a field's ref through fill and press, because its value is not part of its identity", () => {
+	const page = fakePage(PAGE_URL);
+	const d = page.document;
+	const search = d.create("input", { type: "search", placeholder: "Search mail" });
+	const composer = d.create("div", { contenteditable: "true", "aria-label": "Message" });
+	const plain = d.create("div", { contenteditable: "true" });
+	d.body.append(search, composer, plain);
+	const fields = elementsOf(inspectElements(page));
+	assert.equal(
+		fields.some((field) => "context" in field),
+		false,
+		"elements with distinct names carry no context",
+	);
+	const [searchRef, composerRef, plainRef] = fields.map((field) => String(field.ref));
+
+	assert.equal(obj(act(page, { ref: searchRef, type: "fill", value: "invoices" }).record).state, "dispatched");
+	assert.equal(obj(act(page, { ref: searchRef, type: "press", key: "Enter" }).record).state, "dispatched");
+	assert.equal(obj(act(page, { ref: composerRef, type: "fill", value: "Hello" }).record).state, "dispatched");
+	assert.equal(obj(act(page, { ref: composerRef, type: "press", key: "Enter" }).record).state, "dispatched");
+	assert.equal(obj(act(page, { ref: plainRef, type: "fill", value: "Draft" }).record).state, "dispatched");
+	assert.equal(obj(act(page, { ref: plainRef, type: "press", key: "Enter" }).record).state, "dispatched");
+	assert.equal((search as PageElement & { value: string }).value, "invoices");
+	assert.equal(composer.textContent, "Hello");
+	assert.equal(page.document.count(search, "keydown"), 1);
+});
+
+it("gives refs to ambiguous-selector candidates and to the element an action reports", () => {
+	const page = fakePage(PAGE_URL);
+	const { buttons } = inbox(page);
+	const ambiguous = act(page, { selector: "button" });
+	assert.equal(ambiguous.reply.kind, "ambiguous");
+	const candidates = Array.isArray(ambiguous.reply.candidates) ? ambiguous.reply.candidates.map(obj) : [];
+	assert.equal(candidates.length, 3);
+	assert.equal(candidates[2].context, "Charlie Archive");
+	const chosen = act(page, { ref: String(candidates[2].ref) });
+	assert.equal(obj(chosen.reply.element).ref, candidates[2].ref);
+	assert.equal(clicks(page, buttons[2]), 1);
+});
+
+it("refuses an unknown ref and keeps at most the reference limit", () => {
+	const page = fakePage(PAGE_URL);
+	const d = page.document;
+	for (let i = 0; i < REF_LIMIT + 20; i++) d.body.append(d.create("button", { type: "button" }, `Item ${i}`));
+	const first = elementsOf(inspectElements(page, { limit: 200 }))[0];
+	for (let offset = 200; offset < REF_LIMIT + 20; offset += 200) inspectElements(page, { offset, limit: 200 });
+	assert.equal(page.world("globalThis.__piBrowser.refs.byRef.size"), REF_LIMIT);
+
+	const evicted = act(page, { ref: String(first.ref) });
+	assert.equal(evicted.reply.kind, "stale-reference");
+	assert.equal(evicted.reply.cause, "not-retained");
+	const doc = String(first.ref).split(":")[0];
+	assert.equal(act(page, { ref: `${doc}:999999` }).reply.cause, "not-retained");
+	assert.equal(page.document.events.length, 0);
+});
+
+it("checks actionability on the referenced element", () => {
+	const page = fakePage(PAGE_URL);
+	const { buttons } = inbox(page);
+	const refs = elementsOf(inspectElements(page)).map((element) => String(element.ref));
+	(buttons[0] as PageElement & { disabled: boolean }).disabled = true;
+	buttons[1].hidden = true;
+	assert.equal(act(page, { ref: refs[0] }).reply.kind, "not-actionable");
+	assert.equal(act(page, { ref: refs[1] }).reply.kind, "not-actionable");
+	assert.equal(page.document.events.length, 0);
 });

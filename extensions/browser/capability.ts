@@ -9,7 +9,7 @@ import { bool, int, obj, opt, type Schema, str } from "@earendil-works/pi-schema
 import { ACCESS_LEVELS, type AccessMap, BROWSER_KEYS } from "./browsers.ts";
 import type { BrowserDeps } from "./operations.ts";
 import { runOsascript, TransportError } from "./osa.ts";
-import { ACTION_TYPES, INSPECT_VIEWS } from "./page.ts";
+import { ACTION_TYPES, INSPECT_VIEWS, REF_PATTERN } from "./page.ts";
 import { readSettings } from "./settings.ts";
 
 /** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
@@ -77,7 +77,7 @@ export const INSPECT_PARAMETERS = obj(
 		view: opt(
 			StringEnum(INSPECT_VIEWS, {
 				description:
-					"summary (default): headings, counts, focus, open dialogs, and text start; text: rendered text; elements: visible interactive elements with selectors; html: markup; network: navigation and recent resource statuses.",
+					"summary (default): headings, counts, focus, open dialogs, and text start; text: rendered text; elements: visible interactive elements, each with a ref for browser_act and, when names repeat, the text around it; html: markup; network: navigation and recent resource statuses.",
 			}),
 		),
 		selector: opt(
@@ -114,16 +114,26 @@ export const ACT_PARAMETERS = obj(
 			description:
 				"click, fill (text value), select (option value or label), check, uncheck, press (key), submit (form of the element), focus, scroll (into view), or navigate (tab to url).",
 		}),
+		ref: opt(
+			str({
+				description:
+					"Element reference from browser_inspect or an earlier browser_act result. The action reaches that exact element and refuses when the page navigated, removed, replaced, or repurposed it. Give ref or selector for every action except navigate.",
+				minLength: 3,
+				maxLength: 50,
+				pattern: REF_PATTERN,
+			}),
+		),
 		selector: opt(
 			str({
-				description: "CSS selector of the element. Required for every action except navigate.",
+				description:
+					"Low-level CSS selector, resolved again when the action runs; after the page changes, a positional selector can match a different element. Use ref for inspected elements.",
 				minLength: 1,
 				maxLength: 1000,
 			}),
 		),
 		index: opt(
 			int({
-				description: "Zero-based match index when the selector matches several elements.",
+				description: "Zero-based match index when the selector matches several elements. Not used with ref.",
 				minimum: 0,
 				maximum: 10_000,
 			}),
@@ -265,13 +275,13 @@ export const TOOL_TEXT = {
 	browser_inspect: {
 		label: "Inspect browser tab",
 		description:
-			"Read one explicitly selected tab of an already-open browser through bounded extraction: summary, rendered text, interactive elements with selectors, markup, or navigation and resource statuses. Password, hidden, and similar field values are redacted. Uses the page's existing signed-in session; reads no cookies or credentials.",
+			"Read one explicitly selected tab of an already-open browser through bounded extraction: summary, rendered text, interactive elements with element refs for browser_act, markup, or navigation and resource statuses. Password, hidden, and similar field values are redacted. Uses the page's existing signed-in session; reads no cookies or credentials.",
 		snippet: "Read rendered content and page state from a selected tab of an open browser",
 	},
 	browser_act: {
 		label: "Act in browser tab",
 		description:
-			"Perform one action in a selected tab (click, fill, select, check, uncheck, press, submit, focus, scroll, navigate) after confirming its origin, then wait for an optional postcondition. Reports transport, dispatch, observed application responses, and postcondition separately. A failed read after dispatch keeps the known dispatch and marks the outcome unknown. Never repeats an action.",
+			"Perform one action in a selected tab (click, fill, select, check, uncheck, press, submit, focus, scroll, navigate) after confirming its origin, on the element that an inspection ref names, then wait for an optional postcondition. Refuses a ref whose element the page navigated away from, removed, replaced, or repurposed. Reports transport, dispatch, observed application responses, and postcondition separately. A failed read after dispatch keeps the known dispatch and marks the outcome unknown. Never repeats an action.",
 		snippet: "Perform one verified action in a selected browser tab",
 	},
 	browser_evaluate: {
@@ -294,6 +304,7 @@ export const GUIDELINES: readonly string[] = [
 	"Browser tools never launch, restart, activate, or quit a browser and never switch tabs; a closed tab, exited process, or changed origin refuses the operation instead of retargeting it.",
 	`Browser tools address only browsers listed in ${ACCESS_TEXT}. Treat configured access and a signed-in session as reach, not task authority: use browser_act and browser_evaluate only for changes the operator's task authorises, and ask before changes to external services that the task does not cover.`,
 	"Use browser_inspect for reading pages; use browser_evaluate only when extraction views cannot answer. browser_evaluate runs unrestricted JavaScript in an isolated world of the page and is not read-only.",
+	"Act on an inspected element by its ref from browser_inspect or an earlier browser_act result, not by its selector. A stale-reference refusal means the page changed and nothing was dispatched: inspect again and choose from the fresh result. Use selector only for deliberate low-level targeting.",
 	"Give browser_act a waitFor condition that shows the intended outcome, including for a check or uncheck that needs no change. A dispatched action is not a completed task: report the postcondition, observed HTTP statuses, and page state, and say when the outcome is unknown.",
 	"After a browser_act or browser_evaluate transport failure, timeout, or cancellation, inspect the page before any repeat; the tool never retries a possibly completed action.",
 	"browser_capture compares the tab identity and window visibility before and after the pixels. A change between those reads discards the image and saves nothing; a change that reverts between the reads is not detected.",

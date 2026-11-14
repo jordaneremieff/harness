@@ -6,6 +6,7 @@ import { Script } from "node:vm";
 import { type AccessMap, accessCovers, BROWSER_KEYS, BROWSERS, type BrowserKey, type BrowserSpec } from "./browsers.ts";
 import { TransportError } from "./osa.ts";
 import {
+	type ActionSpec,
 	actionScript,
 	type Condition,
 	type ElementAction,
@@ -15,6 +16,7 @@ import {
 	type InspectView,
 	inspectScript,
 	pollScript,
+	REF_PATTERN,
 } from "./page.ts";
 import {
 	Blocked,
@@ -364,7 +366,35 @@ function pageRefusal(data: Facts, expectOrigin: string | null): Blocked {
 	}
 	if (data.kind === "not-actionable")
 		return new Blocked("not-actionable", String(data.reason), { element: data.element });
+	if (data.kind === "stale-reference") return staleReference(data);
 	return new Blocked(String(data.kind), String(data.message ?? data.kind));
+}
+
+const INSPECT_AGAIN =
+	"Nothing was dispatched. Call browser_inspect again (view elements, or summary for focus and dialogs) and act on a ref from the fresh result; a selector from the earlier inspection can now match a different element.";
+
+const STALE_CAUSES: Record<string, string> = {
+	"other-document":
+		"The ref belongs to another document: the tab navigated or reloaded since the inspection, or the ref came from another tab.",
+	"not-retained":
+		"This document no longer holds the ref: newer inspections displaced it, or it was not issued in this document.",
+	detached: "The inspected element is no longer in the page; the page removed or replaced it.",
+	repurposed: "The inspected element now has a different role, name, type, or link target.",
+};
+
+/** A reference that no longer reaches the element as inspected, before anything was dispatched. */
+function staleReference(data: Facts): Blocked {
+	const cause = String(data.cause);
+	return new Blocked(
+		"stale-reference",
+		`${STALE_CAUSES[cause] ?? "The ref no longer reaches the inspected element."} ${INSPECT_AGAIN}`,
+		{
+			ref: data.ref ?? null,
+			cause,
+			...(data.inspected ? { inspected: data.inspected } : {}),
+			...(data.current ? { current: data.current } : {}),
+		},
+	);
 }
 
 /* ---------------------------------------------------------------- inspect */
@@ -441,6 +471,7 @@ export interface WaitFor extends Condition {
 export interface ActParams extends TargetParams {
 	origin: string;
 	action: ElementAction | "navigate";
+	ref?: string;
 	selector?: string;
 	index?: number;
 	value?: string;
@@ -483,17 +514,33 @@ const REQUIRED_ARGUMENT: Partial<Record<ActParams["action"], keyof ActParams>> =
 	press: "key",
 };
 
+const REF = new RegExp(REF_PATTERN);
+
 function checkActArguments(params: ActParams): void {
 	const required = REQUIRED_ARGUMENT[params.action];
 	if (required && params[required] === undefined)
 		throw new Blocked("invalid-arguments", `${params.action} needs ${required}.`);
-	if (params.action !== "navigate" && !params.selector)
-		throw new Blocked("invalid-arguments", `${params.action} needs selector.`);
+	if (params.action === "navigate") return;
+	if (params.ref !== undefined && params.selector !== undefined)
+		throw new Blocked("invalid-arguments", "Pass ref or selector, not both.");
+	if (params.ref === undefined && !params.selector)
+		throw new Blocked(
+			"invalid-arguments",
+			`${params.action} needs ref, the element reference from browser_inspect, or a selector.`,
+		);
+	if (params.ref !== undefined && !REF.test(params.ref))
+		throw new Blocked(
+			"invalid-arguments",
+			"ref is not an element reference; pass a ref exactly as browser_inspect reported it.",
+		);
+	if (params.ref !== undefined && params.index !== undefined)
+		throw new Blocked("invalid-arguments", "index applies only to selector; a ref names one element.");
 }
 
 function describeAction(params: ActParams): Facts {
 	return {
 		type: params.action,
+		...(params.ref !== undefined ? { ref: params.ref } : {}),
 		...(params.selector !== undefined ? { selector: params.selector } : {}),
 		...(params.index !== undefined ? { index: params.index } : {}),
 		...(params.value !== undefined ? { valueLength: params.value.length } : {}),
@@ -602,6 +649,20 @@ function lostAction(actionId: string, lostReply: LostReply): Dispatched {
 	};
 }
 
+/** The page-side action: a ref names its element; otherwise the selector and index select one. */
+function actionSpec(params: ActParams, id: string): ActionSpec {
+	const byRef = params.ref !== undefined;
+	return {
+		id,
+		type: params.action as ElementAction,
+		ref: byRef ? (params.ref as string) : null,
+		selector: byRef ? null : (params.selector as string),
+		index: byRef ? null : (params.index ?? null),
+		value: params.value ?? null,
+		key: params.key ?? null,
+	};
+}
+
 async function dispatchElementAction(
 	params: ActParams,
 	resolved: Resolved,
@@ -611,14 +672,7 @@ async function dispatchElementAction(
 ): Promise<Dispatched | BrowserResult> {
 	const { spec, target, expectOrigin } = resolved;
 	const actionId = randomUUID();
-	const script = actionScript(expectOrigin as string, {
-		id: actionId,
-		type: params.action as ElementAction,
-		selector: params.selector as string,
-		index: params.index ?? null,
-		value: params.value ?? null,
-		key: params.key ?? null,
-	});
+	const script = actionScript(expectOrigin as string, actionSpec(params, actionId));
 	let reply: ExecuteReply;
 	try {
 		reply = await executeInTab(deps, spec, target, script, signal);
@@ -677,7 +731,13 @@ function applyPoll(state: Observation, data: Facts, sent: Dispatched): void {
 	const page = record(data.page);
 	if (sent.startDoc !== null && page?.doc !== sent.startDoc) state.documentReplaced = true;
 	const action = record(data.action);
-	if (action) {
+	if (action?.state === "not-dispatched") {
+		state.dispatch = {
+			status: "not-dispatched",
+			error: action.error,
+			note: "The page withheld the action: its referenced element changed after the reply and before the dispatch task.",
+		};
+	} else if (action) {
 		state.dispatch = { ...state.dispatch, status: action.state, ...(action.error ? { error: action.error } : {}) };
 	} else if (sent.lostReply) {
 		state.dispatch = {
@@ -741,7 +801,7 @@ async function observe(
 	for (let attempt = 0; ; attempt++) {
 		const failure = await observeStep(deps, resolved, sent, script, state, attempt, deadline, signal);
 		if (failure && applyReadFailure(state, failure)) break;
-		if ((condition && state.met) || deps.now() >= deadline) break;
+		if ((condition && state.met) || deps.now() >= deadline || withheld(state)) break;
 	}
 	settleDispatch(state);
 	return state;
@@ -763,6 +823,11 @@ function applyReadFailure(state: Observation, failure: ReadFailure): boolean {
 		...(failure.kind === "unavailable" ? { message: failure.message } : {}),
 	};
 	return true;
+}
+
+/** The page withheld the action because its referenced element changed before dispatch; nothing more will happen. */
+function withheld(state: Observation): boolean {
+	return state.dispatch.status === "not-dispatched";
 }
 
 /** A dispatch that no page read confirmed is unknown, not pending. */
@@ -852,6 +917,7 @@ async function dispatchAct(
 }
 
 function actStatus(sent: Dispatched, state: Observation, postcondition: Facts): string {
+	if (withheld(state)) return "stale-reference";
 	if (state.cancelled) return "cancelled";
 	if (state.failedRead) return state.failedRead.kind === "unavailable" ? "observation-failed" : "target-closed";
 	if (unsettledLostReply(sent, state, postcondition))
@@ -912,13 +978,14 @@ function actResult(
 		},
 		postcondition,
 	};
-	const headline = `${params.action} ${String(state.dispatch.status)}; postcondition ${String(postcondition.status)}. ${UNTRUSTED}`;
+	const stale = withheld(state) ? ` The referenced element changed before the action ran. ${INSPECT_AGAIN}` : "";
+	const headline = `${params.action} ${String(state.dispatch.status)}; postcondition ${String(postcondition.status)}.${stale} ${UNTRUSTED}`;
 	return result(
 		"browser_act",
 		actStatus(sent, state, postcondition),
 		headline,
 		report,
-		state.cancelled || Boolean(state.failedRead) || unsettledLostReply(sent, state, postcondition),
+		withheld(state) || state.cancelled || Boolean(state.failedRead) || unsettledLostReply(sent, state, postcondition),
 	);
 }
 

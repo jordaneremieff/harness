@@ -14,6 +14,7 @@ import {
 } from "./operations.ts";
 import { type OsaReply, type OsaRequest, TransportError } from "./osa.ts";
 import { RUN_LIMIT, RUN_TTL_MS } from "./page.ts";
+import { type FakeElement, type FakePage, fakePage } from "./page-fixture.mts";
 import { decodeRect } from "./session.ts";
 
 type RunOptions = { signal?: AbortSignal; timeoutMs: number };
@@ -871,6 +872,176 @@ it("reports a navigation as not dispatched when the read before it gets no answe
 	assert.equal(result.details.status, "transport-failed");
 	assert.equal(obj(report.dispatch).status, "not-dispatched");
 	assert.equal(requests.filter((request) => request.op === "navigate").length, 0);
+});
+
+/* ---------------------------------------------------------------- element references */
+
+/** Apple Events over a page stand-in: scripts run in the current document's world; navigate loads a new document. */
+function pageRun(page: FakePage, lose: (kind: string) => boolean = () => false): Run {
+	return async (request) => {
+		if (request.op === "navigate") {
+			const before = page.document.url;
+			page.navigate(String(request.url));
+			return ok({ window: "1", before });
+		}
+		if (request.op !== "execute") throw new Error(`unexpected op ${request.op}`);
+		const output = page.run(String(request.script));
+		if (lose(scriptKind(request))) throw new TransportError("timeout", "unknown", "No reply.");
+		return ok({ window: "1", url: page.document.url, title: page.document.title, result: output });
+	};
+}
+
+const REF_TARGET = { browser: "chrome" as const, pid: 5, tab: "7", origin: PAGE.origin };
+
+/** Three inbox rows with identically named Archive buttons; a click on a row's button reports that row. */
+function inboxPage(page: FakePage): FakeElement[] {
+	const d = page.document;
+	const status = d.create("p", { id: "status" });
+	const rows = ["Alpha", "Bravo", "Charlie"].map((title) => {
+		const button = d.create("button", { type: "button" }, "Archive");
+		button.addEventListener("click", () => {
+			status.textContent = `Archived ${title}`;
+		});
+		return d.create("li", {}, d.create("span", {}, title), button);
+	});
+	d.body.append(d.create("ul", {}, ...rows), status);
+	return rows.map((row) => row.children[1]);
+}
+
+async function inspectedElements(deps: BrowserDeps): Promise<Array<Record<string, unknown>>> {
+	const inspected = await browserInspect({ ...REF_TARGET, view: "elements" }, undefined, deps);
+	assert.equal(inspected.details.status, "ok");
+	return list(obj(reportOf(inspected).result).elements);
+}
+
+it("acts on an inspected ref through the normal action path and verifies the outcome", async () => {
+	const page = fakePage(`${PAGE.origin}/inbox`);
+	const buttons = inboxPage(page);
+	const { deps } = fakes(pageRun(page), { access: { chrome: "interact" } });
+	const bravo = (await inspectedElements(deps))[1];
+
+	const result = await browserAct(
+		{ ...REF_TARGET, action: "click", ref: String(bravo.ref), waitFor: { text: "Archived Bravo", timeoutMs: 1_000 } },
+		undefined,
+		deps,
+	);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "ok");
+	assert.equal(obj(report.dispatch).status, "dispatched");
+	assert.equal(obj(report.postcondition).status, "verified");
+	assert.equal(obj(report.action).ref, bravo.ref);
+	assert.equal(obj(report.element).ref, bravo.ref);
+	assert.equal(page.document.count(buttons[1]), 1);
+});
+
+it("never clicks the replacement that the old positional selector selects", async () => {
+	const page = fakePage(`${PAGE.origin}/inbox`);
+	const buttons = inboxPage(page);
+	const { deps, requests } = fakes(pageRun(page), { access: { chrome: "interact" } });
+	const bravo = (await inspectedElements(deps))[1];
+	const replacement = page.document.create("button", { type: "button" }, "Archive");
+	buttons[1].replaceWith(replacement);
+
+	const byRef = await browserAct({ ...REF_TARGET, action: "click", ref: String(bravo.ref) }, undefined, deps);
+	const blocked = obj(reportOf(byRef).blocked);
+	assert.equal(byRef.details.status, "blocked");
+	assert.equal(blocked.reason, "stale-reference");
+	assert.equal(blocked.cause, "detached");
+	assert.match(String(blocked.message), /browser_inspect again/);
+	assert.equal(page.document.events.length, 0);
+	assert.equal(pollRequests(requests).length, 0);
+
+	const bySelector = await browserAct(
+		{ ...REF_TARGET, action: "click", selector: String(bravo.selector), observeMs: 100 },
+		undefined,
+		deps,
+	);
+	assert.equal(obj(reportOf(bySelector).dispatch).status, "dispatched");
+	assert.equal(page.document.count(replacement), 1, "the old positional selector clicked the replacement");
+});
+
+it("refuses a ref from before a same-origin navigation without dispatching in the new document", async () => {
+	const page = fakePage(`${PAGE.origin}/inbox`);
+	inboxPage(page);
+	const { deps } = fakes(pageRun(page), { access: { chrome: "interact" } });
+	const bravo = (await inspectedElements(deps))[1];
+
+	const navigated = await browserAct(
+		{ ...REF_TARGET, action: "navigate", url: `${PAGE.origin}/inbox?page=2`, observeMs: 100 },
+		undefined,
+		deps,
+	);
+	assert.equal(obj(reportOf(navigated).application).documentReplaced, true);
+	inboxPage(page);
+
+	const result = await browserAct({ ...REF_TARGET, action: "click", ref: String(bravo.ref) }, undefined, deps);
+	assert.equal(blockedReason(result), "stale-reference");
+	assert.equal(obj(reportOf(result).blocked).cause, "other-document");
+	assert.equal(page.document.events.length, 0);
+});
+
+it("reports stale-reference when the element changes before the dispatch task, and sends the action once", async () => {
+	let change: (() => void) | null = null;
+	const page = fakePage(`${PAGE.origin}/inbox`, {
+		beforeTasks: () => {
+			change?.();
+			change = null;
+		},
+	});
+	const buttons = inboxPage(page);
+	const { deps, requests } = fakes(pageRun(page), { access: { chrome: "interact" } });
+	const bravo = (await inspectedElements(deps))[1];
+	change = () => {
+		buttons[1].textContent = "Delete";
+	};
+
+	const result = await browserAct(
+		{ ...REF_TARGET, action: "click", ref: String(bravo.ref), waitFor: { text: "Archived", timeoutMs: 5_000 } },
+		undefined,
+		deps,
+	);
+	const dispatch = obj(reportOf(result).dispatch);
+	assert.equal(result.details.status, "stale-reference");
+	assert.equal(result.isError, true);
+	assert.equal(dispatch.status, "not-dispatched");
+	assert.equal(obj(dispatch.error).cause, "repurposed");
+	assert.equal(page.document.events.length, 0);
+	assert.equal(count(requests, "action"), 1);
+	assert.equal(pollRequests(requests).length, 1, "the wait ends at the first read that shows the withheld action");
+});
+
+it("recovers a ref action from its page record after a lost action reply, without resending it", async () => {
+	const page = fakePage(`${PAGE.origin}/inbox`);
+	const buttons = inboxPage(page);
+	let lost = false;
+	const { deps, requests } = fakes(
+		pageRun(page, (kind) => kind === "action" && lost),
+		{ access: { chrome: "interact" } },
+	);
+	const bravo = (await inspectedElements(deps))[1];
+	lost = true;
+
+	const result = await browserAct(
+		{ ...REF_TARGET, action: "click", ref: String(bravo.ref), waitFor: { text: "Archived Bravo", timeoutMs: 1_000 } },
+		undefined,
+		deps,
+	);
+	const report = reportOf(result);
+	assert.equal(obj(report.dispatchReply).status, "lost");
+	assert.equal(obj(report.dispatch).status, "dispatched");
+	assert.equal(obj(report.postcondition).status, "verified");
+	assert.equal(count(requests, "action"), 1);
+	assert.equal(page.document.count(buttons[1]), 1);
+});
+
+it("refuses malformed ref arguments before any Apple Event", async () => {
+	const { deps, requests } = fakes(pageRun(fakePage(`${PAGE.origin}/inbox`)), { access: { chrome: "interact" } });
+	const cases = [{ ref: "d1:1", selector: "#save" }, {}, { ref: "e12" }, { ref: "d1:1", index: 0 }];
+	for (const target of cases) {
+		const result = await browserAct({ ...REF_TARGET, action: "click", ...target }, undefined, deps);
+		assert.equal(blockedReason(result), "invalid-arguments", JSON.stringify(target));
+	}
+	assert.equal(requests.length, 0);
 });
 
 /* ---------------------------------------------------------------- evaluate */
