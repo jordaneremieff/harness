@@ -644,8 +644,10 @@ export class AgentManager {
 	/**
 	 * `options.signal` withdraws the caller's wait for the answer: the client settles at once and a late
 	 * answer is dropped. The host still runs an admitted request; nothing is rolled back or replayed.
+	 * `options.launch: false` uses only a running host or a launch this manager already owns, and
+	 * fails instead of starting one.
 	 */
-	async control(method: string, input: Record<string, unknown>, caller: AgentCaller, options?: { readonly signal?: AbortSignal }): Promise<unknown> {
+	async control(method: string, input: Record<string, unknown>, caller: AgentCaller, options?: { readonly signal?: AbortSignal; readonly launch?: boolean }): Promise<unknown> {
 		const selector = String(input.sessionId ?? "");
 		const sessionId = await this.resolveTarget(selector);
 		if (typeof input.replyTo === "string") input = { ...input, replyTo: await this.resolveTarget(input.replyTo) };
@@ -666,12 +668,12 @@ export class AgentManager {
 			this.recoveryErrors.delete(record.storageId);
 			this.failures.delete(record.storageId);
 		}
-		return this.selectedControl(record, method, params, caller, selector, options?.signal);
+		return this.selectedControl(record, method, params, caller, selector, options?.signal, options?.launch ?? true);
 	}
 
-	private async selectedControl(record: CatalogRecord, method: string, params: Record<string, unknown>, caller: AgentCaller, selector: string, signal?: AbortSignal): Promise<unknown> {
+	private async selectedControl(record: CatalogRecord, method: string, params: Record<string, unknown>, caller: AgentCaller, selector: string, signal: AbortSignal | undefined, launch: boolean): Promise<unknown> {
 		if (method === "release") return this.releaseControl(record, params, caller);
-		try { return await this.controlClient(await this.connection(record), method, params, caller, signal); }
+		try { return await this.controlClient(await this.connection(record, undefined, launch), method, params, caller, signal); }
 		catch (error) {
 			if (method !== "configure" || !selector.startsWith("@")) throw error;
 			throw new Error(`Configure of ${String(params.sessionId)} (${selector}) failed: ${errorText(error)}`, { cause: error });

@@ -596,8 +596,10 @@ reported for another size does nothing.
 Selected cost, usage and model facts follow the observation already open for
 the target. Each live frame refreshes the name, state, unplaced-input facts, model and
 reasoning level without rescanning the store. Model name, reasoning support and
-context window come from the host's `models` read once per selection; a model
-the host did not list shows its identifier without a context bar. When the
+context window come from the host's `models` read once per selection. The read
+uses a running host, or a launch the same manager already owns, and never starts
+one; with no running host, and for a model the host did not list, the status
+line shows the model identifier without a context bar. When the
 observation is lost, the last facts stay on screen under a warning.
 
 Owner tool cards come from a presentation-only module each owning extension

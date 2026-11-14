@@ -117,3 +117,9 @@ test("terminal closure awaits roster disposal after borrowed reads and leaves an
 	await other.close();
 	assert.deepEqual(copies(), []);
 });
+
+test("a control without launch uses only a running host and never starts one", { timeout: 15000 }, async (t) => {
+	const { manager, record, root } = await fixture(t);
+	await assert.rejects(manager.control("models", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }, { launch: false }), /No live host/u);
+	await assert.rejects(manager.control("models", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }), /must not acquire a host/u, "the default still starts a host for an explicit control");
+});

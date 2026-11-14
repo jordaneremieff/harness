@@ -25,7 +25,7 @@ async function settle(condition: () => boolean, what = "the condition"): Promise
 }
 
 function fixture() {
-	const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
+	const calls: Array<{ method: string; input: Record<string, unknown>; launch?: boolean }> = [];
 	const observers = new Map<string, Parameters<TerminalManager["observeLive"]>[2]>();
 	let closes = 0;
 	let releases = 0;
@@ -33,8 +33,8 @@ function fixture() {
 	const responses = new Map<string, unknown>();
 	const manager: TerminalManager = {
 		resolveTarget: async (id) => (id === "@one" ? "a" : id),
-		control: async (method, input) => {
-			calls.push({ method, input });
+		control: async (method, input, _caller, options) => {
+			calls.push({ method, input, ...(options?.launch === undefined ? {} : { launch: options.launch }) });
 			if (responses.has(method)) return responses.get(method);
 			if (method === "submit") return admission();
 			return {};
@@ -285,7 +285,7 @@ it("model metadata comes from the selected host's model list, read once per sele
 	assert.deepEqual(f.controller.modelInfo("test", "model"), { name: "Test model", reasoning: true, contextWindow: 200000 });
 	assert.equal(f.controller.modelInfo("test", "other")?.name, "Other model");
 	assert.equal(f.controller.modelInfo("test", "unlisted"), undefined, "a model the host did not list stays unknown");
-	assert.equal(f.calls.filter((call) => call.method === "models").length, 1);
+	assert.deepEqual(f.calls.filter((call) => call.method === "models").map((call) => call.launch), [false], "selection reads the model list without starting a host");
 	f.controller.select("b");
 	assert.equal(f.controller.modelInfo("test", "model"), undefined, "the previous host's list is gone at once");
 	await f.controller.close();

@@ -173,7 +173,7 @@ export class TerminalController {
 	private async loadModels(id: string): Promise<Map<string, AgentModelInfo>> {
 		const catalog = new Map<string, AgentModelInfo>();
 		try {
-			const read = await this.manager.control("models", { sessionId: id }, this.caller);
+			const read = await this.manager.control("models", { sessionId: id }, this.caller, { launch: false });
 			if (!matchesSchema(ModelChoicesSchema, read)) return catalog;
 			for (const model of read.models)
 				if (model.contextWindow !== undefined) catalog.set(`${model.provider}/${model.modelId}`, { name: model.name ?? model.modelId, reasoning: model.reasoning, contextWindow: model.contextWindow });
