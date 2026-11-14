@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { ORDINARY_CONTINUE_TEXT, ORDINARY_NOTE_CHARS, ORDINARY_TEXT_ANSWER, ORDINARY_TEXT_REFUSED, ORDINARY_TEXT_REQUESTS, ORDINARY_WORK_DESCRIPTION, OrdinaryWorkParams, registerOrdinaryWork } from "./ordinary-work.ts";
+import { ORDINARY_COMPLETE_ANSWER, ORDINARY_COMPLETE_ANSWER_TYPE, ORDINARY_CONTINUE_TEXT, ORDINARY_NOTE_CHARS, ORDINARY_TEXT_ANSWER, ORDINARY_TEXT_REFUSED, ORDINARY_TEXT_REQUESTS, ORDINARY_WORK_DESCRIPTION, OrdinaryWorkParams, registerOrdinaryWork } from "./ordinary-work.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { ordinaryWorkCard } from "./tool-cards.ts";
 
@@ -13,18 +13,33 @@ function only<T extends object>(members: T, name: string): T {
 	return new Proxy(members, { get: (target, key) => { if (key in target) return target[key as keyof T]; throw new Error(`${name} must not use ${String(key)}`); } });
 }
 
-function fixture(mode = "tui", entries: unknown[] = []) {
+type Handler = (event: unknown, ctx: unknown) => unknown;
+
+function fixture(mode = "tui") {
 	let tool: ToolDefinition | undefined;
+	const handlers = new Map<string, Handler>();
 	const card = ordinaryWorkCard();
-	registerOrdinaryWork(only({ registerTool: (definition: ToolDefinition) => { tool = definition; } }, "the registration") as unknown as ExtensionAPI, card);
+	const registration = { registerTool: (definition: ToolDefinition) => { tool = definition; }, on: (name: string, handler: Handler) => { handlers.set(name, handler); return () => {}; } };
+	registerOrdinaryWork(only(registration, "the registration") as unknown as ExtensionAPI, card);
 	assert.ok(tool);
 	const registered = tool;
 	assert.equal(registered.renderCall, card.renderCall, "the registered renderers are the caller's card references");
 	assert.equal(registered.renderResult, card.renderResult);
 	let aborts = 0;
-	const context = only({ mode, sessionManager: { getBranch: () => entries }, abort: () => { aborts++; } }, "the tool") as unknown as ExtensionContext;
-	return { tool: registered, aborts: () => aborts, run: (input: unknown) => registered.execute("call", input as never, undefined, undefined, context as never) };
+	const context = only({ mode, abort: () => { aborts++; } }, "the tool") as unknown as ExtensionContext;
+	return {
+		tool: registered,
+		aborts: () => aborts,
+		run: (input: unknown) => registered.execute("call", input as never, undefined, undefined, context as never),
+		/** A message that the agent loop delivers. */
+		deliver: (message: Record<string, unknown>) => handlers.get("message_end")?.({ type: "message_end", message }, context),
+		settle: () => handlers.get("agent_before_settle")?.({ type: "agent_before_settle", entries: [], continue: false }, context),
+	};
 }
+
+const USER = { role: "user", content: [{ type: "text", text: "Review it." }] };
+const COMPLETION = { role: "custom", customType: "jobs.completion", content: "Background job finished." };
+const text = (value: string) => ({ role: "assistant", stopReason: "stop", content: [{ type: "text", text: value }] });
 
 it("continues a print or JSON run to a text answer, because its output is its last text message", async () => {
 	const note = "The review finished; its findings are in the answer above.";
@@ -40,29 +55,70 @@ it("continues a print or JSON run to a text answer, because its output is its la
 
 it("never ends a print run in the call, and stops a run that calls it again after two reminders since the latest input", async () => {
 	const note = "Nothing remains.";
-	const user = { type: "message", message: { role: "user", content: [{ type: "text", text: "Review it." }] } };
-	const answer = { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Findings: none." }, { type: "toolCall", name: "agent_work" }] } };
-	const silent = { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "done" }, { type: "toolCall", name: "agent_work" }] } };
-	const asked = { type: "message", message: { role: "toolResult", toolName: "agent_work", content: [{ type: "text", text: ORDINARY_TEXT_ANSWER }] } };
-	const completion = { type: "custom_message", customType: "jobs.completion" };
-	const reminded = async (mode: string, entries: unknown[]) => {
-		const f = fixture(mode, entries);
-		const result = await f.run({ action: "continue", note });
-		assert.equal(f.aborts(), 0);
-		assert.notEqual(result.terminate, true);
-		return result.content;
-	};
-	assert.deepEqual(await reminded("print", [user, answer]), [{ type: "text", text: ORDINARY_TEXT_ANSWER }], "text in the call's own message is not printed, so the call still asks");
-	assert.deepEqual(await reminded("json", [user, silent, asked, silent]), [{ type: "text", text: ORDINARY_TEXT_ANSWER }], "a second reminder");
-	assert.deepEqual(await reminded("print", [asked, asked, user, silent]), [{ type: "text", text: ORDINARY_TEXT_ANSWER }], "a user message starts a new count");
-	assert.deepEqual(await reminded("print", [user, silent, asked, silent, asked, completion, silent]), [{ type: "text", text: ORDINARY_TEXT_ANSWER }], "a custom message starts a new count");
-
+	const reminder = [{ type: "text", text: ORDINARY_TEXT_ANSWER }];
 	for (const mode of ["print", "json"]) {
-		const f = fixture(mode, [user, silent, asked, silent, asked, silent]);
+		const f = fixture(mode);
+		f.deliver(USER);
+		assert.deepEqual((await f.run({ action: "continue", note })).content, reminder, `${mode}: the first reminder`);
+		assert.deepEqual((await f.run({ action: "continue", note })).content, reminder, `${mode}: a second reminder`);
 		await assert.rejects(f.run({ action: "continue", note }), (error: Error) => error.message === ORDINARY_TEXT_REFUSED, mode);
 		assert.equal(f.aborts(), 1, `${mode}: a further call aborts the run`);
 	}
+
+	const f = fixture("print");
+	f.deliver(USER);
+	await f.run({ action: "continue", note });
+	await f.run({ action: "continue", note });
+	f.deliver(USER);
+	assert.deepEqual((await f.run({ action: "continue", note })).content, reminder, "a user message starts a new count");
+	await f.run({ action: "continue", note });
+	f.deliver(COMPLETION);
+	assert.deepEqual((await f.run({ action: "continue", note })).content, reminder, "a delivered custom message starts a new count");
+	await f.run({ action: "continue", note });
+	f.deliver({ role: "custom", customType: ORDINARY_COMPLETE_ANSWER_TYPE, content: ORDINARY_COMPLETE_ANSWER });
+	await assert.rejects(f.run({ action: "continue", note }), (error: Error) => error.message === ORDINARY_TEXT_REFUSED, "the extension's own request is not an input");
+	assert.equal(f.aborts(), 1);
 	assert.equal(ORDINARY_TEXT_REQUESTS, 2);
+});
+
+it("asks once more for the complete answer when an input arrives after the answer of a print or JSON run", async () => {
+	const request = { entries: [{ type: "custom_message", customType: ORDINARY_COMPLETE_ANSWER_TYPE, content: ORDINARY_COMPLETE_ANSWER, display: false }], continue: true };
+	for (const mode of ["print", "json"]) {
+		const f = fixture(mode);
+		f.deliver(USER);
+		f.deliver(text("Report: three findings."));
+		f.deliver(COMPLETION);
+		f.deliver(text("The job finished."));
+		assert.deepEqual(f.settle(), request, `${mode}: the reply to the completion alone would be printed`);
+		f.deliver(text("Report: three findings. The job finished."));
+		assert.equal(f.settle(), undefined, `${mode}: one request for each later input`);
+	}
+
+	const first = fixture("print");
+	first.deliver(USER);
+	first.deliver(COMPLETION);
+	first.deliver(text("The job finished."));
+	assert.equal(first.settle(), undefined, "an input before the first answer needs no restatement");
+
+	const reminded = fixture("print");
+	reminded.deliver(USER);
+	reminded.deliver(text("Report."));
+	reminded.deliver(COMPLETION);
+	await reminded.run({ action: "continue", note: "Done." });
+	reminded.deliver(text("Report. The job finished."));
+	assert.equal(reminded.settle(), undefined, "the reminder already asked for the complete answer");
+
+	const failed = fixture("print");
+	failed.deliver(USER);
+	failed.deliver({ role: "assistant", stopReason: "error", content: [{ type: "text", text: "partial" }] });
+	failed.deliver(COMPLETION);
+	assert.equal(failed.settle(), undefined, "an error is no answer");
+
+	const interactive = fixture("tui");
+	interactive.deliver(USER);
+	interactive.deliver(text("Report."));
+	interactive.deliver(COMPLETION);
+	assert.equal(interactive.settle(), undefined, "an operator reads the whole interactive transcript");
 });
 
 it("ends the turn in continue and keeps the note nowhere outside the call", async () => {
@@ -71,7 +127,7 @@ it("ends the turn in continue and keeps the note nowhere outside the call", asyn
 	const result = await f.run({ action: "continue", note });
 	assert.equal(result.terminate, true, "no model request follows the only call of its batch");
 	assert.deepEqual(result.content, [{ type: "text", text: ORDINARY_CONTINUE_TEXT }]);
-	assert.deepEqual(result.details, { action: "continue", note }, "no widget, no session entry and no event hook: the context and the API stay unused");
+	assert.deepEqual(result.details, { action: "continue", note }, "no widget and no session entry: the interactive call leaves the context unused");
 	assert.deepEqual((result as { structuredContent?: unknown }).structuredContent, result.details);
 	assert.equal((await f.run({ action: "continue", note: "One result is in; one worker still runs." })).terminate, true, "each call stands alone");
 

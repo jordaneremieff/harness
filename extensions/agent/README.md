@@ -1862,15 +1862,25 @@ In those modes `continue` never ends the turn. Its result asks for one text
 message, with no tool call, that states the complete final answer, including
 results written earlier in the run.
 
-The tool gives at most two such reminders per input on the current branch; a
-user message or a custom message, such as a job completion, starts a new
-count. A further call after two reminders fails with an error result that says
+The tool gives at most two such reminders per input, also to parallel calls in
+one message. An input is a message that the agent loop delivers (Pi's
+`message_end` event): a user message, or a custom message such as a job
+completion. Context-only messages that Pi appends without the loop, such as
+notes that tools leave for the model, are not inputs and start no new count.
+A further call after two reminders fails with an error result that says
 why, and aborts the run. The aborted turn ends in an aborted assistant message
 without another provider request, so text print mode prints no answer, writes
 the reason and then the abort on stderr, and exits 1; the session file keeps
-the error result. JSON mode streams
-the reminders, the error result and the aborted message as events and exits 0,
-as it does for every run.
+the error result. JSON mode streams the reminders, the error result and the
+aborted message as events and exits 0, as it does for every run.
+
+An input can also arrive after the run already answered, for example the
+completion of a background job that the run started. The reply to it would then
+be printed alone. When such an input arrived and no reminder followed it, the
+extension appends one context-only custom message at `agent_before_settle`
+(`agent-work-complete-answer`) that asks for the complete final answer with the
+results written before that input, and requests one more model turn. It asks
+once for each such input.
 
 The card of the call in the transcript is the only display of the note. It
 shows `agent_work`, then the note with collapsed white space, wrapped on at

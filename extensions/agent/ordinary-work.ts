@@ -41,22 +41,70 @@ export const ORDINARY_TEXT_REQUESTS = 2;
 
 export const ORDINARY_TEXT_REFUSED = `agent_work was called again after ${ORDINARY_TEXT_REQUESTS} requests for a text answer, so this run stops without an answer.`;
 
-type Entry = { type?: unknown; message?: { role?: unknown; toolName?: unknown; content?: unknown } };
+/** Custom message type of the request to state the complete answer again after a later input. */
+export const ORDINARY_COMPLETE_ANSWER_TYPE = "agent-work-complete-answer";
 
-/** The requests for a text answer since the latest user or custom message, which starts a new count. */
-function textRequests(entries: readonly Entry[]): number {
-	let count = 0;
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index];
-		if (entry?.type === "custom_message" || (entry?.type === "message" && entry.message?.role === "user")) break;
-		const message = entry?.type === "message" ? entry.message : undefined;
-		if (message?.role === "toolResult" && message.toolName === "agent_work" && Array.isArray(message.content) && message.content.some((part: { text?: unknown }) => part?.text === ORDINARY_TEXT_ANSWER)) count++;
-	}
-	return count;
+export const ORDINARY_COMPLETE_ANSWER = "This run prints only its last text message, and a message arrived after your answer. End the run with one text message, with no tool call, that states your complete final answer, including the results that you wrote before that message.";
+
+type Delivered = { role?: unknown; customType?: unknown; content?: unknown; stopReason?: unknown };
+
+function hasText(content: unknown): boolean {
+	return Array.isArray(content) && content.some((part: { type?: unknown; text?: unknown }) => part?.type === "text" && typeof part.text === "string" && part.text.trim().length > 0);
 }
 
+/**
+ * The answer state of a print or JSON run, kept from the messages that the agent loop delivers. A user message
+ * or a delivered custom message, such as a background job's completion, is an input. Pi appends context-only
+ * messages, such as notes that tools leave for the model, without the loop, so they are not inputs.
+ */
+export class PrintAnswer {
+	private reminders = 0;
+	private answered = false;
+	private laterInput = false;
+
+	delivered(message: Delivered): void {
+		if (message.role === "user") {
+			this.reminders = 0;
+			this.answered = false;
+			this.laterInput = false;
+		} else if (message.role === "custom" && message.customType !== ORDINARY_COMPLETE_ANSWER_TYPE) {
+			this.reminders = 0;
+			if (this.answered) this.laterInput = true;
+		} else if (message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted" && hasText(message.content)) {
+			this.answered = true;
+		}
+	}
+
+	/** Counts one reminder of the current input; false when the input has had all its reminders. */
+	remind(): boolean {
+		if (this.reminders >= ORDINARY_TEXT_REQUESTS) return false;
+		this.reminders += 1;
+		// The reminder itself asks for the complete answer, including earlier results.
+		this.laterInput = false;
+		return true;
+	}
+
+	/** True once after an input that arrived when the run had already answered, so the printed answer can be partial. */
+	restate(): boolean {
+		const due = this.laterInput;
+		this.laterInput = false;
+		return due;
+	}
+}
+
+const machineMode = (mode: unknown) => mode === "print" || mode === "json";
+
 /** Register the ordinary `agent_work`. The caller owns `card`, so the registered renderers are the same references that it publishes for display. */
-export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool">, card: AgentToolCard): void {
+export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool" | "on">, card: AgentToolCard): void {
+	let answer = new PrintAnswer();
+	pi.on("session_start", () => { answer = new PrintAnswer(); });
+	pi.on("message_end", (event, ctx) => { if (machineMode(ctx.mode)) answer.delivered(event.message as Delivered); });
+	// An input after the answer, such as a job completion, gets a reply that print mode would print alone; the run
+	// states its complete answer once more before it settles.
+	pi.on("agent_before_settle", (event, ctx) => {
+		if (!machineMode(ctx.mode) || !answer.restate()) return undefined;
+		return { entries: [...event.entries, { type: "custom_message", customType: ORDINARY_COMPLETE_ANSWER_TYPE, content: ORDINARY_COMPLETE_ANSWER, display: false }], continue: true };
+	});
 	pi.registerTool({
 		name: "agent_work",
 		label: "Agent work",
@@ -67,8 +115,8 @@ export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool">, car
 		async execute(_callId, input: Static<typeof OrdinaryWorkParams>, _signal, _update, ctx) {
 			if (!matchesSchema(OrdinaryWorkParams, input)) throw new Error("agent_work takes action continue and a note");
 			const details: OrdinaryWorkDetails = { action: "continue", note: input.note };
-			if (ctx.mode === "print" || ctx.mode === "json") {
-				if (textRequests(ctx.sessionManager.getBranch() as readonly Entry[]) >= ORDINARY_TEXT_REQUESTS) {
+			if (machineMode(ctx.mode)) {
+				if (!answer.remind()) {
 					// The aborted run ends in an aborted assistant message, which text print mode reports on stderr with exit code 1.
 					if (ctx.mode === "print") process.stderr.write(`${ORDINARY_TEXT_REFUSED}\n`);
 					ctx.abort();

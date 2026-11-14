@@ -23,7 +23,7 @@ function latestJob(context: TranscriptContext): Job | undefined {
 }
 
 function completionArrived(context: TranscriptContext, id: string): boolean {
-	return context.messages.some((message) => message.role === "user" && (typeof message.content === "string" ? [message.content] : message.content.flatMap((part) => part.type === "text" ? [part.text] : [])).some((value) => value.startsWith(`Background job ${id} `)));
+	return context.messages.some((message) => message.role === "user" && (typeof message.content === "string" ? [message.content] : message.content.flatMap((part) => part.type === "text" ? [part.text] : [])).some((value) => value.includes(id)));
 }
 
 it("prints the answer to a background job's completion that arrives after an earlier text report", { timeout: 90000 }, async () => {

@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { TranscriptContext } from "@earendil-works/pi-ai";
-import { ORDINARY_TEXT_ANSWER, ORDINARY_TEXT_REFUSED } from "./ordinary-work.ts";
+import { ORDINARY_COMPLETE_ANSWER, ORDINARY_TEXT_ANSWER, ORDINARY_TEXT_REFUSED } from "./ordinary-work.ts";
 import { call, lastWorkResult, printRun, text, work } from "./print-run-fixture.mts";
 import { FOLLOW_UP_TEXT } from "./testdata/print-run/follow-up.ts";
 
@@ -78,6 +78,34 @@ it("prints the answer to a follow-up that arrives after an earlier text report",
 		},
 	});
 	assert.deepEqual({ stdout: run.stdout, stderr: run.stderr, code: run.code, requests: run.requests.length }, { stdout: "The check passed: 42 files.\n", stderr: "", code: 0, requests: 4 });
+});
+
+it("asks for the complete answer again when a follow-up after the report gets a short reply, and prints it", { timeout }, async () => {
+	const complete = "Report: three findings. The check passed: 42 files.";
+	for (const mode of ["text", "json"] as const) {
+		const run = await printRun({
+			mode, prompt: "Run the check and report.", extensions: [followUpExtension],
+			script: (context, index) => {
+				if (index === 0) return call("fixture_background", {});
+				if (index === 1) return text("Report: three findings.");
+				if (index === 2) {
+					assert.equal(inputTexts(context).at(-1), FOLLOW_UP_TEXT, "the follow-up starts the next turn");
+					return text("The check passed.");
+				}
+				assert.equal(inputTexts(context).at(-1), ORDINARY_COMPLETE_ANSWER, "the run asks for its complete answer before it settles");
+				return index === 3 ? text(complete) : undefined;
+			},
+		});
+		assert.equal(run.requests.length, 4, mode);
+		assert.equal(run.code, 0, mode);
+		if (mode === "text") assert.deepEqual({ stdout: run.stdout, stderr: run.stderr }, { stdout: `${complete}\n`, stderr: "" });
+		else {
+			const stream = events(run.stdout);
+			assert.equal(stream.filter((event) => event.type === "agent_end").length, 2, "the request for the complete answer starts one more agent run");
+			const last = stream.findLast((event) => event.type === "message_end" && event.message?.role === "assistant")?.message;
+			assert.deepEqual(last?.content, [{ type: "text", text: complete }]);
+		}
+	}
 });
 
 it("ends a JSON stream with the final text message when agent_work follows text", { timeout }, async () => {
