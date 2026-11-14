@@ -695,6 +695,11 @@ it("requires action-specific public fields and rejects discussion bodies on join
 		{ action: "close", threadId },
 	];
 	for (const args of invalid) assert.throws(() => validate(args));
+	assert.throws(
+		() => validate({ action: "join", threadId, message: "Hidden discussion" }),
+		{ message: "message is not valid for action join; join accepts threadId, participation, source" },
+		"the refusal names the fields that the action accepts",
+	);
 	const valid: Parameters<typeof validateToolArguments>[1]["arguments"][] = [
 		{ action: "create", ...frame, participation: "" },
 		{ action: "join", threadId },

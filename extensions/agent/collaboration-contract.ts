@@ -66,7 +66,7 @@ export function validateCollaborationAction(input: Record<string, unknown>): voi
 	const fields = typeof input.action === "string" && Object.hasOwn(actionFields, input.action) ? actionFields[input.action] : undefined;
 	if (!fields) throw new CollaborationReadError("invalid_request", "Unknown collaboration action");
 	const allowed = new Set(["action", "senderIdentity", "origin", "requestId", "ownerId", "sessionId", "cwd", ...fields]);
-	for (const key of Object.keys(input)) if (!allowed.has(key)) throw new CollaborationReadError("invalid_request", `${key} is not valid for action ${input.action}`);
+	for (const key of Object.keys(input)) if (!allowed.has(key)) throw new CollaborationReadError("invalid_request", `${key} is not valid for action ${input.action}; ${input.action} accepts ${fields.join(", ")}`);
 	validateActionText(input);
 	const publicInput = Object.fromEntries(Object.entries(input).filter(([key]) => key === "action" || fields.includes(key)));
 	if (!matchesSchema(CollaborationActionParams, publicInput)) throw new CollaborationReadError("invalid_request", `Invalid fields or selector combinations for action ${input.action}`);

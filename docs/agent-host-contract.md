@@ -978,7 +978,7 @@ text. Native reader messages include:
 | `after` and `before` both present | `after and before are exclusive` |
 | `knownFrameRevision` without `after` | `knownFrameRevision requires after` |
 | `after` above `sequence`, or `knownFrameRevision` above `revision` | `after and knownFrameRevision must not exceed the retained sequence and revision` |
-| a member outside the selected operation's field set | `<member> is not valid for action <action>` |
+| a member outside the selected operation's field set | `<member> is not valid for action <action>; <action> accepts <fields>` |
 | a value or selector combination outside the closed forms | `Invalid fields or selector combinations for action <action>` |
 | `action` present and different from the operation | `Thread read requires action read` or `Thread list requires action list` |
 | page metadata and one event exceed 48 KiB | `Thread event and read metadata exceed the page byte bound; no progress is claimed` |

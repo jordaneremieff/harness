@@ -2285,7 +2285,8 @@ Each action accepts only its own fields. The registered parameters stay one
 object with every field optional, so the declaration survives provider schema
 conversion; execution then validates the selected action's closed field set.
 A field of another action refuses with `<field> is not valid for action
-<action>`, and an invalid value or selector combination refuses with `Invalid
+<action>; <action> accepts <fields>`, which lists that action's public fields,
+and an invalid value or selector combination refuses with `Invalid
 fields or selector combinations for action <action>`.
 
 `read` has two directions. Without `after`, it returns the current frame,
