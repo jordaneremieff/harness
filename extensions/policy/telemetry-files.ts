@@ -4,7 +4,7 @@
  * report them and how to stop admission.
  */
 
-import { constants } from "node:fs";
+import { closeSync, constants, fstatSync, linkSync, lstatSync, openSync, unlinkSync } from "node:fs";
 import { chmod, type FileHandle, lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
@@ -12,7 +12,13 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { PolicyRecord } from "./record.ts";
 
 export const TELEMETRY_DIRECTORY = "telemetry";
-export const TELEMETRY_LOCK_FILE = ".telemetry-lock";
+/** Persistent lock file. A writer owns exclusion through an open descriptor lock on it. */
+export const TELEMETRY_LOCK_FILE = ".telemetry-writer.lock";
+/**
+ * Name that writers of earlier releases create exclusively and remove after each batch. A writer
+ * of this module holds a hard link to the persistent lock under this name while it appends.
+ */
+export const TELEMETRY_LEGACY_LOCK_FILE = ".telemetry-lock";
 export const TELEMETRY_SEGMENT_BYTES = 32 * 1024 * 1024;
 export const TELEMETRY_INVENTORY_ENTRIES = 512;
 export const TELEMETRY_QUEUE_RECORDS = 512;
@@ -25,8 +31,10 @@ export const TELEMETRY_DEFAULT_MAX_AGE_DAYS = 30;
 
 const LOCK_WAIT_MS = 500;
 const LOCK_RETRY_MS = 25;
-/** Bounds the owner note read from a held lock; the note this module writes is far smaller. */
+/** Bounds the owner note read from a lock file of an earlier release, and the persistent lock's size. */
 const LOCK_NOTE_BYTES = 256;
+/** `open(2)` on macOS takes a flock-style exclusive lock atomically with this flag. */
+const O_EXLOCK = 0x20;
 const DAY_MS = 86_400_000;
 const SEGMENT_NAME = /^(\d{4}-\d{2}-\d{2})\.(\d{6})\.jsonl$/;
 
@@ -42,13 +50,39 @@ export interface TelemetrySegment {
 	readonly size: number;
 }
 
+/** Cumulative recovery counts of one writer. */
+export interface TelemetryRecovery {
+	/** Times persistence stopped after a failed append. */
+	readonly stops: number;
+	/** Times a completed append ended a stop. */
+	readonly resumes: number;
+	/** Locks left by a stopped writer that this writer proved stale and took over. */
+	readonly staleLocks: number;
+}
+
 export interface TelemetryHealth {
+	/**
+	 * `ok`: the latest batch reached storage. `pressure`: records dropped at a queue bound or behind
+	 * a held lock. `failed`: an append failed and admission is stopped until `retryAt`.
+	 */
 	readonly state: "ok" | "pressure" | "failed";
+	/** Records that did not reach storage, and their serialised bytes. */
 	readonly lostRecords: number;
 	readonly lostBytes: number;
+	/**
+	 * Records of batches that failed after bytes may have reached storage. Each may be stored,
+	 * truncated or absent, and none is written again. Absent while zero.
+	 */
+	readonly uncertainRecords?: number;
+	readonly uncertainBytes?: number;
+	/** The failure that stopped persistence, while the state is `failed`. */
 	readonly reason?: string;
 	/** Evidence about the held lock while the writer is in pressure from lock contention. */
 	readonly lock?: TelemetryLockHolder;
+	/** Time from which a stopped writer admits a record and tries to write again. */
+	readonly retryAt?: string;
+	/** Absent until the writer stops or takes over a lock for the first time. */
+	readonly recovery?: TelemetryRecovery;
 }
 
 export interface TelemetryWriter {
@@ -58,15 +92,19 @@ export interface TelemetryWriter {
 }
 
 /**
- * Evidence about a held telemetry lock. A writer of this module notes its process in the lock
- * after it acquires it; a lock without that note comes from an older writer, or from a writer
- * between creation and note. The note is diagnostic only: no writer removes a lock because of it.
+ * Evidence about a held telemetry lock. Age, the noted process and its liveness are diagnostic
+ * only: no writer removes a lock because of them.
  */
 export interface TelemetryLockHolder {
 	/** Lock path relative to the policy directory. */
 	readonly path: string;
-	/** Time since the lock file last changed. */
-	readonly ageMs: number;
+	/**
+	 * `live`: the kernel reports a descriptor lock, so a running writer holds it. `uncertain`: a
+	 * lock file of an earlier release exists; its writer may run or may have stopped.
+	 */
+	readonly ownership: "live" | "uncertain";
+	/** Time since an `uncertain` lock file last changed. */
+	readonly ageMs?: number;
 	readonly pid?: number;
 	/** Whether the noted process runs on this host; absent when the lock names no process here. */
 	readonly running?: boolean;
@@ -90,9 +128,23 @@ export class TelemetryAcquisitionExpiredError extends Error {
 	}
 }
 
+/**
+ * The append failed after record bytes may have reached storage: a partial write, a later segment
+ * of the same batch, or lock release. The batch may be stored, truncated or absent, so a caller
+ * must not write it again. Every other rejection of an append means that no record byte was written.
+ */
+export class TelemetryUncertainAppendError extends Error {
+	constructor(cause: unknown) {
+		super(cause instanceof Error ? cause.message : String(cause), { cause });
+		this.name = "TelemetryUncertainAppendError";
+	}
+}
+
 export interface TelemetryAppendOptions {
 	/** Absolute monotonic deadline shared by a batch's acquisition attempts. */
 	readonly acquireUntil?: number;
+	/** Runs when this append takes over a lock that a stopped writer left. */
+	readonly onStaleLock?: () => void;
 	readonly hooks?: TelemetryFileHooks;
 }
 
@@ -103,7 +155,11 @@ export interface SerializedTelemetryRecord {
 	readonly bytes: number;
 }
 
-/** One bounded batch of admitted record bytes written to the telemetry store under its own lock. */
+/**
+ * One bounded batch of admitted record bytes written to the telemetry store under its own lock.
+ * A rejection with `TelemetryUncertainAppendError` means record bytes may have reached storage;
+ * any other rejection means none did.
+ */
 export type AppendTelemetry = (
 	dir: string,
 	records: readonly SerializedTelemetryRecord[],
@@ -248,50 +304,211 @@ async function privateDirectory(path: string): Promise<void> {
 		throw new Error(`policy telemetry path permissions are not private: ${path}`);
 }
 
-/** Inspect a held lock; a vanished file permits another attempt. A stale lock is never removed. */
-async function inspectLock(path: string, hooks: TelemetryFileHooks | undefined): Promise<boolean> {
+function errorCode(error: unknown): string | undefined {
+	return (error as NodeJS.ErrnoException | undefined)?.code;
+}
+
+function notRegularLock(path: string): Error {
+	return new Error(`policy telemetry lock is not a regular non-symlink file: ${path}`);
+}
+
+function foreignLock(path: string): Error {
+	return new Error(`policy telemetry lock is not owned by this user: ${path}`);
+}
+
+/** The descriptor lock that one writer holds on the persistent lock file. */
+interface HeldDescriptor {
+	readonly fd: number;
+	readonly dev: number;
+	readonly ino: number;
+}
+
+/**
+ * Take the descriptor lock in one nonblocking attempt; a lock that another descriptor holds
+ * returns undefined. The kernel releases the lock when its holder exits, so a held lock always
+ * has a running owner. The file is never written, truncated or removed.
+ */
+function openDescriptorLock(path: string, hooks: TelemetryFileHooks | undefined): HeldDescriptor | undefined {
+	if (process.platform !== "darwin") throw new Error("policy telemetry writes need the macOS descriptor lock");
+	let fd: number;
 	try {
-		const info = await lstat(path);
-		if (info.isSymbolicLink() || !info.isFile())
-			throw new Error(`policy telemetry lock is not a regular non-symlink file: ${path}`);
-		if (foreignOwner(path, info.uid, hooks))
-			throw new Error(`policy telemetry lock is not owned by this user: ${path}`);
-		return true;
+		fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | O_EXLOCK, 0o600);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
-		return false;
+		if (errorCode(error) === "EAGAIN") return undefined;
+		if (errorCode(error) === "ELOOP" || errorCode(error) === "EISDIR") throw notRegularLock(path);
+		throw error;
+	}
+	try {
+		const info = fstatSync(fd);
+		if (!info.isFile()) throw notRegularLock(path);
+		if (foreignOwner(path, info.uid, hooks)) throw foreignLock(path);
+		if ((info.mode & 0o077) !== 0) throw new Error(`policy telemetry lock permissions are not private: ${path}`);
+		if (info.size > LOCK_NOTE_BYTES) throw new Error(`policy telemetry lock exceeds ${LOCK_NOTE_BYTES} bytes: ${path}`);
+		const named = lstatSync(path);
+		if (!named.isFile() || named.dev !== info.dev || named.ino !== info.ino)
+			throw new Error(`policy telemetry lock changed during acquisition: ${path}`);
+		return { fd, dev: info.dev, ino: info.ino };
+	} catch (error) {
+		closeSync(fd);
+		throw error;
 	}
 }
 
-async function tryCreateLock(path: string): Promise<FileHandle | undefined> {
-	const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-	try {
-		return await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
-		return undefined;
-	}
-}
+type LegacyClaim = "claimed" | "recovered" | "held" | "vanished";
 
-/** Acquire the exclusive telemetry lock within a bounded wait, or throw without stealing it. */
-async function acquireLock(
-	path: string,
-	acquireUntil: number,
+/**
+ * Exclude writers of earlier releases by linking the persistent lock to the name that they create
+ * exclusively. Those writers only ever create a new file under that name. An entry there with the
+ * identity of the persistent lock was therefore linked by a writer of this protocol, and such a
+ * writer keeps the link only while it holds the descriptor lock. The caller holds that lock, so
+ * a matching entry was left by a stopped writer: the caller takes it over. An entry with any
+ * other identity may belong to a running writer and is left alone.
+ */
+function claimLegacyName(
+	held: HeldDescriptor,
+	lockPath: string,
+	legacyPath: string,
 	hooks: TelemetryFileHooks | undefined,
-): Promise<Awaited<ReturnType<typeof open>>> {
-	const deadline = Math.min(performance.now() + LOCK_WAIT_MS, acquireUntil);
-	let contended = false;
+): LegacyClaim {
+	try {
+		linkSync(lockPath, legacyPath);
+	} catch (error) {
+		if (errorCode(error) !== "EEXIST") throw error;
+		return inspectLegacyName(held, legacyPath, hooks);
+	}
+	const linked = lstatSync(legacyPath);
+	if (!linked.isFile() || linked.dev !== held.dev || linked.ino !== held.ino)
+		throw new Error(`policy telemetry lock changed during acquisition: ${legacyPath}`);
+	return "claimed";
+}
+
+/** Classify an existing entry under the legacy name without following or changing it. */
+function inspectLegacyName(
+	held: HeldDescriptor,
+	legacyPath: string,
+	hooks: TelemetryFileHooks | undefined,
+): Exclude<LegacyClaim, "claimed"> {
+	let info: ReturnType<typeof lstatSync>;
+	try {
+		info = lstatSync(legacyPath);
+	} catch (error) {
+		if (errorCode(error) === "ENOENT") return "vanished";
+		throw error;
+	}
+	if (info.isSymbolicLink() || !info.isFile()) throw notRegularLock(legacyPath);
+	if (info.dev === held.dev && info.ino === held.ino) return "recovered";
+	if (foreignOwner(legacyPath, info.uid, hooks)) throw foreignLock(legacyPath);
+	return "held";
+}
+
+/** Exclusion that one append holds against writers of this protocol and of earlier releases. */
+interface WriterLease {
+	/**
+	 * Compare the held descriptor with both lock names. A missing or changed name ends this lease:
+	 * every later call throws, and the lease removes nothing.
+	 */
+	assertHeld(): void;
+	/** Remove the legacy name after the same comparison, then release the descriptor lock. */
+	release(): void;
+}
+
+function writerLease(held: HeldDescriptor, lockPath: string, legacyPath: string): WriterLease {
+	let lost: Error | undefined;
+	const same = (inspect: () => { isFile(): boolean; dev: number; ino: number }): boolean => {
+		try {
+			const info = inspect();
+			return info.isFile() && info.dev === held.dev && info.ino === held.ino;
+		} catch {
+			return false;
+		}
+	};
+	const assertHeld = () => {
+		if (lost) throw lost;
+		const changed =
+			!same(() => fstatSync(held.fd)) || !same(() => lstatSync(lockPath))
+				? lockPath
+				: same(() => lstatSync(legacyPath))
+					? undefined
+					: legacyPath;
+		if (changed === undefined) return;
+		lost = new Error(`policy telemetry lock changed while held; refusing to continue or to remove ${changed}`);
+		throw lost;
+	};
+	return {
+		assertHeld,
+		release() {
+			try {
+				assertHeld();
+				unlinkSync(legacyPath);
+			} finally {
+				closeSync(held.fd);
+			}
+		},
+	};
+}
+
+/**
+ * One acquisition attempt. Returns the lease, the kind of holder that the attempt met, or
+ * undefined when the legacy name vanished during inspection and another attempt can run at once.
+ */
+function tryAcquire(
+	lockPath: string,
+	legacyPath: string,
+	options: TelemetryAppendOptions,
+): WriterLease | TelemetryLockHolder["ownership"] | undefined {
+	const held = openDescriptorLock(lockPath, options.hooks);
+	if (!held) return "live";
+	let claim: LegacyClaim;
+	try {
+		claim = claimLegacyName(held, lockPath, legacyPath, options.hooks);
+	} catch (error) {
+		closeSync(held.fd);
+		throw error;
+	}
+	if (claim === "held" || claim === "vanished") {
+		closeSync(held.fd);
+		return claim === "held" ? "uncertain" : undefined;
+	}
+	if (claim === "recovered") {
+		try {
+			options.onStaleLock?.();
+		} catch {
+			// Reporting has no persistence authority.
+		}
+	}
+	return writerLease(held, lockPath, legacyPath);
+}
+
+async function busyError(
+	ownership: TelemetryLockHolder["ownership"],
+	lockPath: string,
+	legacyPath: string,
+): Promise<TelemetryLockBusyError> {
+	if (ownership === "live")
+		return new TelemetryLockBusyError(lockPath, { path: `${TELEMETRY_DIRECTORY}/${TELEMETRY_LOCK_FILE}`, ownership });
+	return new TelemetryLockBusyError(legacyPath, await legacyHolder(legacyPath));
+}
+
+/**
+ * Acquire exclusion within a bounded wait, or throw. A held descriptor lock and a lock file of an
+ * earlier release are both waited on and never removed.
+ */
+async function acquireLease(dir: string, options: TelemetryAppendOptions): Promise<WriterLease> {
+	const lockPath = join(dir, TELEMETRY_LOCK_FILE);
+	const legacyPath = join(dir, TELEMETRY_LEGACY_LOCK_FILE);
+	const deadline = Math.min(performance.now() + LOCK_WAIT_MS, options.acquireUntil ?? Number.POSITIVE_INFINITY);
+	let contended: TelemetryLockHolder["ownership"] | undefined;
 	for (;;) {
 		if (performance.now() >= deadline) {
-			if (contended) throw new TelemetryLockBusyError(path, await lockHolder(path));
-			throw new TelemetryAcquisitionExpiredError(path);
+			if (contended) throw await busyError(contended, lockPath, legacyPath);
+			throw new TelemetryAcquisitionExpiredError(lockPath);
 		}
-		const handle = await tryCreateLock(path);
-		if (handle) return handle;
-		if (!(await inspectLock(path, hooks))) continue;
-		contended = true;
+		const attempt = tryAcquire(lockPath, legacyPath, options);
+		if (attempt === undefined) continue;
+		if (typeof attempt !== "string") return attempt;
+		contended = attempt;
 		const remaining = deadline - performance.now();
-		if (remaining <= 0) throw new TelemetryLockBusyError(path, await lockHolder(path));
+		if (remaining <= 0) throw await busyError(contended, lockPath, legacyPath);
 		await delay(Math.min(LOCK_RETRY_MS, remaining));
 	}
 }
@@ -301,58 +518,43 @@ function processRunning(pid: number): boolean {
 		process.kill(pid, 0);
 		return true;
 	} catch (error) {
-		return (error as NodeJS.ErrnoException)?.code === "EPERM";
+		return errorCode(error) === "EPERM";
 	}
 }
 
-/** Read a held lock's owner note without following links; any doubt yields less evidence, not an error. */
-async function lockHolder(path: string): Promise<TelemetryLockHolder | undefined> {
-	const relative = `${TELEMETRY_DIRECTORY}/${TELEMETRY_LOCK_FILE}`;
+/**
+ * Read the owner note of a lock file from an earlier release without following links. Any doubt
+ * yields less evidence, not an error. Nothing here proves that the owner stopped.
+ */
+async function legacyHolder(path: string): Promise<TelemetryLockHolder> {
+	const holder: { path: string; ownership: "uncertain"; ageMs?: number; pid?: number; running?: boolean } = {
+		path: `${TELEMETRY_DIRECTORY}/${TELEMETRY_LEGACY_LOCK_FILE}`,
+		ownership: "uncertain",
+	};
 	let handle: FileHandle | undefined;
 	try {
-		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-		handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | noFollow);
+		handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
 		const info = await handle.stat();
-		if (!info.isFile()) return undefined;
-		const holder: { path: string; ageMs: number; pid?: number; running?: boolean } = {
-			path: relative,
-			ageMs: Math.max(0, Math.round(Date.now() - info.mtimeMs)),
-		};
+		if (!info.isFile()) return holder;
+		holder.ageMs = Math.max(0, Math.round(Date.now() - info.mtimeMs));
 		const buffer = Buffer.alloc(LOCK_NOTE_BYTES);
 		const { bytesRead } = await handle.read(buffer, 0, LOCK_NOTE_BYTES, 0);
 		let note: { pid?: unknown; host?: unknown } = {};
 		try {
 			note = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8")) as typeof note;
 		} catch {
-			// An older writer's lock is empty; its age remains evidence.
+			// Some earlier writers create an empty lock; its age remains evidence.
 		}
 		if (typeof note.pid === "number" && Number.isSafeInteger(note.pid) && note.pid > 0) {
 			holder.pid = note.pid;
 			if (note.host === hostname()) holder.running = processRunning(note.pid);
 		}
-		return holder;
 	} catch {
-		return undefined;
+		// The lock may have gone, or it is not readable; the path alone remains evidence.
 	} finally {
 		await handle?.close().catch(() => {});
 	}
-}
-
-/** Note the owning process in a lock this writer holds. Older writers neither read nor need it. */
-async function noteLockOwner(handle: FileHandle): Promise<void> {
-	try {
-		await handle.write(`${JSON.stringify({ pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString() })}\n`, 0);
-	} catch {
-		// The note is diagnostic; a lock without it remains a valid lock.
-	}
-}
-
-async function releaseLock(handle: Awaited<ReturnType<typeof open>>, path: string): Promise<void> {
-	const owned = await handle.stat();
-	const current = await lstat(path);
-	if (current.dev !== owned.dev || current.ino !== owned.ino || current.isSymbolicLink() || !current.isFile())
-		throw new Error(`policy telemetry lock changed; refusing to remove ${path}`);
-	await unlink(path);
+	return holder;
 }
 
 /** Bytes one batch occupies in a segment: a leading newline, each record, and its newline. */
@@ -385,10 +587,19 @@ export interface TelemetryFileHooks {
 	readonly writeChunk?: (handle: FileHandle, bytes: Uint8Array) => Promise<number>;
 }
 
+/** State that one append shares with each segment operation under its lease. */
+interface AppendContext {
+	readonly hooks: TelemetryFileHooks | undefined;
+	/** Throws when the lease no longer names this writer's lock; runs before each namespace change. */
+	readonly assertHeld: () => void;
+	/** Set before the first record byte is offered to storage. */
+	wrote: boolean;
+}
+
 async function removeSegment(
 	dir: string,
 	entry: TelemetryInventoryEntry,
-	hooks: TelemetryFileHooks | undefined,
+	context: AppendContext,
 ): Promise<void> {
 	const path = join(dir, entry.name);
 	const info = await lstat(path);
@@ -397,10 +608,11 @@ async function removeSegment(
 		!info.isFile() ||
 		info.dev !== entry.dev ||
 		info.ino !== entry.ino ||
-		foreignOwner(path, info.uid, hooks)
+		foreignOwner(path, info.uid, context.hooks)
 	)
 		throw new Error(`policy telemetry segment changed after inspection: ${entry.name}`);
-	await (hooks?.unlinkSegment ?? unlink)(path);
+	context.assertHeld();
+	await (context.hooks?.unlinkSegment ?? unlink)(path);
 }
 
 interface SegmentFile {
@@ -414,7 +626,7 @@ async function appendSegment(
 	target: TelemetryInventoryEntry,
 	created: boolean,
 	batch: readonly SerializedTelemetryRecord[],
-	hooks: TelemetryFileHooks | undefined,
+	context: AppendContext,
 ): Promise<SegmentFile> {
 	const path = join(dir, target.name);
 	const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
@@ -422,6 +634,7 @@ async function appendSegment(
 		? constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NONBLOCK | noFollow
 		: constants.O_WRONLY | constants.O_APPEND | constants.O_NONBLOCK | noFollow;
 	const buffer = Buffer.from(`\n${batch.map((record) => record.json).join("\n")}\n`, "utf8");
+	context.assertHeld();
 	const handle = await open(path, flags, 0o600);
 	try {
 		const info = await handle.stat();
@@ -432,9 +645,10 @@ async function appendSegment(
 			throw new Error(`policy telemetry segment changed after inspection: ${target.name}`);
 		await handle.chmod(0o600);
 		let written = 0;
+		context.wrote = true;
 		while (written < buffer.length) {
-			const bytesWritten = hooks?.writeChunk
-				? await hooks.writeChunk(handle, buffer.subarray(written))
+			const bytesWritten = context.hooks?.writeChunk
+				? await context.hooks.writeChunk(handle, buffer.subarray(written))
 				: (await handle.write(buffer, written, buffer.length - written, null)).bytesWritten;
 			if (bytesWritten <= 0)
 				throw new Error(`policy record write stopped at ${written} of ${buffer.length} bytes`);
@@ -484,9 +698,9 @@ async function removeFromLedger(
 	dir: string,
 	ledger: Ledger,
 	victim: TelemetryInventoryEntry,
-	hooks: TelemetryFileHooks | undefined,
+	context: AppendContext,
 ): Promise<void> {
-	await removeSegment(dir, victim, hooks);
+	await removeSegment(dir, victim, context);
 	ledger.totalBytes -= victim.size;
 	ledger.entries = ledger.entries.filter((candidate) => candidate !== victim);
 }
@@ -499,14 +713,14 @@ async function applyRetention(
 	bytes: number,
 	kept: TelemetryInventoryEntry | undefined,
 	retention: TelemetryRetention,
-	hooks: TelemetryFileHooks | undefined,
+	context: AppendContext,
 ): Promise<void> {
 	const cutoff = retiredDay(day, retention.maxAgeDays);
-	for (const entry of [...ledger.entries]) if (entry.day < cutoff) await removeFromLedger(dir, ledger, entry, hooks);
+	for (const entry of [...ledger.entries]) if (entry.day < cutoff) await removeFromLedger(dir, ledger, entry, context);
 	while (ledger.totalBytes + bytes > retention.maxBytes) {
 		const victim = ledger.entries.find((entry) => entry !== kept);
 		if (!victim) break;
-		await removeFromLedger(dir, ledger, victim, hooks);
+		await removeFromLedger(dir, ledger, victim, context);
 	}
 	if (ledger.totalBytes + bytes > retention.maxBytes)
 		throw new Error(`policy telemetry byte budget cannot hold the next batch: ${retention.maxBytes} bytes`);
@@ -526,7 +740,7 @@ async function appendGroup(
 	day: string,
 	batch: readonly SerializedTelemetryRecord[],
 	retention: TelemetryRetention,
-	hooks: TelemetryFileHooks | undefined,
+	context: AppendContext,
 ): Promise<void> {
 	const bytes = batchBytes(batch);
 	if (bytes > TELEMETRY_SEGMENT_BYTES)
@@ -534,9 +748,9 @@ async function appendGroup(
 	const current = ledger.entries.filter((entry) => entry.day === day).at(-1);
 	const fits =
 		current !== undefined && current.size + bytes <= TELEMETRY_SEGMENT_BYTES && current.size + bytes <= retention.maxBytes;
-	await applyRetention(dir, ledger, day, bytes, fits ? current : undefined, retention, hooks);
+	await applyRetention(dir, ledger, day, bytes, fits ? current : undefined, retention, context);
 	if (fits && current) {
-		const file = await appendSegment(dir, current, false, batch, hooks);
+		const file = await appendSegment(dir, current, false, batch, context);
 		ledger.totalBytes += file.size - current.size;
 		ledger.entries = ledger.entries.map((entry) => (entry === current ? { ...entry, size: file.size } : entry));
 	} else {
@@ -551,7 +765,7 @@ async function appendGroup(
 			ino: 0,
 			unsafe: null,
 		};
-		const file = await appendSegment(dir, target, true, batch, hooks);
+		const file = await appendSegment(dir, target, true, batch, context);
 		ledger.totalBytes += file.size;
 		insertEntry(ledger, { ...target, size: file.size, dev: file.dev, ino: file.ino });
 	}
@@ -561,20 +775,22 @@ async function appendUnderLock(
 	policyDir: string,
 	groups: Map<string, SerializedTelemetryRecord[]>,
 	retention: TelemetryRetention,
-	hooks: TelemetryFileHooks | undefined,
+	context: AppendContext,
 ): Promise<void> {
-	const inventory = await readSafeInventory(policyDir, hooks);
-	await hooks?.afterInventory?.();
+	const inventory = await readSafeInventory(policyDir, context.hooks);
+	await context.hooks?.afterInventory?.();
 	const ledger: Ledger = { entries: [...inventory.entries], totalBytes: inventory.totalBytes };
 	const dir = telemetryDirectory(policyDir);
 	const ordered = [...groups].sort(([left], [right]) => left.localeCompare(right));
-	for (const [day, batch] of ordered) await appendGroup(dir, ledger, day, batch, retention, hooks);
+	for (const [day, batch] of ordered) await appendGroup(dir, ledger, day, batch, retention, context);
 }
 
 /**
  * Append one bounded batch of admitted record bytes to `<policyDir>/telemetry`. The telemetry lock
  * serialises rotation, retention and append across processes. Unrecognised names, symbolic links,
  * nonregular files, foreign-owned segments and segments whose identity changed are never removed.
+ * A failure after the first record byte was offered to storage rejects with
+ * `TelemetryUncertainAppendError`.
  */
 export async function appendSerializedTelemetryRecords(
 	policyDir: string,
@@ -583,31 +799,26 @@ export async function appendSerializedTelemetryRecords(
 	options: TelemetryAppendOptions = {},
 ): Promise<void> {
 	if (records.length === 0) return;
-	const hooks = options.hooks;
 	const bounded = validateTelemetryRetention(retention);
 	const groups = groupByDay(records);
 	await privateDirectory(policyDir);
 	const dir = telemetryDirectory(policyDir);
 	await privateDirectory(dir);
-	await hooks?.afterDirectoryPreparation?.();
-	const lockPath = join(dir, TELEMETRY_LOCK_FILE);
-	const handle = await acquireLock(lockPath, options.acquireUntil ?? Number.POSITIVE_INFINITY, hooks);
+	await options.hooks?.afterDirectoryPreparation?.();
+	const lease = await acquireLease(dir, options);
+	const context: AppendContext = { hooks: options.hooks, assertHeld: lease.assertHeld, wrote: false };
 	let failure: unknown;
 	try {
-		if (!(await handle.stat()).isFile()) throw new Error(`policy telemetry lock is not a regular file: ${lockPath}`);
-		await noteLockOwner(handle);
-		await appendUnderLock(policyDir, groups, bounded, hooks);
+		await appendUnderLock(policyDir, groups, bounded, context);
 	} catch (error) {
 		failure = error;
 	}
-	for (const finish of [() => releaseLock(handle, lockPath), () => handle.close()]) {
-		try {
-			await finish();
-		} catch (error) {
-			failure ??= error;
-		}
+	try {
+		lease.release();
+	} catch (error) {
+		failure ??= error;
 	}
-	if (failure !== undefined) throw failure;
+	if (failure !== undefined) throw context.wrote ? new TelemetryUncertainAppendError(failure) : failure;
 }
 
 /** Serialise each record once, then append the admitted bytes. */

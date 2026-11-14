@@ -11,7 +11,6 @@ import {
 	serializeTelemetryRecord,
 	TELEMETRY_BATCH_BYTES,
 	TELEMETRY_BATCH_RECORDS,
-	TELEMETRY_LOCK_FILE,
 	TELEMETRY_QUEUE_BYTES,
 	TELEMETRY_QUEUE_RECORDS,
 	TelemetryAcquisitionExpiredError,
@@ -19,6 +18,7 @@ import {
 	type TelemetryLockHolder,
 	TelemetryLockBusyError,
 	type TelemetryRetention,
+	TelemetryUncertainAppendError,
 	type TelemetryWriter,
 } from "./telemetry-files.ts";
 
@@ -66,18 +66,40 @@ export async function appendRecord(
 }
 
 const TELEMETRY_RETRY_BUDGET_MS = 2_000;
+/** Longest first wait before a stopped writer admits a record again. Each further failure doubles it. */
+export const TELEMETRY_RESUME_BASE_MS = 1_000;
+/** Longest wait between two write attempts of a stopped writer. */
+export const TELEMETRY_RESUME_MAX_MS = 300_000;
 
 /**
  * Bounded serial writer outside tool-result handlers. Accepted records are serialised once.
  * In-flight batches remain charged to the queue until written or discarded.
+ *
+ * A failed append stops admission for a bounded, growing wait instead of for the life of the
+ * process. The first record offered after the wait is admitted, and its append is the next
+ * attempt: the writer holds no timer, and it tries only as often as records arrive. Each attempt
+ * runs every safety check of an append before it writes, and repairs nothing. Only a completed
+ * append returns the state to `ok` and resets the wait.
  */
 export class PolicyWriter implements TelemetryWriter {
-	private accepting = true;
-	private discardQueued = false;
-	private currentHealth: TelemetryHealth = { state: "ok", lostRecords: 0, lostBytes: 0 };
+	private closing = false;
+	private state: TelemetryHealth["state"] = "ok";
+	private reason: string | undefined;
+	private lock: TelemetryLockHolder | undefined;
+	private lostRecords = 0;
+	private lostBytes = 0;
+	private uncertainRecords = 0;
+	private uncertainBytes = 0;
+	private stops = 0;
+	private resumes = 0;
+	private staleLocks = 0;
+	/** Failed appends since the latest completed one; selects the next wait. */
+	private failures = 0;
+	/** Monotonic time before which a stopped writer refuses records. */
+	private resumeAt: number | undefined;
+	private retryAt: string | undefined;
 	private lossSignalled = false;
 	private closeDeadline: number | undefined;
-	private retryAbort: AbortController | undefined;
 	private queuedBytes = 0;
 	private queuedRecords = 0;
 	private pending: SerializedTelemetryRecord[] = [];
@@ -100,32 +122,33 @@ export class PolicyWriter implements TelemetryWriter {
 	}
 
 	health(): TelemetryHealth {
-		return { ...this.currentHealth };
-	}
-
-	private lose(records: number, bytes: number): void {
-		this.currentHealth = {
-			...this.currentHealth,
-			lostRecords: this.currentHealth.lostRecords + records,
-			lostBytes: this.currentHealth.lostBytes + bytes,
+		return {
+			state: this.state,
+			lostRecords: this.lostRecords,
+			lostBytes: this.lostBytes,
+			...(this.uncertainRecords > 0
+				? { uncertainRecords: this.uncertainRecords, uncertainBytes: this.uncertainBytes }
+				: {}),
+			...(this.reason === undefined ? {} : { reason: this.reason }),
+			...(this.lock === undefined ? {} : { lock: this.lock }),
+			...(this.retryAt === undefined ? {} : { retryAt: this.retryAt }),
+			...(this.stops + this.staleLocks > 0
+				? { recovery: { stops: this.stops, resumes: this.resumes, staleLocks: this.staleLocks } }
+				: {}),
 		};
 	}
 
 	/**
-	 * Signals a state change, and once the first loss under unchanged pressure: a lock left
-	 * by a stopped process keeps the writer in pressure while every batch drops.
+	 * Signals a state change, and once the first loss under an unchanged state: a lock that
+	 * stays held keeps the writer in pressure while every batch drops.
 	 */
-	private state(state: TelemetryHealth["state"], reason?: string): void {
-		if (this.currentHealth.state === "failed") return;
-		const firstLoss = !this.lossSignalled && this.currentHealth.lostRecords > 0;
-		if (this.currentHealth.state === state && !firstLoss) return;
-		if (this.currentHealth.lostRecords > 0) this.lossSignalled = true;
-		const { lock: _lock, ...rest } = this.currentHealth;
-		this.currentHealth = {
-			...(state === "pressure" ? this.currentHealth : rest),
-			state,
-			...(reason === undefined ? {} : { reason }),
-		};
+	private transition(state: TelemetryHealth["state"]): void {
+		const lost = this.lostRecords + this.uncertainRecords > 0;
+		if (this.state === state && (this.lossSignalled || !lost)) return;
+		if (lost) this.lossSignalled = true;
+		if (state !== "pressure") this.lock = undefined;
+		if (state !== "failed") this.reason = undefined;
+		this.state = state;
 		try {
 			this.onStateChange(this.health());
 		} catch {
@@ -133,38 +156,46 @@ export class PolicyWriter implements TelemetryWriter {
 		}
 	}
 
-	/** Keep the latest held-lock evidence for the health view; recovery clears it. */
-	private noteLock(holder: TelemetryLockHolder | undefined): void {
-		if (this.currentHealth.state === "failed") return;
-		const { lock: _lock, ...rest } = this.currentHealth;
-		this.currentHealth = holder ? { ...rest, lock: holder } : rest;
-	}
-
-	private fail(reason: string): void {
-		if (this.currentHealth.state === "failed") return;
-		this.accepting = false;
-		this.discardQueued = true;
+	/** Discard the queue and refuse records until a bounded wait ends. Each failure doubles the wait. */
+	private stop(reason: string): void {
 		const bytes = this.pending.reduce((total, entry) => total + entry.bytes, 0);
-		this.releaseBatch(this.pending.length, bytes, true);
+		this.releaseBatch(this.pending.length, bytes, "lost");
 		this.pending = [];
-		this.retryAbort?.abort();
-		this.state("failed", reason);
+		if (this.state !== "failed") this.stops++;
+		const longest = Math.min(TELEMETRY_RESUME_MAX_MS, TELEMETRY_RESUME_BASE_MS * 2 ** Math.min(this.failures, 30));
+		this.failures++;
+		// Writers that failed together spread their next attempts over the second half of the wait.
+		const wait = longest * (0.5 + Math.random() / 2);
+		this.resumeAt = performance.now() + wait;
+		this.retryAt = new Date(Date.now() + wait).toISOString();
+		this.reason = reason;
+		this.transition("failed");
 	}
 
 	/** Queue telemetry only. Refusal never changes an approved policy decision. */
 	enqueue(record: PolicyRecord): boolean {
-		if (!this.accepting) return false;
+		if (this.closing) return false;
 		let admitted: SerializedTelemetryRecord;
 		try {
 			admitted = serializeTelemetryRecord(record);
-		} catch (error) {
-			this.lose(1, 0);
-			this.fail(errorMessage(error));
+		} catch {
+			this.lostRecords++;
+			this.transition(this.state);
 			return false;
 		}
+		if (this.resumeAt !== undefined) {
+			if (performance.now() < this.resumeAt) {
+				this.lostRecords++;
+				this.lostBytes += admitted.bytes;
+				return false;
+			}
+			this.resumeAt = undefined;
+			this.retryAt = undefined;
+		}
 		if (this.queuedRecords >= TELEMETRY_QUEUE_RECORDS || this.queuedBytes + admitted.bytes > TELEMETRY_QUEUE_BYTES) {
-			this.lose(1, admitted.bytes);
-			this.state("pressure");
+			this.lostRecords++;
+			this.lostBytes += admitted.bytes;
+			this.transition(this.state === "failed" ? "failed" : "pressure");
 			return false;
 		}
 		this.pending.push(admitted);
@@ -174,8 +205,14 @@ export class PolicyWriter implements TelemetryWriter {
 		return true;
 	}
 
-	private releaseBatch(records: number, bytes: number, lost = false): void {
-		if (lost) this.lose(records, bytes);
+	private releaseBatch(records: number, bytes: number, outcome?: "lost" | "uncertain"): void {
+		if (outcome === "lost") {
+			this.lostRecords += records;
+			this.lostBytes += bytes;
+		} else if (outcome === "uncertain") {
+			this.uncertainRecords += records;
+			this.uncertainBytes += bytes;
+		}
 		this.queuedBytes -= bytes;
 		this.queuedRecords -= records;
 	}
@@ -206,53 +243,59 @@ export class PolicyWriter implements TelemetryWriter {
 	private async backoff(started: number): Promise<void> {
 		const remaining = this.acquisitionDeadline(started) - performance.now();
 		const wait = Math.min(50 + Math.random() * 50, Math.max(0, remaining));
-		if (wait <= 0) return;
-		const abort = new AbortController();
-		this.retryAbort = abort;
-		try {
-			await delay(wait, undefined, { signal: abort.signal });
-		} catch (error) {
-			if (!abort.signal.aborted) throw error;
-		} finally {
-			this.retryAbort = undefined;
-		}
+		if (wait > 0) await delay(wait);
 	}
 
+	/** Retries only a held lock, which leaves the batch unwritten. Every other failure is thrown. */
 	private async writeBatch(batch: readonly SerializedTelemetryRecord[]): Promise<"written" | "dropped"> {
 		const started = performance.now();
-		while (!this.discardQueued) {
+		for (;;) {
 			const deadline = this.acquisitionDeadline(started);
 			if (deadline <= performance.now()) return "dropped";
 			try {
-				await this.append(this.dir, batch, this.retention, { acquireUntil: deadline });
+				await this.append(this.dir, batch, this.retention, {
+					acquireUntil: deadline,
+					onStaleLock: () => {
+						this.staleLocks++;
+					},
+				});
 				return "written";
 			} catch (error) {
 				if (error instanceof TelemetryAcquisitionExpiredError) return "dropped";
 				if (!(error instanceof TelemetryLockBusyError)) throw error;
-				this.noteLock(error.holder);
-				this.state("pressure");
-				if (!this.discardQueued) await this.backoff(started);
+				this.lock = error.holder;
+				this.transition("pressure");
+				await this.backoff(started);
 			}
 		}
-		return "dropped";
 	}
 
 	/** Clears its handle in the turn that finds the queue empty, so accepted records are not stranded. */
 	private async drain(): Promise<void> {
 		await Promise.resolve();
 		try {
-			while (!this.discardQueued && this.pending.length > 0) {
+			while (this.pending.length > 0) {
 				const batch = this.takeBatch();
 				const bytes = batch.reduce((total, entry) => total + entry.bytes, 0);
+				let outcome: "written" | "dropped";
 				try {
-					const outcome = await this.writeBatch(batch);
-					this.releaseBatch(batch.length, bytes, outcome === "dropped");
-					this.state(outcome === "dropped" ? "pressure" : "ok");
+					outcome = await this.writeBatch(batch);
 				} catch (error) {
-					this.releaseBatch(batch.length, bytes, true);
-					this.fail(errorMessage(error));
-					return;
+					// Bytes of this batch may be in storage: count it apart, and never write it again.
+					const uncertain = error instanceof TelemetryUncertainAppendError;
+					this.releaseBatch(batch.length, bytes, uncertain ? "uncertain" : "lost");
+					this.stop(errorMessage(error));
+					continue;
 				}
+				if (outcome === "dropped") {
+					this.releaseBatch(batch.length, bytes, "lost");
+					this.transition("pressure");
+					continue;
+				}
+				this.releaseBatch(batch.length, bytes);
+				if (this.state === "failed") this.resumes++;
+				this.failures = 0;
+				this.transition("ok");
 			}
 		} finally {
 			this.drainPromise = undefined;
@@ -261,52 +304,81 @@ export class PolicyWriter implements TelemetryWriter {
 
 	/** Stop admission; pending acquisitions share a deadline, while acquired appends finish cleanup. */
 	async close(): Promise<void> {
-		this.accepting = false;
+		this.closing = true;
 		this.closeDeadline ??= performance.now() + TELEMETRY_RETRY_BUDGET_MS;
 		while (this.drainPromise) await this.drainPromise;
 	}
 }
 
 function lockAdvice(lock: TelemetryLockHolder | undefined): string {
-	const path = lock?.path ?? `telemetry/${TELEMETRY_LOCK_FILE}`;
-	const age = lock ? ` for ${Math.round(lock.ageMs / 1000)} s` : "";
-	if (lock?.pid !== undefined && lock.running === false)
-		return `The lock ${path} in the policy directory names process ${lock.pid}, which is not running on this host. If that file still exists and still names process ${lock.pid}, remove it to restore telemetry.`;
-	if (lock?.pid !== undefined && lock.running === true)
-		return `The lock ${path} in the policy directory names process ${lock.pid}, which is running on this host; the lock has existed${age}.`;
-	return `If drops continue, another writer holds ${path} in the policy directory${age}, or a stopped process left it.`;
+	if (!lock) return "";
+	if (lock.ownership === "live")
+		return ` A running writer holds ${lock.path} in the policy directory; recording continues when it releases the lock.`;
+	const age = lock.ageMs === undefined ? "" : ` for ${Math.round(lock.ageMs / 1000)} s`;
+	const owner =
+		lock.pid === undefined
+			? "names no process"
+			: lock.running === undefined
+				? `names process ${lock.pid} on another host`
+				: `names process ${lock.pid}, which is ${lock.running ? "" : "not "}running on this host`;
+	const evidence = ` The lock file ${lock.path} in the policy directory has existed${age} and ${owner}.`;
+	if (lock.running) return `${evidence} Recording continues when that process releases the lock.`;
+	return `${evidence} A writer from an earlier release can still own that file, so Policy never removes it. Recording continues when the file is gone. Remove it only when no Pi process from an earlier release still runs.`;
 }
 
 export interface TelemetryNotice {
-	readonly level: "warning" | "error";
+	readonly level: "info" | "warning" | "error";
 	readonly text: string;
 }
+
+/** Shortest time between two stop notices of one writer. */
+export const TELEMETRY_STOP_NOTICE_INTERVAL_MS = 600_000;
 
 /**
  * Selects the writer health changes that need operator attention. Lock contention
  * that recovers without loss is routine and stays visible only through health
- * inspection. The first loss is reported once per writer, also while pressure
- * persists; permanent failure is reported once. Later cumulative counts stay in
- * the health view.
+ * inspection, and so does a lock taken over from a stopped writer. The first loss
+ * is reported once per writer, also while pressure persists. A stop is reported
+ * when it starts, at most once per interval, and a reported stop is followed by one
+ * notice when a completed append ends it. Later attempts and cumulative counts stay
+ * in the health view.
  */
 export class TelemetryNotices {
 	private lossReported = false;
-	private failureReported = false;
+	private stopped = false;
+	private stopNoticeAt: number | undefined;
+	private resumeOwed = false;
 
 	next(health: TelemetryHealth): TelemetryNotice | undefined {
 		if (health.state === "failed") {
-			if (this.failureReported) return undefined;
-			this.failureReported = true;
+			if (this.stopped) return undefined;
+			this.stopped = true;
+			this.lossReported = true;
+			const now = performance.now();
+			if (this.stopNoticeAt !== undefined && now - this.stopNoticeAt < TELEMETRY_STOP_NOTICE_INTERVAL_MS) return undefined;
+			this.stopNoticeAt = now;
+			this.resumeOwed = true;
+			const uncertain = health.uncertainRecords
+				? ` ${health.uncertainRecords} record(s) of a failed batch may be partly stored and are not written again.`
+				: "";
 			return {
 				level: "error",
-				text: `[policy] Telemetry persistence stopped: ${health.reason ?? "unknown failure"}. Rules still apply. Policy health shows the lost counts.`,
+				text: `[policy] Telemetry persistence stopped: ${health.reason ?? "unknown failure"}. Rules still apply.${uncertain} The writer tries again by itself at growing intervals. Policy health shows the next attempt and the lost counts.`,
+			};
+		}
+		this.stopped = false;
+		if (this.resumeOwed && health.state === "ok") {
+			this.resumeOwed = false;
+			return {
+				level: "info",
+				text: "[policy] Telemetry persistence resumed: a batch reached storage. Policy health shows the lost counts.",
 			};
 		}
 		if (health.lostRecords === 0 || this.lossReported) return undefined;
 		this.lossReported = true;
 		return {
 			level: "warning",
-			text: `[policy] Telemetry dropped ${health.lostRecords} record(s) under write pressure. Rules still apply. ${lockAdvice(health.lock)} Policy health shows the current counts.`,
+			text: `[policy] Telemetry dropped ${health.lostRecords} record(s). Rules still apply.${lockAdvice(health.lock)} Policy health shows the current counts.`,
 		};
 	}
 }

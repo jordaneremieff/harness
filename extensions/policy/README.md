@@ -1733,9 +1733,14 @@ the policy directory.
   at inventory and is checked again for ownership and identity just before removal;
   Policy never changes or replaces it. A truncated or unreadable listing does
   the same.
-- **Lock.** A `.telemetry-lock` file in the telemetry directory serialises rotation,
-  retention, and append across processes. It is separate from the rule transaction
-  lock and the observation-state lock. Each acquisition waits at most 500 ms,
+- **Lock.** A writer owns exclusion through an open descriptor lock (macOS
+  `O_EXLOCK`, nonblocking, no-follow) on `.telemetry-writer.lock` in the telemetry
+  directory. The lock serialises rotation, retention, and append across processes.
+  It is separate from the rule transaction lock and the observation-state lock.
+  The file stays empty and private (0600). No writer writes, truncates, or removes
+  it. The kernel releases the lock when its holder exits, so a held lock always
+  has a running owner and no lock of this kind is ever stale. Another platform
+  refuses telemetry writes. Each acquisition waits at most 500 ms,
   capped by the batch's remaining budget. Only a safe held lock produces
   `TelemetryLockBusyError`. The writer retries that error with 50–100 ms jitter
   within a 2,000 ms monotonic budget from the batch's first attempt. It retains
@@ -1743,28 +1748,61 @@ the policy directory.
   only that unwritten batch and counts its lost records and serialised bytes;
   future admission stays open. Directory preparation consumes that same budget.
   Expiry before the first lock creation produces `TelemetryAcquisitionExpiredError`,
-  not held-lock contention or a permanent failure; no retention or append occurs.
-  Policy never removes a lock because of its age.
-  If a process stopped while holding it, stop all policy writers before removing
-  `.telemetry-lock` by hand, unless the lock's note names a process that is not
-  running on this host: such a lock has no owner left to release it. A writer notes its process ID and host name in
-  the lock after it acquires it. Older writers create an empty lock and never
-  read the note, so the note changes no lock behaviour. A writer that waits on a
-  held lock reads the note (at most 256 bytes) as evidence only.
+  not held-lock contention or a failed append; no retention or append occurs.
+- **Writers of earlier releases.** A process that started before an upgrade keeps
+  the writer it loaded. Those writers create `.telemetry-lock` exclusively, remove
+  it after each batch, and know no other lock. While a writer appends, it also
+  holds a hard link to its lock file under that name. An earlier writer then
+  finds the name taken and waits, and a writer that finds an earlier writer's
+  file there waits in turn. The link exists only between acquisition and release.
+  A writer that stops in between leaves the link behind. Earlier writers only ever
+  create a new file under that name, so an entry there with the device and inode
+  of `.telemetry-writer.lock` was linked by a writer of this protocol, and such a
+  writer keeps the link only while it holds the descriptor lock. The writer that
+  holds the descriptor lock next therefore knows that the entry has no owner. It
+  takes the entry over, counts it in `recovery.staleLocks`, appends, and removes
+  the name on release. No person and no notice is involved.
+  A file with any other identity under `.telemetry-lock` can belong to a running
+  earlier writer. Policy never removes it: not because of its age, not because of
+  its note, and not because a process check finds no such process. Batches drop
+  until that file is gone, and the health view and one notice show the evidence. A
+  person decides that case. Earlier writers note their process ID and host name
+  in the file, and some leave it empty; a waiting writer reads at most 256 bytes
+  of it as evidence only.
+  Before each segment removal, before each segment open, and on release, the
+  writer compares its descriptor with both names. A missing or changed name fails
+  the append, and the writer then removes nothing. The comparison and the
+  following operation are not atomic: this is cooperative exclusion, and a person
+  who removes a held `.telemetry-lock` defeats it.
 - **Queue.** The writer holds at most 512 accepted records and 4 MiB of serialised
   records, including an in-flight or retry batch. Each record is serialised once
   at admission; later changes to the caller's object do not alter those bytes.
   Records go to disk in batches of at most 32 records or 64 KiB; a permitted record
   larger than a batch runs alone. Queue pressure refuses and counts the incoming
   record and its bytes without closing admission. Admission resumes when capacity
-  returns. A record over 256 KiB is refused as a permanent failure.
-- **Failure.** Invalid or oversized records, unsafe inventory or foreign ownership,
-  changed segment or lock identity, retention failure, append failure (including
-  partial writes), and unlock or cleanup failure stop admission permanently.
-  They are never retried. The writer discards and counts unwritten queued records;
-  a failed append counts its batch as lost because complete persistence is uncertain.
-  A record that fails admission validation contributes a lost record but no
-  admitted byte count.
+  returns. An invalid record, or one over 256 KiB, is refused and counted alone as
+  a lost record with no byte count; admission stays open.
+- **Failure and resumption.** A failed append stops admission for a bounded wait,
+  not for the life of the process. Causes include an unsafe directory, inventory,
+  or lock (a symbolic link, foreign ownership, open permissions), a changed
+  segment or lock identity, a retention failure, and a write error. The writer
+  discards and counts the queued records, and it refuses and counts each record
+  offered during the wait. The wait is between half and all of a limit that
+  starts at 1 s and doubles with each failed attempt, up to 5 min. The first
+  record offered after the wait is admitted, and its append is the next attempt.
+  The writer holds no timer, so it tries only as often as records arrive, and
+  writers that failed together do not try together. An attempt runs every check
+  of an append before it writes and repairs nothing. An unsafe store stays as it
+  was found until a person changes it; recording then resumes without a restart.
+  Only a completed append sets `ok`, counts a resume, and starts the wait again
+  from 1 s.
+  A batch that failed before its first record byte was written is counted as
+  lost. A batch that failed after that point is counted in `uncertainRecords` and
+  `uncertainBytes`: a partial write, a failure in a later segment of the same
+  batch, or a failed lock release. Its records can be stored, truncated, or
+  absent. No failed batch is written again, so a failure never duplicates a
+  record. A writer process that stops during an append can leave one torn batch
+  that no count covers; the next batch starts on a new line.
   Telemetry failure never changes an approved tool decision.
 - **Close.** Closing stops admission. Remaining acquisitions share one 2,000 ms
   monotonic budget from close, rather than a separate budget per remaining batch.
@@ -1815,28 +1853,48 @@ Native tool execution queues a telemetry record and does not wait for the disk
 write. A successful policy decision does not prove its record reached disk.
 
 The ordinary and native `health` inspection views read the writer's current
-`telemetry` snapshot: `state` (`ok`, `pressure`, or `failed`), cumulative
-`lostRecords` and `lostBytes`, and `reason` when failed. Byte counts use the
-serialised queue size, including framing allowances. A recovered append clears
-pressure but preserves cumulative losses. Only permanent failure stops future
-admission.
+`telemetry` snapshot:
 
-Lock contention that recovers without loss is routine and produces no output;
-the `health` view shows it. The writer signals health on state changes, and
-once more at its first loss while pressure persists, not once per refused
-record. Each writer reports that first loss once and its permanent failure
-once; later counts stay in the `health` view. The loss notice names
-`telemetry/.telemetry-lock` in the policy directory, because a lock that stays
-held makes every batch drop (see Lock above). While contention keeps the writer
-in pressure, the `health` snapshot adds `lock`: the path relative to the
-policy directory, `ageMs` since the lock last changed, and the noted `pid`.
-When the note names this host, `running` tells whether that process exists.
-The notice says that a lock whose process is not running can be removed, if
-the file still names that process. It says nothing more about a running owner
-or an empty lock from an older writer. The check assumes that one host name
-means one process table: a policy directory shared by hosts or containers with
-the same host name can show a false `running: false`.
-Recovery removes `lock` from the snapshot. An ordinary
+- `state`: `ok` after a batch reached storage; `pressure` while records drop at
+  a queue bound or behind a held lock; `failed` after a failed append, while
+  admission is stopped or the next attempt runs.
+- `lostRecords` and `lostBytes`: cumulative records that did not reach storage.
+  Byte counts use the serialised queue size, including framing allowances.
+- `uncertainRecords` and `uncertainBytes`: cumulative records of batches that
+  failed after bytes may have reached storage. Absent while zero.
+- `reason`: the failure, while the state is `failed`.
+- `retryAt`: the time from which a stopped writer admits a record and tries
+  again. Absent once that record is admitted.
+- `lock`: evidence about the held lock, while contention keeps the writer in
+  pressure. `path` is relative to the policy directory. `ownership` is `live`
+  for a held descriptor lock, which has a running owner by construction, and
+  `uncertain` for a `.telemetry-lock` file of an earlier release. An uncertain
+  lock adds `ageMs` since the file last changed and the noted `pid`; when the
+  note names this host, `running` tells whether that process exists. The check
+  assumes that one host name means one process table: a policy directory shared
+  by hosts or containers with the same host name can show a false
+  `running: false`. All three are evidence and decide nothing.
+- `recovery`: cumulative `stops` (times a failed append stopped admission),
+  `resumes` (times a completed append ended a stop), and `staleLocks` (links of
+  stopped writers that this writer took over). Absent until the first stop or
+  takeover.
+
+A completed append clears pressure and a stop but preserves the cumulative
+counts.
+
+Lock contention that recovers without loss is routine and produces no output,
+and so does a lock taken over from a stopped writer; the `health` view shows
+both. The writer signals health on state changes, and once more at its first
+loss under an unchanged state, not once per refused record. Each writer reports
+that first loss once. The loss notice carries the lock evidence when a held lock
+caused the loss. For an uncertain lock it says that Policy never removes the
+file, and that a person removes it only when no Pi process from an earlier
+release still runs; for a lock whose noted process runs, it says only that
+recording continues when that process releases the lock. A stop is reported as
+an error when it starts, at most once per 10 minutes for one writer, and a
+reported stop is followed by one notice when a completed append ends it. Failed
+attempts in between, later stops inside the interval, and all later counts stay
+in the `health` view. An ordinary
 session delivers these notices through its UI (`ctx.ui.notify`), never by
 writing to the terminal directly, because a TUI owns that terminal and a direct
 write paints over the editor. A session without UI writes them to stderr, and a

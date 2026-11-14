@@ -1598,7 +1598,7 @@ test("captures the configured telemetry retention when its writer starts", async
 		await fixture.pi.emit("session_shutdown", {}, fixture.ctx);
 		const day = new Date();
 		const name = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}.000001.jsonl`;
-		assert.deepEqual((await readdir(join(fixture.dir, "telemetry"))).sort(), [name]);
+		assert.deepEqual((await readdir(join(fixture.dir, "telemetry"))).sort(), [".telemetry-writer.lock", name]);
 		assert.equal((await telemetry(fixture.dir)).length, 1);
 	} finally {
 		await rm(base, { recursive: true, force: true });

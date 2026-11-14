@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { closeSync, constants, openSync } from "node:fs";
+import { chmod, link, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import type { PolicyRecord } from "./record.ts";
 import {
@@ -13,8 +16,11 @@ import {
 	readTelemetryInventory,
 	TELEMETRY_INVENTORY_ENTRIES,
 	TelemetryAcquisitionExpiredError,
+	TELEMETRY_LEGACY_LOCK_FILE,
+	TELEMETRY_LOCK_FILE,
 	TelemetryLockBusyError,
 	TELEMETRY_SEGMENT_BYTES,
+	TelemetryUncertainAppendError,
 	type TelemetryRetention,
 	validateTelemetryRetention,
 } from "./telemetry-files.ts";
@@ -64,7 +70,13 @@ async function seed(dir: string, name: string, size: number): Promise<string> {
 	return path;
 }
 
-const names = async (dir: string) => (await readdir(join(dir, "telemetry"))).sort();
+/** Every name except the persistent lock file, which stays after the first acquisition. */
+const names = async (dir: string) =>
+	(await readdir(join(dir, "telemetry"))).filter((name) => name !== TELEMETRY_LOCK_FILE).sort();
+const lockPath = (dir: string) => join(dir, "telemetry", TELEMETRY_LOCK_FILE);
+const legacyPath = (dir: string) => join(dir, "telemetry", TELEMETRY_LEGACY_LOCK_FILE);
+/** The macOS open flag that takes the descriptor lock, as a second writer process would. */
+const O_EXLOCK = 0x20;
 
 describe("telemetry retention settings", () => {
 	it("requires integers, a byte budget that holds a segment, and a positive age", () => {
@@ -238,7 +250,7 @@ describe("telemetry safety", () => {
 		for (let index = 0; index < TELEMETRY_INVENTORY_ENTRIES; index++)
 			await writeFile(join(dir, "telemetry", `other-${index}`), "");
 		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION), /inventory is incomplete/);
-		assert.equal((await readdir(join(dir, "telemetry"))).length, TELEMETRY_INVENTORY_ENTRIES + 1);
+		assert.equal((await names(dir)).length, TELEMETRY_INVENTORY_ENTRIES + 1);
 	});
 
 	it("refuses to remove a segment whose identity changed after inspection", async (t) => {
@@ -310,11 +322,11 @@ describe("telemetry lock", () => {
 			return true;
 		});
 		await preparing;
-		assert.deepEqual(await names(dir), []);
+		assert.deepEqual(await readdir(join(dir, "telemetry")), []);
 		now = 2100;
 		release();
 		await expired;
-		assert.deepEqual(await names(dir), []);
+		assert.deepEqual(await readdir(join(dir, "telemetry")), [], "expiry opens no lock file");
 	});
 
 	it("finishes an acquired append and lock cleanup after its acquisition deadline", async (t) => {
@@ -337,7 +349,12 @@ describe("telemetry lock", () => {
 		await writeFile(lock, "other-owner", { mode: 0o600 });
 		const identity = await stat(lock);
 		const started = Date.now();
-		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION), TelemetryLockBusyError);
+		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION), (error: unknown) => {
+			assert.ok(error instanceof TelemetryLockBusyError);
+			assert.equal(error.holder?.path, "telemetry/.telemetry-lock");
+			assert.equal(error.holder?.ownership, "uncertain", "a lock file of an earlier release has no provable owner");
+			return true;
+		});
 		const elapsed = Date.now() - started;
 		assert.ok(elapsed >= 400 && elapsed < 5000, `waited ${elapsed} ms`);
 		assert.equal(await readFile(lock, "utf8"), "other-owner");
@@ -385,9 +402,9 @@ describe("telemetry lock", () => {
 		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION), /lock is not a regular non-symlink file/);
 	});
 
-	it("refuses to remove a lock whose identity changed while it was held", async (t) => {
+	it("writes nothing and removes nothing after a lock name changed while it was held", async (t) => {
 		const dir = await policyDir(t);
-		const lock = join(dir, "telemetry", ".telemetry-lock");
+		const lock = legacyPath(dir);
 		await assert.rejects(
 			appendTelemetryRecords(dir, [record("a")], RETENTION, {
 				afterInventory: async () => {
@@ -395,9 +412,189 @@ describe("telemetry lock", () => {
 					await writeFile(lock, "intruder");
 				},
 			}),
-			/lock changed; refusing to remove/,
+			(error: unknown) => {
+				assert.ok(error instanceof Error && !(error instanceof TelemetryUncertainAppendError));
+				assert.match(error.message, /lock changed while held/);
+				return true;
+			},
 		);
 		assert.equal(await readFile(lock, "utf8"), "intruder");
+		assert.deepEqual(await names(dir), [".telemetry-lock"], "no segment is created without the lock");
+	});
+
+	it("marks an append uncertain when it fails after the first record byte", async (t) => {
+		const dir = await policyDir(t);
+		let writes = 0;
+		await assert.rejects(
+			appendTelemetryRecords(dir, [record("a")], RETENTION, {
+				writeChunk: async (handle, bytes) => {
+					if (writes++ === 0) return (await handle.write(bytes.subarray(0, 10))).bytesWritten;
+					throw new Error("disk refused the rest");
+				},
+			}),
+			(error: unknown) => {
+				assert.ok(error instanceof TelemetryUncertainAppendError);
+				assert.match(error.message, /disk refused the rest/);
+				return true;
+			},
+		);
+		assert.equal((await stat(join(dir, "telemetry", `${DAY}.000001.jsonl`))).size, 10);
+		assert.deepEqual(await names(dir), [`${DAY}.000001.jsonl`], "the legacy name is removed after the failure");
+	});
+
+	it("keeps one empty private lock file and links the legacy name only while it appends", async (t) => {
+		const dir = await policyDir(t);
+		let linked: number | undefined;
+		await appendTelemetryRecords(dir, [record("a")], RETENTION, {
+			afterInventory: async () => { linked = (await lstat(legacyPath(dir))).ino; },
+		});
+		const first = await lstat(lockPath(dir));
+		assert.equal(linked, first.ino, "the legacy name is the lock file itself while the append runs");
+		assert.equal(first.isFile(), true);
+		assert.equal(first.mode & 0o777, 0o600);
+		assert.equal(first.size, 0);
+		assert.equal(first.nlink, 1);
+		await assert.rejects(lstat(legacyPath(dir)), { code: "ENOENT" });
+		await appendTelemetryRecords(dir, [record("b")], RETENTION);
+		assert.equal((await lstat(lockPath(dir))).ino, first.ino, "the lock file is never replaced");
+	});
+
+	it("waits on a running writer's descriptor lock, reports it as live, and appends after its release", async (t) => {
+		const dir = await policyDir(t);
+		const held = openSync(lockPath(dir), constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | O_EXLOCK, 0o600);
+		let open = true;
+		t.after(() => { if (open) closeSync(held); });
+		const started = Date.now();
+		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION), (error: unknown) => {
+			assert.ok(error instanceof TelemetryLockBusyError);
+			assert.deepEqual(error.holder, { path: "telemetry/.telemetry-writer.lock", ownership: "live" });
+			return true;
+		});
+		const elapsed = Date.now() - started;
+		assert.ok(elapsed >= 400 && elapsed < 5000, `waited ${elapsed} ms`);
+		assert.deepEqual(await names(dir), [], "a waiting writer creates neither the legacy name nor a segment");
+		closeSync(held);
+		open = false;
+		await appendTelemetryRecords(dir, [record("a")], RETENTION);
+		assert.deepEqual(await names(dir), [`${DAY}.000001.jsonl`]);
+	});
+
+	it("refuses a lock file with group or other permissions without changing it", async (t) => {
+		const dir = await policyDir(t);
+		await writeFile(lockPath(dir), "", { mode: 0o600 });
+		await chmod(lockPath(dir), 0o644);
+		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION), /lock permissions are not private/);
+		assert.equal((await lstat(lockPath(dir))).mode & 0o777, 0o644);
+		assert.deepEqual(await names(dir), []);
+	});
+
+	it("takes over a legacy name that carries the lock file's identity", async (t) => {
+		const dir = await policyDir(t);
+		await writeFile(lockPath(dir), "", { mode: 0o600 });
+		await link(lockPath(dir), legacyPath(dir));
+		let recovered = 0;
+		const options = { onStaleLock: () => { recovered++; } };
+		await appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record("a"))], RETENTION, options);
+		assert.equal(recovered, 1);
+		assert.deepEqual(await names(dir), [`${DAY}.000001.jsonl`], "the taken-over name is removed on release");
+		await appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record("b"))], RETENTION, options);
+		assert.equal(recovered, 1, "a clean acquisition is not a recovery");
+	});
+
+	it("recovers by itself after a writer process dies while it holds the lock", { timeout: 60_000 }, async (t) => {
+		const dir = await policyDir(t);
+		const script = `
+			import { appendTelemetryRecords } from ${JSON.stringify(new URL("./telemetry-files.ts", import.meta.url).href)};
+			const [dir, at] = process.argv.slice(1);
+			const entry = {
+				session: "s", mode: "tui", cwd: "/w", model: "m", thinkingLevel: "high", projectContext: false,
+				ruleStoreDegraded: false, at, tool: "bash", callId: "dying", durationMs: 1, outputBytes: 1,
+				policyMode: "observe", truncated: false, error: false, errorKind: null, tokens: null, classes: [], captured: "x",
+			};
+			await appendTelemetryRecords(dir, [entry], { maxBytes: 1024 * 1024 * 1024, maxAgeDays: 30 }, {
+				afterInventory: async () => {
+					process.stdout.write("held\\n");
+					await new Promise(() => { setInterval(() => {}, 1000); });
+				},
+			});
+		`;
+		const child = spawn(process.execPath, ["--input-type=module", "--eval", script, dir, AT], { stdio: ["ignore", "pipe", "inherit"] });
+		t.after(() => { child.kill("SIGKILL"); });
+		const exited = once(child, "exit");
+		await Promise.race([
+			once(child.stdout, "data"),
+			exited.then(() => { throw new Error("the writer process exited before it held the lock"); }),
+		]);
+		await assert.rejects(
+			appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record("waiting"))], RETENTION, { acquireUntil: performance.now() + 80 }),
+			(error: unknown) => error instanceof TelemetryLockBusyError && error.holder?.ownership === "live",
+			"a running holder is live contention, not a stale lock",
+		);
+		child.kill("SIGKILL");
+		await exited;
+		assert.equal((await lstat(legacyPath(dir))).ino, (await lstat(lockPath(dir))).ino, "the dead writer left its link under the legacy name");
+		let recovered = 0;
+		await appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record("after"))], RETENTION, {
+			onStaleLock: () => { recovered++; },
+		});
+		assert.equal(recovered, 1);
+		await assert.rejects(lstat(legacyPath(dir)), { code: "ENOENT" });
+		const lines = (await readFile(join(dir, "telemetry", `${DAY}.000001.jsonl`), "utf8")).split("\n").filter(Boolean);
+		assert.deepEqual(lines.map((line) => JSON.parse(line).callId), ["after"]);
+	});
+
+	it("excludes a writer of an earlier release in both directions", { timeout: 60_000 }, async (t) => {
+		const dir = await policyDir(t);
+		const counter = join(dir, "..", "counter");
+		await writeFile(counter, "0");
+		// The lock steps of an earlier release: exclusive creation, work, removal. Lost counter
+		// updates show two writers inside the lock together.
+		const earlierWriter = `
+			import { constants } from "node:fs";
+			import { open, readFile, unlink, writeFile } from "node:fs/promises";
+			import { setTimeout as delay } from "node:timers/promises";
+			const [lock, counter, count] = process.argv.slice(1);
+			for (let index = 0; index < Number(count); index++) {
+				let handle;
+				while (!handle) {
+					try {
+						handle = await open(lock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+					} catch (error) {
+						if (error.code !== "EEXIST") throw error;
+						await delay(1);
+					}
+				}
+				const value = Number(await readFile(counter, "utf8"));
+				await delay(2);
+				await writeFile(counter, String(value + 1));
+				await unlink(lock);
+				await handle.close();
+			}
+		`;
+		const earlier = execute(process.execPath, ["--input-type=module", "--eval", earlierWriter, legacyPath(dir), counter, "120"], {
+			timeout: 45_000,
+			killSignal: "SIGKILL",
+			maxBuffer: 65536,
+		});
+		while ((await readFile(counter, "utf8")) === "0") await delay(5);
+		const countUnderLock = async () => {
+			const value = Number(await readFile(counter, "utf8"));
+			await delay(2);
+			await writeFile(counter, String(value + 1));
+		};
+		const appendAfterContention = async (callId: string, attempt = 0): Promise<void> => {
+			try {
+				await appendTelemetryRecords(dir, [record(callId)], RETENTION, { afterInventory: countUnderLock });
+			} catch (error) {
+				if (attempt >= 40 || !(error instanceof TelemetryLockBusyError)) throw error;
+				await appendAfterContention(callId, attempt + 1);
+			}
+		};
+		for (let index = 0; index < 40; index++) await appendAfterContention(`n${index}`);
+		await earlier;
+		assert.equal(await readFile(counter, "utf8"), "160", "no update was lost, so no two writers held the lock together");
+		assert.equal((await readTelemetry(dir, DAY, DAY)).records, 40);
+		assert.deepEqual(await names(dir), [`${DAY}.000001.jsonl`]);
 	});
 });
 
