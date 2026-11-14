@@ -160,3 +160,13 @@ it("returns explicit malformed-settings and missing-command setup errors without
 	await assert.rejects(f.unchanged(() => resolveConfiguredAgent(f.defaults)), /Could not read global settings/u);
 	assert.equal(existsSync(join(f.agentDir, "sessions")), false, "selection owns no disk session");
 });
+
+it("selects the Agent of this process in place of a configured Agent entrypoint", async (t) => {
+	const f = await fixture(t, { packages: ["../configured/extensions/agent/index.ts"], enabledModels: ["agent-test/first"] });
+	const configured = join(f.agentDir, "..", "configured", "extensions", "agent", "index.ts"), marker = join(f.agentDir, "..", "configured-factory");
+	mkdirSync(join(configured, ".."), { recursive: true });
+	writeFileSync(configured, `import { writeFileSync } from "node:fs";\nexport default function () { writeFileSync(${JSON.stringify(marker)}, "factory executed"); }\n`);
+	const selected = await f.unchanged(() => resolveConfiguredAgent(f.defaults)) as Awaited<ReturnType<typeof resolveConfiguredAgent>>;
+	assert.equal(selected.model.modelId, "first");
+	assert.equal(existsSync(marker), false, "the configured Agent factory never runs");
+});

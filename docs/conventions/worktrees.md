@@ -175,8 +175,13 @@ waits for none, apart from the [shared acts](#shared-acts).
    running Pi.
 
 A Pi process started before the switch, and every host it started, keeps the
-code it loaded until it ends. A snapshot stays on disk while any process or
-host runs from it.
+code it loaded until it ends. A host that such a process starts after the
+switch also loads that process's snapshot, not the configured one, and reports
+both directories. The switch therefore stops no running process from starting
+or waking agents; a process reaches the new snapshot when it restarts. An
+older process can also wake a retired host whose store newer code wrote, which
+is one of the meetings that step 3 settles before the switch. A snapshot stays
+on disk while any process or host runs from it.
 
 ### Recover
 

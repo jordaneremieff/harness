@@ -898,8 +898,11 @@ Idle retirement does not silently choose a new Pi install. Source and dependency
 updates form one activation unit: an `observeCommits()` or `watchDoc()`
 consumer requires the Durable API of the installed release, not an older
 dependency graph. A commit on `main` does not activate anything by itself:
-Pi loads each extension from the checkout its settings entry names, and a
-running process keeps the code it loaded. Reload refreshes extension factories,
+a new Pi process loads each extension from the checkout its settings entry
+names, and a running process keeps the code it loaded. A native host loads the
+package copy of the process that started it, also when the settings entry
+already names a later copy; the host reports both directories (see
+"Capabilities and project resources" in the Agent README). Reload refreshes extension factories,
 not objects an extension retains at process scope (see the candidate
 verification rules below). The
 [development workflow](conventions/worktrees.md#pi-configuration) owns both

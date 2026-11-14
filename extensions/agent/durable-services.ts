@@ -25,7 +25,8 @@
  * order and releases every execution environment it created.
  */
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord/context";
@@ -34,6 +35,7 @@ import * as Durable from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createBashTool, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
 import {
+	CONFIG_DIR_NAME,
 	ProjectTrustStore,
 	SettingsManager,
 	createAgentSessionServices,
@@ -173,8 +175,12 @@ export interface CreateDurableServicesOptions {
 	readonly settingsManager?: SettingsManager;
 	/**
 	 * Select this runner's Agent entrypoint before configured factories execute.
-	 * Local extensions/agent/index.ts references redirect to this canonical file;
-	 * other resources retain their SDK scopes and trust. SDK settings saves stay
+	 * Local extensions/agent/index.ts references redirect to this canonical file.
+	 * A configured local package directory that is another copy of the package
+	 * holding this entrypoint (the same manifest name, with its own
+	 * extensions/agent/index.ts) is replaced as a whole by the runner's copy,
+	 * and the replacement is reported with both directories. Other resources
+	 * retain their SDK scopes and trust. SDK settings saves stay
 	 * in process memory rather than changing the configured source documents.
 	 * Reads use the source manager's bootstrap snapshot, including scope errors.
 	 * An in-process settings reload does not reread files; host reload creates new services.
@@ -204,7 +210,11 @@ export interface CreateDurableServicesOptions {
 	readonly askPrimary?: (cwd: string) => Promise<ProjectTrustDecision | undefined>;
 	/** Full project-trust resolution, for a caller that already owns that logic. */
 	readonly resolveProjectTrust?: (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean>;
-	/** Receives non-fatal bootstrap failures: load errors and unmatched contributions. Must not throw. */
+	/**
+	 * Receives non-fatal bootstrap failures (load errors and unmatched
+	 * contributions) as errors, and each replaced package directory as one line
+	 * of text. Must not throw.
+	 */
 	readonly onReport?: (error: unknown) => void;
 	readonly launchIndependent?: IndependentCommandLaunch;
 }
@@ -261,9 +271,11 @@ interface PiRuntime {
 	hasTrustRequiringProjectResources: typeof hasTrustRequiringProjectResources;
 	ProjectTrustStore: typeof ProjectTrustStore;
 	SettingsManager: typeof SettingsManager;
+	CONFIG_DIR_NAME: typeof CONFIG_DIR_NAME;
 }
 
 const localRuntime: PiRuntime = {
+	CONFIG_DIR_NAME,
 	createAgentSessionServices,
 	createAgentSessionFromServices,
 	resolveModelScopeWithDiagnostics,
@@ -309,16 +321,21 @@ async function loadPiRuntime(packageDir: string | undefined): Promise<PiRuntime>
 	for (const name of ["createAgentSessionServices", "createAgentSessionFromServices", "resolveModelScopeWithDiagnostics", "SessionManager", "createEventBus", "createReadTool", "createReadToolDefinition", "formatSkillsForPrompt", "getAgentDir", "hasTrustRequiringProjectResources", "ProjectTrustStore", "SettingsManager"] as const) {
 		if (typeof loaded[name] !== "function") throw new Error(`packageDir ${packageDir} does not export ${name}`);
 	}
+	if (typeof loaded.CONFIG_DIR_NAME !== "string") throw new Error(`packageDir ${packageDir} does not export CONFIG_DIR_NAME`);
 	return loaded as unknown as PiRuntime;
 }
 
-/** Resolve a fresh CLI-style selection using only public Pi scope and SDK contracts. */
+/**
+ * Resolve a fresh CLI-style selection using only public Pi scope and SDK
+ * contracts. The resolution selects this process's Agent and package copy, as
+ * the host that the caller starts next does.
+ */
 export async function resolveConfiguredAgent(options: Pick<CreateDurableServicesOptions, "cwd" | "agentDir" | "packageDir" | "modelRuntime" | "extensionPaths" | "askPrimary" | "onReport"> & { readonly command?: string }): Promise<{ model: { provider: string; modelId: string }; thinkingLevel: string; projectTrusted: boolean }> {
 	const pi = await loadPiRuntime(options.packageDir);
 	const agentDir = options.agentDir ?? pi.getAgentDir();
-	const settingsManager = pi.SettingsManager.create(options.cwd, agentDir, { projectTrusted: false });
-	const prepared = await createDurableServices({ ...options, agentDir, settingsManager, storageId: "independent-selection" });
+	const prepared = await createDurableServices({ ...options, agentDir, agentExtensionPath: defaultAgentEntrypoint, storageId: "independent-selection" });
 	try {
+		const settingsManager = prepared.services.settingsManager;
 		const errors = settingsManager.drainErrors();
 		if (errors.length) throw new Error(errors.map(({ scope, error }) => `Could not read ${scope} settings: ${error.message}`).join("; "));
 		if (options.command !== undefined && !prepared.commands.has(options.command)) throw new Error(`durable command ${options.command} is not registered`);
@@ -436,7 +453,7 @@ function durableReadTool(pi: PiRuntime, cwd: string, hostSignal: AbortSignal) {
 }
 
 /** The host built-in extension: coding tools and resource-derived prompt sections. */
-function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: DurableInventory, signal: AbortSignal): Durable.Extension {
+function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: DurableInventory, packageSources: readonly PackageSource[], signal: AbortSignal): Durable.Extension {
 	return Durable.defineExtension({
 		name: "pi.host",
 		tasks: [CheckInTask, CheckInDeadlineTask, UnplacedWatchTask],
@@ -489,6 +506,10 @@ function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: 
 				}
 				return lines.length === 0 ? undefined : lines.join("\n");
 			}),
+			Durable.section("package_source", () => packageSources.length === 0 ? undefined : [
+				"Pi settings configure a package directory that this conversation's host did not load. The host loaded the copy of that package that its starting process runs:",
+				...packageSources.map((item) => `- configured ${item.configured}; loaded ${item.loaded}`),
+			].join("\n")),
 		],
 	});
 }
@@ -646,16 +667,89 @@ function selectAgentEntry(path: string, selected: string): string {
 	return /(?:^|\/)extensions\/agent\/index\.ts$/u.test(path) ? selected : path;
 }
 
-function selectAgentSettings(settings: ReturnType<SettingsManager["getGlobalSettings"]>, selected: string): ReturnType<SettingsManager["getGlobalSettings"]> {
+const AGENT_ENTRY = join("extensions", "agent", "index.ts");
+
+/** One configured package directory and the directory a host loaded in its place. */
+interface PackageSource {
+	readonly configured: string;
+	readonly loaded: string;
+}
+
+/** The package that holds the selected Agent at `extensions/agent/index.ts`. */
+interface AgentPackage {
+	readonly root: string;
+	readonly name: string;
+}
+
+/** The runner's Agent, its package when a manifest names one, and the package directories replaced so far. */
+interface AgentSelection {
+	readonly agent: string;
+	readonly package: AgentPackage | undefined;
+	readonly replaced: PackageSource[];
+	readonly report: (error: unknown) => void;
+}
+
+function manifestName(directory: string): string | undefined {
+	try {
+		const name = (JSON.parse(readFileSync(join(directory, "package.json"), "utf8")) as { name?: unknown }).name;
+		return typeof name === "string" && name !== "" ? name : undefined;
+	} catch { return undefined; }
+}
+
+function agentPackage(selected: string): AgentPackage | undefined {
+	const root = resolve(dirname(selected), "..", "..");
+	if (join(root, AGENT_ENTRY) !== selected) return undefined;
+	const name = manifestName(root);
+	return name === undefined ? undefined : { root, name };
+}
+
+/** Resolve a local package source against its settings scope, as Pi does; undefined unless it is an existing directory. */
+function localPackageDirectory(source: string, baseDir: string): string | undefined {
+	const trimmed = source.trim();
+	const path = trimmed === "~" ? homedir() : trimmed.startsWith("~/") ? join(homedir(), trimmed.slice(2)) : resolve(baseDir, trimmed);
+	try {
+		const directory = realpathSync(path);
+		return statSync(directory).isDirectory() ? directory : undefined;
+	} catch { return undefined; }
+}
+
+/** Another directory of the runner's package: the same manifest name and an Agent entrypoint at the same place. */
+function otherPackageCopy(directory: string, own: AgentPackage): boolean {
+	if (directory === own.root || manifestName(directory) !== own.name) return false;
+	try { return statSync(join(directory, AGENT_ENTRY)).isFile(); }
+	catch { return false; }
+}
+
+/**
+ * Keep one package copy per host. Pi settings can name another directory of
+ * the runner's package, such as a release that became active after the
+ * starting process loaded its own. Loading that directory would run its Agent
+ * beside the selected one, so the host loads the runner's directory instead.
+ */
+function selectPackageSource(source: string, baseDir: string, selection: AgentSelection): string {
+	const entry = selectAgentEntry(source, selection.agent);
+	if (entry !== source || selection.package === undefined) return entry;
+	const configured = localPackageDirectory(source, baseDir);
+	if (configured === undefined || !otherPackageCopy(configured, selection.package)) return source;
+	const loaded = selection.package.root;
+	if (!selection.replaced.some(item => item.configured === configured)) {
+		selection.replaced.push({ configured, loaded });
+		selection.report(`Pi settings configure the package directory ${configured}. The selected Agent belongs to another copy of the same package (${selection.package.name}), so ${loaded} was loaded in its place.`);
+	}
+	return loaded;
+}
+
+function selectAgentSettings(settings: ReturnType<SettingsManager["getGlobalSettings"]>, baseDir: string, selection: AgentSelection): ReturnType<SettingsManager["getGlobalSettings"]> {
 	return {
 		...settings,
-		...(settings.packages === undefined ? {} : { packages: settings.packages.map(entry => typeof entry === "string" ? selectAgentEntry(entry, selected) : { ...entry, source: selectAgentEntry(entry.source, selected) }) }),
-		...(settings.extensions === undefined ? {} : { extensions: settings.extensions.map(path => selectAgentEntry(path, selected)) }),
+		...(settings.packages === undefined ? {} : { packages: settings.packages.map(entry => typeof entry === "string" ? selectPackageSource(entry, baseDir, selection) : { ...entry, source: selectPackageSource(entry.source, baseDir, selection) }) }),
+		...(settings.extensions === undefined ? {} : { extensions: settings.extensions.map(path => selectAgentEntry(path, selection.agent)) }),
 	};
 }
 
 /** Keep SDK saves local, and defer project reads until Pi grants project trust. */
-function selectedAgentSettingsManager(pi: PiRuntime, source: SettingsManager, selected: string, report: (error: unknown) => void): SettingsManager {
+function selectedAgentSettingsManager(pi: PiRuntime, source: SettingsManager, selection: AgentSelection, baseDirs: Readonly<Record<"global" | "project", string>>): SettingsManager {
+	const report = selection.report;
 	const writes = new Map<"global" | "project", string>();
 	const errors = new Map<"global" | "project", Error>();
 	const read = (scope: "global" | "project") => {
@@ -673,7 +767,7 @@ function selectedAgentSettingsManager(pi: PiRuntime, source: SettingsManager, se
 		withLock(scope, update) {
 			const current = writes.get(scope);
 			const settings = current === undefined ? read(scope) : JSON.parse(current) as ReturnType<SettingsManager["getGlobalSettings"]>;
-			const next = update(JSON.stringify(selectAgentSettings(settings, selected)));
+			const next = update(JSON.stringify(selectAgentSettings(settings, baseDirs[scope], selection)));
 			if (next !== undefined) writes.set(scope, next);
 		},
 	}, { projectTrusted: source.isProjectTrusted() });
@@ -682,15 +776,14 @@ function selectedAgentSettingsManager(pi: PiRuntime, source: SettingsManager, se
 function selectedAgentResources(pi: PiRuntime, options: CreateDurableServicesOptions, cwd: string, agentDir: string, report: (error: unknown) => void) {
 	// The selected host loads project settings only after the resource loader grants trust.
 	const sourceSettings = options.settingsManager ?? pi.SettingsManager.create(cwd, agentDir, options.agentExtensionPath === undefined ? undefined : { projectTrusted: false });
-	let selectedAgent: string | undefined;
-	if (options.agentExtensionPath !== undefined) {
-		if (!isAbsolute(options.agentExtensionPath)) throw new Error("The selected Agent entrypoint must be an absolute file path");
-		selectedAgent = realpathSync(options.agentExtensionPath);
-		if (!statSync(selectedAgent).isFile()) throw new Error("The selected Agent entrypoint must be a file");
-	}
-	const settingsManager = selectedAgent === undefined ? sourceSettings : selectedAgentSettingsManager(pi, sourceSettings, selectedAgent, report);
-	const extensionPaths = selectedAgent === undefined ? options.extensionPaths : [...new Set([selectedAgent, ...(options.extensionPaths ?? []).map(path => selectAgentEntry(path, selectedAgent))])];
-	return { settingsManager, extensionPaths, selectedAgent };
+	if (options.agentExtensionPath === undefined) return { settingsManager: sourceSettings, extensionPaths: options.extensionPaths, selectedAgent: undefined, packageSources: [] };
+	if (!isAbsolute(options.agentExtensionPath)) throw new Error("The selected Agent entrypoint must be an absolute file path");
+	const selectedAgent = realpathSync(options.agentExtensionPath);
+	if (!statSync(selectedAgent).isFile()) throw new Error("The selected Agent entrypoint must be a file");
+	const selection: AgentSelection = { agent: selectedAgent, package: agentPackage(selectedAgent), replaced: [], report };
+	const settingsManager = selectedAgentSettingsManager(pi, sourceSettings, selection, { global: agentDir, project: join(cwd, pi.CONFIG_DIR_NAME) });
+	const extensionPaths = [...new Set([selectedAgent, ...(options.extensionPaths ?? []).map(path => selectAgentEntry(path, selectedAgent))])];
+	return { settingsManager, extensionPaths, selectedAgent, packageSources: selection.replaced };
 }
 
 function unselectedAgentContribution(data: unknown, selected: string | undefined): Error | undefined {
@@ -735,7 +828,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 	const cwd = resolve(options.cwd);
 	const agentDir = options.agentDir === undefined ? pi.getAgentDir() : resolve(options.agentDir);
 	const report = options.onReport ?? (() => {});
-	const { settingsManager, extensionPaths, selectedAgent } = selectedAgentResources(pi, options, cwd, agentDir, report);
+	const { settingsManager, extensionPaths, selectedAgent, packageSources } = selectedAgentResources(pi, options, cwd, agentDir, report);
 	const canonicalAgent = selectedAgent ?? defaultAgentEntrypoint;
 
 	const bus = pi.createEventBus();
@@ -860,7 +953,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 		requireSelectedAgent(selectedAgent, matched, selectionError);
 		const inventory = buildInventory(matched, loadedPaths, loaded.errors);
 		const commands = buildCommands(matched);
-		const builtin = buildBuiltin(pi, services, inventory, controller.signal);
+		const builtin = buildBuiltin(pi, services, inventory, packageSources, controller.signal);
 		const registry = Durable.createRegistry();
 		registry.install(builtin);
 		const host: DurableContributionHost = {

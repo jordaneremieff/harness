@@ -2831,10 +2831,33 @@ loading, project trust, and configured provider registrations. `ModelRuntime`
 supplies Durable's public model interface directly.
 
 Each native runner explicitly selects its sibling `extensions/agent/index.ts`
-before configured extension factories run. Only configured local package or
+before configured extension factories run. Configured local package or
 extension references to an `extensions/agent/index.ts` entrypoint redirect to that
 selected source. Other configured packages, extensions, skills and prompts keep
-their settings and SDK project-trust scopes. The selected-source settings adapter
+their settings and SDK project-trust scopes, with one exception for a second
+copy of the runner's own package.
+
+Pi settings can name another directory of the package that holds the runner:
+the same `package.json` name, with its own `extensions/agent/index.ts`. This
+is the state after an activation switch, while the starting process still runs
+the release it loaded. The host then loads the runner's package directory in
+place of the configured one. It replaces the package as a whole and keeps the
+entry's other fields, so a host never runs the Agent of one copy beside the
+extensions, skills, and prompts of another. A host therefore runs the release
+of the process that started it, and three facts stay separate:
+
+- the configured directory is the package entry in Pi settings;
+- the loaded directory is the one in each contribution `source` of the host's
+  status inventory;
+- a replacement names both. The host writes one report line for each replaced
+  directory, and its conversations carry a `package_source` prompt section
+  with the configured and the loaded directory.
+
+A local package under another name that carries an Agent is not a copy of the
+runner's package; the host rejects it as an unselected Agent. The settings
+resolution that precedes independent contributed work selects the Agent and
+package copy of its own process in the same way, so it accepts what the host
+it starts will load. The selected-source settings adapter
 keeps SDK changes in the current process without rewriting global or project
 settings files. Settings load errors retain their global or project scope and
 source path in reports and returned SDK errors. Untrusted project settings stay

@@ -123,6 +123,80 @@ test("rejects another Agent from a configured package directory before native in
 	} finally { await services?.close(); }
 });
 
+/** One directory of a fixture package: its manifest, an Agent emitter and one more native extension. */
+function packageCopy(root: string, directory: string, name: string, extension: string) {
+	const packageRoot = join(root, directory);
+	const agent = join(packageRoot, "extensions", "agent", "index.ts"), extra = join(packageRoot, "extensions", "extra", "index.ts");
+	const agentMarker = join(root, `${directory}-agent-factory`), extraMarker = join(root, `${directory}-extra-factory`);
+	mkdirSync(dirname(agent), { recursive: true });
+	mkdirSync(dirname(extra), { recursive: true });
+	writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name, version: "1.0.0", pi: { extensions: ["./extensions"] } }));
+	writeFileSync(agent, emitter("agent", agentMarker));
+	writeFileSync(extra, emitter(extension, extraMarker));
+	return { packageRoot, agent, agentMarker, extraMarker };
+}
+
+test("loads the runner's package copy when settings name another directory of the same package", { timeout: 20000 }, async t => {
+	const f = fixture(t);
+	const root = realpathSync(f.root);
+	const runner = packageCopy(root, "release-runner", "selection-package", "selection.runner-extra");
+	const configured = packageCopy(root, "release-configured", "selection-package", "selection.configured-extra");
+	const path = join(f.agentDir, "settings.json");
+	const settings = JSON.stringify({ packages: [{ source: relative(f.agentDir, configured.packageRoot), skills: [] }], cacheWarming: "off", retry: { enabled: false } });
+	writeFileSync(path, settings);
+	const reports: unknown[] = [];
+	const services = await createDurableServices({
+		cwd: f.cwd, agentDir: f.agentDir, storageId: "package-copy-selection", packageDir: getPackageDir(),
+		modelRuntime: await createTestRuntime(), trusted: false, agentExtensionPath: runner.agent,
+		onReport: error => { reports.push(error); },
+	});
+	try {
+		const contributions = services.inventory.contributions;
+		assert.deepEqual(contributions.filter(item => item.name === "agent").map(item => item.source), [runner.agent]);
+		assert.ok(contributions.some(item => item.name === "selection.runner-extra"));
+		assert.ok(!contributions.some(item => item.name === "selection.configured-extra"));
+		assert.ok(!services.services.resourceLoader.getExtensions().extensions.some(item => item.resolvedPath.startsWith(configured.packageRoot)));
+		assert.equal(existsSync(configured.agentMarker), false);
+		assert.equal(existsSync(configured.extraMarker), false);
+		assert.equal(existsSync(runner.agentMarker), true);
+		assert.deepEqual(services.services.settingsManager.getPackages(), [{ source: runner.packageRoot, skills: [] }], "the entry keeps its other fields");
+		const lines = reports.filter((item): item is string => typeof item === "string");
+		assert.equal(lines.length, 1, "one report for one replaced directory");
+		assert.ok(lines[0]?.includes(configured.packageRoot) && lines[0].includes(runner.packageRoot));
+		assert.deepEqual(reports.filter(item => typeof item !== "string"), []);
+		const section = services.registry.snapshot().sections().find(({ section }) => section.key === "package_source")?.section;
+		assert.equal(await section?.render({} as never, BACKGROUND_CONTEXT), [
+			"Pi settings configure a package directory that this conversation's host did not load. The host loaded the copy of that package that its starting process runs:",
+			`- configured ${configured.packageRoot}; loaded ${runner.packageRoot}`,
+		].join("\n"));
+		assert.equal(readFileSync(path, "utf8"), settings);
+	} finally { await services.close(); }
+});
+
+test("keeps a configured package under another name, and rejects its Agent", { timeout: 20000 }, async t => {
+	const f = fixture(t);
+	const root = realpathSync(f.root);
+	const runner = packageCopy(root, "release-runner", "selection-package", "selection.runner-extra");
+	const configured = packageCopy(root, "release-configured", "selection-other-package", "selection.configured-extra");
+	const path = join(f.agentDir, "settings.json");
+	const settings = JSON.stringify({ packages: [relative(f.agentDir, configured.packageRoot)], cacheWarming: "off", retry: { enabled: false } });
+	writeFileSync(path, settings);
+	const reports: unknown[] = [];
+	let services: Awaited<ReturnType<typeof createDurableServices>> | undefined;
+	try {
+		await assert.rejects(async () => {
+			services = await createDurableServices({
+				cwd: f.cwd, agentDir: f.agentDir, storageId: "package-name-selection", packageDir: getPackageDir(),
+				modelRuntime: await createTestRuntime(), trusted: false, agentExtensionPath: runner.agent,
+				onReport: error => { reports.push(error); },
+			});
+		}, /unselected Agent contribution/u);
+		assert.equal(existsSync(configured.agentMarker), true);
+		assert.deepEqual(reports.filter(item => typeof item === "string"), []);
+		assert.equal(readFileSync(path, "utf8"), settings);
+	} finally { await services?.close(); }
+});
+
 test("refuses a selected entrypoint without its native Agent contribution", async t => {
 	const f = fixture(t);
 	await assert.rejects(createDurableServices({
