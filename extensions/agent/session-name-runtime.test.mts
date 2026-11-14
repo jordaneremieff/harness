@@ -14,6 +14,9 @@ import { eventLog } from "./host-fixture.mts";
 import { machineConfig } from "./settings-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
+// Pi offline mode keeps loaded extensions from automatic network reads during these tests.
+process.env.PI_OFFLINE = "1";
+
 function answer(): AssistantMessage {
 	return {
 		role: "assistant", api: testModel.api, provider: testModel.provider, model: testModel.id,

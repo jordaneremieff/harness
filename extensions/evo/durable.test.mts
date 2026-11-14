@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
+import { type AgentSessionServices, getPackageDir, VERSION } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
@@ -15,10 +16,14 @@ import {
 	type DurableInventory,
 } from "./durable.ts";
 import { buildEvoKickoff } from "./kickoff.ts";
-import { readPiReleaseIntake } from "./release.ts";
+import { distTagsUrl, PI_HOST_PACKAGE, PI_PUBLICATION_DEADLINE_MS, readPiReleaseIntake } from "./release.ts";
+import { controlledRegistry, nextPatch, observedTimes, withoutObservedTimes } from "./release-fixture.mts";
 
 const HARNESS_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const ENTRYPOINT = fileURLToPath(new URL("./index.ts", import.meta.url));
+
+// The command reads published versions; offline mode keeps tests without a controlled registry off the network.
+process.env.PI_OFFLINE = "1";
 
 function inventoryFor(contribution: DurableContribution): DurableInventory {
 	return {
@@ -84,6 +89,29 @@ async function userTexts(conversation: Durable.Conversation): Promise<string[]> 
 	});
 }
 
+async function normalizedUserTexts(conversation: Durable.Conversation): Promise<string[]> {
+	return (await userTexts(conversation)).map(withoutObservedTimes);
+}
+
+function gitShow(revision: string): string {
+	return execFileSync("git", ["-C", HARNESS_ROOT, "show", revision], { encoding: "utf8", maxBuffer: 4_000_000 });
+}
+
+/** The declared Pi packages and their resolved versions, read independently from local main. */
+function mainCheckout() {
+	const commit = execFileSync("git", ["-C", HARNESS_ROOT, "rev-parse", "refs/heads/main^{commit}"], { encoding: "utf8" }).trim();
+	const manifest = JSON.parse(gitShow(`${commit}:package.json`));
+	const lockfile = JSON.parse(gitShow(`${commit}:package-lock.json`));
+	const marker = /<!-- pi-release-reviewed-through: (\S+) -->/.exec(gitShow(`${commit}:docs/pi-durable-harness.md`))?.[1];
+	const declared = [
+		...Object.entries(manifest.dependencies ?? {}).map(([name, range]) => ({ name, relation: "dependency", range })),
+		...Object.entries(manifest.peerDependencies ?? {}).map(([name, range]) => ({ name, relation: "peer", range })),
+	]
+		.filter((entry) => entry.name.startsWith("@earendil-works/"))
+		.map((entry) => ({ ...entry, version: lockfile.packages[`node_modules/${entry.name}`]?.version as string }));
+	return { commit, marker, declared };
+}
+
 test("the contribution offers the evo command and no model tools", async () => {
 	const contribution = createEvoContribution({ source: ENTRYPOINT });
 	assert.equal(contribution.name, "evo");
@@ -121,7 +149,7 @@ test("identical invocations submit separately and a retried invocation submits o
 			invocationId: "evo-invocation-1",
 		});
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
-		assert.deepEqual(await userTexts(conversation), [expected]);
+		assert.deepEqual(await normalizedUserTexts(conversation), [withoutObservedTimes(expected)]);
 
 		const retry = await command.run({
 			args: "Improve document explanations",
@@ -133,7 +161,7 @@ test("identical invocations submit separately and a retried invocation submits o
 		});
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
 		assert.equal(retry, first);
-		assert.deepEqual(await userTexts(conversation), [expected]);
+		assert.deepEqual(await normalizedUserTexts(conversation), [withoutObservedTimes(expected)]);
 
 		const second = await command.run({
 			args: "Improve document explanations",
@@ -145,7 +173,7 @@ test("identical invocations submit separately and a retried invocation submits o
 		});
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
 		assert.notEqual(second, first);
-		assert.deepEqual(await userTexts(conversation), [expected, expected]);
+		assert.deepEqual(await normalizedUserTexts(conversation), [expected, expected].map(withoutObservedTimes));
 
 		const answers = (await conversation.context(BACKGROUND_CONTEXT)).messages.filter(
 			(message) => message.role === "assistant",
@@ -176,10 +204,11 @@ test("the invocation workspace comes from the host, not the conversation agent c
 			invocationId: "evo-invocation-cwd",
 		});
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
-		assert.deepEqual(
-			await userTexts(conversation),
-			[buildEvoKickoff({ harnessRoot: HARNESS_ROOT, invocationCwd: "/workspace/host-project", origin: "operator", release })],
-		);
+		assert.deepEqual(await normalizedUserTexts(conversation), [
+			withoutObservedTimes(
+				buildEvoKickoff({ harnessRoot: HARNESS_ROOT, invocationCwd: "/workspace/host-project", origin: "operator", release }),
+			),
+		]);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 	}
@@ -203,11 +232,14 @@ test("only a stated operator invocation admits the command's grant", async () =>
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
 
 		const texts = await userTexts(conversation);
-		assert.deepEqual(texts, [
-			buildEvoKickoff({ ...base, origin: "model", invocation: "task:41" }),
-			buildEvoKickoff({ ...base, origin: "unknown", invocation: "evo-invocation-unstated" }),
-			buildEvoKickoff({ ...base, origin: "operator" }),
-		]);
+		assert.deepEqual(
+			texts.map(withoutObservedTimes),
+			[
+				buildEvoKickoff({ ...base, origin: "model", invocation: "task:41" }),
+				buildEvoKickoff({ ...base, origin: "unknown", invocation: "evo-invocation-unstated" }),
+				buildEvoKickoff({ ...base, origin: "operator" }),
+			].map(withoutObservedTimes),
+		);
 		for (const text of texts.slice(0, 2)) {
 			assert.doesNotMatch(text, /This invocation (?:also )?authorizes/);
 			assert.match(text, /This invocation is not an operator grant/);
@@ -241,6 +273,85 @@ test("an invalid direction is refused before any submission", async () => {
 		);
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
 		assert.deepEqual(await userTexts(conversation), []);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
+});
+
+test("the native kickoff carries the four version facts from their own sources", { timeout: 20_000 }, async (t) => {
+	const newer = nextPatch(VERSION);
+	const registry = controlledRegistry(t, (name) => ({ latest: name === PI_HOST_PACKAGE ? newer : VERSION }));
+	const contribution = createEvoContribution({ source: ENTRYPOINT });
+	const command = contribution.commands?.[0];
+	assert.ok(command);
+	const { harness, conversation, host } = await openHarness(contribution, "/workspace/current-project");
+	try {
+		const main = mainCheckout();
+		const started = Date.now();
+		await command.run({
+			args: "",
+			origin: "operator",
+			conversation,
+			context: BACKGROUND_CONTEXT,
+			host,
+			invocationId: "evo-invocation-facts",
+		});
+		const finished = Date.now();
+		await harness.waitForIdle(BACKGROUND_CONTEXT);
+		const [text] = await userTexts(conversation);
+		const times = observedTimes(text);
+		assert.equal(times.length, 2);
+		for (const time of times) {
+			assert.ok(Date.parse(time) >= Math.floor(started / 1_000) * 1_000 && Date.parse(time) <= finished, time);
+		}
+		const lines = text.split("\n");
+		for (const line of [
+			`- Published versions: the "latest" dist-tag on https://registry.npmjs.org, observed ${times[0]}.`,
+			`- Running host: Pi ${JSON.stringify(VERSION)}, reported by the coding-agent module that the process running this command loaded from ${JSON.stringify(getPackageDir())}. Other Pi processes, including retained agent hosts, can run other versions.`,
+			`- Checkout graph: "package-lock.json" at ${main.commit}, the tip of local main, observed ${times[1]}. It records what the checkout resolves, not what a running or retained process loaded.`,
+			`- Review coverage: reviewed-through ${main.marker} in "docs/pi-durable-harness.md" at ${main.commit}, the tip of local main.`,
+			`- Published coding-agent ${newer} is newer than the running host ${VERSION}: a Pi upgrade and a fresh process are pending.`,
+			...main.declared.map(
+				(entry) =>
+					`- ${entry.name} (${entry.relation} ${JSON.stringify(entry.range)}): published ${entry.name === PI_HOST_PACKAGE ? newer : VERSION}; checkout ${entry.version}.`,
+			),
+		]) {
+			assert.ok(lines.includes(line), `missing kickoff line: ${line}`);
+		}
+		assert.deepEqual(
+			registry.requests.map((request) => request.url).sort(),
+			[...new Set([PI_HOST_PACKAGE, ...main.declared.map((entry) => entry.name)])].map(distTagsUrl).sort(),
+		);
+		assert.ok(registry.requests.every((request) => request.method === "GET"));
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
+});
+
+test("a silent registry delays the native kickoff by no more than the publication deadline", { timeout: 20_000 }, async (t) => {
+	controlledRegistry(t, () => "hang");
+	const contribution = createEvoContribution({ source: ENTRYPOINT });
+	const command = contribution.commands?.[0];
+	assert.ok(command);
+	const { harness, conversation, host } = await openHarness(contribution, "/workspace/current-project");
+	try {
+		const started = performance.now();
+		await command.run({
+			args: "Improve document explanations",
+			origin: "operator",
+			conversation,
+			context: BACKGROUND_CONTEXT,
+			host,
+			invocationId: "evo-invocation-silent-registry",
+		});
+		const elapsed = performance.now() - started;
+		assert.ok(elapsed >= PI_PUBLICATION_DEADLINE_MS - 20 && elapsed < PI_PUBLICATION_DEADLINE_MS + 2_000, `${elapsed} ms`);
+		await harness.waitForIdle(BACKGROUND_CONTEXT);
+		const [text] = await userTexts(conversation);
+		assert.match(text, new RegExp(`^- Published versions: unavailable at \\S+: "No registry answer within ${PI_PUBLICATION_DEADLINE_MS} ms\\."$`, "m"));
+		assert.match(text, /^- Checkout graph: "package-lock\.json" at [a-f0-9]{40}, the tip of local main/m);
+		assert.match(text, /A registry failure is not a gate\./);
+		assert.match(text, /<evo-direction-json>\n"Improve document explanations"/);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 	}

@@ -98,11 +98,13 @@ shared contract and derivation.
 ## Release intake
 
 Latest-version alignment and release review are separate obligations. Every run
-checks the latest published versions of existing Pi dependencies and peers,
-compares them with the running host and checkout graph, and repairs a stale graph
-before unrelated directed work. Wildcard declarations remain; the lockfile records
-the current resolved versions. Upgrade defects require consumer repairs, not an
-older dependency target. Dependency versions do not establish review coverage.
+starts from the [version facts](#version-facts) that the command reads: the
+latest published versions of existing Pi dependencies and peers, the running
+host, the checkout graph, and review coverage. The coordinator repairs a stale
+graph before unrelated directed work. Wildcard declarations remain; the lockfile
+records the current resolved versions. Upgrade defects require consumer repairs,
+not an older dependency target. Dependency versions do not establish review
+coverage.
 
 The coordinator selects main or an isolated development worktree through the
 [development workflow](../../docs/conventions/worktrees.md). The package root in
@@ -113,11 +115,70 @@ development worktrees and the repository's required checks.
 If publication is ahead of the running host, repository alignment continues.
 The coordinator identifies the required Pi upgrade and fresh process; those host
 changes require operator authority beyond the invocation's repository grant.
-The command itself performs no publication lookup, fetch, install, or hot upgrade.
-Before activation, follow
+The command itself performs no Git fetch, package install or update, activation,
+or hot upgrade; its only network access is the bounded registry read described
+below. Before activation, follow
 [storage host retirement](../../docs/pi-durable-harness.md#storage-host-retirement)
 for loaded-runtime checks and a safe process/source switch. A newer dependency
 graph does not establish compatibility with an older retained host.
+
+### Version facts
+
+The kickoff states four version facts. Each fact names its own source and
+failure state, and none establishes another:
+
+- **Published versions:** the registry's `latest` dist-tag for the running
+  host's package, `@earendil-works/pi-coding-agent`, and for every
+  `@earendil-works` dependency and peer that `package.json` on local `main`
+  declares. The command sends one GET request per package to
+  `https://registry.npmjs.org/-/package/<name>/dist-tags`, follows no redirect,
+  and records when the read ended.
+- **Running host:** `VERSION` and `getPackageDir()` of the coding-agent module
+  that the process running the command loaded. In an ordinary session that is
+  the running Pi installation. In a native agent host it is the installation
+  that host selected, which a retained host keeps after a Pi upgrade. Other
+  processes can run other versions.
+- **Checkout graph:** `package-lock.json` at the tip of local `main`, the same
+  commit as review coverage. For each declared package the kickoff gives its
+  relation, its declared range, its top-level resolved version, and other
+  resolved copies whose version differs. Dirty files and other branches do not
+  count. The graph shows what the checkout resolves, not what a running or
+  retained process loaded.
+- **Review coverage:** the `pi-release-reviewed-through` declaration that
+  [release review](#release-review) describes.
+
+A comparison follows the facts. It compares published and running coding-agent,
+published and resolved versions per package, and each resolved version with the
+running host's version. It also names declared ranges other than `*`. These
+lines report differences; they do not merge the facts. When a checkout version
+differs from the running host's version, activating that graph beside the host
+follows storage host retirement.
+
+The kickoff waits for these reads. One deadline of 3,000 ms covers all registry
+requests, which run in parallel; a request that ignores cancellation cannot
+extend it. Each answer is capped at 16,000 bytes, and the read covers at most
+32 declared packages. Git reads keep the limits that release review states. The
+kickoff lists at most eight other resolved copies per package, with a count of
+the rest. A Durable command call ends the registry read when its caller cancels
+it.
+
+Each fact records its own failure with a reason and an observation time. Published
+versions are partial when some packages have no answer, or when the declared set
+on local `main` is unavailable and only the host package was read. Pi's offline mode
+(`--offline`, or `PI_OFFLINE` set to `1`, `true`, or `yes`) skips the registry
+read and reports why. An unavailable or partial registry read is not a gate: the
+kickoff tells the coordinator to report latest-version alignment as unverified
+for the missing packages and to complete the rest of the alignment and the
+independent authorised work. A later direct registry read can supply the missing
+fact.
+
+Intake only reads. It runs `git rev-parse` and `git show` against local `main`,
+reads the installed changelog, and sends the registry requests. It never installs
+or updates packages, writes the reviewed-through declaration, or activates a
+release. Package installation and alignment remain coordinator work under the
+[development workflow](../../docs/conventions/worktrees.md).
+
+### Release review
 
 After an upgrade, start a new Pi process and run bare `/evo`. The command reads
 `VERSION` and `getPackageDir()` from the running Pi host and its cumulative
@@ -130,8 +191,8 @@ The baseline is the explicit `pi-release-reviewed-through` declaration in
 It describes completed release review, not dependency installation. The command
 does not use the lockfile or a checkout-version row as review evidence. It reads
 the document by immutable commit at the tip of local `main`. Dirty files and
-provisional branches do not suppress pending intake. Review coverage and
-publication are separate facts: a marker committed on local `main` counts whether
+provisional branches do not suppress pending intake. Review coverage and the push
+of `main` are separate facts: a marker committed on local `main` counts whether
 or not `main` is pushed. Evo does not fetch.
 
 If the declaration is `unknown` or coverage evidence is unavailable, a bare run
@@ -166,7 +227,8 @@ claims interval coverage. It rejects malformed, duplicate, and out-of-order
 release headings. Numeric version gaps do not imply missing publications. Coverage
 means every entry in the installed file, not proof that upstream omitted none.
 
-Each Git operation has a five-second timeout and a 128,000-byte output cap.
+Each Git operation has a five-second timeout and a 128,000-byte output cap,
+except the lockfile read, which stops at 2,000,000 bytes.
 Changelog reads stop at 2,000,000 bytes; the parser accepts at most 512 release
 headings. Exceeding either input limit produces actionable unavailable evidence.
 Embedded notes have a 40,000-byte UTF-8 cap, measured after JSON escaping.
@@ -180,7 +242,7 @@ The coordinator judges the direction's focus; the command does not classify
 free text. It adopts new capabilities where they serve the operator's work.
 The coordinator advances coverage only after complete review, resolved applicable
 findings, required checks, and accepted adoption. The commit on `main` includes
-the marker only with completed adoption. Publication is reported as its own
+the marker only with completed adoption. The push of `main` is reported as its own
 state and does not hold coverage. Partial, failed, and unrelated directed runs leave coverage unchanged.
 The command itself never writes the marker.
 
@@ -355,16 +417,23 @@ the ordinary command.
 `durable.test.mts` runs the contribution in a real Harness over `MemoryStorage`
 with the pi-ai faux provider. It checks kickoff admission, separate submissions
 for identical invocations, reuse for a retried invocation, the host-cwd
-binding, direction refusal, and the absence of model tools.
+binding, direction refusal, the absence of model tools, and the version facts
+of a native kickoff.
 
 ## Implementation and checks
 
 - `index.ts` registers `/evo`, emits the Durable contribution, resolves its
   evidence root, reads release intake, reports invalid input, names an unnamed
   session from the direction outside RPC mode, and selects follow-up delivery.
-- `release.ts` reads committed review coverage and bounds cumulative release notes.
+- `release.ts` reads the four version facts: published versions, the running
+  host, the checkout graph on local `main`, and committed review coverage with
+  bounded cumulative release notes.
 - `release.test.mts` checks source validation, committed-coverage boundaries, context
-  limits, recovery priority, and directed focus with isolated Git fixtures.
+  limits, recovery priority, and directed focus. It also checks newer publication,
+  a divergent checkout graph, unavailable, partial, silent and offline registry
+  reads, cancellation, graph failures, read-only intake, and section forgery.
+  `release-fixture.mts` supplies the isolated Git fixtures and a controlled
+  registry transport, so no test reaches the network.
 - `command.ts` sanitizes and bounds the direction.
 - `kickoff.ts` frames intent, invocation origin, direction, authority, and the
   required workflow read. The command's grant appears only for an operator origin.
@@ -373,7 +442,9 @@ binding, direction refusal, and the absence of model tools.
 - `durable.test.mts` runs the contribution in a real Durable Harness: admission,
   separate identical invocations, retry reuse, the host-cwd binding,
   direction refusal, and the admitted kickoff and answer for an operator, a
-  model, and an unstated origin.
+  model, and an unstated origin. With a controlled registry it checks the four
+  version facts of a native kickoff against independent reads of local `main`,
+  and the publication deadline when the registry never answers.
 - `evo.test.mts` checks parser boundaries, JSON isolation, direction precedence,
   the complete grant and reservations of an operator kickoff, the absence of
   that grant for other origins, and semantic requirements across the
@@ -384,7 +455,11 @@ binding, direction refusal, and the absence of model tools.
   requests, preflight lifetime, active follow-up delivery, retained outcome, and
   error routing without live credentials. An isolated harness fixture verifies
   pending release delivery even when its lockfile matches the running host, and
-  verifies that dispatch does not write coverage.
+  verifies that dispatch does not write coverage. Another fixture checks the four
+  version facts from a controlled registry and a divergent graph, and the
+  publication deadline when the registry never answers.
+- Tests without a controlled registry set Pi's offline mode, so the command's
+  registry read never reaches the network.
 
 ```bash
 node --test extensions/evo/*.test.mts

@@ -24,8 +24,18 @@ import type { ProvisionalName } from "../../session-name/lifecycle.ts";
 import { MAX_DIRECTION_CODE_POINTS } from "./command.ts";
 import registerEvo from "./index.ts";
 import { buildEvoKickoff } from "./kickoff.ts";
-import { readPiReleaseIntake } from "./release.ts";
-import { releaseFixture } from "./release-fixture.mts";
+import { PI_HOST_PACKAGE, PI_PUBLICATION_DEADLINE_MS, readPiReleaseIntake } from "./release.ts";
+import {
+	controlledRegistry,
+	nextPatch,
+	observedTimes,
+	type RegistryAnswer,
+	releaseFixture,
+	withoutObservedTimes,
+} from "./release-fixture.mts";
+
+// The command reads published versions; offline mode keeps tests without a controlled registry off the network.
+process.env.PI_OFFLINE = "1";
 
 function deferred() {
 	let resolve!: () => void;
@@ -200,16 +210,18 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
 			].entries()) {
 				// Exact provider input establishes dispatch, not autonomous outcome quality.
 				assert.equal(
-					texts[index],
-					buildEvoKickoff({
-						harnessRoot: resolve(fileURLToPath(new URL("../..", import.meta.url))),
-						release: await readPiReleaseIntake({
+					withoutObservedTimes(texts[index]),
+					withoutObservedTimes(
+						buildEvoKickoff({
 							harnessRoot: resolve(fileURLToPath(new URL("../..", import.meta.url))),
+							release: await readPiReleaseIntake({
+								harnessRoot: resolve(fileURLToPath(new URL("../..", import.meta.url))),
+							}),
+							invocationCwd: runtime.cwd,
+							origin: "operator",
+							direction,
 						}),
-						invocationCwd: runtime.cwd,
-						origin: "operator",
-						direction,
-					}),
+					),
 				);
 				assert.match(texts[index], /docs\/agent-delivery.md.*in full before selection or governed work/);
 				assert.match(
@@ -334,15 +346,7 @@ test("real evo command retains pending releases despite aligned dependencies and
 	const baseline = headings[installedIndex + 2];
 	const fixture = releaseFixture(baseline);
 	t.after(fixture.close);
-	const extensionDir = join(fixture.root, "extensions", "evo");
-	mkdirSync(extensionDir, { recursive: true });
-	for (const file of ["index.ts", "command.ts", "kickoff.ts", "release.ts", "durable.ts"]) {
-		copyFileSync(new URL(file, import.meta.url), join(extensionDir, file));
-	}
-	mkdirSync(join(fixture.root, "session-name"), { recursive: true });
-	for (const file of ["index.ts", "lifecycle.ts"]) {
-		copyFileSync(new URL(`../../session-name/${file}`, import.meta.url), join(fixture.root, "session-name", file));
-	}
+	const entrypoint = installFixtureExtension(fixture.root);
 	writeFileSync(
 		join(fixture.root, "package-lock.json"),
 		JSON.stringify({
@@ -360,7 +364,7 @@ test("real evo command retains pending releases despite aligned dependencies and
 	const markerPath = join(fixture.root, "docs", "pi-durable-harness.md");
 	const before = readFileSync(markerPath, "utf8");
 	const commitBefore = fixture.git("rev-parse", "HEAD");
-	const runtime = await ordinarySession("print", undefined, undefined, join(extensionDir, "index.ts"));
+	const runtime = await ordinarySession("print", undefined, undefined, entrypoint);
 	try {
 		for (const direction of ["", " Improve document explanations"]) {
 			const settled = deferred();
@@ -373,19 +377,21 @@ test("real evo command retains pending releases despite aligned dependencies and
 		}
 		const texts = userTexts(runtime.requests[1]);
 		assert.equal(
-			texts[0],
-			buildEvoKickoff({
-				harnessRoot: realpathSync(fixture.root),
-				invocationCwd: runtime.cwd,
-				origin: "operator",
-				release: expected,
-			}),
+			withoutObservedTimes(texts[0]),
+			withoutObservedTimes(
+				buildEvoKickoff({
+					harnessRoot: realpathSync(fixture.root),
+					invocationCwd: runtime.cwd,
+					origin: "operator",
+					release: expected,
+				}),
+			),
 		);
 		assert.match(texts[0], /purpose is the harness-wide release intake/);
 		assert.match(texts[1], /pending lead/);
 		for (const text of texts) {
 			assert.match(text, /Latest Pi alignment applies to every run/);
-			assert.match(text, /Check the latest published versions/);
+			assert.match(text, /Start from the Pi version facts below/);
 			assert.match(text, /Audit every extension, skill, prompt, and script/);
 		}
 		assert.match(texts[1], /When it targets Pi release intake/);
@@ -399,6 +405,85 @@ test("real evo command retains pending releases despite aligned dependencies and
 		await runtime.close();
 	}
 });
+
+test("real evo command delivers four separate version facts and bounds a silent registry", {
+	timeout: 30000,
+}, async (t) => {
+	const durable = "@earendil-works/pi-durable";
+	const newer = nextPatch(VERSION);
+	// Review coverage matches the running host; the graph resolves a newer Durable than the host.
+	const fixture = releaseFixture(VERSION, undefined, { [PI_HOST_PACKAGE]: VERSION, [durable]: newer });
+	t.after(fixture.close);
+	const commit = fixture.git("rev-parse", "HEAD").trim();
+	let answer: RegistryAnswer | undefined = { latest: newer };
+	const registry = controlledRegistry(t, () => answer ?? "hang");
+	const runtime = await ordinarySession("print", undefined, undefined, installFixtureExtension(fixture.root));
+	try {
+		const started = Date.now();
+		await settleCommand(runtime, "/evo");
+		const finished = Date.now();
+		const [text] = userTexts(runtime.requests[0]);
+		const times = observedTimes(text);
+		assert.equal(times.length, 2);
+		for (const time of times) {
+			assert.ok(Date.parse(time) >= Math.floor(started / 1_000) * 1_000 && Date.parse(time) <= finished, time);
+		}
+		const lines = text.split("\n");
+		for (const line of [
+			`- Published versions: the "latest" dist-tag on https://registry.npmjs.org, observed ${times[0]}.`,
+			`- Running host: Pi ${JSON.stringify(VERSION)}, reported by the coding-agent module that the process running this command loaded from ${JSON.stringify(getPackageDir())}. Other Pi processes, including retained agent hosts, can run other versions.`,
+			`- Checkout graph: "package-lock.json" at ${commit}, the tip of local main, observed ${times[1]}. It records what the checkout resolves, not what a running or retained process loaded.`,
+			`- Review coverage: reviewed-through ${VERSION} in "docs/pi-durable-harness.md" at ${commit}, the tip of local main.`,
+			`- ${PI_HOST_PACKAGE} (peer "*"): published ${newer}; checkout ${VERSION}.`,
+			`- ${durable} (dependency "*"): published ${newer}; checkout ${newer}.`,
+			`- Published coding-agent ${newer} is newer than the running host ${VERSION}: a Pi upgrade and a fresh process are pending.`,
+			`- The checkout graph is behind the published versions: ${PI_HOST_PACKAGE} ${VERSION} (published ${newer}).`,
+			`- Checkout versions that differ from the running host's ${VERSION}: ${durable} ${newer}. Activating this graph beside that host follows docs/pi-durable-harness.md#storage-host-retirement.`,
+			`Committed review coverage matches installed Pi ${VERSION}; no newer listed release is pending.`,
+		]) {
+			assert.ok(lines.includes(line), `missing kickoff line: ${line}`);
+		}
+		assert.equal(registry.requests.length, 2);
+		assert.ok(registry.requests.every((request) => request.method === "GET"));
+
+		answer = undefined;
+		const settled = deferred();
+		const stop = runtime.session.subscribe((event) => {
+			if (event.type !== "agent_settled") return;
+			stop();
+			settled.resolve();
+		});
+		const silentStart = performance.now();
+		await runtime.session.prompt("/evo Improve document explanations");
+		const delay = performance.now() - silentStart;
+		assert.ok(delay >= PI_PUBLICATION_DEADLINE_MS - 20 && delay < PI_PUBLICATION_DEADLINE_MS + 2_000, `${delay} ms`);
+		await settled.promise;
+		const silent = userTexts(runtime.requests[1]).at(-1) ?? "";
+		assert.match(silent, new RegExp(`^- Published versions: unavailable at \\S+: "No registry answer within ${PI_PUBLICATION_DEADLINE_MS} ms\\."$`, "m"));
+		assert.ok(silent.split("\n").includes(`- Review coverage: reviewed-through ${VERSION} in "docs/pi-durable-harness.md" at ${commit}, the tip of local main.`));
+		assert.match(silent, /A registry failure is not a gate\./);
+		assert.match(silent, /<evo-direction-json>\n"Improve document explanations"/);
+		assert.equal(fixture.git("rev-parse", "HEAD").trim(), commit);
+		assert.equal(fixture.git("status", "--porcelain", "--", "docs", "package.json", "package-lock.json"), "");
+		assert.deepEqual(runtime.errors, []);
+	} finally {
+		await runtime.close();
+	}
+});
+
+/** A copy of the extension whose package root, and so its local main, is the fixture repository. */
+function installFixtureExtension(root: string): string {
+	const extensionDir = join(root, "extensions", "evo");
+	mkdirSync(extensionDir, { recursive: true });
+	for (const file of ["index.ts", "command.ts", "kickoff.ts", "release.ts", "durable.ts"]) {
+		copyFileSync(new URL(file, import.meta.url), join(extensionDir, file));
+	}
+	mkdirSync(join(root, "session-name"), { recursive: true });
+	for (const file of ["index.ts", "lifecycle.ts"]) {
+		copyFileSync(new URL(`../../session-name/${file}`, import.meta.url), join(root, "session-name", file));
+	}
+	return join(extensionDir, "index.ts");
+}
 
 async function settleCommand(runtime: Awaited<ReturnType<typeof ordinarySession>>, text: string): Promise<void> {
 	const settled = deferred();

@@ -46,8 +46,8 @@ checkout versions do not establish that coverage.
 
 Evo reads the declaration from the tip of local main, by immutable commit.
 Dirty files and provisional declarations do not suppress intake. Review coverage
-and publication are separate facts: a declaration committed on local main counts
-whether or not main is pushed. Missing evidence or an
+and the push of main are separate facts: a declaration committed on local main
+counts whether or not main is pushed. Missing evidence or an
 invalid declaration requires baseline recovery, not substitution of an installed
 version or lockfile. The reader is `extensions/evo/release.ts`.
 
@@ -1133,8 +1133,10 @@ host operation identities. No ordinary/Durable parity claim follows from naming.
 After each Pi upgrade and before a host-dependent decision:
 
 - Resolve publication, active installation, checkout graph, and upstream refs
-  separately. Keep wildcard declarations and install the current lock graph in
-  affected checkouts.
+  separately. An `/evo` kickoff reports the first three with their sources and
+  observation times ([version facts](../extensions/evo/README.md#version-facts));
+  a retained process can still run another installation. Keep wildcard
+  declarations and install the current lock graph in affected checkouts.
 - Compare previous and current published package files, excluding source maps
   and release bundles. Re-read changed defining files and affected consumers.
   Carry a source claim forward only when unchanged bytes or inspected hunks

@@ -80,7 +80,7 @@ export function createEvoContribution(options: EvoContributionOptions): DurableC
 		async run(call) {
 			const invocation = parseEvoInvocation(call.args);
 			if (!invocation.ok) throw new Error(invocation.error);
-			const release = await readPiReleaseIntake({ harnessRoot: HARNESS_ROOT });
+			const release = await readPiReleaseIntake({ harnessRoot: HARNESS_ROOT, signal: call.context.abortSignal });
 			// Only a stated operator invocation carries the command's grant. An agent tool call
 			// and a caller that states no origin admit a kickoff that grants nothing itself.
 			const origin = call.origin ?? "unknown";

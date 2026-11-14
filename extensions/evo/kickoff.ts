@@ -1,7 +1,20 @@
 /** Construct the coordinator's bounded autonomous delivery request. */
 
-import type { PiReleaseIntake, PiReleaseSection } from "./release.ts";
-import { PI_RELEASE_NOTES_CAP_BYTES, releaseEvidenceString } from "./release.ts";
+import type {
+	PiCheckoutGraph,
+	PiDeclaredPackage,
+	PiPackageVersion,
+	PiPublication,
+	PiReleaseIntake,
+	PiReleaseSection,
+} from "./release.ts";
+import {
+	compareReleaseVersions,
+	isReleaseVersion,
+	PI_HOST_PACKAGE,
+	PI_RELEASE_NOTES_CAP_BYTES,
+	releaseEvidenceString,
+} from "./release.ts";
 
 /**
  * Who invoked the command. `operator`: a direct command surface. `model`: an agent tool call.
@@ -86,14 +99,165 @@ function releaseNotesBlock(releases: PiReleaseSection[]): string[] {
 	return lines;
 }
 
-const latestPiAlignment = (origin: EvoInvocationOrigin): string[] => [
+const latestPiAlignment = (origin: EvoInvocationOrigin, release: PiReleaseIntake | undefined): string[] => [
 	"Latest Pi alignment applies to every run, before unrelated directed work, subject to explicit operator restrictions:",
-	"- Check the latest published versions of the existing @earendil-works dependencies and peers. Compare publication, the running Pi host, and the resolved checkout graph separately; matching review coverage does not establish dependency alignment.",
+	release
+		? "- Start from the Pi version facts below. Published versions, the running host, the checkout graph, and review coverage are separate facts: matching review coverage does not establish dependency alignment, and checkout dependencies do not show what a running or retained process loaded. Read a source again only when its fact is unavailable or a change makes it stale."
+		: "- Check the latest published versions of the existing @earendil-works dependencies and peers. Compare publication, the running Pi host, and the resolved checkout graph separately; matching review coverage does not establish dependency alignment.",
 	"- Use docs/conventions/worktrees.md to select main or an isolated development worktree for writes. The harness package root is an evidence and discovery location, not permission to mutate a loaded release checkout.",
 	"- Keep wildcard Pi declarations. Where the graph is behind, run `npm update` for the @earendil-works packages, then `npm ci` in affected development worktrees, repair consumers, and run the required repository checks. An upgrade defect is work to repair now, not a reason to retain older dependencies. Dependency versions are not review coverage.",
 	`- If the latest published Pi is newer than the running host, continue independent repository alignment and identify the required Pi upgrade and new process. Those host changes need operator authority ${origin === "operator" ? "beyond this invocation's repository grant" : "that this invocation does not supply"}; do not hot-upgrade the running process or claim it uses the new graph.`,
+	"- If published versions are unavailable or partial, latest-version alignment stays unverified for the missing packages: report that with its reason and complete the rest of the alignment and the independent authorised work. A registry failure is not a gate.",
 	"- Before activation, follow docs/pi-durable-harness.md#storage-host-retirement. Do not combine a newer Durable/Chord graph with an older retained coding-agent host without the required host/source checks and safe process switch. Name an unresolved host boundary without blocking independent repository work.",
 ];
+
+function publishedLine(release: PiReleaseIntake): string {
+	const { publication } = release;
+	const source = `the ${jsonString(publication.tag)} dist-tag on ${publication.registry}, observed ${publication.observedAt}`;
+	switch (publication.state) {
+		case "observed":
+			return `- Published versions: ${source}.`;
+		case "partial":
+			return publication.reason === undefined
+				? `- Published versions: ${source}; the registry gave no version for some packages, as listed below.`
+				: `- Published versions: ${source}; partial: ${jsonString(publication.reason)}`;
+		case "unavailable":
+			return `- Published versions: unavailable at ${publication.observedAt}: ${jsonString(publication.reason ?? "No registry answer.")}`;
+	}
+}
+
+function graphLine(release: PiReleaseIntake): string {
+	const { graph } = release;
+	if (graph.state === "unavailable") {
+		return `- Checkout graph: unavailable at ${graph.observedAt}: ${jsonString(graph.reason ?? "No lockfile evidence.")}`;
+	}
+	const declared =
+		graph.packages.length === 0
+			? ` The manifest at that commit declares no @earendil-works dependencies or peers.`
+			: "";
+	return `- Checkout graph: ${jsonString(graph.lockfilePath)} at ${graph.commit}, the tip of local main, observed ${graph.observedAt}. It records what the checkout resolves, not what a running or retained process loaded.${declared}`;
+}
+
+function packageRows(release: PiReleaseIntake): string[] {
+	const { graph, publication } = release;
+	const declared = new Map(graph.packages.map((entry) => [entry.name, entry]));
+	const published = new Map(publication.packages.map((entry) => [entry.name, entry]));
+	const names = [...new Set([...published.keys(), ...declared.keys()])].sort();
+	return names.map((name) => packageRow(name, published.get(name), declared.get(name), graph.state === "observed"));
+}
+
+/** Only a validated numeric version reaches prompt text unquoted. */
+function knownVersion(fact: PiPackageVersion | undefined): string | undefined {
+	return fact?.version !== undefined && isReleaseVersion(fact.version) ? fact.version : undefined;
+}
+
+function versionText(fact: PiPackageVersion | undefined): string {
+	return knownVersion(fact) ?? `unavailable (${jsonString(fact?.reason ?? "Not read.")})`;
+}
+
+function packageRow(
+	name: string,
+	latest: PiPackageVersion | undefined,
+	entry: PiDeclaredPackage | undefined,
+	graphObserved: boolean,
+): string {
+	if (!entry) {
+		return graphObserved
+			? `- ${name} (not declared): published ${versionText(latest)}; checkout not declared.`
+			: `- ${name}: published ${versionText(latest)}; checkout unavailable.`;
+	}
+	const copies = entry.nested.map((copy) => `${jsonString(copy.version)} at ${jsonString(copy.path)}`);
+	if (entry.nestedOmitted > 0) copies.push(`and ${entry.nestedOmitted} more`);
+	const copyText = copies.length > 0 ? `; other resolved copies: ${copies.join(", ")}` : "";
+	return `- ${name} (${entry.relation} ${jsonString(entry.range)}): published ${versionText(latest)}; checkout ${versionText(entry)}${copyText}.`;
+}
+
+function hostComparison(release: PiReleaseIntake): string {
+	const host = release.installedVersion;
+	const latest = knownVersion(release.publication.packages.find((entry) => entry.name === PI_HOST_PACKAGE));
+	if (latest === undefined || !isReleaseVersion(host)) {
+		return "- Published versions and running host: not compared, because one of them is unavailable.";
+	}
+	const order = compareReleaseVersions(latest, host);
+	if (order === 0) return `- The running host runs the latest published coding-agent, ${host}.`;
+	return order > 0
+		? `- Published coding-agent ${latest} is newer than the running host ${host}: a Pi upgrade and a fresh process are pending.`
+		: `- The running host ${host} is newer than the latest published coding-agent, ${latest}.`;
+}
+
+function publicationComparison(graph: PiCheckoutGraph, publication: PiPublication): string[] {
+	const published = new Map(publication.packages.map((entry) => [entry.name, knownVersion(entry)]));
+	const behind: string[] = [];
+	const ahead: string[] = [];
+	const unknown: string[] = [];
+	for (const entry of graph.packages) {
+		const latest = published.get(entry.name);
+		const resolved = knownVersion(entry);
+		const order = resolved === undefined || latest === undefined ? undefined : compareReleaseVersions(resolved, latest);
+		if (order === undefined) unknown.push(entry.name);
+		else if (order < 0) behind.push(`${entry.name} ${resolved} (published ${latest})`);
+		else if (order > 0) ahead.push(`${entry.name} ${resolved} (published ${latest})`);
+	}
+	const lines: string[] = [];
+	if (behind.length > 0) lines.push(`- The checkout graph is behind the published versions: ${behind.join(", ")}.`);
+	if (ahead.length > 0) {
+		lines.push(`- The checkout graph resolves versions newer than the ${jsonString(publication.tag)} tag: ${ahead.join(", ")}.`);
+	}
+	if (unknown.length > 0) lines.push(`- Not compared with published versions: ${unknown.join(", ")}.`);
+	return lines.length > 0 ? lines : ["- The checkout graph resolves the latest published version of every declared package."];
+}
+
+function hostGraphComparison(graph: PiCheckoutGraph, host: string): string[] {
+	if (!isReleaseVersion(host)) return [];
+	const differs = graph.packages
+		.filter((entry) => knownVersion(entry) !== undefined && entry.version !== host)
+		.map((entry) => `${entry.name} ${entry.version}`);
+	if (differs.length > 0) {
+		return [
+			`- Checkout versions that differ from the running host's ${host}: ${differs.join(", ")}. Activating this graph beside that host follows docs/pi-durable-harness.md#storage-host-retirement.`,
+		];
+	}
+	return graph.packages.every((entry) => knownVersion(entry) !== undefined)
+		? [`- Every declared package in the checkout graph resolves ${host}, the running host's version.`]
+		: [];
+}
+
+function graphComparisons(release: PiReleaseIntake): string[] {
+	const { graph } = release;
+	if (graph.state === "unavailable") {
+		return ["- Checkout graph: not compared with the published versions or the running host, because it is unavailable."];
+	}
+	if (graph.packages.length === 0) return [];
+	const ranges = graph.packages
+		.filter((entry) => entry.range !== "*")
+		.map((entry) => `${entry.name} ${jsonString(entry.range)}`);
+	return [
+		...publicationComparison(graph, release.publication),
+		...hostGraphComparison(graph, release.installedVersion),
+		...(ranges.length > 0 ? [`- Declared ranges other than "*": ${ranges.join(", ")}. Keep wildcard Pi declarations.`] : []),
+	];
+}
+
+/** Four facts with their own sources; comparisons name differences without merging the facts. */
+function versionFactsBlock(release: PiReleaseIntake | undefined): string[] {
+	if (!release) return [];
+	const coverage =
+		release.baselineVersion !== undefined && release.baselineCommit !== undefined
+			? `- Review coverage: reviewed-through ${release.baselineVersion} in ${jsonString(release.baselinePath)} at ${release.baselineCommit}, the tip of local main.`
+			: "- Review coverage: unavailable; the release state below gives the reason and the recovery procedure.";
+	return [
+		"Pi version facts, read by this command (each has its own source; none establishes another):",
+		publishedLine(release),
+		`- Running host: Pi ${jsonString(release.installedVersion)}, reported by the coding-agent module that the process running this command loaded ${release.installedPackageDir === "" ? "from a package directory that did not resolve" : `from ${jsonString(release.installedPackageDir)}`}. Other Pi processes, including retained agent hosts, can run other versions.`,
+		graphLine(release),
+		coverage,
+		"Declared @earendil-works dependencies and peers:",
+		...packageRows(release),
+		"Comparison:",
+		hostComparison(release),
+		...graphComparisons(release),
+	];
+}
 
 const RELEASE_WORK = [
 	"- Refresh docs/pi-durable-harness.md from current sources with current verification dates.",
@@ -145,9 +309,9 @@ function releaseBlock(release: PiReleaseIntake | undefined, directed: boolean): 
 	if (!release) return [];
 	const lines = [
 		"Pi release state:",
-		`Running Pi version: ${jsonString(release.installedVersion)}. Installed changelog: ${jsonString(release.changelogPath)}.`,
-		`Review baseline source: ${jsonString(release.baselinePath)} at ${release.baselineCommit ?? "an unresolved commit"}, the tip of local main. Dirty and provisional worktree copies do not establish coverage.`,
-		"Review coverage and publication are separate facts: a marker committed on local main counts whether or not main is pushed. This invocation never writes the reviewed-through marker.",
+		`Changelog of the running host: ${jsonString(release.changelogPath)}.`,
+		`Review baseline source: ${jsonString(release.baselinePath)} at ${release.baselineCommit === undefined ? "the tip of local main, which did not resolve" : `${release.baselineCommit}, the tip of local main`}. Dirty and provisional worktree copies do not establish coverage.`,
+		"Review coverage does not depend on a push: a marker committed on local main counts whether or not main is pushed. This command's intake never writes the reviewed-through marker.",
 	];
 	switch (release.state) {
 		case "aligned":
@@ -214,8 +378,10 @@ export function buildEvoKickoff(options: EvoKickoffOptions): string {
 		"",
 		directionBlock(options.direction, options.origin, options.release),
 		"",
-		...latestPiAlignment(options.origin),
+		...latestPiAlignment(options.origin, options.release),
 		"",
+		...versionFactsBlock(options.release),
+		...(options.release ? [""] : []),
 		...releaseBlock(options.release, options.direction !== undefined),
 		"",
 		...authorityBlock(options.origin),

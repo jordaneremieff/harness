@@ -9,6 +9,10 @@ import { MAX_DIRECTION_CODE_POINTS, MAX_RAW_DIRECTION_BYTES, parseEvoInvocation 
 import registerEvo from "./index.ts";
 import { buildEvoKickoff } from "./kickoff.ts";
 import { readPiReleaseIntake } from "./release.ts";
+import { withoutObservedTimes } from "./release-fixture.mts";
+
+// The registered command reads published versions; offline mode keeps these tests off the network.
+process.env.PI_OFFLINE = "1";
 
 interface SentMessage {
 	content: string;
@@ -958,15 +962,18 @@ test("all modes use follow-up-safe delivery without idle-state inspection", asyn
 		assert.equal(registered.sent.length, 1);
 		assert.deepEqual(registered.sent[0].options, { deliverAs: "followUp" });
 		assert.match(registered.sent[0].content, /<evo-direction-json>\n"status"\n<\/evo-direction-json>/);
+		assert.match(registered.sent[0].content, /^- Published versions: unavailable at .*: "Pi offline mode/m);
 		assert.equal(
-			registered.sent[0].content,
-			buildEvoKickoff({
-				harnessRoot: resolve(fileURLToPath(new URL("../..", import.meta.url))),
-				release: await readPiReleaseIntake({ harnessRoot: resolve(fileURLToPath(new URL("../..", import.meta.url))) }),
-				invocationCwd: "/workspace/current-project",
-				origin: "operator",
-				direction: "status",
-			}),
+			withoutObservedTimes(registered.sent[0].content),
+			withoutObservedTimes(
+				buildEvoKickoff({
+					harnessRoot: resolve(fileURLToPath(new URL("../..", import.meta.url))),
+					release: await readPiReleaseIntake({ harnessRoot: resolve(fileURLToPath(new URL("../..", import.meta.url))) }),
+					invocationCwd: "/workspace/current-project",
+					origin: "operator",
+					direction: "status",
+				}),
+			),
 		);
 	}
 });
