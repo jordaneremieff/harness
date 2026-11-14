@@ -837,3 +837,22 @@ test("argument search validates its mode, query, filter and position arguments",
 	assert.equal(argumentMatches(resumed).length, 0);
 	assert.equal(argumentMatches(searchHistory(sm, { ...base, position: { block: 1, path: [0, 0] } })).length, 1);
 });
+
+test("scan continuations resume after a surrogate pair at the overlap boundary without repeating a match", () => {
+	const value = `${"a".repeat(2044)}😀x`;
+	for (const [sm, args] of [
+		[source([raw("t", null, value)]), { query: "😀", maxScanBytes: 2048 }],
+		[
+			source([callEntry("c", null, [fauxToolCall("probe", { s: value }, { id: "c" })])]),
+			{ query: "😀", mode: "arguments", maxScanBytes: 2048 },
+		],
+	] as const) {
+		const pages = allPages(sm, args);
+		assert.equal(pages[0].status, "scan_limit");
+		assert.equal(pages.at(-1)?.status, "ancestry_exhausted");
+		assert.deepEqual(
+			pages.flatMap((page) => argumentMatches(page).map((match) => match.offset)),
+			[2044],
+		);
+	}
+});

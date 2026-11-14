@@ -383,7 +383,8 @@ class HistorySearch {
 		}
 		if (chunk.nextOffset !== null) {
 			let nextOffset = Math.max(this.#offset, chunk.endOffset - query.length + 1);
-			if (!boundary(value, nextOffset)) nextOffset--;
+			// No match starts at a low surrogate; one at the preceding high surrogate ended inside this chunk.
+			if (!boundary(value, nextOffset)) nextOffset++;
 			this.#offset = nextOffset;
 			return this.#result("scan_limit", this.#cursor());
 		}

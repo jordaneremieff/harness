@@ -857,3 +857,20 @@ test("history contribution finds a model-issued edit through its arguments over 
 		await harness.close(context);
 	}
 });
+
+test("native scan continuations resume after a surrogate pair at the overlap boundary without repeating a match", async () => {
+	const value = `${"a".repeat(2044)}😀x`;
+	for (const [entry, mode] of [
+		[nativeEntry([{ role: "user", content: value }], 1, "pi.user"), "text"],
+		[nativeEntry([{ role: "assistant", content: [toolCall("c", "probe", { s: value })] }], 1, "pi.assistant"), "arguments"],
+	] as const) {
+		const { pages } = await nativeArgumentSearch([entry]);
+		const all = await pages({ query: "😀", mode, maxScanBytes: 2048 });
+		assert.equal(all[0].status, "scan_limit");
+		assert.equal(all.at(-1)?.status, "ancestry_exhausted");
+		assert.deepEqual(
+			all.flatMap((page) => page.matches.map((match) => match.offset)),
+			[2044],
+		);
+	}
+});
