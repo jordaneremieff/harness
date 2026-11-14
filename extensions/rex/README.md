@@ -214,11 +214,14 @@ the conversation's pixels are at least as wide as tall and below it otherwise. L
 panes of the same decision stack in that half, so the conversation keeps its share.
 
 A pane that does not cover the conversation at its decision is never moved later.
-After the decision the arrangement belongs to the operator: a pane that the operator
-floats again, moves or resizes stays where the operator put it. Panes that this
-conversation did not create, including panes of other agents and of the operator, never
-move. The extension also leaves every pane in place while another block is zoomed or
-when the conversation is not in its window's tiled layout.
+The arrangement belongs to the operator: a floating layer whose bounds differ from the
+bounds of its creation by more than a hundredth of the window was moved or resized, so
+it stays, and a pane that the operator floats again after the decision stays where the
+operator put it. Panes that this conversation did not create, including panes of other
+agents and of the operator, never move. The extension also leaves every pane in place
+while any block of the window is zoomed, because a move ends the zoom, and when the
+conversation is not in its window's tiled layout. A move changes no focus: a pane that
+had focus keeps it in its new place, and the extension never takes focus for a dialog.
 
 The extension acts only when inherited `REX_SESSION` and `REX_BLOCK` name a block
 whose foreground process is this Pi process, the same proof that tab names use. It

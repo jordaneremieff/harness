@@ -19,12 +19,21 @@ function view(layers: unknown[], zoomed?: string) {
 
 const SPLIT_LAYOUT = { split: { direction: "horizontal", before: leaf(CONVERSATION, [0, 0, 0.5, 1]), after: leaf("block:neighbour", [0.5, 0, 0.5, 1]) } };
 
+/** Candidates without recorded creation bounds. */
+function candidates(...blockIds: string[]) {
+	return new Map(blockIds.map((blockId) => [blockId, undefined]));
+}
+
+function panes(...blockIds: string[]) {
+	return blockIds.map((blockId) => ({ blockId }));
+}
+
 test("a floating pane that this conversation created and that covers it is reported with its share", () => {
 	const covering = coveringPanes(view([
 		{ kind: "tiled", layout: SPLIT_LAYOUT },
 		{ kind: "floating", bounds: [0.1, 0.1, 0.8, 0.8], layout: leaf("block:reader", [0.1, 0.1, 0.8, 0.8]) },
 		{ kind: "floating", bounds: [0, 0, 1, 1], layout: leaf("block:foreign", [0, 0, 1, 1]) },
-	]), CONVERSATION, new Set(["block:reader"]));
+	]), CONVERSATION, candidates("block:reader"));
 	assert.equal(covering?.length, 1);
 	assert.equal(covering?.[0]?.blockId, "block:reader");
 	assert.ok(Math.abs((covering?.[0]?.share ?? 0) - 0.64) < 1e-9);
@@ -36,16 +45,24 @@ test("panes that cover too little of the conversation, or only its neighbour, st
 		{ kind: "tiled", layout: SPLIT_LAYOUT },
 		{ kind: "floating", layout: leaf("block:corner", [0.5 - small, 0, small, small]) },
 		{ kind: "floating", layout: leaf("block:neighbour-only", [0.55, 0.1, 0.4, 0.8]) },
-	]), CONVERSATION, new Set(["block:corner", "block:neighbour-only"]));
+	]), CONVERSATION, candidates("block:corner", "block:neighbour-only"));
 	assert.deepEqual(covering, []);
 });
 
-test("the operator's zoom and a conversation outside the tiled layout leave every pane in place", () => {
+test("any zoom in the window and a conversation outside the tiled layout leave every pane in place", () => {
 	const floating = { kind: "floating", layout: leaf("block:reader", [0, 0, 1, 1]) };
-	assert.equal(coveringPanes(view([{ kind: "tiled", layout: SPLIT_LAYOUT }, floating], "block:neighbour"), CONVERSATION, new Set(["block:reader"])), undefined);
-	assert.equal(coveringPanes(view([{ kind: "tiled", layout: leaf("block:neighbour", [0, 0, 1, 1]) }, { kind: "floating", layout: leaf(CONVERSATION, [0.2, 0.2, 0.5, 0.5]) }]), CONVERSATION, new Set(["block:reader"])), undefined);
-	const zoomed = coveringPanes(view([{ kind: "tiled", layout: SPLIT_LAYOUT }, floating], CONVERSATION), CONVERSATION, new Set(["block:reader"]));
-	assert.equal(zoomed?.[0]?.share, 1);
+	assert.equal(coveringPanes(view([{ kind: "tiled", layout: SPLIT_LAYOUT }, floating], "block:neighbour"), CONVERSATION, candidates("block:reader")), undefined);
+	assert.equal(coveringPanes(view([{ kind: "tiled", layout: SPLIT_LAYOUT }, floating], CONVERSATION), CONVERSATION, candidates("block:reader")), undefined, "moving a block would end the operator's zoom");
+	assert.equal(coveringPanes(view([{ kind: "tiled", layout: leaf("block:neighbour", [0, 0, 1, 1]) }, { kind: "floating", layout: leaf(CONVERSATION, [0.2, 0.2, 0.5, 0.5]) }]), CONVERSATION, candidates("block:reader")), undefined);
+});
+
+test("a floating pane that someone moved or resized before the decision stays where it is", () => {
+	const created = [0.1, 0.1, 0.8, 0.8];
+	const layers = (bounds: number[]) => [{ kind: "tiled", layout: SPLIT_LAYOUT }, { kind: "floating", bounds, layout: leaf("block:reader", bounds) }];
+	const recorded = new Map([["block:reader", created]]);
+	assert.equal(coveringPanes(view(layers([0.1, 0.1, 0.8, 0.8])), CONVERSATION, recorded)?.length, 1);
+	assert.equal(coveringPanes(view(layers([0.105, 0.1, 0.8, 0.8])), CONVERSATION, recorded)?.length, 1, "rounding within a hundredth of the window is no change");
+	assert.deepEqual(coveringPanes(view(layers([0.05, 0.3, 0.6, 0.6])), CONVERSATION, recorded), []);
 });
 
 test("a docked pane goes beside a conversation whose pixels are wide and below one that is tall", () => {
@@ -104,7 +121,7 @@ test("when the run settles, covering floating panes move beside the conversation
 	const keeper = createConversationKeeper({ settings: { executable: "rex", maxOutputBytes: 65536, maxWaitMs: 1000 }, env: ENV, pid: 4242, createTransport: () => rex });
 	const { ctx, notices } = context();
 	keeper.start(ctx);
-	keeper.floated(["block:reader", "block:probe"]);
+	keeper.floated(panes("block:reader", "block:probe"));
 	keeper.attention(ctx);
 	await keeper.idle();
 	const moves = rex.calls.filter((call) => call.method === "session.move_block").map((call) => call.args);
@@ -125,7 +142,7 @@ test("a pane that does not cover the conversation at its first decision is never
 	const keeper = createConversationKeeper({ settings: { executable: "rex", maxOutputBytes: 65536, maxWaitMs: 1000 }, env: ENV, pid: 4242, createTransport: () => rex });
 	const { ctx } = context();
 	keeper.start(ctx);
-	keeper.floated(["block:reader"]);
+	keeper.floated(panes("block:reader"));
 	keeper.attention(ctx);
 	await keeper.idle();
 	rex.layers = COVERED;
@@ -142,7 +159,7 @@ test("another foreground program, another mode or no inherited block moves nothi
 		const keeper = createConversationKeeper({ settings: { executable: "rex", maxOutputBytes: 65536, maxWaitMs: 1000 }, env, pid, createTransport: () => rex });
 		const { ctx } = context(mode);
 		keeper.start(ctx);
-		keeper.floated(["block:reader"]);
+		keeper.floated(panes("block:reader"));
 		keeper.attention(ctx);
 		await keeper.idle();
 		assert.equal(rex.calls.some((call) => call.method === "session.move_block"), false);
@@ -156,10 +173,10 @@ test("a failed move warns once and leaves later decisions to new panes", async (
 	const keeper = createConversationKeeper({ settings: { executable: "rex", maxOutputBytes: 65536, maxWaitMs: 1000 }, env: ENV, pid: 4242, createTransport: () => rex });
 	const { ctx, notices } = context();
 	keeper.start(ctx);
-	keeper.floated(["block:reader"]);
+	keeper.floated(panes("block:reader"));
 	keeper.attention(ctx);
 	await keeper.idle();
-	keeper.floated(["block:probe"]);
+	keeper.floated(panes("block:probe"));
 	keeper.attention(ctx);
 	await keeper.idle();
 	assert.equal(notices.length, 1);
@@ -172,7 +189,7 @@ test("panes floated before a session switch belong to the old session", async ()
 	const keeper = createConversationKeeper({ settings: { executable: "rex", maxOutputBytes: 65536, maxWaitMs: 1000 }, env: ENV, pid: 4242, createTransport: () => rex });
 	const { ctx } = context();
 	keeper.start(ctx);
-	keeper.floated(["block:reader"]);
+	keeper.floated(panes("block:reader"));
 	keeper.start(ctx);
 	keeper.attention(ctx);
 	await keeper.idle();

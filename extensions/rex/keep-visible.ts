@@ -7,7 +7,15 @@ type Rect = [number, number, number, number];
 
 /** Share of the conversation pane that a floating pane must cover before it moves. */
 export const MIN_COVERED_SHARE = 0.05;
+/** Largest difference, in window fractions, between creation bounds and current bounds that counts as unchanged. */
+const BOUNDS_TOLERANCE = 0.01;
 const MAX_PENDING = 64;
+
+/** A floating pane that this conversation created, with the bounds that the creation requested. */
+export interface FloatedPane {
+	blockId: string;
+	bounds?: readonly number[];
+}
 
 export interface CoveringPane {
 	blockId: string;
@@ -18,7 +26,7 @@ export interface CoveringPane {
 export interface ConversationKeeper {
 	start(ctx: ExtensionContext): void;
 	/** Floating panes that this conversation created; each is placed at the next attention moment. */
-	floated(blockIds: readonly string[]): void;
+	floated(panes: readonly FloatedPane[]): void;
 	/** The run settled or a dialog waits for the operator. */
 	attention(ctx: ExtensionContext): void;
 	idle(): Promise<void>;
@@ -65,20 +73,27 @@ function overlap(a: Rect, b: Rect): number {
 function conversationPane(window: Record<string, unknown>, layers: unknown[], blockId: string): { index: number; pane: Rect } | null | undefined {
 	const index = layers.findIndex((layer) => object(layer).kind === "tiled" && leaves(object(layer).layout).some((leaf) => leaf.blockId === blockId));
 	if (index < 0) return layers.some((layer) => leaves(object(layer).layout).some((leaf) => leaf.blockId === blockId)) ? null : undefined;
-	const zoomed = window.zoomed_block_id;
-	if (typeof zoomed === "string" && zoomed !== blockId) return null;
-	const pane = zoomed === blockId ? [0, 0, 1, 1] as Rect : leaves(object(layers[index]).layout).find((leaf) => leaf.blockId === blockId)?.rect;
+	// A zoom is the operator's arrangement, and moving a block ends every zoom in its window.
+	if (typeof window.zoomed_block_id === "string") return null;
+	const pane = leaves(object(layers[index]).layout).find((leaf) => leaf.blockId === blockId)?.rect;
 	return pane && pane[2] > 0 && pane[3] > 0 ? { index, pane } : null;
 }
 
-function coveringIn(layers: unknown[], from: number, pane: Rect, candidates: ReadonlySet<string>): CoveringPane[] {
+/** True when the layer still has the bounds that its creation requested, so nobody has moved or resized it. */
+function unchanged(layer: Record<string, unknown>, created: readonly number[] | undefined): boolean {
+	if (created === undefined) return true;
+	const current = rect(layer.bounds);
+	return current !== undefined && created.length === 4 && current.every((value, index) => Math.abs(value - (created[index] ?? Number.NaN)) <= BOUNDS_TOLERANCE);
+}
+
+function coveringIn(layers: unknown[], from: number, pane: Rect, candidates: ReadonlyMap<string, readonly number[] | undefined>): CoveringPane[] {
 	const area = pane[2] * pane[3];
 	const covering: CoveringPane[] = [];
 	for (const value of layers.slice(from)) {
 		const layer = object(value);
 		if (layer.kind === "tiled") continue;
 		for (const leaf of leaves(layer.layout)) {
-			const share = candidates.has(leaf.blockId) ? overlap(pane, leaf.rect) / area : 0;
+			const share = candidates.has(leaf.blockId) && unchanged(layer, candidates.get(leaf.blockId)) ? overlap(pane, leaf.rect) / area : 0;
 			if (share >= MIN_COVERED_SHARE) covering.push({ blockId: leaf.blockId, share });
 		}
 	}
@@ -87,10 +102,11 @@ function coveringIn(layers: unknown[], from: number, pane: Rect, candidates: Rea
 
 /**
  * The candidate panes in floating layers in front of the conversation pane, with the share of the
- * conversation that each covers. Undefined when the conversation is not in a window's tiled layout or
- * another block is zoomed there: then the operator's arrangement decides what shows.
+ * conversation that each covers. A candidate whose layer no longer has its creation bounds was moved
+ * or resized, and stays. Undefined when the conversation is not in a window's tiled layout or a block
+ * of that window is zoomed: then the operator's arrangement decides what shows.
  */
-export function coveringPanes(view: unknown, conversationBlockId: string, candidates: ReadonlySet<string>): CoveringPane[] | undefined {
+export function coveringPanes(view: unknown, conversationBlockId: string, candidates: ReadonlyMap<string, readonly number[] | undefined>): CoveringPane[] | undefined {
 	const windows = object(view).windows;
 	if (!Array.isArray(windows)) return undefined;
 	for (const value of windows) {
@@ -121,7 +137,7 @@ class Keeper implements ConversationKeeper {
 	private readonly env: NodeJS.ProcessEnv;
 	private readonly pid: number;
 	private readonly createTransport: () => RexTransport;
-	private readonly pending = new Set<string>();
+	private readonly pending = new Map<string, readonly number[] | undefined>();
 	private active = false;
 	private ctx: ExtensionContext | undefined;
 	private controller: AbortController | undefined;
@@ -146,11 +162,11 @@ class Keeper implements ConversationKeeper {
 		this.transport = this.createTransport();
 	}
 
-	floated(blockIds: readonly string[]): void {
+	floated(panes: readonly FloatedPane[]): void {
 		if (!this.active) return;
-		for (const blockId of blockIds) {
+		for (const pane of panes) {
 			if (this.pending.size >= MAX_PENDING) break;
-			this.pending.add(blockId);
+			this.pending.set(pane.blockId, pane.bounds);
 		}
 	}
 
@@ -190,7 +206,7 @@ class Keeper implements ConversationKeeper {
 			if (!controller || !transport || !ctx) return;
 			// Each floating pane gets one decision: the run that created it ends, or a dialog needs the
 			// operator. Later arrangement belongs to the operator.
-			const candidates = new Set(this.pending);
+			const candidates = new Map(this.pending);
 			this.pending.clear();
 			try {
 				await this.place(ctx, transport, controller.signal, candidates);
@@ -200,7 +216,7 @@ class Keeper implements ConversationKeeper {
 		}
 	}
 
-	private async place(ctx: ExtensionContext, transport: RexTransport, signal: AbortSignal, candidates: ReadonlySet<string>): Promise<void> {
+	private async place(ctx: ExtensionContext, transport: RexTransport, signal: AbortSignal, candidates: ReadonlyMap<string, readonly number[] | undefined>): Promise<void> {
 		if (ctx.mode !== "tui") return;
 		const sessionId = this.env.REX_SESSION;
 		const blockId = this.env.REX_BLOCK;

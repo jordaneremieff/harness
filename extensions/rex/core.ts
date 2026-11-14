@@ -1715,7 +1715,7 @@ function creationCall(
 /** A centred pane that leaves the surrounding layout visible. */
 const FLOAT_BOUNDS = [0.1, 0.06, 0.8, 0.88];
 /** Floating pane rectangle as [x, y, width, height] fractions of its window, inside the window. */
-function floatBounds(bounds: number[] | undefined): number[] {
+export function floatBounds(bounds: number[] | undefined): number[] {
 	if (bounds === undefined) return FLOAT_BOUNDS;
 	const [x, y, width, height] = bounds;
 	if (

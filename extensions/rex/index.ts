@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { getAgentDir, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Schema, Static } from "@earendil-works/pi-schema";
-import { boundResult, deadlineResult, resultByteLimit, RexCore, type RexRequest } from "./core.ts";
+import { boundResult, deadlineResult, floatBounds, resultByteLimit, RexCore, type RexRequest } from "./core.ts";
 import { liveCalls, ordinaryOwner, ordinaryOwnershipStore, ordinaryStatusStore, resultChannels, serialiseOwners, type RexAdapterOptions } from "./config.ts";
 import { rexContribution } from "./durable.ts";
 import { createRexBudget } from "./deadline.ts";
@@ -11,20 +11,21 @@ import { publishSettings, readSettings } from "./settings.ts";
 import { REX_GUIDANCE, ResultSchema, toolSpecs, validateRequest, type StatusRequest } from "./schema.ts";
 import { rexStatus, type RexExecutor } from "./status.ts";
 import { createTabLabelProjector, type TabLabelProjectorOptions } from "./tab-label.ts";
-import { createConversationKeeper, type ConversationKeeperOptions } from "./keep-visible.ts";
+import { createConversationKeeper, type ConversationKeeperOptions, type FloatedPane } from "./keep-visible.ts";
 
 type RegistrationOptions = RexAdapterOptions & {
 	createTabLabelProjector?: (options: TabLabelProjectorOptions) => ReturnType<typeof createTabLabelProjector>;
 	createConversationKeeper?: (options: ConversationKeeperOptions) => ReturnType<typeof createConversationKeeper>;
 };
 
-/** Blocks of a confirmed floating pane that a `rex_terminal` create returned. */
-function createdFloats(tool: string, request: unknown, result: unknown): string[] {
-	const call = request as { op?: unknown; kind?: unknown } | undefined;
+/** Blocks of a confirmed floating pane that a `rex_terminal` create returned, with the bounds it requested. */
+function createdFloats(tool: string, request: unknown, result: unknown): FloatedPane[] {
+	const call = request as { op?: unknown; kind?: unknown; bounds?: number[] } | undefined;
 	if (tool !== "rex_terminal" || call?.op !== "create" || call.kind !== "float") return [];
 	const effects = (result as { ok?: unknown; effects?: { state?: unknown; resources?: unknown } } | undefined);
 	if (effects?.ok !== true || effects.effects?.state !== "confirmed" || !Array.isArray(effects.effects.resources)) return [];
-	return effects.effects.resources.flatMap((resource: { kind?: unknown; blockId?: unknown }) => resource?.kind === "block" && typeof resource.blockId === "string" ? [resource.blockId] : []);
+	const bounds = floatBounds(call.bounds);
+	return effects.effects.resources.flatMap((resource: { kind?: unknown; blockId?: unknown }) => resource?.kind === "block" && typeof resource.blockId === "string" ? [{ blockId: resource.blockId, bounds }] : []);
 }
 
 export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {}): void {

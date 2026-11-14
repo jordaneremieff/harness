@@ -251,7 +251,7 @@ test("ordinary registration wires tab labels without changing the tool surface",
 	} as unknown as ExtensionAPI;
 	const keeper = {
 		start: () => { events.push("keeper start"); },
-		floated: (blocks: readonly string[]) => { events.push(`floated ${blocks.join(",")}`); },
+		floated: (panes: readonly { blockId: string }[]) => { events.push(`floated ${panes.map((pane) => pane.blockId).join(",")}`); },
 		attention: () => { events.push("attention"); },
 		idle: async () => {},
 		shutdown: async () => { events.push("keeper shutdown"); },
@@ -274,8 +274,8 @@ test("a confirmed floating pane that rex_terminal creates is handed to the conve
 	type Handler = (event?: unknown, ctx?: unknown) => unknown;
 	const tools = new Map<string, ToolDefinition<Schema>>();
 	const handlers = new Map<string, Handler>();
-	const floated: string[][] = [];
-	const keeper = { start: () => {}, floated: (blocks: readonly string[]) => { floated.push([...blocks]); }, attention: () => {}, idle: async () => {}, shutdown: async () => {} };
+	const floated: unknown[][] = [];
+	const keeper = { start: () => {}, floated: (panes: readonly unknown[]) => { floated.push([...panes]); }, attention: () => {}, idle: async () => {}, shutdown: async () => {} };
 	const projector = { start: () => {}, refresh: () => {}, input: () => {}, idle: async () => {}, shutdown: async () => {} };
 	const pi = {
 		events: createEventBus(),
@@ -294,7 +294,7 @@ test("a confirmed floating pane that rex_terminal creates is handed to the conve
 	const terminal = tools.get("rex_terminal");
 	await terminal?.execute("call-1", { op: "create", kind: "float", label: "reader", target: { session: "session:test", block: "block:anchor" } } as never, undefined, undefined, ctx as never);
 	await terminal?.execute("call-2", { op: "create", kind: "split", label: "split", target: { session: "session:test", block: "block:anchor" } } as never, undefined, undefined, ctx as never);
-	assert.deepEqual(floated, [["block:float"], []]);
+	assert.deepEqual(floated, [[{ blockId: "block:float", bounds: [0.1, 0.06, 0.8, 0.88] }], []], "the default float bounds are the creation bounds");
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
 });
 
