@@ -11,6 +11,7 @@ import {
 	type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import { compile, type Schema } from "@earendil-works/pi-schema";
+import { createJobActivity, formatStatusRecord, recordId } from "./activity.ts";
 import { COMPLETION_LIMITS, JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./completion.ts";
 import registerJobs from "./index.ts";
 import type { JobLogs, JobSnapshot } from "./manager.ts";
@@ -105,14 +106,18 @@ function textOf(result: Result): string {
 	assert.ok(text !== undefined, "text content present");
 	return text;
 }
-function setup(cwd = root, trusted = false) {
+function setup(cwd = root, trusted = false, terminal?: { writes: string[]; statuses: Array<[string, string | undefined]> }) {
 	const pi = new TestPi();
-	registerJobs(pi as unknown as ExtensionAPI);
+	const activity = terminal
+		? createJobActivity({ write: (text) => terminal.writes.push(text), isTTY: () => true, env: () => ({}) })
+		: undefined;
+	registerJobs(pi as unknown as ExtensionAPI, activity);
 	const base = {
 		cwd,
 		isProjectTrusted: () => trusted,
-		mode: "print",
-		hasUI: false,
+		mode: terminal ? "tui" : "print",
+		hasUI: terminal !== undefined,
+		ui: { setStatus: (key: string, text: string | undefined) => terminal?.statuses.push([key, text]) },
 		model: { provider: "fixture", id: "deterministic" },
 		thinkingLevel: "low",
 		sessionManager: { getSessionId: () => "job-session", getSessionFile: () => undefined },
@@ -319,6 +324,39 @@ describe("Command Jobs adapter", () => {
 		await pi.shutdown();
 		assert.equal(jobOf(await call("jobs", { action: "status", id: jobOf(second).id })).status, "cancelled");
 		await assert.rejects(call("bash", { command: "printf never", background: true }), /closed/);
+	});
+
+	it("reports job activity to the footer and the terminal from the bash admission path", async () => {
+		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]> };
+		const { pi, call } = setup(root, false, terminal);
+		try {
+			const failed = jobOf(await call("bash", { command: "printf hidden; exit 3", background: true }));
+			const id = recordId(failed.id);
+			assert.ok(id);
+			assert.deepEqual(terminal.statuses[0], ["jobs", "jobs: 1 running"]);
+			await completion(pi, failed.id);
+			await delay(0);
+			assert.equal(terminal.writes[0], formatStatusRecord({ id, state: "working", title: "Background job", msg: "Background job running" }));
+			assert.equal(
+				terminal.writes[1],
+				formatStatusRecord({ id, state: "error", title: "Background job", msg: "Background job failed · exit 3 · < 1 min · result sent to the conversation" }),
+			);
+			assert.deepEqual(terminal.statuses.at(-1), ["jobs", undefined]);
+			assert.ok(!terminal.writes.join("").includes(Buffer.from("hidden").toString("base64")));
+
+			const cancelled = jobOf(await call("bash", { command: "sleep 30", background: true }));
+			await call("jobs", { action: "cancel", id: cancelled.id });
+			await settled(call, cancelled.id);
+			await delay(0);
+			assert.equal(terminal.writes.at(-1), formatStatusRecord({ id: recordId(cancelled.id) as string, state: "clear" }));
+
+			const running = jobOf(await call("bash", { command: "sleep 30", background: true }));
+			await pi.shutdown();
+			assert.equal(terminal.writes.at(-1), formatStatusRecord({ id: recordId(running.id) as string, state: "clear" }));
+			assert.equal(terminal.writes.filter((text) => text.includes("state=clear")).length, 2);
+		} finally {
+			await pi.shutdown();
+		}
 	});
 
 	it("rejects invalid shell setting types before either execution path", async () => {

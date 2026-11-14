@@ -279,7 +279,8 @@ Do not hand-edit the rows.
   enforces that rule. Context inputs `PI_AGENT_DIR`, `PI_AGENT_SESSIONS_DIR`,
   `PI_MANAGED_INSTALL_ROOT`, `PI_CODING_AGENT_DIR` (Pi's own agent-directory
   override), `PI_SESSION_ID`, `PI_HARNESS_FILE`, `PI_CODEMODE_MAX_WORKERS`,
-  `PI_OFFLINE` (Pi's own offline mode), and `PI_*_TEST_*` are not settings.
+  `PI_OFFLINE` (Pi's own offline mode), `PI_PROGRAM_STATUS` (Pi's own
+  terminal status reports), and `PI_*_TEST_*` are not settings.
 - `scripts/settings-contract.test.mts`, part of `npm test`, discovers every
   `extensions/*/settings.ts` and runs its `readSettings` and `publishSettings`
   against the cases of this contract with temporary agent directories and a

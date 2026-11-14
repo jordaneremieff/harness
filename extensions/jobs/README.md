@@ -52,6 +52,46 @@ settles while the session is idle is appended to the transcript without
 starting a turn. The next prompt sees it in context. A later run clears that
 state, so completions during or after ordinary work continue it as usual.
 
+### Footer status and terminal records
+
+While at least one job of the session runs, the footer shows `jobs: N running`
+through `ctx.ui.setStatus("jobs", ...)`; the status clears when none runs.
+Sessions without a UI show no status.
+
+In the interactive TUI, each job also becomes a child record in the terminal's
+program status records, through the generic
+[Program Status Protocol (OSC 7501)](https://www.superlogical.com/rex/docs/build/program-status)
+that Pi core uses for its own root record. Terminals that support the protocol
+can show these records as tab indicators, activity lists, or notifications;
+other terminals ignore the sequence. The record id is `jobs/<job id without
+hyphens>`:
+
+- `working` when the job starts;
+- `done` when it succeeds;
+- `error` when it fails or times out;
+- `clear` when it is cancelled, since cancellation is the caller's own act.
+
+Each record carries the title `Background job` and one message line made only
+from the job record: outcome, exit code, whole minutes elapsed, and whether the
+completion message was sent to the conversation, for example
+`Background job failed · exit 1 · 3 min · result sent to the conversation`.
+Records never contain the command, its output, prompts, or model text, because
+a terminal can forward them to notifications and other devices. Messages are
+at most 160 characters, with control characters replaced by spaces.
+
+The session keeps at most eight settled records: when a newer job settles past
+that bound, the oldest settled record is cleared. On `session_shutdown`, the
+records of jobs that still run are cleared, because shutdown cancels them;
+settled records stay, as the protocol keeps `done` and `error` after the
+process exits. Records are written to standard output only in the TUI, only
+when standard output is a terminal, and never when `PI_PROGRAM_STATUS=0`, the
+switch that also turns off Pi's own reports. Print, JSON, and RPC modes and
+Durable agent conversations write none. Unlike Pi core, the extension does not
+query the terminal for protocol support first. When Pi's terminal layer stops
+after it reported its own status, for example on suspend or exit, it clears
+every record on the terminal, job records included, so a resumed session shows
+only jobs that change state afterwards.
+
 ### Agent conversations on Pi Durable
 
 The extension also emits a Durable contribution through the package-level
@@ -305,7 +345,8 @@ daemon mode to detach it from the managed command.
 
 ## Load and verification
 
-The extension has no extension-specific environment variables. Pi's shell
+The extension has no extension-specific environment variables. It reads Pi's
+own `PI_PROGRAM_STATUS` switch for terminal records, as described above. Pi's shell
 settings and session environment retain their existing names and meanings.
 
 Use an explicit isolated launch for a provisional extension. Normal global

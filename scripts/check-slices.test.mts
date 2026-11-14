@@ -840,6 +840,7 @@ test("upstream codemode worker capacity is a process setting, not slice configur
 
 test("Pi offline mode is a process setting, not slice configuration", async () => {
 	assert.deepEqual(environmentReads("process.env.PI_OFFLINE; env['PI_OFFLINE'];"), []);
+	assert.deepEqual(environmentReads("process.env.PI_PROGRAM_STATUS; env['PI_PROGRAM_STATUS'];"), []);
 	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
 	try {
 		const runtime = join(root, "extensions/example/runtime.ts");

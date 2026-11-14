@@ -9,6 +9,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { arr, bool, int, nul, num, obj, opt, str, type Schema, type Static, union } from "@earendil-works/pi-schema";
+import { createJobActivity } from "./activity.ts";
 import { commandPreview, completionContent, completionTail, displayText, JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./completion.ts";
 import { createJobsContribution } from "./durable.ts";
 import { toolDisplay } from "./display.ts";
@@ -112,7 +113,7 @@ function textResult<T extends Static<typeof JobsOutputSchema>>(details: T) {
 }
 
 /** Launch remains a bash call so ordinary tool-call policy runs before execution. */
-export default function registerJobs(pi: ExtensionAPI) {
+export default function registerJobs(pi: ExtensionAPI, activity = createJobActivity()) {
 	// Agent session hosts collect this native form; an ordinary session has no listener.
 	pi.events.emit("durable:contribution", createJobsContribution({ source: fileURLToPath(import.meta.url) }));
 	const display = toolDisplay();
@@ -129,14 +130,15 @@ export default function registerJobs(pi: ExtensionAPI) {
 	let closed = false;
 	let lastRunAborted = false;
 
-	/** One message per settled finite job; explicit cancellation and shutdown settle quietly. */
-	function deliverCompletion(job: JobSnapshot, command: string): void {
-		if (closed || job.status === "cancelled") return;
+	/** One message per settled finite job; explicit cancellation and shutdown settle quietly. Returns whether it sent one. */
+	function deliverCompletion(job: JobSnapshot, command: string): boolean {
+		if (closed || job.status === "cancelled") return false;
 		const details: JobCompletionDetails = { job, command, tail: completionTail((cursor) => manager.logs(job.id, cursor)) };
 		pi.sendMessage(
 			{ customType: JOB_COMPLETION_MESSAGE, content: completionContent(details), display: true, details },
 			{ deliverAs: "followUp", triggerTurn: !lastRunAborted },
 		);
+		return true;
 	}
 
 	pi.registerTool({
@@ -180,7 +182,12 @@ export default function registerJobs(pi: ExtensionAPI) {
 			await tool.execute(id, params, signal, undefined, ctx);
 			if (!job) throw new Error("The command job was not accepted.");
 			const preview = commandPreview(params.command);
-			void manager.wait(job.id).then((settled) => deliverCompletion(settled, preview));
+			activity.start(job, ctx);
+			void manager.wait(job.id).then((settled) => {
+				const delivered = deliverCompletion(settled, preview);
+				if (settled.status === "cancelled") activity.cancel(settled);
+				else activity.settle(settled, delivered);
+			});
 			return textResult({ job });
 		},
 	});
@@ -226,8 +233,12 @@ export default function registerJobs(pi: ExtensionAPI) {
 	pi.on("agent_settled", async (event) => {
 		lastRunAborted = event.aborted;
 	});
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (_event, ctx) => {
 		closed = true;
-		await manager.dispose();
+		try {
+			activity.shutdown(ctx);
+		} finally {
+			await manager.dispose();
+		}
 	});
 }

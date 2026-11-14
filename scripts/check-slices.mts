@@ -56,6 +56,7 @@ const contextVariables = new Set([
 	"PI_HARNESS_FILE",
 	"PI_CODEMODE_MAX_WORKERS",
 	"PI_OFFLINE",
+	"PI_PROGRAM_STATUS",
 ]);
 const configurationVariable = (name: string) => !contextVariables.has(name) && !/^PI_.*_TEST_/.test(name);
 
