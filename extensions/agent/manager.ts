@@ -1318,7 +1318,7 @@ export class AgentManager {
 				times.push(now);
 				const stopped = times.length > MAX_AUTOMATIC_RESTARTS;
 				this.crashes.set(storageId, { times, stopped });
-				if (stopped) { this.recordRecoveryError(storageId, "Automatic recovery stopped after repeated host losses within 60 seconds. Inspect the host error, then use agent_attach to retry."); return; }
+				if (stopped) { this.recordRecoveryError(storageId, "Automatic recovery stopped after repeated host losses within 60 seconds. A running host's error output is not retained; use agent_attach to retry, and a host that fails before readiness returns its error output in that refusal."); return; }
 				this.recoveryHolds.delete(storageId);
 				this.queuedRecovery.add(storageId);
 				void this.enqueueRecovery([record], primary).catch((error) => { this.queuedRecovery.delete(storageId); this.recordRecoveryError(storageId, errorText(error)); });

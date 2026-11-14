@@ -1333,6 +1333,7 @@ it("stops repeated live host losses in Attention and permits an explicit attach 
 	assert.equal(connections.length, 4, "three replacements exhaust the short-window budget");
 	const stopped = await manager.dashboardPage();
 	assert.match(stopped.rows[0]?.health?.lastError ?? "", /Automatic recovery stopped/u);
+	assert.match(stopped.rows[0]?.health?.lastError ?? "", /error output is not retained; use agent_attach to retry/u, "the notice names only an action that exists");
 	assert.match(dashboardText({ observedAt: Date.now(), sessions: stopped.rows }), /1 need attention/u);
 	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
 	assert.equal(connections.length, 5);
