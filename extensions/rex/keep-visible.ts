@@ -4,12 +4,15 @@ import { CliTransport, type CliResult, type RexTransport } from "./transport.ts"
 
 type Settings = Pick<RexSettings, "executable" | "maxOutputBytes" | "maxWaitMs">;
 type Rect = [number, number, number, number];
+type Direction = "horizontal" | "vertical";
 
 /** Share of the conversation pane that a floating pane must cover before it moves. */
 export const MIN_COVERED_SHARE = 0.05;
 /** Largest difference, in window fractions, between creation bounds and current bounds that counts as unchanged. */
 const BOUNDS_TOLERANCE = 0.01;
 const MAX_PENDING = 64;
+/** Failed moves after which a pane stays where it is. */
+export const MAX_FAILED_MOVES = 3;
 
 /** A floating pane that this conversation created, with the bounds that the creation requested. */
 export interface FloatedPane {
@@ -17,17 +20,34 @@ export interface FloatedPane {
 	bounds?: readonly number[];
 }
 
-export interface CoveringPane {
-	blockId: string;
-	/** Fraction of the conversation pane's area that this pane covers. */
-	share: number;
+/**
+ * What one view shows about a pane that this conversation created:
+ * - `covering`: it floats unchanged in front of the conversation and covers at least the minimum share;
+ * - `focused`: it has the focus of its window, so somebody works in it, and it waits for a later moment;
+ * - `clear`: it floats unchanged but leaves the conversation visible, so it stays where it is;
+ * - `arranged`: it was moved, resized, tiled or taken to another window, so it stays where it is;
+ * - `missing`: it no longer exists.
+ */
+export type PaneState =
+	| { kind: "covering"; share: number }
+	| { kind: "focused" | "clear" | "arranged" | "missing" };
+
+/** The conversation's window as one view shows it, while the window's arrangement allows a move. */
+export interface ConversationWindow {
+	/** The block with the focus of the window, when the view names one. */
+	focus?: string;
+	/** The conversation's rectangle in window fractions. */
+	pane: Rect;
+	layers: unknown[];
+	/** Blocks of the window's tiled layer. */
+	tiled: ReadonlySet<string>;
 }
 
 export interface ConversationKeeper {
 	start(ctx: ExtensionContext): void;
-	/** Floating panes that this conversation created; each is placed at the next attention moment. */
+	/** Floating panes that this conversation created; each waits for a moment that needs the operator. */
 	floated(panes: readonly FloatedPane[]): void;
-	/** The run settled or a dialog waits for the operator. */
+	/** A moment that needs the operator: the run ended with an answer or an error, or a dialog waits. */
 	attention(ctx: ExtensionContext): void;
 	idle(): Promise<void>;
 	shutdown(): Promise<void>;
@@ -69,14 +89,38 @@ function overlap(a: Rect, b: Rect): number {
 	return width > 0 && height > 0 ? width * height : 0;
 }
 
-/** The conversation's tiled pane in this window, `null` when the window's arrangement leaves it alone. */
-function conversationPane(window: Record<string, unknown>, layers: unknown[], blockId: string): { index: number; pane: Rect } | null | undefined {
-	const index = layers.findIndex((layer) => object(layer).kind === "tiled" && leaves(object(layer).layout).some((leaf) => leaf.blockId === blockId));
-	if (index < 0) return layers.some((layer) => leaves(object(layer).layout).some((leaf) => leaf.blockId === blockId)) ? null : undefined;
-	// A zoom is the operator's arrangement, and moving a block ends every zoom in its window.
-	if (typeof window.zoomed_block_id === "string") return null;
-	const pane = leaves(object(layers[index]).layout).find((leaf) => leaf.blockId === blockId)?.rect;
-	return pane && pane[2] > 0 && pane[3] > 0 ? { index, pane } : null;
+function windows(view: unknown): Record<string, unknown>[] {
+	const list = object(view).windows;
+	return Array.isArray(list) ? list.map(object) : [];
+}
+
+function layersOf(window: Record<string, unknown>): unknown[] {
+	return Array.isArray(window.layers) ? window.layers : [];
+}
+
+function holds(window: Record<string, unknown>, blockId: string): boolean {
+	return layersOf(window).some((layer) => leaves(object(layer).layout).some((leaf) => leaf.blockId === blockId));
+}
+
+/**
+ * The conversation's window when a move may happen there. Undefined when the view does not hold the
+ * conversation, when any block of its window is zoomed (a move ends every zoom in the window), and when
+ * the conversation is not in the window's tiled layer: then the operator's arrangement decides what shows.
+ */
+export function conversationWindow(view: unknown, conversationBlockId: string): ConversationWindow | undefined {
+	const window = windows(view).find((candidate) => holds(candidate, conversationBlockId));
+	if (!window || (typeof window.zoomed_block_id === "string" && window.zoomed_block_id)) return undefined;
+	const layers = layersOf(window);
+	const tiledLayer = layers.map(object).find((layer) => layer.kind === "tiled");
+	const tiled = leaves(tiledLayer?.layout);
+	const pane = tiled.find((leaf) => leaf.blockId === conversationBlockId)?.rect;
+	if (!pane || pane[2] <= 0 || pane[3] <= 0) return undefined;
+	return {
+		...(typeof window.focused_block_id === "string" ? { focus: window.focused_block_id } : {}),
+		pane,
+		layers,
+		tiled: new Set(tiled.map((leaf) => leaf.blockId)),
+	};
 }
 
 /** True when the layer still has the bounds that its creation requested, so nobody has moved or resized it. */
@@ -86,45 +130,52 @@ function unchanged(layer: Record<string, unknown>, created: readonly number[] | 
 	return current !== undefined && created.length === 4 && current.every((value, index) => Math.abs(value - (created[index] ?? Number.NaN)) <= BOUNDS_TOLERANCE);
 }
 
-function coveringIn(layers: unknown[], from: number, pane: Rect, candidates: ReadonlyMap<string, readonly number[] | undefined>): CoveringPane[] {
-	const area = pane[2] * pane[3];
-	const covering: CoveringPane[] = [];
-	for (const value of layers.slice(from)) {
+/** The state of one pane that this conversation created, from one view of the conversation's window. */
+export function paneState(view: unknown, window: ConversationWindow, blockId: string, created: readonly number[] | undefined): PaneState {
+	if (window.tiled.has(blockId)) return { kind: "arranged" };
+	for (const value of window.layers) {
 		const layer = object(value);
 		if (layer.kind === "tiled") continue;
-		for (const leaf of leaves(layer.layout)) {
-			const share = candidates.has(leaf.blockId) && unchanged(layer, candidates.get(leaf.blockId)) ? overlap(pane, leaf.rect) / area : 0;
-			if (share >= MIN_COVERED_SHARE) covering.push({ blockId: leaf.blockId, share });
-		}
+		const leaf = leaves(layer.layout).find((candidate) => candidate.blockId === blockId);
+		if (!leaf) continue;
+		// A layer kind other than floating is a presentation that this extension does not know, so it stays.
+		if (layer.kind !== "floating" || !unchanged(layer, created)) return { kind: "arranged" };
+		if (window.focus === blockId) return { kind: "focused" };
+		const share = overlap(window.pane, leaf.rect) / (window.pane[2] * window.pane[3]);
+		return share >= MIN_COVERED_SHARE ? { kind: "covering", share } : { kind: "clear" };
 	}
-	return covering;
-}
-
-/**
- * The candidate panes in floating layers in front of the conversation pane, with the share of the
- * conversation that each covers. A candidate whose layer no longer has its creation bounds was moved
- * or resized, and stays. Undefined when the conversation is not in a window's tiled layout or a block
- * of that window is zoomed: then the operator's arrangement decides what shows.
- */
-export function coveringPanes(view: unknown, conversationBlockId: string, candidates: ReadonlyMap<string, readonly number[] | undefined>): CoveringPane[] | undefined {
-	const windows = object(view).windows;
-	if (!Array.isArray(windows)) return undefined;
-	for (const value of windows) {
-		const window = object(value);
-		const layers = Array.isArray(window.layers) ? window.layers : [];
-		const found = conversationPane(window, layers, conversationBlockId);
-		if (found === null) return undefined;
-		if (found) return coveringIn(layers, found.index + 1, found.pane, candidates);
-	}
-	return undefined;
+	return windows(view).some((other) => holds(other, blockId)) ? { kind: "arranged" } : { kind: "missing" };
 }
 
 /** Side by side when the conversation's pixels are at least as wide as tall, otherwise one above the other. */
-export function dockDirection(size: unknown): "horizontal" | "vertical" {
+export function dockDirection(size: unknown): Direction {
 	const terminal = object(size);
 	const width = Number(terminal.columns) * Number(terminal.cell_width_px);
 	const height = Number(terminal.rows) * Number(terminal.cell_height_px);
 	return Number.isFinite(width) && Number.isFinite(height) && height > width ? "vertical" : "horizontal";
+}
+
+function textOf(content: unknown): boolean {
+	return Array.isArray(content) && content.some((part) => {
+		const value = object(part);
+		return value.type === "text" && typeof value.text === "string" && value.text.trim().length > 0;
+	});
+}
+
+/**
+ * Whether a settled run left something for the operator: its last model message is an answer with text
+ * or an error. A run that ended in a tool call, such as a quiet state note, or that was aborted, did not.
+ */
+export function runAnswered(branch: readonly unknown[], aborted: boolean): boolean {
+	if (aborted) return false;
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = object(branch[index]);
+		if (entry.type !== "message") continue;
+		const message = object(entry.message);
+		if (message.role === "assistant") return message.stopReason === "error" || (message.stopReason !== "aborted" && textOf(message.content));
+		if (message.role === "user" || message.role === "toolResult") return false;
+	}
+	return false;
 }
 
 export function createConversationKeeper(options: ConversationKeeperOptions): ConversationKeeper {
@@ -133,11 +184,25 @@ export function createConversationKeeper(options: ConversationKeeperOptions): Co
 
 class CliCallError extends Error {}
 
+interface Waiting {
+	bounds?: readonly number[];
+	failures: number;
+}
+
+/** One move request: the pane, and the anchor and direction that placed it. */
+interface Attempt {
+	paneId: string;
+	anchor: string;
+	direction: Direction;
+}
+
 class Keeper implements ConversationKeeper {
 	private readonly env: NodeJS.ProcessEnv;
 	private readonly pid: number;
 	private readonly createTransport: () => RexTransport;
-	private readonly pending = new Map<string, readonly number[] | undefined>();
+	private readonly pending = new Map<string, Waiting>();
+	/** The last pane that this keeper docked, and the direction in which later panes stack beside it. */
+	private docked: { blockId: string; direction: Direction } | undefined;
 	private active = false;
 	private ctx: ExtensionContext | undefined;
 	private controller: AbortController | undefined;
@@ -166,7 +231,7 @@ class Keeper implements ConversationKeeper {
 		if (!this.active) return;
 		for (const pane of panes) {
 			if (this.pending.size >= MAX_PENDING) break;
-			this.pending.set(pane.blockId, pane.bounds);
+			this.pending.set(pane.blockId, { ...(pane.bounds ? { bounds: pane.bounds } : {}), failures: 0 });
 		}
 	}
 
@@ -194,6 +259,7 @@ class Keeper implements ConversationKeeper {
 		this.controller = undefined;
 		this.transport = undefined;
 		this.pending.clear();
+		this.docked = undefined;
 		this.requested = false;
 	}
 
@@ -204,49 +270,100 @@ class Keeper implements ConversationKeeper {
 			const transport = this.transport;
 			const ctx = this.ctx;
 			if (!controller || !transport || !ctx) return;
-			// Each floating pane gets one decision: the run that created it ends, or a dialog needs the
-			// operator. Later arrangement belongs to the operator.
-			const candidates = new Map(this.pending);
-			this.pending.clear();
 			try {
-				await this.place(ctx, transport, controller.signal, candidates);
+				await this.place(ctx, transport, controller.signal);
 			} catch (error) {
+				// A failed read changes nothing, so every pane keeps waiting for a later moment.
 				if (!controller.signal.aborted) this.warn(ctx, error);
 			}
 		}
 	}
 
-	private async place(ctx: ExtensionContext, transport: RexTransport, signal: AbortSignal, candidates: ReadonlyMap<string, readonly number[] | undefined>): Promise<void> {
-		if (ctx.mode !== "tui") return;
+	/**
+	 * Moves the waiting panes that cover the conversation, one at a time. Each move follows its own view of
+	 * the window with no other request between them, and a pane is decided only from the latest view: Rex
+	 * offers no conditional move, so an arrangement that changes between that view and the move can still
+	 * lose to the move. A change of the window's focus during the decision stops it.
+	 */
+	private async place(ctx: ExtensionContext, transport: RexTransport, signal: AbortSignal): Promise<void> {
 		const sessionId = this.env.REX_SESSION;
 		const blockId = this.env.REX_BLOCK;
-		if (!sessionId || !blockId) return;
-		const processes = object(await this.api(ctx, transport, signal, "com.superlogical.terminal.process", { session_id: sessionId, block_id: blockId, args: {} }));
+		if (ctx.mode !== "tui" || !sessionId || !blockId) return;
+		const block = { session_id: sessionId, block_id: blockId, args: {} };
+		const processes = object(await this.api(ctx, transport, signal, "com.superlogical.terminal.process", block));
 		if (object(processes.foreground).pid !== this.pid) return;
-		const view = await this.api(ctx, transport, signal, "session.view", { session_id: sessionId });
-		const covering = coveringPanes(view, blockId, candidates);
-		if (!covering?.length) return;
-		const size = await this.api(ctx, transport, signal, "com.superlogical.terminal.size", { session_id: sessionId, block_id: blockId, args: {} });
-		let anchor = blockId;
-		let direction = dockDirection(size);
-		for (const pane of covering) {
-			await this.api(ctx, transport, signal, "session.move_block", { session_id: sessionId, block_id: pane.blockId, anchor_block_id: anchor, direction, side: "after", ratio: 0.5 });
-			// Later panes stack in the space of the first one, so the conversation keeps its share.
-			if (anchor === blockId) direction = direction === "horizontal" ? "vertical" : "horizontal";
-			anchor = pane.blockId;
+		const size = await this.api(ctx, transport, signal, "com.superlogical.terminal.size", block);
+		const attempted = new Set<string>();
+		let focus: string | undefined;
+		let unconfirmed: Attempt | undefined;
+		for (let first = true; ; first = false) {
+			const view = await this.api(ctx, transport, signal, "session.view", { session_id: sessionId });
+			const window = conversationWindow(view, blockId);
+			if (!window || (!first && window.focus !== focus)) return;
+			focus = window.focus;
+			if (unconfirmed) this.reconcile(unconfirmed, blockId, window);
+			unconfirmed = undefined;
+			const next = this.next(view, window, attempted);
+			if (next === undefined) return;
+			attempted.add(next);
+			const attempt = { paneId: next, ...this.placement(blockId, size, window) };
+			const response = await this.call(ctx, transport, signal, "session.move_block", { session_id: sessionId, block_id: next, anchor_block_id: attempt.anchor, direction: attempt.direction, side: "after", ratio: 0.5 });
+			if (succeeded(response)) this.dock(blockId, attempt);
+			else {
+				this.warn(ctx, new CliCallError(cliError("session.move_block", response)));
+				unconfirmed = attempt;
+			}
 		}
 	}
 
-	private async api(ctx: ExtensionContext, transport: RexTransport, signal: AbortSignal, method: string, args: Record<string, unknown>): Promise<unknown> {
+	/** Settles the waiting panes that this view decides, and returns the first covering pane not yet attempted. */
+	private next(view: unknown, window: ConversationWindow, attempted: ReadonlySet<string>): string | undefined {
+		let next: string | undefined;
+		for (const [paneId, waiting] of [...this.pending]) {
+			const state = paneState(view, window, paneId, waiting.bounds);
+			if (state.kind === "covering") next ??= attempted.has(paneId) ? undefined : paneId;
+			else if (state.kind !== "focused") this.pending.delete(paneId);
+		}
+		return next;
+	}
+
+	/** A move that failed or got no answer counts as made only when the new view shows the pane tiled. */
+	private reconcile(attempt: Attempt, conversationBlockId: string, window: ConversationWindow): void {
+		if (window.tiled.has(attempt.paneId)) {
+			this.dock(conversationBlockId, attempt);
+			return;
+		}
+		const waiting = this.pending.get(attempt.paneId);
+		if (waiting && ++waiting.failures >= MAX_FAILED_MOVES) this.pending.delete(attempt.paneId);
+	}
+
+	/** Beside the pane that this keeper docked last when it is still tiled here, otherwise beside the conversation. */
+	private placement(conversationBlockId: string, size: unknown, window: ConversationWindow): { anchor: string; direction: Direction } {
+		if (this.docked && window.tiled.has(this.docked.blockId)) return { anchor: this.docked.blockId, direction: this.docked.direction };
+		return { anchor: conversationBlockId, direction: dockDirection(size) };
+	}
+
+	/** Records a docked pane; later panes stack in its space, so the conversation keeps its share. */
+	private dock(conversationBlockId: string, attempt: Attempt): void {
+		this.pending.delete(attempt.paneId);
+		const direction = attempt.anchor === conversationBlockId ? (attempt.direction === "horizontal" ? "vertical" : "horizontal") : attempt.direction;
+		this.docked = { blockId: attempt.paneId, direction };
+	}
+
+	private call(ctx: ExtensionContext, transport: RexTransport, signal: AbortSignal, method: string, args: Record<string, unknown>): Promise<CliResult> {
 		signal.throwIfAborted();
 		const prefix = ["--autostart=false", "--color=never", "--timeout=10s", ...(this.env.REX_SERVER ? ["--server", this.env.REX_SERVER] : [])];
-		const response = await transport.run([...prefix, "api", "call", method, JSON.stringify(args)], {
+		return transport.run([...prefix, "api", "call", method, JSON.stringify(args)], {
 			cwd: ctx.cwd,
 			signal,
 			timeoutMs: this.options.settings.maxWaitMs,
 			maxOutputBytes: this.options.settings.maxOutputBytes,
 		});
-		if (response.outcome !== "exited" || response.exitCode !== 0 || response.truncated) throw new CliCallError(cliError(method, response));
+	}
+
+	private async api(ctx: ExtensionContext, transport: RexTransport, signal: AbortSignal, method: string, args: Record<string, unknown>): Promise<unknown> {
+		const response = await this.call(ctx, transport, signal, method, args);
+		if (!succeeded(response)) throw new CliCallError(cliError(method, response));
 		try {
 			return JSON.parse(response.stdout);
 		} catch {
@@ -260,6 +377,10 @@ class Keeper implements ConversationKeeper {
 		const detail = (error instanceof Error ? error.message : String(error)).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 300);
 		ctx.ui.notify(`Rex could not move a floating pane off this conversation: ${detail || "Unknown error"}`, "warning");
 	}
+}
+
+function succeeded(response: CliResult): boolean {
+	return response.outcome === "exited" && response.exitCode === 0 && !response.truncated;
 }
 
 function cliError(method: string, response: CliResult): string {

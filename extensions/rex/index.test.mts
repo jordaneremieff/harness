@@ -259,15 +259,22 @@ test("ordinary registration wires tab labels without changing the tool surface",
 	registerRex(pi, { createTabLabelProjector: () => projector, createConversationKeeper: () => keeper });
 	assert.deepEqual([...tools.keys()], ["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status"]);
 	assert.deepEqual([...handlers.keys()].sort(), ["agent_settled", "input", "session_info_changed", "session_shutdown", "session_start", "ui_prompt_start"]);
-	const ctx = { mode: "tui" };
+	const answer = { type: "message", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "The result." }] } };
+	const call = { type: "message", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "call", name: "note", arguments: {} }] } };
+	const quiet = { type: "message", message: { role: "toolResult", toolCallId: "call", content: [{ type: "text", text: "Noted." }] } };
+	let branch: unknown[] = [answer];
+	const ctx = { mode: "tui", sessionManager: { getBranch: () => branch } };
 	await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
 	handlers.get("session_info_changed")?.({ type: "session_info_changed", name: "Named" }, ctx);
 	handlers.get("input")?.({ type: "input", source: "rpc" }, ctx);
 	handlers.get("input")?.({ type: "input", source: "interactive" }, ctx);
 	handlers.get("agent_settled")?.({ type: "agent_settled", aborted: false }, ctx);
+	handlers.get("agent_settled")?.({ type: "agent_settled", aborted: true }, ctx);
+	branch = [answer, call, quiet];
+	handlers.get("agent_settled")?.({ type: "agent_settled", aborted: false }, ctx);
 	handlers.get("ui_prompt_start")?.({ type: "ui_prompt_start" }, ctx);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
-	assert.deepEqual(events, ["start", "keeper start", "refresh", "input", "attention", "attention", "shutdown", "keeper shutdown"]);
+	assert.deepEqual(events, ["start", "keeper start", "refresh", "input", "attention", "attention", "shutdown", "keeper shutdown"], "an answer and a dialog need the operator; an aborted run and a run that ended in a tool call do not");
 });
 
 test("a confirmed floating pane that rex_terminal creates is handed to the conversation keeper", async () => {

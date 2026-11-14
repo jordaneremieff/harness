@@ -204,31 +204,55 @@ need not stop.
 
 Ordinary interactive Pi keeps its own conversation pane visible when it needs the
 operator. A floating pane that this conversation created with `rex_terminal` is
-transient to the run that created it. When that run settles (`agent_settled`) or a
-dialog starts waiting for the operator (`ui_prompt_start`), the extension decides once
-for each such pane: if it covers at least five percent of the conversation pane, it
-moves into the tiled layout beside the conversation with `session.move_block`. The
-program, its screen and any window it places over its pane keep running; nothing
-closes. The first moved pane takes half of the conversation's space, beside it when
-the conversation's pixels are at least as wide as tall and below it otherwise. Later
-panes of the same decision stack in that half, so the conversation keeps its share.
+transient to the run that created it. Panes that this conversation did not create,
+including panes of other agents and of the operator, never move. A created pane waits
+for a moment that needs the operator:
+a run that settles (`agent_settled`) with an answer, which is a last model message with
+text, or with an error, and a dialog that starts waiting (`ui_prompt_start`). A run that
+ends quietly in a tool call, such as a state note while background work continues, and a
+run that the operator aborts leave the arrangement alone: a quiet settlement does not show
+that the work finished, and nothing waits there to be read.
 
-A pane that does not cover the conversation at its decision is never moved later.
-The arrangement belongs to the operator: a floating layer whose bounds differ from the
-bounds of its creation by more than a hundredth of the window was moved or resized, so
-it stays, and a pane that the operator floats again after the decision stays where the
-operator put it. Panes that this conversation did not create, including panes of other
-agents and of the operator, never move. The extension also leaves every pane in place
-while any block of the window is zoomed, because a move ends the zoom, and when the
-conversation is not in its window's tiled layout. A move changes no focus: a pane that
-had focus keeps it in its new place, and the extension never takes focus for a dialog.
+At such a moment the extension decides each waiting pane from the latest
+`session.view`:
+
+- A pane that floats with the bounds of its creation and covers at least five percent
+  of the conversation pane moves into the tiled layout beside the conversation with
+  `session.move_block`. The program, its screen and any window it places over its pane
+  keep running; nothing closes.
+- A pane that leaves the conversation visible stays where it is and is not moved later.
+- A pane whose floating layer differs from the bounds of its creation by more than a
+  hundredth of the window, a pane in the tiled layout, a pane in another window and a
+  pane in a layer of a kind other than floating were arranged by someone, so they stay.
+  A closed pane is forgotten.
+- The pane that has the focus of its window is the one that somebody works in. It
+  waits for a later moment.
+
+While any block of the window is zoomed, because a move ends the zoom, and while the
+conversation is not in its window's tiled layout, every pane waits. The first moved
+pane takes half of the conversation's space, beside it when the conversation's pixels
+are at least as wide as tall and below it otherwise. Later panes, also at later
+moments, stack in the space of the last moved pane while it stays tiled in the window,
+so the conversation keeps its share. A move changes no focus: a pane that had focus
+keeps it in its new place, and the extension never takes focus for a dialog.
+
+Each move follows its own view, with no other request between them: the extension reads
+the terminal size first, then reads the view again before every move. A change of the
+window's focus between two moves stops the decision, and the remaining panes wait. Rex
+offers no conditional move, so an arrangement that changes in the short time between
+the latest view and the move can still lose to that move.
+
+A failed read changes nothing, so every pane keeps waiting for the next moment. A move
+that Rex refuses or does not answer counts as made only when the next view shows the
+pane tiled. Otherwise the pane waits for a later moment, the other panes of the decision
+still move, and after three failed moves the pane stays where it is. Failures report one
+warning per extension runtime. No timer or poll repeats a decision.
 
 The extension acts only when inherited `REX_SESSION` and `REX_BLOCK` name a block
 whose foreground process is this Pi process, the same proof that tab names use. It
 holds no store: floating panes created before a reload get no decision. Each decision
-runs bounded CLI calls; a session change or shutdown aborts them. A failure reports one
-warning per extension runtime and leaves the panes as they are. Durable, RPC, JSON and
-print sessions do not move panes.
+runs bounded CLI calls; a session change or shutdown aborts them and forgets the
+waiting panes. Durable, RPC, JSON and print sessions do not move panes.
 
 For content that the operator reads for a while, such as a document, create a split
 beside your own conversation instead of a floating pane. To show a new document where

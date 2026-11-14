@@ -11,7 +11,7 @@ import { publishSettings, readSettings } from "./settings.ts";
 import { REX_GUIDANCE, ResultSchema, toolSpecs, validateRequest, type StatusRequest } from "./schema.ts";
 import { rexStatus, type RexExecutor } from "./status.ts";
 import { createTabLabelProjector, type TabLabelProjectorOptions } from "./tab-label.ts";
-import { createConversationKeeper, type ConversationKeeperOptions, type FloatedPane } from "./keep-visible.ts";
+import { createConversationKeeper, runAnswered, type ConversationKeeperOptions, type FloatedPane } from "./keep-visible.ts";
 
 type RegistrationOptions = RexAdapterOptions & {
 	createTabLabelProjector?: (options: TabLabelProjectorOptions) => ReturnType<typeof createTabLabelProjector>;
@@ -83,8 +83,9 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 	}
 	const stopDisplay = publishRexToolDisplay(pi.events, tools);
 	pi.on("session_start", async (_event, ctx) => { await stopCalls(); lifetime = new AbortController(); tabLabels.start(ctx); keeper.start(ctx); });
-	// The conversation needs the operator when its run settles or a dialog waits for an answer.
-	pi.on("agent_settled", (_event, ctx) => { keeper.attention(ctx); });
+	// The conversation needs the operator when its run ends with an answer or an error, or a dialog waits.
+	// A run that ends quietly in a tool call leaves the arrangement alone: its work can still be running.
+	pi.on("agent_settled", (event, ctx) => { if (runAnswered(ctx.sessionManager.getBranch(), event.aborted)) keeper.attention(ctx); });
 	pi.on("ui_prompt_start", (_event, ctx) => { keeper.attention(ctx); });
 	pi.on("session_info_changed", (_event, ctx) => { tabLabels.refresh(ctx); });
 	pi.on("input", (event, ctx) => { if (event.source === "interactive") tabLabels.input(ctx); });
