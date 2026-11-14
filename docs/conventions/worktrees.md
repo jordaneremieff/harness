@@ -162,10 +162,14 @@ waits for none, apart from the [shared acts](#shared-acts).
    `node scripts/activate.mts --expect ../harness.releases/<active> ../harness.releases/<name>`
    replaces the harness package entry in Pi's global settings in one read,
    check, and write under Pi's own settings lock. Every other setting stays
-   byte-equal. The script refuses unless the entry still names the snapshot
-   you expected and the new commit descends from it, so a concurrent
-   activation is never silently reversed. After a refusal, read the entry
-   again and decide from the new state.
+   byte-equal. The script refuses unless the new snapshot is the root of a
+   Git work tree, its commit is reachable from `refs/heads/main` of its own
+   repository, the entry still names the snapshot you expected, and the new
+   commit descends from it. A commit that `main` does not contain never goes
+   live, and a concurrent activation is never silently reversed. An earlier
+   commit of `main` stays eligible after `main` moves on. Missing or unreadable
+   Git evidence is a refusal, never a pass. After a refusal that concerns the
+   entry, read the entry again and decide from the new state.
 5. **Confirm.** Start a fresh Pi process on the configured route and exercise
    the changed behaviour. This step checks the configured route under the
    running Pi.
@@ -178,8 +182,10 @@ host runs from it.
 
 A failed check before the switch changes nothing. After a fault,
 `node scripts/activate.mts --rollback --expect <current> <earlier>` selects an
-earlier snapshot: it keeps the expected-entry check and drops the descent
-check. Start a fresh process afterwards.
+earlier snapshot: it keeps the expected-entry check and the requirement that
+the earlier snapshot holds a commit of `main`, and drops the descent check.
+The snapshot it leaves needs no commit of `main`. Start a fresh process
+afterwards.
 
 If the new code wrote to a store, stop the processes that write it, then keep
 or explicitly dispose of the valid writes made since the copy, before any

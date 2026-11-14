@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 // Switches the snapshot checkout that Pi's settings file lists as the harness
-// package. The read, check and write run under Pi's settings lock so two
+// package. The new snapshot must hold a commit of its repository's local main
+// branch. The read, check and write run under Pi's settings lock so two
 // sessions cannot overwrite each other's switch, and only the one package
 // source is rewritten.
 
@@ -39,26 +40,88 @@ const lockWaitMs = 20;
 // Synchronous waiting without a timer: Atomics.wait blocks the thread briefly between lock attempts.
 const lockWait = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 const usage = "Usage: activate.mts [--rollback] --expect <current-snapshot-dir> <new-snapshot-dir>";
+const mainRef = "refs/heads/main";
+const mainRemedy = "Land the commit on main, then make the snapshot with git worktree add --detach <dir> main.";
 
 type Settings = Record<string, unknown>;
 type Match = { index: number; source: string };
+type GitResult = { status: number | null; stdout: string; detail: string };
+
+let repositoryVariables: string[] | undefined;
 
 function resolvedPath(path: string): string {
 	const absolute = resolve(path);
 	return existsSync(absolute) ? realpathSync(absolute) : absolute;
 }
 
+function spawnGit(args: string[], env: NodeJS.ProcessEnv): GitResult {
+	const result = spawnSync("git", args, { encoding: "utf8", env });
+	if (result.error !== undefined)
+		return { status: null, stdout: "", detail: `git did not run: ${result.error.message}` };
+	const detail = result.stderr.trim() || `git exited with ${result.status ?? result.signal}`;
+	return { status: result.status, stdout: result.stdout, detail };
+}
+
+/** Runs git without Git's repository-selecting variables, so it reads the repository that holds `directory`. */
+function runGit(directory: string, args: string[]): GitResult {
+	if (repositoryVariables === undefined) {
+		const listed = spawnGit(["rev-parse", "--local-env-vars"], process.env);
+		if (listed.status !== 0) return listed;
+		repositoryVariables = listed.stdout.split("\n").filter(Boolean);
+	}
+	const env = { ...process.env };
+	for (const name of repositoryVariables) delete env[name];
+	return spawnGit(["-C", directory, ...args], env);
+}
+
 function gitHead(directory: string): string {
-	const result = spawnSync("git", ["-C", directory, "rev-parse", "HEAD"], { encoding: "utf8" });
-	if (result.status !== 0) throw new Error(`Could not read the commit of ${directory}: ${result.stderr.trim()}`);
+	const result = runGit(directory, ["rev-parse", "--verify", "HEAD^{commit}"]);
+	if (result.status !== 0) throw new Error(`Could not read the commit of ${directory}: ${result.detail}`);
 	return result.stdout.trim();
+}
+
+function mainEvidenceFailure(directory: string, detail: string): Error {
+	return new Error(
+		`Could not establish that the new snapshot's commit is on ${mainRef} of its repository: ${directory}: ${detail}.`,
+	);
+}
+
+function mainEvidence(directory: string, args: string[]): string {
+	const result = runGit(directory, args);
+	if (result.status !== 0) throw mainEvidenceFailure(directory, result.detail);
+	return result.stdout;
+}
+
+/**
+ * The new snapshot must be the root of a work tree whose commit `refs/heads/main` of the same repository reaches.
+ * A directory below a work-tree root would report the enclosing checkout's commit instead of its own.
+ */
+function assertOnMain(directory: string): void {
+	const [inside, prefix] = mainEvidence(directory, ["rev-parse", "--is-inside-work-tree", "--show-prefix"]).split("\n");
+	if (inside !== "true" || prefix !== "") {
+		throw mainEvidenceFailure(
+			directory,
+			"the directory is not the root of a Git work tree. Make the snapshot with git worktree add --detach <dir> main",
+		);
+	}
+	const commit = mainEvidence(directory, ["rev-parse", "--verify", "HEAD^{commit}"]).trim();
+	// show-ref --verify reads only the exact ref; rev-parse would also resolve refs/tags/refs/heads/main.
+	const mainCommit = mainEvidence(directory, ["show-ref", "--verify", "--hash", mainRef]).trim();
+	const reach = runGit(directory, ["merge-base", "--is-ancestor", commit, mainCommit]);
+	if (reach.status === 0) return;
+	if (reach.status === 1) {
+		throw new Error(
+			`The new snapshot's commit ${commit} is not on ${mainRef} of its repository: ${directory}. ${mainRemedy}`,
+		);
+	}
+	throw mainEvidenceFailure(directory, `commit ${commit}: ${reach.detail}`);
 }
 
 /** Default ancestry check: the descendant worktree must contain the ancestor commit. */
 function gitAncestor(ancestorDir: string, descendantDir: string): boolean {
 	const ancestor = gitHead(ancestorDir);
 	const descendant = gitHead(descendantDir);
-	return spawnSync("git", ["-C", descendantDir, "merge-base", "--is-ancestor", ancestor, descendant]).status === 0;
+	return runGit(descendantDir, ["merge-base", "--is-ancestor", ancestor, descendant]).status === 0;
 }
 
 function assertNewSnapshot(directory: string): void {
@@ -208,11 +271,16 @@ function switchLocked(settingsPath: string, expectReal: string, toReal: string):
 	return { from: match.source, to: newSource };
 }
 
-/** Replaces the one harness package entry after confirming it still names `expect`; `rollback` skips the ancestry check. */
+/**
+ * Replaces the one harness package entry after confirming that the new snapshot's commit is on its repository's
+ * local main branch and that the entry still names `expect`. `rollback` skips only the ancestry check; the expected
+ * snapshot itself needs no main commit, so a rollback can leave any active entry.
+ */
 export function switchHarnessPackage(options: SwitchOptions): { from: string; to: string } {
 	const expectReal = resolvedPath(options.expect);
 	const toReal = resolvedPath(options.to);
 	assertNewSnapshot(toReal);
+	assertOnMain(toReal);
 	const isAncestor = options.isAncestor ?? gitAncestor;
 	if (options.rollback !== true && !isAncestor(expectReal, toReal)) {
 		throw new Error(
