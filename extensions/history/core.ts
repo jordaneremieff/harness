@@ -6,6 +6,8 @@ import {
 	type SearchFilter,
 	type SearchMode,
 	type ArgumentNode,
+	argumentItem,
+	argumentLevel,
 	argumentNodes,
 	argumentPath,
 	boundary,
@@ -536,6 +538,17 @@ function withheld(entry: SessionEntry, parts: string[]): boolean {
 		(type === "thinking" && own(block, "redacted") === true && key === "thinking")
 	);
 }
+/** The argument-listing level of a pointer inside a stored tool call's `arguments`, when it has one. */
+function argumentPointerLevel(entry: SessionEntry, parts: string[]): number | undefined {
+	const blockLength =
+		parts[0] === own(CONTENT_ROOTS, entry.type) && parts[1] === "content"
+			? 3
+			: entry.type === "custom_message" && parts[0] === "content"
+				? 2
+				: 0;
+	if (!blockLength || parts.length <= blockLength || !/^(0|[1-9]\d*)$/.test(parts[blockLength - 1])) return undefined;
+	return argumentLevel(select(entry, parts.slice(0, blockLength)), parts.slice(blockLength));
+}
 function knownKeys(parts: string[]): readonly string[] | undefined {
 	if (parts.length === 0) return ENTRY_KEYS;
 	if (parts.length === 1 && (parts[0] === "message" || parts[0] === "systemMessage")) return MESSAGE_KEYS;
@@ -564,6 +577,7 @@ class HistoryRead {
 	readonly #outputCap: number;
 	readonly #signal: AbortSignal | undefined;
 	readonly #base: RecordValue;
+	#argumentLevel: number | undefined;
 
 	constructor(source: HistorySource, value: unknown, signal?: AbortSignal) {
 		check(signal);
@@ -588,7 +602,7 @@ class HistoryRead {
 			startId: entryId,
 			membership: "not_checked",
 			pointer: this.#pointer,
-			offsetUnit: "UTF-16 code units for strings; item index for arrays and known-field lists",
+			offsetUnit: "UTF-16 code units for strings; item index for arrays, known-field lists and argument-key lists",
 		};
 	}
 
@@ -624,7 +638,10 @@ class HistoryRead {
 				action: "Read the entry root or a parent pointer for supported field selectors.",
 			});
 		if (typeof selected === "string") return this.#readString(selected);
-		const keys = object(selected) ? knownKeys(this.#parts) : undefined;
+		this.#argumentLevel = argumentPointerLevel(entry, this.#parts);
+		const keys = object(selected)
+			? (knownKeys(this.#parts) ?? (this.#argumentLevel === undefined ? undefined : Object.keys(selected)))
+			: undefined;
 		if (Array.isArray(selected) || keys) return this.#readItems(entry, selected, keys);
 		if (this.#offset !== 0) throw new Error("Offset applies only to strings, arrays, or known-field lists.");
 		return this.#finish({
@@ -682,6 +699,7 @@ class HistoryRead {
 	}
 
 	#itemDescriptor(entry: SessionEntry, key: string, child: unknown): RecordValue {
+		if (this.#argumentLevel !== undefined) return argumentItem(key, child, this.#pointer, this.#argumentLevel);
 		return withheld(entry, [...this.#parts, key])
 			? {
 					pointer: `${this.#pointer}/${key}`,

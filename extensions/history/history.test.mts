@@ -352,7 +352,10 @@ test("tool arguments remain available by pointer while provider payloads and red
 			},
 		} as unknown as SessionEntry,
 	]);
-	assert.equal(readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments" }).status, "structured_omitted");
+	assert.deepEqual(readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments" }).items, [
+		{ key: "data", pointer: "/message/content/0/arguments/data", kind: "string", totalCodeUnits: 10, text: "tool input" },
+		{ key: "query", pointer: "/message/content/0/arguments/query", kind: "string", totalCodeUnits: 16, text: "specific request" },
+	]);
 	assert.equal(readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments/data" }).text, "tool input");
 	for (const pointer of [
 		"/message/content/0/thoughtSignature",
@@ -855,4 +858,72 @@ test("scan continuations resume after a surrogate pair at the overlap boundary w
 			[2044],
 		);
 	}
+});
+
+test("an argument-search match and one read of the call's arguments answer every argument", () => {
+	let deep: Record<string, unknown> = { leaf: "bottom" };
+	for (let level = 0; level < LIMITS.argumentDepth; level++) deep = { next: deep };
+	const longKey = "k".repeat(LIMITS.pointerUnits);
+	const sm = source([
+		{
+			id: "a",
+			parentId: null,
+			timestamp: "2026-01-01",
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "call",
+						name: "clipboard_copy",
+						arguments: {
+							content: "use-path marker 42",
+							archive: false,
+							"odd/key~": 3,
+							long: "x".repeat(300),
+							edits: [{ oldText: "a", newText: "b" }],
+							options: { mode: "fast" },
+							deep,
+							[longKey]: "unreachable",
+						},
+					},
+				],
+			},
+		} as unknown as SessionEntry,
+	]);
+	const found = matches(searchHistory(sm, { query: "use-path marker", mode: "arguments" }));
+	assert.equal(found[0]?.pointer, "/message/content/0/arguments/content");
+	const listing = readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments" });
+	assert.equal(listing.status, "complete");
+	assert.deepEqual(listing.items, [
+		{ key: "content", pointer: "/message/content/0/arguments/content", kind: "string", totalCodeUnits: 18, text: "use-path marker 42" },
+		{ key: "archive", pointer: "/message/content/0/arguments/archive", kind: "scalar", value: false },
+		{ key: "odd/key~", pointer: "/message/content/0/arguments/odd~1key~0", kind: "scalar", value: 3 },
+		{
+			key: "long",
+			pointer: "/message/content/0/arguments/long",
+			kind: "string",
+			totalCodeUnits: 300,
+			omitted: true,
+			action: "Read this pointer with offset and maxBytes.",
+		},
+		{ key: "edits", pointer: "/message/content/0/arguments/edits", kind: "array", length: 1, omitted: true, action: "Read this pointer with offset and maxItems." },
+		{ key: "options", pointer: "/message/content/0/arguments/options", kind: "object", omitted: true, action: "Read this pointer to list its argument keys." },
+		{ key: "deep", pointer: "/message/content/0/arguments/deep", kind: "object", omitted: true, action: "Read this pointer to list its argument keys." },
+		{ kind: "skipped", reason: "pointerLength", totalCodeUnits: LIMITS.pointerUnits },
+	]);
+	assert.equal(readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments/odd~1key~0" }).value, 3);
+	assert.deepEqual(readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments/edits/0" }).items, [
+		{ key: "oldText", pointer: "/message/content/0/arguments/edits/0/oldText", kind: "string", totalCodeUnits: 1, text: "a" },
+		{ key: "newText", pointer: "/message/content/0/arguments/edits/0/newText", kind: "string", totalCodeUnits: 1, text: "b" },
+	]);
+	const paged = readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments", maxItems: 2 });
+	assert.equal((paged.items as unknown[]).length, 2);
+	assert.deepEqual(paged.next, { sessionId: "synthetic-session", entryId: "a", pointer: "/message/content/0/arguments", offset: 2 });
+	let pointer = "/message/content/0/arguments/deep";
+	for (let level = 1; level < LIMITS.argumentDepth - 1; level++) pointer += "/next";
+	const lastListed = readHistory(sm, { entryId: "a", pointer });
+	assert.deepEqual((lastListed.items as Record<string, unknown>[])[0]?.action, "Read this pointer, or append a known child key as a JSON pointer. Opaque object keys are not enumerated.", "the listing stops at the argument-search depth");
+	assert.equal(readHistory(sm, { entryId: "a", pointer: `${pointer}/next` }).status, "structured_omitted");
 });

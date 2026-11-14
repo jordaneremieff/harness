@@ -874,3 +874,56 @@ test("native scan continuations resume after a surrogate pair at the overlap bou
 		);
 	}
 });
+
+test("native history_read lists a tool call's argument keys and keeps other opaque objects omitted", async () => {
+	const extension = await durableContribution(SOURCE).create({
+		durable: Durable,
+		services: undefined as unknown as AgentSessionServices,
+		cwd: ".",
+		agentDir: ".",
+		storageId: "synthetic",
+		signal: new AbortController().signal,
+		inventory: { contributions: [], ordinaryOnly: [] },
+	});
+	const tool = extension.tools?.find((item) => item.name === "history_read");
+	assert.ok(tool);
+	const entries = [
+		nativeEntry(
+			[
+				{
+					role: "assistant",
+					content: [toolCall("c", "clipboard_copy", { content: "marker", archive: false, options: { mode: "fast" } })],
+				},
+				{ role: "toolResult", toolCallId: "c", content: [], details: { secret: "kept opaque" } },
+			],
+			1,
+			"pi.assistant",
+		),
+	];
+	const tx = {
+		scanEntries: async (query: Durable.EntryQuery, limit: number) => ({
+			items: entries
+				.filter((entry) => (query.minEntryId === undefined || entry.id >= query.minEntryId) && (query.maxEntryId === undefined || entry.id <= query.maxEntryId))
+				.slice(0, limit),
+		}),
+	} as unknown as Durable.Tx;
+	const api = {
+		conversationId: 1,
+		commit: async (fn: (tx: Durable.Tx) => Promise<unknown>) => fn(tx),
+	} as unknown as Durable.ToolExecutionApi;
+	const read = async (pointer: string) => {
+		const result = await tool.execute({ entryId: 1, pointer }, api, BACKGROUND_CONTEXT);
+		return JSON.parse((result.output as { text: string }[])[0].text) as Record<string, unknown>;
+	};
+	assert.deepEqual((await read("/model/0/content/0/arguments")).items, [
+		{ key: "content", pointer: "/model/0/content/0/arguments/content", kind: "string", totalCodeUnits: 6, text: "marker" },
+		{ key: "archive", pointer: "/model/0/content/0/arguments/archive", kind: "scalar", value: false },
+		{ key: "options", pointer: "/model/0/content/0/arguments/options", kind: "object", omitted: true, action: "Read this pointer to list its argument keys." },
+	]);
+	assert.deepEqual((await read("/model/0/content/0/arguments/options")).items, [
+		{ key: "mode", pointer: "/model/0/content/0/arguments/options/mode", kind: "string", totalCodeUnits: 4, text: "fast" },
+	]);
+	const details = await read("/model/1/details");
+	assert.equal(details.status, "structured_omitted");
+	assert.equal(details.items, undefined);
+});

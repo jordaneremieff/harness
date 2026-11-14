@@ -126,6 +126,11 @@ for example `/message/content/2/arguments/edits/0/newText`. Pass that entry ID
 and pointer to `history_read` to read the complete value. Offsets, excerpts,
 match, scan and output bounds behave as in text search.
 
+To see every argument of the matched call, read the match's pointer up to
+`arguments`, for example `/message/content/2/arguments`. That read lists the
+call's argument keys in stored order, as described under
+[Tool-call arguments](#tool-call-arguments).
+
 Argument search requires a `query` and takes no `filter`: every filter source
 selects entries that hold no tool calls. When `mode` is omitted or `"text"`,
 text search keeps its results and response shape. It refuses an argument-search
@@ -141,7 +146,7 @@ reads the `type` of each content block and the `id`, `name` and `arguments` of
 tool calls, nothing else. It never reads text or thinking content, tool result
 text, `details`, custom `data`, signatures or image payloads, so it exposes
 nothing that `history_read` withholds. A returned pointer names only the keys
-on the path to its match; no response lists the keys of an arguments object.
+on the path to its match; `history_read` lists the other keys.
 
 Traversal bounds are explicit:
 
@@ -238,13 +243,29 @@ returns `field_absent`. Malformed arguments or entries cause a bounded error.
 Root, message, replacement, and content-block manifests expose a fixed set of standard
 fields. Arrays return bounded child descriptors. String descriptors give their
 length and an exact pointer rather than copying text into metadata. The tools
-never enumerate arbitrary object keys or serialize a complete source object.
+never serialize a complete source object, and they enumerate object keys only
+for tool-call arguments.
 
-Opaque objects such as tool `details`, custom `data`, tool-call `arguments`,
-and system-message `sections` return `structured_omitted` with their pointer.
-Read a known child key directly; object-key discovery is not provided.
-Argument search returns exact pointers to matching argument strings instead. This boundary preserves bounded work
-regardless of an opaque object's size. Ordinary fields named `data` inside
+Opaque objects such as tool `details`, custom `data`, and system-message
+`sections` return `structured_omitted` with their pointer. Read a known child
+key directly; key discovery is not provided for them. This boundary preserves
+bounded work regardless of an opaque object's size.
+
+### Tool-call arguments
+
+A tool call's `arguments` object is the model's own input, and each value is
+already readable by pointer. A read at a `toolCall` block's `arguments`, or at
+an object nested in it, lists its keys in stored order with the item paging
+of arrays (`offset`, `maxItems` and the output limit). Each item carries the
+`key` and its exact `pointer`, with `~` and `/` escaped. A string of at most 256
+UTF-16 code units appears inline as `text` with `totalCodeUnits`. A longer
+string, an array or a scalar has its usual descriptor. A nested object gives a
+pointer whose read lists its own keys. Array items inside arguments use the
+same item form. Listings reach the depth that argument search enters: an object
+`LIMITS.argumentDepth` levels below `arguments` keeps the opaque descriptor. A
+key whose pointer would exceed `LIMITS.pointerUnits` appears as
+`{ "kind": "skipped", "reason": "pointerLength" }` with the key's length. Every
+other opaque object keeps the behaviour above. Ordinary fields named `data` inside
 those objects remain readable. Provider signatures, image payloads, and
 redacted thinking are withheld at typed content-block locations, including
 compaction checkpoints and context-edit replacements. Direct pointers retain

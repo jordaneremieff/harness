@@ -151,6 +151,35 @@ export function descriptor(value: unknown, pointer: string): RecordValue {
 		return { pointer, kind: "scalar", value };
 	return { pointer, kind: "unsupported", omitted: true };
 }
+/** Longest argument string, in UTF-16 code units, that an argument-key listing returns inline. */
+const INLINE_ARGUMENT_UNITS = 256;
+
+/**
+ * The level below a tool call's `arguments` that `below` selects, when an argument listing applies there.
+ * `below` holds the pointer parts after the content block. Listings reach the same depth as argument search;
+ * every other object keeps its opaque descriptor.
+ */
+export function argumentLevel(block: unknown, below: readonly string[]): number | undefined {
+	if (own(block, "type") !== "toolCall" || below[0] !== "arguments") return undefined;
+	const level = below.length - 1;
+	return level < LIMITS.argumentDepth ? level : undefined;
+}
+
+/**
+ * One entry of an argument-key listing: a short string inline, anything else as its read descriptor.
+ * `depth` is the parent object's level below `arguments`; a nested object past the listing depth keeps
+ * its opaque descriptor.
+ */
+export function argumentItem(key: string, value: unknown, parent: string, depth: number): RecordValue {
+	const pointer = `${parent}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`;
+	if (pointer.length > LIMITS.pointerUnits) return { kind: "skipped", reason: "pointerLength", totalCodeUnits: key.length };
+	if (typeof value === "string" && value.length <= INLINE_ARGUMENT_UNITS)
+		return { key, pointer, kind: "string", totalCodeUnits: value.length, text: value };
+	if (object(value) && depth + 1 < LIMITS.argumentDepth)
+		return { key, pointer, kind: "object", omitted: true, action: "Read this pointer to list its argument keys." };
+	return { key, ...descriptor(value, pointer) };
+}
+
 export type SearchMode = "text" | "arguments";
 
 export function searchMode(value: unknown): SearchMode {
