@@ -674,22 +674,25 @@ export async function runTerminal(args: string[]): Promise<void> {
 	process.once("SIGTERM", close);
 	const restoreWarnings = suppressProcessWarnings();
 	try {
-		const target = session ?? remembered.read();
-		if (target) screen.view.selectIdentity(await manager.resolveTarget(target));
-		else screen.view.openNamedAction("new");
-		tui.addChild(screen);
-		tui.setFocus(screen);
-		tui.start();
-		await finished;
-	} finally {
-		process.off("SIGINT", close);
-		process.off("SIGTERM", close);
-		screen.dispose();
 		try {
-			await controller.close();
+			const target = session ?? remembered.read();
+			if (target) screen.view.selectIdentity(await manager.resolveTarget(target));
+			else screen.view.openNamedAction("new");
+			tui.addChild(screen);
+			tui.setFocus(screen);
+			tui.start();
+			await finished;
 		} finally {
-			tui.stop();
-			restoreWarnings();
+			process.off("SIGINT", close);
+			process.off("SIGTERM", close);
+			screen.dispose();
+			try {
+				await controller.close();
+			} finally {
+				tui.stop();
+			}
 		}
+	} finally {
+		restoreWarnings();
 	}
 }
