@@ -41,6 +41,8 @@ export interface ConversationWindow {
 	layers: unknown[];
 	/** Blocks of the window's tiled layer. */
 	tiled: ReadonlySet<string>;
+	/** Each block in a layer of the window that is not tiled, with that layer's kind and bounds. */
+	floating: ReadonlyMap<string, string>;
 }
 
 export interface ConversationKeeper {
@@ -115,12 +117,29 @@ export function conversationWindow(view: unknown, conversationBlockId: string): 
 	const tiled = leaves(tiledLayer?.layout);
 	const pane = tiled.find((leaf) => leaf.blockId === conversationBlockId)?.rect;
 	if (!pane || pane[2] <= 0 || pane[3] <= 0) return undefined;
+	const floating = new Map<string, string>();
+	for (const value of layers) {
+		const layer = object(value);
+		if (layer.kind === "tiled") continue;
+		for (const leaf of leaves(layer.layout)) floating.set(leaf.blockId, JSON.stringify([layer.kind, layer.bounds]));
+	}
 	return {
 		...(typeof window.focused_block_id === "string" ? { focus: window.focused_block_id } : {}),
 		pane,
 		layers,
 		tiled: new Set(tiled.map((leaf) => leaf.blockId)),
+		floating,
 	};
+}
+
+/**
+ * Whether the window's layers that are not tiled are as before a move, apart from the pane that the move took
+ * out of them. Another change means that somebody arranges the window, and the decision stops.
+ */
+export function floatingUnchanged(before: ConversationWindow, after: ConversationWindow, moved: string): boolean {
+	for (const [blockId, layer] of after.floating) if (before.floating.get(blockId) !== layer) return false;
+	for (const blockId of before.floating.keys()) if (blockId !== moved && !after.floating.has(blockId)) return false;
+	return true;
 }
 
 /** True when the layer still has the bounds that its creation requested, so nobody has moved or resized it. */
@@ -294,18 +313,18 @@ class Keeper implements ConversationKeeper {
 		if (object(processes.foreground).pid !== this.pid) return;
 		const size = await this.api(ctx, transport, signal, "com.superlogical.terminal.size", block);
 		const attempted = new Set<string>();
-		let focus: string | undefined;
+		let before: { window: ConversationWindow; moved: string } | undefined;
 		let unconfirmed: Attempt | undefined;
-		for (let first = true; ; first = false) {
+		for (;;) {
 			const view = await this.api(ctx, transport, signal, "session.view", { session_id: sessionId });
 			const window = conversationWindow(view, blockId);
-			if (!window || (!first && window.focus !== focus)) return;
-			focus = window.focus;
+			if (!window || disturbed(before, window)) return;
 			if (unconfirmed) this.reconcile(unconfirmed, blockId, window);
 			unconfirmed = undefined;
 			const next = this.next(view, window, attempted);
 			if (next === undefined) return;
 			attempted.add(next);
+			before = { window, moved: next };
 			const attempt = { paneId: next, ...this.placement(blockId, size, window) };
 			const response = await this.call(ctx, transport, signal, "session.move_block", { session_id: sessionId, block_id: next, anchor_block_id: attempt.anchor, direction: attempt.direction, side: "after", ratio: 0.5 });
 			if (succeeded(response)) this.dock(blockId, attempt);
@@ -377,6 +396,14 @@ class Keeper implements ConversationKeeper {
 		const detail = (error instanceof Error ? error.message : String(error)).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 300);
 		ctx.ui.notify(`Rex could not move a floating pane off this conversation: ${detail || "Unknown error"}`, "warning");
 	}
+}
+
+/**
+ * Whether the focus or the floating layers of the window changed since the view before the last move, apart
+ * from that move: then somebody arranges the window, and the remaining panes wait.
+ */
+function disturbed(before: { window: ConversationWindow; moved: string } | undefined, after: ConversationWindow): boolean {
+	return before !== undefined && (after.focus !== before.window.focus || !floatingUnchanged(before.window, after, before.moved));
 }
 
 function succeeded(response: CliResult): boolean {

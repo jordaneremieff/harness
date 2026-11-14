@@ -237,10 +237,11 @@ so the conversation keeps its share. A move changes no focus: a pane that had fo
 keeps it in its new place, and the extension never takes focus for a dialog.
 
 Each move follows its own view, with no other request between them: the extension reads
-the terminal size first, then reads the view again before every move. A change of the
-window's focus between two moves stops the decision, and the remaining panes wait. Rex
-offers no conditional move, so an arrangement that changes in the short time between
-the latest view and the move can still lose to that move.
+the terminal size first, then reads the view again before every move. When the window's
+focus or any of its floating layers changed between two moves, apart from the pane that
+the first move took out, somebody arranges the window: the decision stops, and the
+remaining panes wait. Rex offers no conditional move, so an arrangement that changes in
+the short time between the latest view and the move can still lose to that move.
 
 A failed read changes nothing, so every pane keeps waiting for the next moment. A move
 that Rex refuses or does not answer counts as made only when the next view shows the

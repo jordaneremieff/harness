@@ -235,8 +235,8 @@ test("a resize or zoom while the keeper inspects the window wins over the move",
 });
 
 test("a change between two moves stops the decision before the second move", async () => {
-	for (const change of ["zoom", "resize", "focus"] as const) {
-		const rex = new FakeRex([["block:reader", READER], ["block:probe", PROBE]]);
+	for (const change of ["zoom", "resize", "focus", "other pane"] as const) {
+		const rex = new FakeRex([["block:reader", READER], ["block:probe", PROBE], ["block:foreign", [0.7, 0.7, 0.2, 0.2]]]);
 		const keeper = keeperFor(rex);
 		const { ctx } = context();
 		keeper.start(ctx);
@@ -253,12 +253,13 @@ test("a change between two moves stops the decision before the second move", asy
 		await reached.promise;
 		if (change === "zoom") rex.zoomed = "block:reader";
 		else if (change === "resize") rex.floats.set("block:probe", [0.5, 0.5, 0.4, 0.4]);
-		else rex.focus = "block:reader";
+		else if (change === "focus") rex.focus = "block:reader";
+		else rex.floats.set("block:foreign", [0.6, 0.6, 0.3, 0.3]);
 		rex.hold = undefined;
 		pause.open();
 		await keeper.idle();
 		assert.deepEqual(rex.moves().map((move) => move.block_id), ["block:reader"], `${change} between the moves`);
-		if (change === "zoom") {
+		if (change === "zoom" || change === "other pane") {
 			rex.zoomed = undefined;
 			rex.calls.length = 0;
 			await decide(keeper, ctx);
