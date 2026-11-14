@@ -81,6 +81,16 @@ async function waitFor(check: () => boolean, label: string): Promise<void> {
 	assert.fail(`timed out waiting for ${label}`);
 }
 
+/** Collects the host's direct diagnostic output: console warnings and stderr writes. */
+function captureDiagnostics(): { lines: string[]; restore(): void } {
+	const lines: string[] = [];
+	const warn = console.warn;
+	const write = process.stderr.write;
+	console.warn = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+	process.stderr.write = ((chunk: unknown) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
+	return { lines, restore() { console.warn = warn; process.stderr.write = write; } };
+}
+
 function deferred(): { promise: Promise<void>; resolve: () => void } {
 	let resolve: () => void = () => {};
 	const promise = new Promise<void>((done) => {
@@ -2114,18 +2124,15 @@ test("native telemetry health follows pressure and recovery from the writer snap
 		mode: "observe",
 		extension: probeExtension({ executed: 0 }),
 		append: async () => {
-			if (++attempts === 1) throw new TelemetryLockBusyError("held");
+			if (++attempts === 1) {
+				pressure.resolve();
+				throw new TelemetryLockBusyError("held");
+			}
 			await gate.promise;
+			recovered.resolve();
 		},
 	});
-	const warnings: string[] = [];
-	const warn = console.warn;
-	console.warn = (...args: unknown[]) => {
-		const text = args.map(String).join(" ");
-		warnings.push(text);
-		if (text.includes("telemetry pressure")) pressure.resolve();
-		if (text.includes("telemetry ok")) recovered.resolve();
-	};
+	const output = captureDiagnostics();
 	try {
 		await submit(fixture,
 			[fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("done")], "run probe");
@@ -2139,11 +2146,10 @@ test("native telemetry health follows pressure and recovery from the writer snap
 		gate.resolve();
 		await recovered.promise;
 		assert.deepEqual(await inspect(), { state: "ok", lostRecords: 0, lostBytes: 0 });
-		assert.equal(warnings.filter((line) => line.includes("telemetry pressure")).length, 1);
-		assert.equal(warnings.filter((line) => line.includes("telemetry ok")).length, 1);
+		assert.deepEqual(output.lines.filter((line) => line.includes("[policy]")), [], "recovered contention is routine");
 	} finally {
 		gate.resolve();
-		console.warn = warn;
+		output.restore();
 		await fixture.close();
 	}
 });
@@ -2159,11 +2165,8 @@ test("native telemetry failure reports once in health without changing an approv
 			throw new Error("disk unavailable");
 		},
 	});
-	const warnings: string[] = [];
-	const warn = console.warn;
-	console.warn = (...args: unknown[]) => {
-		warnings.push(args.map((value) => String(value)).join(" "));
-	};
+	const output = captureDiagnostics();
+	const warnings = output.lines;
 	try {
 		await addRule(fixture.policy, "telemetry-failure-deny", {
 			phase: "input",
@@ -2180,8 +2183,8 @@ test("native telemetry failure reports once in health without changing an approv
 		assert.equal(denied?.isError, true);
 		assert.match(textOf(denied), /telemetry-failure-deny/);
 		assert.equal(counter.executed, 0);
-		await waitFor(() => warnings.some((line) => line.includes("telemetry persistence stopped")), "telemetry failure");
-		const reports = warnings.filter((line) => line.includes("telemetry persistence stopped"));
+		await waitFor(() => warnings.some((line) => line.includes("Telemetry persistence stopped")), "telemetry failure");
+		const reports = warnings.filter((line) => line.includes("Telemetry persistence stopped"));
 		assert.equal(reports.length, 1);
 		assert.match(reports[0], /disk unavailable/);
 		assert.ok(attempts >= 1);
@@ -2194,7 +2197,7 @@ test("native telemetry failure reports once in health without changing an approv
 		const deniedAgain = (await toolResults(fixture.root, "probe")).at(-1);
 		assert.equal(deniedAgain?.isError, true);
 		assert.equal(counter.executed, 0);
-		assert.equal(warnings.filter((line) => line.includes("telemetry persistence stopped")).length, 1);
+		assert.equal(warnings.filter((line) => line.includes("Telemetry persistence stopped")).length, 1);
 
 		await submit(
 			fixture,
@@ -2211,7 +2214,7 @@ test("native telemetry failure reports once in health without changing an approv
 		assert.match(health.telemetry.reason ?? "", /disk unavailable/);
 		assert.equal(health.authority.status, "ok");
 	} finally {
-		console.warn = warn;
+		output.restore();
 		await fixture.close();
 	}
 });

@@ -1764,8 +1764,21 @@ The ordinary and native `health` inspection views read the writer's current
 `telemetry` snapshot: `state` (`ok`, `pressure`, or `failed`), cumulative
 `lostRecords` and `lostBytes`, and `reason` when failed. Byte counts use the
 serialised queue size, including framing allowances. A recovered append clears
-pressure but preserves cumulative losses. Reports occur on state changes, not
-once per refused record. Only permanent failure stops future admission.
+pressure but preserves cumulative losses. Only permanent failure stops future
+admission.
+
+Lock contention that recovers without loss is routine and produces no output;
+the `health` view shows it. The writer signals health on state changes, not
+once per refused record. Each writer reports record loss once, at the first
+state change whose snapshot shows a loss, and its permanent failure once; later
+counts stay in the `health` view. A loss during sustained pressure is therefore
+reported when the writer recovers or fails. An ordinary
+session delivers these notices through its UI (`ctx.ui.notify`), never by
+writing to the terminal directly, because a TUI owns that terminal and a direct
+write paints over the editor. A session without UI writes them to stderr, and a
+native host writes them to its diagnostic stderr. Settings diagnostics, an
+invalid `--policy-mode`, and rule-store notices follow the same route: an
+ordinary session holds them until its session starts.
 Telemetry state never stops approved rules, corrections, or counters, and it
 never changes an approved tool decision. Rule-authority health remains a separate
 boundary.

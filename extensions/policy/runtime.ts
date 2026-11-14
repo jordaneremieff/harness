@@ -31,7 +31,7 @@ import type { RuleSnapshot } from "./local-rules.ts";
 import { type PreparedPolicy, attachedPreparedPolicy, preparedPolicyFor } from "./prepared.ts";
 import type { PolicyMode } from "./mode.ts";
 import { createObservationClock, type ObservationClock } from "./observation-clock.ts";
-import { readRecentActivity } from "./panel.ts";
+import { readRecentActivity, terminalSafe } from "./panel.ts";
 import {
 	type Condition,
 	captureProgramEvidence,
@@ -61,7 +61,7 @@ import {
 import { contentRevision, type RuleRecord, effectiveEffect, effectiveState, ruleGuidance } from "./rule.ts";
 import { shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin } from "./state.ts";
-import { PolicyWriter } from "./store.ts";
+import { PolicyWriter, TelemetryNotices } from "./store.ts";
 import { DEFAULT_TELEMETRY_RETENTION, type TelemetryHealth, type TelemetryRetention } from "./telemetry-files.ts";
 
 const MAX_CATALOG_TOOLS = 1024;
@@ -325,6 +325,9 @@ export class PolicyRuntime {
 	private incomplete = 0;
 	private stale = 0;
 	private readonly writer: Pick<PolicyWriter, "enqueue" | "health" | "close">;
+	private readonly telemetryNotices = new TelemetryNotices();
+	/** The latest event context; telemetry health changes arrive outside any handler. */
+	private noticeContext: ExtensionContext | undefined;
 	private readonly dir: string;
 	private readonly pi: ExtensionAPI;
 	private readonly load: (ctx?: ExtensionContext) => Promise<RuleSnapshot>;
@@ -347,6 +350,7 @@ export class PolicyRuntime {
 		this.dir = dir;
 		this.pi = pi;
 		this.load = async (ctx) => {
+			if (ctx) this.noticeContext = ctx;
 			try { return await load(ctx); }
 			catch (error) { this.actions.clear(); throw error; }
 		};
@@ -357,11 +361,19 @@ export class PolicyRuntime {
 		this.createActionState = createActionState;
 		this.writer = writer ?? new PolicyWriter(dir, (health) => this.recordingChanged(health), undefined, retention);
 	}
+	/**
+	 * A TUI owns the terminal, so a direct stderr write would paint over the editor at the
+	 * hardware cursor. Health notices go through the session UI; a session without UI has no
+	 * terminal renderer to damage and receives them on stderr.
+	 */
 	private recordingChanged(health: TelemetryHealth): void {
 		try {
-			console.warn(health.state === "failed"
-				? `[policy] telemetry persistence stopped: ${health.reason}`
-				: `[policy] telemetry ${health.state}; lost ${health.lostRecords} records, ${health.lostBytes} bytes`);
+			const notice = this.telemetryNotices.next(health);
+			const ctx = this.noticeContext;
+			if (!notice || !ctx) return;
+			const text = terminalSafe(notice.text);
+			if (ctx.hasUI) ctx.ui.notify(text, notice.level);
+			else process.stderr.write(`${text}\n`);
 		} catch {
 			/* Reporting has no policy authority. */
 		}

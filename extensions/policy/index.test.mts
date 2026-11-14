@@ -457,11 +457,15 @@ describe("panel command and shortcut", () => {
 		t.after(() => warn.mock.restore());
 		await pi.shortcut().handler(ctx as unknown as ExtensionContext);
 		await pi.command().handler("", ctx as never);
-		assert.equal(warn.mock.callCount(), 1);
 		assert.equal(notifications.length, 2);
 		assert.ok(
 			notifications.every(({ message, type }) => /mode configuration is invalid/.test(message) && type === "error"),
 		);
+		await pi.emit("session_start", { type: "session_start" }, ctx);
+		assert.equal(warn.mock.callCount(), 0, "a TUI session never receives a direct console write");
+		assert.equal(notifications.length, 3);
+		assert.deepEqual(notifications[2], { message: notifications[2].message, type: "error" });
+		assert.match(notifications[2].message, /^\[policy\] Invalid mode configuration: /);
 		await assert.rejects(stat(dir), /ENOENT/);
 	});
 

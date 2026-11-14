@@ -243,3 +243,37 @@ export class PolicyWriter implements TelemetryWriter {
 		while (this.drainPromise) await this.drainPromise;
 	}
 }
+
+export interface TelemetryNotice {
+	readonly level: "warning" | "error";
+	readonly text: string;
+}
+
+/**
+ * Selects the writer health changes that need operator attention. Lock contention
+ * that recovers without loss is routine and stays visible only through health
+ * inspection. The writer signals on state changes, so a loss is reported at the
+ * first change whose snapshot shows it, once per writer; permanent failure is
+ * reported once. Later cumulative counts stay in the health view.
+ */
+export class TelemetryNotices {
+	private lossReported = false;
+	private failureReported = false;
+
+	next(health: TelemetryHealth): TelemetryNotice | undefined {
+		if (health.state === "failed") {
+			if (this.failureReported) return undefined;
+			this.failureReported = true;
+			return {
+				level: "error",
+				text: `[policy] Telemetry persistence stopped: ${health.reason ?? "unknown failure"}. Rules still apply. Policy health shows the lost counts.`,
+			};
+		}
+		if (health.lostRecords === 0 || this.lossReported) return undefined;
+		this.lossReported = true;
+		return {
+			level: "warning",
+			text: `[policy] Telemetry dropped ${health.lostRecords} record(s) under write pressure. Rules still apply. Policy health shows the current counts.`,
+		};
+	}
+}

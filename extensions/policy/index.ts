@@ -39,6 +39,8 @@ import {
 } from "./tools.ts";
 
 const POLICY_MODE_FLAG = "policy-mode";
+/** Bounds notices raised before the first session context; settings diagnostics and one mode error fit. */
+const HELD_NOTICE_LIMIT = 16;
 /** This extension's entrypoint; the ordinary frame binds the published view to its /policy registration. */
 const OWNER = fileURLToPath(import.meta.url);
 const POLICY_USAGE = [
@@ -886,8 +888,33 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 	const eventBus = pi.events;
 	const agentDir = getAgentDir();
 	const configured = readSettings({ agentDir });
+	/**
+	 * A reload or an in-process services copy runs this factory while a TUI owns the terminal,
+	 * and a direct console write there paints over the editor at the hardware cursor. Notices
+	 * wait for a session context, then use its UI, or stderr when the session has none.
+	 */
+	let noticeContext: ExtensionContext | undefined;
+	const heldNotices: { text: string; level: "warning" | "error" }[] = [];
+	const report = (text: string, level: "warning" | "error"): void => {
+		try {
+			const safe = terminalSafe(text);
+			if (!noticeContext) {
+				if (heldNotices.length < HELD_NOTICE_LIMIT) heldNotices.push({ text: safe, level });
+				return;
+			}
+			if (noticeContext.hasUI) noticeContext.ui.notify(safe, level);
+			else process.stderr.write(`${safe}\n`);
+		} catch {
+			/* Reporting has no authority. */
+		}
+	};
+	const bindNotices = (ctx: ExtensionContext): void => {
+		noticeContext = ctx;
+		for (const held of heldNotices.splice(0)) report(held.text, held.level);
+	};
+	pi.on("session_start", (_event, ctx) => bindNotices(ctx));
 	for (const diagnostic of configured.diagnostics) {
-		console.warn(`[policy] ${diagnostic.field} (${diagnostic.source}): ${diagnostic.message}`);
+		report(`[policy] ${diagnostic.field} (${diagnostic.source}): ${diagnostic.message}`, "warning");
 	}
 	const disposeSettings = publishSettings(eventBus, { agentDir });
 	pi.on("session_shutdown", disposeSettings);
@@ -913,22 +940,15 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		maxBytes: configured.values.telemetryMaxBytes,
 		maxAgeDays: configured.values.telemetryMaxAgeDays,
 	};
-	let noticeContext: ExtensionContext | undefined;
 	const registry = new RuleRegistry(dir, {
 		onNotice(message) {
-			try {
-				const safe = terminalSafe(message);
-				if (noticeContext?.mode === "tui") noticeContext.ui.notify(safe, "error");
-				else console.warn(safe);
-			} catch {
-				/* Reporting has no authority. */
-			}
+			report(message, "error");
 		},
 	});
 	let completionSnapshot: RuleSnapshot | undefined;
 	let runtime: PolicyRuntime;
 	const loadRegistry = async (ctx?: ExtensionContext): Promise<RuleSnapshot> => {
-		if (ctx) noticeContext = ctx;
+		if (ctx) bindNotices(ctx);
 		const snapshot = await registry.snapshot();
 		completionSnapshot = snapshot;
 		runtime?.sync(snapshot);
@@ -953,7 +973,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 			}
 		} catch (error) {
 			valid = false;
-			console.warn(`[policy] Invalid mode configuration: ${failureText(error)}`);
+			report(`[policy] Invalid mode configuration: ${failureText(error)}`, "error");
 		}
 		return valid;
 	};

@@ -1,9 +1,10 @@
 import { obj, opt, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, test } from "node:test";
+import { describe, it, type TestContext, test } from "node:test";
 import { convertToLlm, type ExtensionAPI, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 
 import { DEFAULT_LIMITS, PACKAGE_CATALOG } from "./catalog.ts";
@@ -17,7 +18,7 @@ import type { RuleRecord } from "./rule.ts";
 import { PolicyRuntime, refusalText } from "./runtime.ts";
 import type { ObservationClock } from "./observation-clock.ts";
 import { PolicyWriter } from "./store.ts";
-import { TELEMETRY_QUEUE_RECORDS } from "./telemetry-files.ts";
+import { TELEMETRY_QUEUE_RECORDS, type TelemetryHealth } from "./telemetry-files.ts";
 
 const yes = { op: "exists" as const, path: ["input"] };
 const success = { op: "eq" as const, path: ["outcome", "kind"], value: "success" };
@@ -2577,5 +2578,84 @@ describe("telemetry writer lifecycle", () => {
 		assert.equal(f.writer.enqueue({ ...f.records[0], callId: "late" }), false);
 		await f.handlers.get("session_shutdown")?.({}, f.ctx);
 		assert.equal(f.records.length, accepted);
+	});
+});
+
+describe("telemetry health reporting", () => {
+	async function reporting(t: TestContext, setup: (dir: string) => Promise<void>, hasUI = true) {
+		const dir = await mkdtemp(join(tmpdir(), "policy-health-"));
+		t.after(() => rm(dir, { recursive: true, force: true }));
+		await chmod(dir, 0o700);
+		await setup(dir);
+		const terminal: string[] = [];
+		t.mock.method(console, "warn", (...args: unknown[]) => { terminal.push(args.join(" ")); });
+		t.mock.method(process.stderr, "write", (chunk: unknown) => { terminal.push(String(chunk)); return true; });
+		const notifications: Array<{ text: string; level: string }> = [];
+		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
+		const ctx = {
+			mode: hasUI ? "tui" : "print",
+			hasUI,
+			cwd: "/project",
+			model: { provider: "test", id: "model" },
+			sessionManager: SessionManager.inMemory("/project", { id: "session" }),
+			getSystemPrompt: () => "",
+			ui: { notify: (text: string, level: string) => notifications.push({ text, level }) },
+		} as unknown as ExtensionContext;
+		const pi = {
+			getAllTools: () => [{ name: "sample", parameters: obj({}, { open: true }) }],
+			getActiveTools: () => ["sample"],
+			appendEntry: () => {},
+			on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(name, handler),
+		} as unknown as ExtensionAPI;
+		const snapshot: RuleSnapshot = { records: new Map(), pending: [], data: new Map(), health: { status: "ok", path: "rules.jsonl" } };
+		const runtime: PolicyRuntime = new PolicyRuntime(pi, async () => { runtime.sync(snapshot); return snapshot; }, () => "observe", dir);
+		runtime.sync(snapshot);
+		runtime.attach();
+		const run = async (id: string) => {
+			await runtime.toolStart({ toolName: "sample", toolCallId: id, args: {} }, ctx);
+			await runtime.toolCall({ type: "tool_call", toolName: "sample", toolCallId: id, input: {} }, ctx);
+			await runtime.toolEnd({ toolName: "sample", toolCallId: id, isError: false, result: { content: [{ type: "text", text: "body" }] } }, ctx);
+		};
+		const close = () => handlers.get("session_shutdown")?.({}, ctx);
+		const health = async () => ((await runtime.inspect("health", {}, ctx)) as { telemetry: TelemetryHealth }).telemetry;
+		return { dir, run, close, health, notifications, terminal };
+	}
+
+	it("writes nothing when another writer's lock delays an append that then succeeds", async (t) => {
+		const lock = (dir: string) => join(dir, "telemetry", ".telemetry-lock");
+		const f = await reporting(t, async (dir) => {
+			await mkdir(join(dir, "telemetry"), { mode: 0o700 });
+			await writeFile(lock(dir), "", { mode: 0o600 });
+		});
+		const started = performance.now();
+		const released = delay(700).then(() => unlink(lock(f.dir)));
+		await f.run("contended");
+		await released;
+		await f.close();
+		assert.ok(performance.now() - started >= 700, "the append waited for the held lock");
+		assert.deepEqual(await f.health(), { state: "ok", lostRecords: 0, lostBytes: 0 });
+		assert.equal((await readdir(join(f.dir, "telemetry"))).filter((name) => name.endsWith(".jsonl")).length, 1);
+		assert.deepEqual(f.notifications, []);
+		assert.deepEqual(f.terminal, []);
+	});
+
+	it("reports a permanent failure once through the session UI and never writes to the terminal", async (t) => {
+		const f = await reporting(t, (dir) => writeFile(join(dir, "telemetry"), "", { mode: 0o600 }));
+		await f.run("first");
+		await f.close();
+		assert.equal((await f.health()).state, "failed");
+		assert.equal(f.notifications.length, 1);
+		assert.equal(f.notifications[0].level, "error");
+		assert.match(f.notifications[0].text, /^\[policy\] Telemetry persistence stopped: /);
+		assert.deepEqual(f.terminal, []);
+	});
+
+	it("writes a permanent failure to stderr when the session has no UI", async (t) => {
+		const f = await reporting(t, (dir) => writeFile(join(dir, "telemetry"), "", { mode: 0o600 }), false);
+		await f.run("first");
+		await f.close();
+		assert.deepEqual(f.notifications, []);
+		assert.equal(f.terminal.length, 1);
+		assert.match(f.terminal[0], /^\[policy\] Telemetry persistence stopped: .*\n$/);
 	});
 });

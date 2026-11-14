@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { PolicyRecord } from "./record.ts";
-import { appendRecord, PolicyWriter } from "./store.ts";
+import { appendRecord, PolicyWriter, TelemetryNotices } from "./store.ts";
 import {
 	appendSerializedTelemetryRecords,
 	localDate,
@@ -664,5 +664,27 @@ describe("PolicyWriter", () => {
 		assert.equal(calls, stopped, "no retry timer survives close");
 		assert.equal(writer.enqueue(row), false);
 		assert.deepEqual(await readdir(join(dir, "telemetry")), []);
+	});
+});
+
+describe("TelemetryNotices", () => {
+	it("stays silent for contention that recovers without loss", () => {
+		const notices = new TelemetryNotices();
+		assert.equal(notices.next({ state: "pressure", lostRecords: 0, lostBytes: 0 }), undefined);
+		assert.equal(notices.next({ state: "ok", lostRecords: 0, lostBytes: 0 }), undefined);
+		assert.equal(notices.next({ state: "pressure", lostRecords: 0, lostBytes: 0 }), undefined);
+	});
+
+	it("reports the first loss once and a permanent failure once", () => {
+		const notices = new TelemetryNotices();
+		const loss = notices.next({ state: "pressure", lostRecords: 2, lostBytes: 96 });
+		assert.equal(loss?.level, "warning");
+		assert.match(loss?.text ?? "", /dropped 2 record\(s\)/);
+		assert.equal(notices.next({ state: "ok", lostRecords: 2, lostBytes: 96 }), undefined);
+		assert.equal(notices.next({ state: "pressure", lostRecords: 5, lostBytes: 240 }), undefined);
+		const failure = notices.next({ state: "failed", lostRecords: 6, lostBytes: 288, reason: "disk unavailable" });
+		assert.equal(failure?.level, "error");
+		assert.match(failure?.text ?? "", /persistence stopped: disk unavailable/);
+		assert.equal(notices.next({ state: "failed", lostRecords: 6, lostBytes: 288, reason: "disk unavailable" }), undefined);
 	});
 });

@@ -130,7 +130,7 @@ import {
 import { SHELL_CARD_BYTES, shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin, type StateView } from "./state.ts";
 import { createObservationClock } from "./observation-clock.ts";
-import { PolicyWriter } from "./store.ts";
+import { PolicyWriter, TelemetryNotices } from "./store.ts";
 import type { AppendTelemetry, TelemetryHealth, TelemetryRetention } from "./telemetry-files.ts";
 import { formatTelemetry, readTelemetry } from "./telemetry.ts";
 import {
@@ -749,6 +749,7 @@ class DurablePolicyRuntime {
 	private readonly stateDoc: Durable.ConversationDocToken<PolicyStateValue>;
 	private readonly guidanceDoc: Durable.ConversationDocToken<GuidanceDocValue>;
 	private readonly writer: PolicyWriter;
+	private readonly telemetryNotices = new TelemetryNotices();
 	private readonly observationClock = createObservationClock();
 	private stateTail: Promise<unknown> = Promise.resolve();
 
@@ -770,11 +771,11 @@ class DurablePolicyRuntime {
 		);
 	}
 
+	/** The host's stderr is a diagnostic pipe, not an operator terminal; routine health stays silent there too. */
 	private recordingChanged(health: TelemetryHealth): void {
 		try {
-			console.warn(health.state === "failed"
-				? `[policy] telemetry persistence stopped: ${health.reason}`
-				: `[policy] telemetry ${health.state}; lost ${health.lostRecords} records, ${health.lostBytes} bytes`);
+			const notice = this.telemetryNotices.next(health);
+			if (notice) process.stderr.write(`${terminalSafe(notice.text)}\n`);
 		} catch {
 			/* Failure reporting must not create an unhandled rejection. */
 		}
