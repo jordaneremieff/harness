@@ -1,9 +1,15 @@
 import { int, obj, opt, str } from "@earendil-works/pi-schema";
 import { GRANTS, STDOUT_LIMITS } from "./gws.ts";
-import { external, ok, TextBudget } from "./result.ts";
+import { checkContinuation, external, ok, renderingId, requireSourceId, SOURCE_ID_PATTERN, TextBudget } from "./result.ts";
 import type { ToolSpec } from "./tools.ts";
 
 const PresentationId = str({ minLength: 1, maxLength: 512 });
+const SourceId = str({
+	minLength: 16,
+	maxLength: 16,
+	pattern: SOURCE_ID_PATTERN,
+	description: "The sourceId of the page that returned offset. Required when offset is above 0.",
+});
 const SLIDE_LIST_MAX = 200;
 const GROUP_DEPTH_MAX = 8;
 const PAGE_MAX_BYTES = 24 * 1024;
@@ -138,22 +144,26 @@ export const slidesTools: ToolSpec[] = [
 		name: "slides_get",
 		label: "Slides read",
 		description:
-			"Read a Google Slides presentation as a bounded markdown slice of slide text and speaker notes. The first page lists each slide's objectId and text offset.",
+			"Read a Google Slides presentation as a bounded markdown slice of slide text and speaker notes. The first page lists each slide's objectId and text offset. To read on, pass an offset with the sourceId of the page it came from; a changed presentation refuses with DOCUMENT_CHANGED.",
 		parameters: obj({
 			presentationId: PresentationId,
 			offset: opt(int({ minimum: 0, default: 0 })),
+			sourceId: opt(SourceId),
 			limit: opt(int({ minimum: 1, maximum: 24000, default: 12000 })),
 		}),
 		replay: "unsafe",
 		execute: async (value, runtime, signal) =>
 			runtime.run({ scopes: GRANTS.slidesRead }, signal, async (operation) => {
-				const args = value as { presentationId: string; offset?: number; limit?: number };
+				const args = value as { presentationId: string; offset?: number; sourceId?: string; limit?: number };
+				requireSourceId(args.offset ?? 0, args.sourceId);
 				const response = await operation.call<Json>("slides", ["presentations", "get"], {
 					params: { presentationId: args.presentationId, fields: "presentationId,title,revisionId,slides" },
 					stdoutLimit: STDOUT_LIMITS.document,
 				});
 				const deck = renderDeck(records(response.slides));
 				const offset = args.offset ?? 0;
+				const sourceId = renderingId(deck.text);
+				checkContinuation(offset, args.sourceId, sourceId, "presentation");
 				const listed = offset === 0 ? deck.index.slice(0, SLIDE_LIST_MAX) : undefined;
 				const reserved = listed ? Buffer.byteLength(JSON.stringify(listed)) : 0;
 				const budget = new TextBudget(RESULT_TEXT_BYTES - reserved);
@@ -172,6 +182,7 @@ export const slidesTools: ToolSpec[] = [
 							truncated: page.nextOffset !== undefined,
 							...(page.nextOffset !== undefined ? { nextOffset: page.nextOffset } : {}),
 							totalCodePoints: page.total,
+							sourceId,
 						},
 					}),
 				});

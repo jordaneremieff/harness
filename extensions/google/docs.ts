@@ -1,11 +1,26 @@
 import { bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { GRANTS, type Operation, STDOUT_LIMITS } from "./gws.ts";
-import { external, GoogleError, ok, TextBudget } from "./result.ts";
+import {
+	checkContinuation,
+	external,
+	GoogleError,
+	ok,
+	renderingId,
+	requireSourceId,
+	SOURCE_ID_PATTERN,
+	TextBudget,
+} from "./result.ts";
 import type { ToolSpec } from "./tools.ts";
 
 const DocumentId = str({ minLength: 1, maxLength: 512 });
 const TabId = str({ minLength: 1, maxLength: 512 });
 const RevisionId = str({ minLength: 1, maxLength: 1024 });
+const SourceId = str({
+	minLength: 16,
+	maxLength: 16,
+	pattern: SOURCE_ID_PATTERN,
+	description: "The sourceId of the page that returned offset. Required when offset is above 0.",
+});
 const TAB_LIST_MAX = 100;
 const TAB_DEPTH_MAX = 8;
 const TABLE_DEPTH_MAX = 4;
@@ -221,17 +236,20 @@ export const docsTools: ToolSpec[] = [
 		name: "docs_get",
 		label: "Docs read",
 		description:
-			"Read one Google Docs tab as a bounded markdown slice, with the tab list and, for an editable document, its revisionId. Pending suggestions are left out.",
+			"Read one Google Docs tab as a bounded markdown slice, with the tab list and, for an editable document, its revisionId. Pending suggestions are left out. To read on, pass nextOffset as offset with the page's sourceId; a changed tab refuses with DOCUMENT_CHANGED.",
 		parameters: obj({
 			documentId: DocumentId,
 			tabId: opt(TabId),
 			offset: opt(int({ minimum: 0, default: 0 })),
+			sourceId: opt(SourceId),
 			limit: opt(int({ minimum: 1, maximum: 24000, default: 12000 })),
 		}),
 		replay: "unsafe",
 		execute: async (value, runtime, signal) =>
 			runtime.run({ scopes: GRANTS.docsRead }, signal, async (operation) => {
-				const args = value as { documentId: string; tabId?: string; offset?: number; limit?: number };
+				const args = value as { documentId: string; tabId?: string; offset?: number; sourceId?: string; limit?: number };
+				const offset = args.offset ?? 0;
+				requireSourceId(offset, args.sourceId);
 				const response = await operation.call<Json>("docs", ["documents", "get"], {
 					params: {
 						documentId: args.documentId,
@@ -254,7 +272,11 @@ export const docsTools: ToolSpec[] = [
 					...(item.parentTabId ? { parentTabId: item.parentTabId } : {}),
 					title: budget.clip(item.title, 512).text,
 				}));
-				const page = budget.page(renderTab(tab.documentTab), args.offset ?? 0, args.limit ?? 12000, PAGE_MAX_BYTES);
+				const rendering = renderTab(tab.documentTab);
+				// The ID also names the tab, so a continuation that resolves another tab is refused.
+				const sourceId = renderingId(`${tab.tabId}\u0000${rendering}`);
+				checkContinuation(offset, args.sourceId, sourceId, "selected tab or its rendering");
+				const page = budget.page(rendering, offset, args.limit ?? 12000, PAGE_MAX_BYTES);
 				return ok({
 					documentId: text(response.documentId) || args.documentId,
 					...(text(response.revisionId) ? { revisionId: text(response.revisionId) } : {}),
@@ -269,6 +291,7 @@ export const docsTools: ToolSpec[] = [
 							truncated: page.nextOffset !== undefined,
 							...(page.nextOffset !== undefined ? { nextOffset: page.nextOffset } : {}),
 							totalCodePoints: page.total,
+							sourceId,
 						},
 					}),
 				});

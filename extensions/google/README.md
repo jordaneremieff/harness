@@ -60,8 +60,17 @@ records provenance; it does not detect or prevent prompt injection.
 `docs_get` and `slides_get` return text inline, so a read needs no export file.
 Each call fetches the current document or presentation and returns one slice of
 its markdown rendering in `externalData.content`: `text`, `truncated`,
-`nextOffset` and `totalCodePoints`. Pass `nextOffset` as `offset` to read on.
-Offsets count code points of the rendering.
+`nextOffset`, `totalCodePoints` and `sourceId`. Offsets count code points of
+the rendering, and `sourceId` names that rendering. To read on, pass
+`nextOffset` as `offset` and the page's `sourceId` as `sourceId`; an offset
+above 0 without `sourceId` is refused before Google is called. If the rendering
+changed since that page, an edit has shifted the offsets, so the read returns
+`DOCUMENT_CHANGED` instead of text from two versions; read again from offset 0.
+An edit that leaves the rendering unchanged, such as one in another tab, does
+not interrupt the read. For `docs_get`, `sourceId` also names the tab: a
+continuation that selects another tab, for example one that omits `tabId` after
+a tab was inserted before the first one, is refused the same way. Pass the
+page's `tabId` to keep reading the same tab.
 
 - `docs_get` renders one tab: headings, lists, tables, links, the display text
   of person, date, dropdown and file chips, and the footnotes that the body
@@ -73,14 +82,15 @@ Offsets count code points of the rendering.
   markers, then its speaker notes. The first page (`offset` 0) carries
   `externalData.slides`: the `objectId`, number and text offset of each slide
   and, for a slide with speaker notes, the offset of the notes. A slide's
-  offset reads from that slide.
+  offset reads from that slide, with the first page's `sourceId`.
 
 Both results carry Google's `revisionId` when the account can edit the file;
 Google returns none for a file the account can only view. Google states that an
 unchanged revision ID means unchanged content, and that an ID stays valid for
 24 hours. Compare it, or the `modifiedTime` that `drive_file_get` returns for
 any readable file, with an earlier read to decide whether a kept copy is
-current. The read tools take no freshness parameter.
+current. `sourceId` serves continuation only: it compares the rendering, not
+the whole file.
 
 `docs_append` and `docs_replace_text` require `expectedRevisionId`, the
 `revisionId` of the read that the edit is based on. Google applies the edit

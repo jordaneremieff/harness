@@ -80,7 +80,7 @@ type SlidesData = {
 		title: string;
 		slides?: { objectId: string; slideNumber: number; offset: number; notesOffset?: number }[];
 		slidesTruncated?: boolean;
-		content: { text: string; truncated: boolean; nextOffset?: number; totalCodePoints: number };
+		content: { text: string; truncated: boolean; nextOffset?: number; totalCodePoints: number; sourceId: string };
 	};
 };
 
@@ -117,10 +117,35 @@ test("slides_get continues from a slide offset without repeating the slide list"
 		const offset = MARKDOWN.indexOf("## Slide 2");
 		const first = (await fake.tool("slides_get", { presentationId: "p1", limit: offset })).data as SlidesData;
 		assert.equal(first.externalData.content.nextOffset, offset);
-		const rest = (await fake.tool("slides_get", { presentationId: "p1", offset })).data as SlidesData;
+		const { sourceId } = first.externalData.content;
+		const rest = (await fake.tool("slides_get", { presentationId: "p1", offset, sourceId })).data as SlidesData;
 		assert.equal(rest.externalData.content.text, MARKDOWN.slice(offset));
 		assert.equal(rest.externalData.content.truncated, false);
 		assert.equal(rest.externalData.slides, undefined);
+		assert.equal(rest.externalData.content.sourceId, sourceId);
+	} finally {
+		await fake.cleanup();
+	}
+});
+
+test("slides_get refuses a slide offset after the deck changed and requires the sourceId", async () => {
+	const edited = structuredClone(PRESENTATION) as { slides: unknown[] };
+	edited.slides.unshift(structuredClone(edited.slides[0]));
+	const fake = await createFake({ responses: { [GET]: [{ stdout: PRESENTATION }, { stdout: edited }] } });
+	try {
+		const first = (await fake.tool("slides_get", { presentationId: "p1" })).data as SlidesData;
+		const offset = first.externalData.slides?.[1].offset ?? 0;
+		assert.equal(
+			errorCode(await fake.tool("slides_get", { presentationId: "p1", offset })),
+			"INVALID_ARGUMENT",
+		);
+		assert.equal(methodCalls(await fake.calls(), GET).length, 1, "a missing sourceId is refused before Google is called");
+		const changed = await fake.tool("slides_get", {
+			presentationId: "p1",
+			offset,
+			sourceId: first.externalData.content.sourceId,
+		});
+		assert.equal(errorCode(changed), "DOCUMENT_CHANGED");
 	} finally {
 		await fake.cleanup();
 	}

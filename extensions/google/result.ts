@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 
 export const RESULT_MAX_BYTES = 64 * 1024;
@@ -85,6 +86,35 @@ export function cleanText(value: string, maxBytes = RESULT_MAX_BYTES): string {
 	}
 	while (Buffer.byteLength(text) > maxBytes) text = text.slice(0, -1);
 	return text;
+}
+
+/** Pattern of the `sourceId` that names one rendering of a paged document. */
+export const SOURCE_ID_PATTERN = "^[a-f0-9]{16}$";
+
+/** Names the rendering that page offsets count into; equal renderings have equal IDs. */
+export function renderingId(rendering: string): string {
+	return createHash("sha256").update(rendering).digest("hex").slice(0, 16);
+}
+
+/** A page after the first names the rendering it continues; checked before any request. */
+export function requireSourceId(offset: number, expected: string | undefined): void {
+	if (offset > 0 && expected === undefined)
+		throw new GoogleError(
+			"INVALID_ARGUMENT",
+			`A read from offset ${offset} requires the sourceId of the page that returned that offset.`,
+		);
+}
+
+/**
+ * A page after the first continues the rendering that returned its offset. A changed rendering
+ * shifts every offset, so the read refuses instead of joining text from two versions.
+ */
+export function checkContinuation(offset: number, expected: string | undefined, current: string, source: string): void {
+	if (offset > 0 && expected !== current)
+		throw new GoogleError(
+			"DOCUMENT_CHANGED",
+			`The ${source} changed after the page with sourceId ${expected}, so its offsets no longer match. Read it again from offset 0.`,
+		);
 }
 
 /**
