@@ -655,8 +655,10 @@ struct Context {
             let saved = await first.capturePositionForCheck()
             await first.close()
             let flushed = await firstState.flush(timeout: 2)
-            if case .notSaved(let reason) = flushed {
-                return .init(name: "position-survives-reopen", pass: false, detail: "the state flush failed: \(reason)")
+            switch flushed {
+            case .notSaved(let reason), .unconfirmed(let reason):
+                return .init(name: "position-survives-reopen", pass: false, detail: "the state flush did not confirm a save: \(reason)")
+            case .saved, .nothingToSave: break
             }
             let second = await open(store.reference(id), revision: nil, state: ReadingStateStore(directory: stateDirectory), keep: &keep)
             let restored = await second.capturePositionForCheck()

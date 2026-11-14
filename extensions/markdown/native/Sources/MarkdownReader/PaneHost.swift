@@ -1,9 +1,12 @@
 import AppKit
 import Darwin
 import MacPlatform
+import OSLog
 import MarkdownCore
 import ReaderFeature
 import SwiftUI
+
+let paneLog = Logger(subsystem: "local.harness.markdown-reader", category: "pane")
 
 /// Pane mode: the reader runs as the program of a terminal pane and shows its window exactly over
 /// that pane. The terminal keeps a short placeholder with a marker that lets the process find
@@ -90,7 +93,11 @@ final class PaneHost: NSObject, NSWindowDelegate {
         case .placed(let shown) where !shown.coveredEntirely:
             placement = shown
             if window.frame != shown.frame { window.setFrame(shown.frame, display: true) }
-            content.holes = shown.covers.map { $0.offsetBy(dx: -shown.frame.minX, dy: -shown.frame.minY) }
+            let holes = shown.covers.map { $0.offsetBy(dx: -shown.frame.minX, dy: -shown.frame.minY) }
+            if holes != content.holes {
+                paneLog.notice("holes \(holes.count, privacy: .public): \(holes.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }.joined(separator: "; "), privacy: .public)")
+                content.holes = holes
+            }
             if !window.isVisible { window.orderFrontRegardless() }
             order()
         case .placed, .concealed, .searching, .untrusted:
@@ -169,45 +176,99 @@ final class PaneHost: NSObject, NSWindowDelegate {
 
     // MARK: - Ending
 
-    /// Saves the reading position, restores the terminal and ends the process. Closing the reader
-    /// ends only this pane's program; the document and other readers are not affected. The final
-    /// position capture gets one second; after that the last saved position stands. A terminal
-    /// that hung up is not written to.
+    /// Captures the reading position, saves the pending reading state, restores the terminal and
+    /// ends the process. Closing the reader ends only this pane's program; the document and other
+    /// readers are not affected. Every wait has a bound on the monotonic clock: the capture half a
+    /// second, capture and save together one second, and each write to the terminal a fifth of a
+    /// second, so a stalled lock, file system, terminal or error pipe never keeps the process
+    /// alive. The exit status is the caller's when the state was saved or had nothing to save, and
+    /// at least 1 otherwise, with one line on standard error that says whether the position was
+    /// not saved or may not have been saved. A terminal that hung up is not written to.
     func end(status: Int32, terminalGone: Bool = false) {
         guard !ending else { return }
         ending = true
         anchor.stop()
         window.orderOut(nil)
-        var gone = terminalGone
-        var finished = false
-        terminal.onHangUp = { gone = true }
+        let gone = Flag(terminalGone)
+        terminal.onHangUp = { gone.value = true }
+        let finished = Flag()
         let finish: (ReadingStateFlushResult) -> Void = { [self] result in
-            guard !finished else { return }
-            finished = true
-            if !gone { terminal.leave() }
-            var finalStatus = status
-            if case .notSaved = result {
-                result.logFailure()
-                if !gone {
-                    FileHandle.standardError.write(Data("Markdown Reader: the reading position was not saved.\n".utf8))
-                }
-                if finalStatus == 0 { finalStatus = 1 }
+            guard !finished.value else { return }
+            finished.value = true
+            result.logFailure()
+            let message: String?
+            switch result {
+            case .saved, .nothingToSave: message = nil
+            case .notSaved: message = "Markdown Reader: the reading position was not saved."
+            case .unconfirmed: message = "Markdown Reader: the reading position may not have been saved."
             }
-            exit(finalStatus)
+            if !gone.value {
+                terminal.leave(before: .now() + Self.outputAllowance)
+                if let message { terminal.report(message, before: .now() + Self.outputAllowance) }
+            }
+            // Output that the terminal did not take must not hold the exit, so no exit handler
+            // runs that could wait for it.
+            _exit(message == nil ? status : max(status, 1))
         }
+        let deadline = DispatchTime.now() + Self.saveAllowance
         Task { @MainActor in
-            await model.close()
-            var result = await state.flush(timeout: 0.75)
-            while result == .saved, state.hasPendingChanges {
-                result = await state.flush(timeout: 0.75)
+            let captured = await Self.run(until: .now() + Self.captureAllowance) { await self.model.close() }
+            var result = await state.flush(timeout: Self.seconds(until: deadline))
+            while result == .saved, state.hasPendingChanges, Self.seconds(until: deadline) > 0 {
+                result = await state.flush(timeout: Self.seconds(until: deadline))
+            }
+            if !captured, result == .saved || result == .nothingToSave {
+                result = .unconfirmed(reason: "The final reading position was not captured in time.")
             }
             finish(result)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            MainActor.assumeIsolated {
-                finish(.notSaved(reason: "The final position capture or state flush exceeded one second."))
+        DispatchQueue.main.asyncAfter(deadline: deadline + Self.outputAllowance) {
+            MainActor.assumeIsolated { finish(.unconfirmed(reason: "The shutdown deadline passed before the save settled.")) }
+        }
+    }
+
+    /// Time for the final position capture.
+    static let captureAllowance = 0.5
+    /// Time for the capture and the save together.
+    static let saveAllowance = 1.0
+    /// Time for each write to the terminal at the end.
+    static let outputAllowance = 0.2
+
+    static func seconds(until deadline: DispatchTime) -> TimeInterval {
+        let now = DispatchTime.now().uptimeNanoseconds
+        let end = deadline.uptimeNanoseconds
+        return end > now ? Double(end - now) / 1_000_000_000 : 0
+    }
+
+    /// Runs `work` and reports whether it finished before `deadline`; after the deadline the
+    /// caller goes on and the work continues on its own.
+    static func run(until deadline: DispatchTime, _ work: @escaping @MainActor () async -> Void) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let resumed = Flag()
+            Task { @MainActor in
+                await work()
+                guard !resumed.value else { return }
+                resumed.value = true
+                continuation.resume(returning: true)
+            }
+            DispatchQueue.main.asyncAfter(deadline: deadline) {
+                MainActor.assumeIsolated {
+                    guard !resumed.value else { return }
+                    resumed.value = true
+                    continuation.resume(returning: false)
+                }
             }
         }
+    }
+}
+
+/// A value that main-actor closures share.
+@MainActor
+final class Flag {
+    var value: Bool
+
+    init(_ value: Bool = false) {
+        self.value = value
     }
 }
 
@@ -306,7 +367,10 @@ final class PaneTerminal {
     var onTerminate: (() -> Void)?
     private var saved = termios()
     private var raw = false
+    private var left = false
     private var sources: [DispatchSourceProtocol] = []
+    private let output = TerminalOutput(descriptor: STDOUT_FILENO, label: "local.harness.markdown-reader.terminal-output")
+    private let errors = TerminalOutput(descriptor: STDERR_FILENO, label: "local.harness.markdown-reader.error-output")
 
     /// Nil unless standard input and output are a terminal.
     init?() {
@@ -319,15 +383,28 @@ final class PaneTerminal {
             cfmakeraw(&settings)
             raw = tcsetattr(STDIN_FILENO, TCSANOW, &settings) == 0
         }
-        write("\u{1B}[?1049h\u{1B}[?25l\u{1B}[2J")
+        output.enqueue(Array("\u{1B}[?1049h\u{1B}[?25l\u{1B}[2J".utf8))
     }
 
-    func leave() {
-        write("\u{1B}[0m\u{1B}[2J\u{1B}[?25h\u{1B}[?1049l")
+    /// Restores the terminal and draws nothing more. The screen sequences wait at most until
+    /// `deadline`; the terminal modes return at once.
+    func leave(before deadline: DispatchTime) {
+        guard !left else { return }
+        left = true
+        output.send(Array("\u{1B}[0m\u{1B}[2J\u{1B}[?25h\u{1B}[?1049l".utf8), before: deadline)
         if raw { tcsetattr(STDIN_FILENO, TCSANOW, &saved) }
     }
 
+    /// Writes one line to standard error, cleaned by `TerminalText.line`, waiting at most until
+    /// `deadline`.
+    func report(_ text: String, before deadline: DispatchTime) {
+        errors.send(Array(TerminalText.line(text).utf8), before: deadline)
+    }
+
     func start() {
+        // A closed pipe on standard error returns an error to the write instead of ending the
+        // process with a signal, so the exit status stays the reader's own.
+        signal(SIGPIPE, SIG_IGN)
         let input = DispatchSource.makeReadSource(fileDescriptor: STDIN_FILENO, queue: .main)
         input.setEventHandler { [weak self] in
             MainActor.assumeIsolated { self?.readInput() }
@@ -375,6 +452,7 @@ final class PaneTerminal {
     /// narrow pane still shows it whole. Each line is placed by row and the placeholder stops at
     /// the last row, so a short pane never scrolls the marker away.
     func draw(title: String, status: String, keys: String, marker: String) {
+        guard !left else { return }
         let (columns, rows) = size()
         let width = max(10, columns - 4)
         var lines = ["\u{1B}[8m\(marker)\u{1B}[28m", ""]
@@ -387,29 +465,6 @@ final class PaneTerminal {
         var text = "\u{1B}[0m"
         for (row, line) in lines.prefix(rows).enumerated() { text += "\u{1B}[\(row + 1);1H\(line)\u{1B}[K" }
         text += "\u{1B}[J"
-        write(text)
-    }
-
-    /// Writes to the terminal and waits at most a fifth of a second for it in all: a terminal
-    /// that stops reading loses the rest of the text rather than holding the main thread.
-    private func write(_ text: String) {
-        let bytes = Array(text.utf8)
-        let flags = fcntl(STDOUT_FILENO, F_GETFL)
-        if flags >= 0 { _ = fcntl(STDOUT_FILENO, F_SETFL, flags | O_NONBLOCK) }
-        defer { if flags >= 0 { _ = fcntl(STDOUT_FILENO, F_SETFL, flags) } }
-        let deadline = Date().addingTimeInterval(0.2)
-        var offset = 0
-        while offset < bytes.count {
-            let written = bytes.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress! + offset, $0.count - offset) }
-            if written > 0 {
-                offset += written
-                continue
-            }
-            guard written < 0, errno == EAGAIN || errno == EINTR else { return }
-            let remaining = deadline.timeIntervalSinceNow
-            guard remaining > 0 else { return }
-            var descriptor = pollfd(fd: STDOUT_FILENO, events: Int16(POLLOUT), revents: 0)
-            _ = poll(&descriptor, 1, Int32(max(1, remaining * 1000)))
-        }
+        output.post(frame: Array(text.utf8))
     }
 }

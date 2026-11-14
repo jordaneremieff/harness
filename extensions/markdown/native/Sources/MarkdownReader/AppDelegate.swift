@@ -77,25 +77,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return .terminateCancel
         }
         guard case .application = mode else { return .terminateNow }
-        var answered = false
+        let answered = Flag()
         let finish: (ReadingStateFlushResult) -> Void = { result in
-            guard !answered else { return }
-            answered = true
+            guard !answered.value else { return }
+            answered.value = true
             result.logFailure()
             sender.reply(toApplicationShouldTerminate: true)
         }
+        let deadline = DispatchTime.now() + PaneHost.saveAllowance
         Task { @MainActor in
-            await windows.closeReaders()
-            var result = await windows.state.flush(timeout: 0.75)
-            while result == .saved, windows.state.hasPendingChanges {
-                result = await windows.state.flush(timeout: 0.75)
+            let captured = await PaneHost.run(until: .now() + PaneHost.captureAllowance) { await self.windows.closeReaders() }
+            var result = await windows.state.flush(timeout: PaneHost.seconds(until: deadline))
+            while result == .saved, windows.state.hasPendingChanges, PaneHost.seconds(until: deadline) > 0 {
+                result = await windows.state.flush(timeout: PaneHost.seconds(until: deadline))
+            }
+            if !captured, result == .saved || result == .nothingToSave {
+                result = .unconfirmed(reason: "The final reading positions were not captured in time.")
             }
             finish(result)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            MainActor.assumeIsolated {
-                finish(.notSaved(reason: "The final position capture or state flush exceeded one second."))
-            }
+        DispatchQueue.main.asyncAfter(deadline: deadline + PaneHost.outputAllowance) {
+            MainActor.assumeIsolated { finish(.unconfirmed(reason: "The quit deadline passed before the save settled.")) }
         }
         return .terminateLater
     }

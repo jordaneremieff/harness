@@ -32,5 +32,7 @@ let package = Package(
         .testTarget(name: "MarkdownCoreTests", dependencies: ["MarkdownCore"]),
         .testTarget(name: "MacPlatformTests", dependencies: ["MacPlatform", "MarkdownCore"]),
         .testTarget(name: "ReaderFeatureTests", dependencies: ["ReaderFeature", "MarkdownCore"]),
+        // Runs the built reader binary in pane mode on a pseudo-terminal.
+        .testTarget(name: "MarkdownReaderTests", dependencies: ["MarkdownCore", "MarkdownReader"]),
     ]
 )
