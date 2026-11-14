@@ -301,7 +301,7 @@ test("the show command runs the installed reader's pane mode only when the build
 	const result = await tool.execute("call", { title: "Shown", text: "# exact" }, undefined, undefined, context);
 	const outcome = success(result.details);
 	assert.deepEqual(outcome.show, [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", store.root, outcome.documentId]);
-	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(`run this command as the program of a new split pane beside your own conversation pane that closes when its program ends: ${JSON.stringify(outcome.show)}. The reader window sits over that pane and follows new revisions of this document; q in the pane or the reader's close button ends it.`));
+	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(`run this command as the program of a new split pane beside the pane where the operator reads your conversation, a pane that closes when its program ends: ${JSON.stringify(outcome.show)}. The reader window sits over that pane and follows new revisions of this document; q in the pane or the reader's close button ends it.`));
 }));
 
 test("a response snapshot saves the earlier answer exactly, once per response", () => fixture(async (root, store) => {
