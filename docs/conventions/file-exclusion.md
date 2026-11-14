@@ -28,5 +28,13 @@ Exclusion holds only among writers that use this protocol. A writer that does
 not use the protocol is not excluded. Writers never remove the persistent lock
 file.
 
-Pillars and Memory each own a slice-local lock adapter and its tests.
-Adapters do not import siblings. There is no shared lock library.
+Pillars, Memory and Policy telemetry each own a slice-local lock adapter and its
+tests. Adapters do not import siblings. There is no shared lock library.
+
+Policy telemetry also excludes writers loaded from earlier releases, which
+create `telemetry/.telemetry-lock` exclusively and remove it after each batch.
+While it appends, a current writer hard-links its persistent lock file to that
+name. An entry there with the persistent file's device and inode can only come
+from a current writer, so the next descriptor-lock holder takes it over; an
+entry with any other identity is never removed. The Policy README owns the
+details.
