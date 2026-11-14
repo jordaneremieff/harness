@@ -461,6 +461,9 @@ describe("finite proposal description and recursive admission", () => {
 				"path",
 				"from",
 				"to",
+				"since",
+				"until",
+				"cursor",
 			].sort(),
 		);
 		assert.deepEqual(projectedControl.input_schema.required, ["operation"]);
