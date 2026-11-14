@@ -634,6 +634,18 @@ async function creationServices(agentDir: string): Promise<TerminalCreation | un
 	}
 }
 
+/**
+ * Drop Node process warnings until the returned restore runs. Node prints each warning straight to
+ * stderr, which is the screen the TUI owns: a lazily loaded built-in such as `node:sqlite` would
+ * otherwise paint its ExperimentalWarning over the work view and the message field. Pi's own
+ * interactive CLI drops process warnings for the same reason.
+ */
+export function suppressProcessWarnings(): () => void {
+	const emitWarning = process.emitWarning;
+	process.emitWarning = () => {};
+	return () => { process.emitWarning = emitWarning; };
+}
+
 export async function runTerminal(args: string[]): Promise<void> {
 	const { session, selectedTheme } = parseTerminalArgs(args);
 	if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("This attachment requires an interactive terminal");
@@ -660,6 +672,7 @@ export async function runTerminal(args: string[]): Promise<void> {
 	const close = () => finish();
 	process.once("SIGINT", close);
 	process.once("SIGTERM", close);
+	const restoreWarnings = suppressProcessWarnings();
 	try {
 		const target = session ?? remembered.read();
 		if (target) screen.view.selectIdentity(await manager.resolveTarget(target));
@@ -676,6 +689,7 @@ export async function runTerminal(args: string[]): Promise<void> {
 			await controller.close();
 		} finally {
 			tui.stop();
+			restoreWarnings();
 		}
 	}
 }

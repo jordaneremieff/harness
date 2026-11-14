@@ -522,7 +522,11 @@ and back keeps them while native work continues. Separate terminals have
 independent local values and share operator input to the same native
 conversation. There is no exclusive input lease; native admission determines
 the result. The terminal leaves the outer fullscreen page bindings empty so
-PageUp and PageDown reach the work view.
+PageUp and PageDown reach the work view. While its screen is open the terminal
+drops Node process warnings, as Pi's interactive CLI does: Node writes them
+straight to the terminal, so a built-in loaded on first use (for example the
+SQLite module behind Threads and stored conversations) would otherwise paint
+its warning over the work view and the message field.
 
 | Input | Effect |
 |---|---|

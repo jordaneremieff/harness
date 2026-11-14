@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { TuiAltScreen, getKeybindings, setKeybindings, type ProgramStatus, type Terminal, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { AgentComposer } from "./agent-composer.ts";
-import { TerminalController, TerminalScreen, terminalAdmission, terminalForms, terminalKeys, terminalTargetFile, parseTerminalArgs, type TerminalCreation, type TerminalManager } from "./terminal-client.ts";
+import { TerminalController, TerminalScreen, terminalAdmission, terminalForms, terminalKeys, terminalTargetFile, parseTerminalArgs, suppressProcessWarnings, type TerminalCreation, type TerminalManager } from "./terminal-client.ts";
 import { agentState, updateDraft } from "./dashboard-state.ts";
 import { row, page, conversationFrame, deferred, theme } from "./dashboard-test-fixture.mts";
 
@@ -672,4 +672,23 @@ it("terminal forms act on the captured target through native requests", async ()
 	}
 	assert.equal(f.controller.selected, "b", "forms never move the selection");
 	await f.controller.close();
+});
+
+it("drops Node process warnings while the terminal owns the screen and restores them afterwards", async () => {
+	const original = process.emitWarning;
+	const seen: string[] = [];
+	const listener = (warning: Error) => { seen.push(warning.message); };
+	process.on("warning", listener);
+	try {
+		const restore = suppressProcessWarnings();
+		process.emitWarning("painted over the work view", "ExperimentalWarning");
+		restore();
+		assert.equal(process.emitWarning, original);
+		process.emitWarning("reported after the terminal closed", { code: "TERMINAL_TEST_WARNING" });
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(seen, ["reported after the terminal closed"]);
+	} finally {
+		process.off("warning", listener);
+		process.emitWarning = original;
+	}
 });
