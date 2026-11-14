@@ -11,10 +11,21 @@ import { publishSettings, readSettings } from "./settings.ts";
 import { REX_GUIDANCE, ResultSchema, toolSpecs, validateRequest, type StatusRequest } from "./schema.ts";
 import { rexStatus, type RexExecutor } from "./status.ts";
 import { createTabLabelProjector, type TabLabelProjectorOptions } from "./tab-label.ts";
+import { createConversationKeeper, type ConversationKeeperOptions } from "./keep-visible.ts";
 
 type RegistrationOptions = RexAdapterOptions & {
 	createTabLabelProjector?: (options: TabLabelProjectorOptions) => ReturnType<typeof createTabLabelProjector>;
+	createConversationKeeper?: (options: ConversationKeeperOptions) => ReturnType<typeof createConversationKeeper>;
 };
+
+/** Blocks of a confirmed floating pane that a `rex_terminal` create returned. */
+function createdFloats(tool: string, request: unknown, result: unknown): string[] {
+	const call = request as { op?: unknown; kind?: unknown } | undefined;
+	if (tool !== "rex_terminal" || call?.op !== "create" || call.kind !== "float") return [];
+	const effects = (result as { ok?: unknown; effects?: { state?: unknown; resources?: unknown } } | undefined);
+	if (effects?.ok !== true || effects.effects?.state !== "confirmed" || !Array.isArray(effects.effects.resources)) return [];
+	return effects.effects.resources.flatMap((resource: { kind?: unknown; blockId?: unknown }) => resource?.kind === "block" && typeof resource.blockId === "string" ? [resource.blockId] : []);
+}
 
 export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {}): void {
 	const agentDir = getAgentDir();
@@ -25,6 +36,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 		settings,
 		getSessionName: () => pi.getSessionName(),
 	});
+	const keeper = (options.createConversationKeeper ?? createConversationKeeper)({ settings });
 	const serialise = serialiseOwners();
 	const active = new Set<RexExecutor>();
 	const invocations = liveCalls();
@@ -59,6 +71,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 					const result = spec.name === "rex_status"
 						? await rexStatus(validated.request as StatusRequest, context, core, ordinaryStatusStore(pi, ctx, serialise, context.signal, budget), async () => ({ host: "ordinary", state: ctx.isIdle() ? "idle" : "active", observedAt: new Date().toISOString(), source: "ExtensionContext.isIdle()", note: "Current ordinary host activity only. Pi's interactive reporter owns TUI lifecycle output. Headless and RPC callers do not gain terminal attachment." }))
 						: await core.execute(validated.request as RexRequest, context);
+					keeper.floated(createdFloats(spec.name, validated.request, result));
 					return resultChannels(boundResult(deadlineResult(result, budget, validated.request.op), resultByteLimit(settings.maxOutputBytes)));
 				} finally { active.delete(core); try { core.dispose(); } finally { release(); } }
 				} finally { budget.dispose(); }
@@ -68,14 +81,18 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 		pi.registerTool(tool);
 	}
 	const stopDisplay = publishRexToolDisplay(pi.events, tools);
-	pi.on("session_start", async (_event, ctx) => { await stopCalls(); lifetime = new AbortController(); tabLabels.start(ctx); });
+	pi.on("session_start", async (_event, ctx) => { await stopCalls(); lifetime = new AbortController(); tabLabels.start(ctx); keeper.start(ctx); });
+	// The conversation needs the operator when its run settles or a dialog waits for an answer.
+	pi.on("agent_settled", (_event, ctx) => { keeper.attention(ctx); });
+	pi.on("ui_prompt_start", (_event, ctx) => { keeper.attention(ctx); });
 	pi.on("session_info_changed", (_event, ctx) => { tabLabels.refresh(ctx); });
 	pi.on("input", (event, ctx) => { if (event.source === "interactive") tabLabels.input(ctx); });
 	pi.on("session_shutdown", async () => {
 		const labelsStopped = tabLabels.shutdown();
+		const keeperStopped = keeper.shutdown();
 		try { await stopCalls(); }
 		finally {
-			try { await labelsStopped; }
+			try { await Promise.all([labelsStopped, keeperStopped]); }
 			finally { try { stopDisplay(); } finally { stopPublisher(); } }
 		}
 	});

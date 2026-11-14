@@ -200,6 +200,38 @@ appropriate evidence. Inspect the same IDs after an interruption. Start dependen
 work only after the prerequisite's relevant outcome is observed; unrelated work
 need not stop.
 
+## Keep the conversation visible
+
+Ordinary interactive Pi keeps its own conversation pane visible when it needs the
+operator. A floating pane that this conversation created with `rex_terminal` is
+transient to the run that created it. When that run settles (`agent_settled`) or a
+dialog starts waiting for the operator (`ui_prompt_start`), the extension decides once
+for each such pane: if it covers at least five percent of the conversation pane, it
+moves into the tiled layout beside the conversation with `session.move_block`. The
+program, its screen and any window it places over its pane keep running; nothing
+closes. The first moved pane takes half of the conversation's space, beside it when
+the conversation's pixels are at least as wide as tall and below it otherwise. Later
+panes of the same decision stack in that half, so the conversation keeps its share.
+
+A pane that does not cover the conversation at its decision is never moved later.
+After the decision the arrangement belongs to the operator: a pane that the operator
+floats again, moves or resizes stays where the operator put it. Panes that this
+conversation did not create, including panes of other agents and of the operator, never
+move. The extension also leaves every pane in place while another block is zoomed or
+when the conversation is not in its window's tiled layout.
+
+The extension acts only when inherited `REX_SESSION` and `REX_BLOCK` name a block
+whose foreground process is this Pi process, the same proof that tab names use. It
+holds no store: floating panes created before a reload get no decision. Each decision
+runs bounded CLI calls; a session change or shutdown aborts them. A failure reports one
+warning per extension runtime and leaves the panes as they are. Durable, RPC, JSON and
+print sessions do not move panes.
+
+For content that the operator reads for a while, such as a document, create a split
+beside your own conversation instead of a floating pane. To show a new document where
+an earlier reader pane of yours is, create the split with that pane as the anchor and
+then clean up the earlier pane: the new pane takes its place.
+
 ## Pane stacking feed
 
 A pane created with a `command` receives `PI_PANE_STACKING` only when the

@@ -249,16 +249,53 @@ test("ordinary registration wires tab labels without changing the tool surface",
 		appendEntry: () => {},
 		getSessionName: () => undefined,
 	} as unknown as ExtensionAPI;
-	registerRex(pi, { createTabLabelProjector: () => projector });
+	const keeper = {
+		start: () => { events.push("keeper start"); },
+		floated: (blocks: readonly string[]) => { events.push(`floated ${blocks.join(",")}`); },
+		attention: () => { events.push("attention"); },
+		idle: async () => {},
+		shutdown: async () => { events.push("keeper shutdown"); },
+	};
+	registerRex(pi, { createTabLabelProjector: () => projector, createConversationKeeper: () => keeper });
 	assert.deepEqual([...tools.keys()], ["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status"]);
-	assert.deepEqual([...handlers.keys()].sort(), ["input", "session_info_changed", "session_shutdown", "session_start"]);
+	assert.deepEqual([...handlers.keys()].sort(), ["agent_settled", "input", "session_info_changed", "session_shutdown", "session_start", "ui_prompt_start"]);
 	const ctx = { mode: "tui" };
 	await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
 	handlers.get("session_info_changed")?.({ type: "session_info_changed", name: "Named" }, ctx);
 	handlers.get("input")?.({ type: "input", source: "rpc" }, ctx);
 	handlers.get("input")?.({ type: "input", source: "interactive" }, ctx);
+	handlers.get("agent_settled")?.({ type: "agent_settled", aborted: false }, ctx);
+	handlers.get("ui_prompt_start")?.({ type: "ui_prompt_start" }, ctx);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
-	assert.deepEqual(events, ["start", "refresh", "input", "shutdown"]);
+	assert.deepEqual(events, ["start", "keeper start", "refresh", "input", "attention", "attention", "shutdown", "keeper shutdown"]);
+});
+
+test("a confirmed floating pane that rex_terminal creates is handed to the conversation keeper", async () => {
+	type Handler = (event?: unknown, ctx?: unknown) => unknown;
+	const tools = new Map<string, ToolDefinition<Schema>>();
+	const handlers = new Map<string, Handler>();
+	const floated: string[][] = [];
+	const keeper = { start: () => {}, floated: (blocks: readonly string[]) => { floated.push([...blocks]); }, attention: () => {}, idle: async () => {}, shutdown: async () => {} };
+	const projector = { start: () => {}, refresh: () => {}, input: () => {}, idle: async () => {}, shutdown: async () => {} };
+	const pi = {
+		events: createEventBus(),
+		on: (name: string, handler: Handler) => { handlers.set(name, handler); return () => handlers.delete(name); },
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		appendEntry: () => {},
+		getSessionName: () => undefined,
+	} as unknown as ExtensionAPI;
+	const created = (blockId: string) => ({ ok: true, outcome: "created", data: {}, effects: { state: "confirmed", recordId: "call", resources: [{ kind: "block", sessionId: "session:test", windowId: "window:test", blockId }] }, coverage: { bounded: true } });
+	registerRex(pi, {
+		createTabLabelProjector: () => projector,
+		createConversationKeeper: () => keeper,
+		createCore: () => ({ dispose: () => {}, execute: async (request: { kind?: string }) => created(request.kind === "float" ? "block:float" : "block:split") }) as never,
+	});
+	const ctx = { mode: "tui", cwd: "/tmp", sessionManager: { getSessionId: () => "session", getEntries: () => [], getSessionFile: () => undefined } };
+	const terminal = tools.get("rex_terminal");
+	await terminal?.execute("call-1", { op: "create", kind: "float", label: "reader", target: { session: "session:test", block: "block:anchor" } } as never, undefined, undefined, ctx as never);
+	await terminal?.execute("call-2", { op: "create", kind: "split", label: "split", target: { session: "session:test", block: "block:anchor" } } as never, undefined, undefined, ctx as never);
+	assert.deepEqual(floated, [["block:float"], []]);
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
 });
 
 const LABEL_CHECKS = ["whoami", "com.superlogical.terminal.process", "session.view"];
