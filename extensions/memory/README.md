@@ -221,7 +221,8 @@ Pass a `slug`, or `README` for the corpus contract. Pass the search result's `di
 on the first read. A page returns at most 12,000 Unicode code points within the
 48 KiB serialized result bound. Escaping overhead can shorten the page;
 pass its returned `nextOffset` and unchanged lowercase SHA-256 `digest` to continue.
-Nonzero offsets require the digest. A changed source refuses instead of mixing
+Nonzero offsets require the digest; a refusal names the offset 0 read that
+returns it. A changed source refuses instead of mixing
 revisions. Read the same slug at offset 0 without a digest for the current note
 and digest. This also restarts a stale continuation; follow the new page's
 `nextOffset` and digest, not the previous page. For a changed `README`, restart its

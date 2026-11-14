@@ -1421,7 +1421,9 @@ export async function readMemory(
 		}
 		const offset = boundedInt("offset", options.offset === undefined ? 0 : options.offset, 0, OFFSET_LIMIT);
 		if (offset > 0 && options.digest === undefined)
-			throw new UsageError("offset above 0 requires digest for safe continuation");
+			throw new UsageError(
+				`offset above 0 requires digest for safe continuation. Read memory_read with ${JSON.stringify({ slug: options.slug, ...(options.revision === undefined ? {} : { revision: options.revision }), offset: 0 })} for the digest, then repeat this offset with that digest`,
+			);
 		if (options.digest !== undefined && typeof options.digest !== "string")
 			throw new UsageError("digest must be a string");
 		const digest = options.digest === undefined ? null : normalizeDigest(options.digest);

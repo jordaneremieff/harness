@@ -699,7 +699,20 @@ test("changed notes name a bounded restart call that returns current source from
 			const next = await read(root, { slug, offset: number(current.nextOffset), digest: string(current.digest) });
 			assert.equal(string(current.content) + string(next.content), currentSource);
 		}
-		await rejects(readMemory(root, { slug, offset: number(first.nextOffset) }), "input", /requires digest/);
+		const offset = number(first.nextOffset);
+		let firstPage: Record<string, unknown> | undefined;
+		await assert.rejects(readMemory(root, { slug, offset }), (error: unknown) => {
+			assert.ok(error instanceof MemoryRetrievalError);
+			assert.equal(error.code, "input");
+			const call = /^offset above 0 requires digest for safe continuation\. Read memory_read with (\{.*\}) for the digest, then repeat this offset with that digest$/u.exec(error.message);
+			assert.ok(call?.[1]);
+			firstPage = JSON.parse(call[1]) as Record<string, unknown>;
+			return true;
+		});
+		assert.deepEqual(firstPage, { slug, offset: 0 });
+		const current = await read(root, firstPage ?? {});
+		const next = await read(root, { slug, offset, digest: string(current.digest) });
+		assert.equal(next.offset, offset);
 	}
 });
 
