@@ -66,22 +66,25 @@ can show these records as tab indicators, activity lists, or notifications;
 other terminals ignore the sequence. The record id is `jobs/<job id without
 hyphens>`:
 
-- `working` when the job starts, and again when the session's run settles while
-  the job still runs;
+- `working` when the job starts, and again when the session's run settles
+  quietly while the job still runs;
 - `done` when it succeeds;
 - `error` when it fails or times out;
 - `clear` when it is cancelled, since cancellation is the caller's own act.
 
 Each record carries the title `Background job` and one message line made only
 from the job record. A running job shows `Background job running`. When the
-session's run settles while the job runs, for example after a quiet turn that
-only waits for the job, the message also says what the completion will do:
-`its completion starts the next turn`, or after an aborted run `its completion
-waits for the next prompt`. Pi writes its own record for the settled run after
-the extensions' `agent_settled` handlers return; this update follows it, so the
-running job is the newest record of the terminal. A terminal that shows its
-newest activity, such as the Rex activity list, then shows the job as working
-instead of the finished quiet turn. Pi's own record stays as Pi wrote it.
+session's run settles quietly while the job runs, that is when its last model
+message is a tool result, such as a turn that only waits for the job, the
+message also says `its completion starts the next turn`. Pi writes its own
+`done` record for the settled run after the extensions' `agent_settled`
+handlers return; this update follows it, so the running job is the newest
+record of the terminal. A terminal that shows its newest activity, such as the
+Rex activity list, then shows the job as working instead of the quiet turn as
+done. A run that ends with an answer or an error, and an aborted run, get no
+update, so the answer stays the newest record. Pi's own record stays as Pi
+wrote it. Pi writes its record again when its terminal layer starts again, for
+example after a suspend, and the update is not repeated then.
 
 A settled job's message holds the outcome, exit code, and whole minutes
 elapsed, written when the job settles, followed by the delivery state of the
@@ -113,7 +116,10 @@ Escape clears the queue. A later arrival still changes the record. Pi reports
 an asynchronous send failure only through its own error listener, so a message
 lost that way keeps its submission state, which never claims addition. Each
 change rewrites the existing record with the same id and state; a record
-already cleared from the retained set is not written again. The delivery state
+already cleared from the retained set is not written again. A move to another
+branch of the session (`session_tree`) checks the retained records again: a
+completion that is not on the new branch shows `completion not in the
+conversation`, and one that is shows `completion in the conversation`. The delivery state
 says only where the message is; it does not say that the agent has acted on it.
 
 Records never contain the command, its output, prompts, or model text, because

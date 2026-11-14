@@ -225,26 +225,37 @@ describe("records after a settled run", () => {
 		activity.start(other, ctx);
 		activity.settle({ ...other, status: "succeeded", exitCode: 0, endedAt: 1 });
 		writes.length = 0;
-		assert.equal(activity.runSettled("turn", activity.runningJobs()), 1);
+		assert.equal(activity.runSettled(activity.runningJobs()), 1);
 		assert.deepEqual(writes, [formatStatusRecord({ id: RECORD, state: "working", title: "Background job", msg: "Background job running · its completion starts the next turn" })]);
-		writes.length = 0;
-		assert.equal(activity.runSettled("prompt", activity.runningJobs()), 1);
-		assert.deepEqual(writes, [formatStatusRecord({ id: RECORD, state: "working", title: "Background job", msg: "Background job running · its completion waits for the next prompt" })]);
 		const atSettlement = activity.runningJobs();
 		activity.settle({ ...job(), status: "succeeded", exitCode: 0, endedAt: 1 });
 		writes.length = 0;
-		assert.equal(activity.runSettled("turn", atSettlement), 0, "a job that settled meanwhile keeps its settled record");
+		assert.equal(activity.runSettled(atSettlement), 0, "a job that settled meanwhile keeps its settled record");
 		activity.start(job(), ctx);
 		activity.shutdown();
 		writes.length = 0;
-		assert.equal(activity.runSettled("turn", [JOB_ID]), 0);
+		assert.equal(activity.runSettled([JOB_ID]), 0);
 		assert.deepEqual(writes, []);
+	});
+
+	it("follows the branch that the session shows", () => {
+		const { activity, writes, ctx } = fixture();
+		const done = (delivery: string) => formatStatusRecord({ id: RECORD, state: "done", title: "Background job", msg: `Background job succeeded · exit 0 · < 1 min · ${delivery}` });
+		activity.start(job(), ctx);
+		activity.settle({ ...job(), status: "succeeded", exitCode: 0, endedAt: 1 }, "added");
+		writes.length = 0;
+		activity.onBranch(new Set());
+		assert.deepEqual(writes, [done("completion not in the conversation")], "a branch without the message");
+		activity.onBranch(new Set([JOB_ID]));
+		assert.deepEqual(writes.slice(1), [done("completion in the conversation")], "back on a branch with it");
+		activity.onBranch(new Set([JOB_ID]));
+		assert.equal(writes.length, 2, "an unchanged state writes nothing");
 	});
 
 	it("writes nothing for jobs that have no terminal record", () => {
 		const { activity, writes, ctx } = fixture({ tty: false });
 		activity.start(job(), ctx);
-		assert.equal(activity.runSettled("turn", activity.runningJobs()), 0);
+		assert.equal(activity.runSettled(activity.runningJobs()), 0);
 		assert.deepEqual(writes, []);
 	});
 });

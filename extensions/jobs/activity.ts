@@ -172,13 +172,12 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 			return closed ? [] : [...running.keys()];
 		},
 		/**
-		 * Rewrites the records of the given jobs that still run after the session's run settled, with what their
-		 * completion will do: start the next turn, or wait for the next prompt after an aborted run. Returns the
-		 * records written.
+		 * Rewrites the records of the given jobs that still run after the session's run settled quietly, with what
+		 * their completion will do. Returns the records written.
 		 */
-		runSettled(next: "turn" | "prompt", jobIds: readonly string[]): number {
+		runSettled(jobIds: readonly string[]): number {
 			if (closed) return 0;
-			const msg = `Background job running · ${next === "turn" ? "its completion starts the next turn" : "its completion waits for the next prompt"}`;
+			const msg = "Background job running · its completion starts the next turn";
 			let written = 0;
 			for (const jobId of jobIds) {
 				const id = running.get(jobId);
@@ -194,6 +193,17 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 			if (closed || !record || record.delivery === delivery) return;
 			record.delivery = delivery;
 			write({ id: record.id, state: settledState(record.job), title: RECORD_TITLE, msg: settledMessage(record.job, delivery) });
+		},
+		/**
+		 * Moves retained records to the branch that the session now shows: a completion on it is in the
+		 * conversation, and one that was there and is not on it is no longer.
+		 */
+		onBranch(present: ReadonlySet<string>): void {
+			if (closed) return;
+			for (const [jobId, record] of settled) {
+				if (present.has(jobId) && awaitsConversation(record.delivery)) this.deliver(jobId, "added");
+				else if (!present.has(jobId) && record.delivery === "added") this.deliver(jobId, "absent");
+			}
 		},
 		/** Job ids of retained settled records whose completion is not yet known to be in the conversation. */
 		awaiting(): string[] {

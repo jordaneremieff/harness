@@ -59,13 +59,13 @@ class TestPi {
 	/** Pi's idle state as `ctx.isIdle()` reports it. */
 	idle = true;
 	/** Session entries on the current branch; an idle send that starts no turn appends at once, as Pi does. */
-	branch: Array<{ type: string; customType: string; details?: unknown }> = [];
+	branch: Array<{ type: string; customType?: string; details?: unknown; message?: unknown }> = [];
 	ctx: ExtensionContext | undefined;
 	registerTool(tool: Tool) {
 		this.tools.set(tool.name, tool);
 	}
 	on(name: string, handler: (event: unknown) => Promise<void>) {
-		assert.ok(["agent_start", "message_end", "turn_end", "agent_end", "agent_settled", "session_shutdown"].includes(name), `unexpected event ${name}`);
+		assert.ok(["agent_start", "message_end", "turn_end", "agent_end", "agent_settled", "session_tree", "session_shutdown"].includes(name), `unexpected event ${name}`);
 		this.#handlers.set(name, handler);
 	}
 	failSend = false;
@@ -424,20 +424,51 @@ describe("Command Jobs adapter", () => {
 		}
 	});
 
-	it("rewrites the record of a job that still runs after Pi's own report for a settled run", async () => {
+	it("rewrites the record of a job that still runs after Pi's own report for a quiet settled run", async () => {
 		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]> };
 		const { pi, call } = setup(root, false, terminal);
-		const record = (id: string, msg: string) => formatStatusRecord({ id: recordId(id) as string, state: "working", title: "Background job", msg: `Background job running · ${msg}` });
+		const running = (id: string) => formatStatusRecord({ id: recordId(id) as string, state: "working", title: "Background job", msg: "Background job running · its completion starts the next turn" });
+		const tick = () => new Promise((resolve) => setImmediate(resolve));
 		try {
 			const job = jobOf(await call("bash", { command: "sleep 30", background: true }));
+			pi.branch.push({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "note", name: "note", arguments: {} }] } });
+			pi.branch.push({ type: "message", message: { role: "toolResult", toolCallId: "note", content: [{ type: "text", text: "noted" }] } });
 			const writes = terminal.writes.length;
 			await pi.emit("agent_settled", { type: "agent_settled", aborted: false });
 			assert.equal(terminal.writes.length, writes, "the update waits until the settled handlers have returned");
-			await new Promise((resolve) => setImmediate(resolve));
-			assert.equal(terminal.writes.at(-1), record(job.id, "its completion starts the next turn"));
+			await tick();
+			assert.equal(terminal.writes.at(-1), running(job.id), "a run that ended in a tool call leaves the running job newest");
+
+			const quiet = terminal.writes.length;
 			await pi.emit("agent_settled", { type: "agent_settled", aborted: true });
-			await new Promise((resolve) => setImmediate(resolve));
-			assert.equal(terminal.writes.at(-1), record(job.id, "its completion waits for the next prompt"));
+			await tick();
+			assert.equal(terminal.writes.length, quiet, "an aborted run writes no update");
+			pi.branch.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "The answer." }] } });
+			await pi.emit("agent_settled", { type: "agent_settled", aborted: false });
+			await tick();
+			assert.equal(terminal.writes.length, quiet, "an answered run keeps Pi's record newest");
+		} finally {
+			await pi.shutdown();
+		}
+	});
+
+	it("moves the delivery state with the branch that the session shows", async () => {
+		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]> };
+		const { pi, call } = setup(root, false, terminal);
+		const record = (id: string, msg: string) => formatStatusRecord({ id: recordId(id) as string, state: "done", title: "Background job", msg: `Background job succeeded · exit 0 · < 1 min · ${msg}` });
+		try {
+			const job = jobOf(await call("bash", { command: "printf done", background: true }));
+			const sent = await completion(pi, job.id);
+			await delay(0);
+			pi.branch.push({ type: "custom_message", customType: JOB_COMPLETION_MESSAGE, details: sent.message.details });
+			await pi.emit("agent_end", { type: "agent_end" });
+			assert.equal(terminal.writes.at(-1), record(job.id, "completion in the conversation"));
+			pi.branch.length = 0;
+			await pi.emit("session_tree", { type: "session_tree" });
+			assert.equal(terminal.writes.at(-1), record(job.id, "completion not in the conversation"), "a branch without the message");
+			pi.branch.push({ type: "custom_message", customType: JOB_COMPLETION_MESSAGE, details: sent.message.details });
+			await pi.emit("session_tree", { type: "session_tree" });
+			assert.equal(terminal.writes.at(-1), record(job.id, "completion in the conversation"), "back on a branch with it");
 		} finally {
 			await pi.shutdown();
 		}

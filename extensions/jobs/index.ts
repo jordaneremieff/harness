@@ -112,6 +112,18 @@ function shellOptions(ctx: ExtensionContext): BashToolOptions {
 	return { shellPath: settings.getShellPath(), commandPrefix: settings.getShellCommandPrefix() };
 }
 
+/** Whether the run on this branch ended in a tool call: its last model message is a tool result, not an answer or an error. */
+function endedQuietly(branch: readonly { type?: unknown; message?: unknown }[]): boolean {
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index];
+		if (entry?.type !== "message") continue;
+		const role = (entry.message as { role?: unknown } | undefined)?.role;
+		if (role === "toolResult") return true;
+		if (role === "assistant" || role === "user") return false;
+	}
+	return false;
+}
+
 function textResult<T extends Static<typeof JobsOutputSchema>>(details: T) {
 	return {
 		content: [{ type: "text" as const, text: JSON.stringify(details, null, 2) }],
@@ -304,12 +316,14 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 	pi.on("agent_settled", async (event, ctx) => {
 		lastRunAborted = event.aborted;
 		reconcile(ctx, true);
-		// Pi writes its own record for the settled run after these handlers return. The update of each job that runs
-		// at this settlement follows it, so a job that still runs after the conversation went quiet is the newest
-		// record of the terminal.
+		// After a quiet run, one that ended in a tool call, Pi writes its own `done` record once these handlers
+		// return. The update of each job that runs at this settlement follows it, so the running job is the newest
+		// record of the terminal. A run that answered or failed keeps Pi's record newest.
 		const jobIds = activity.runningJobs();
-		if (jobIds.length > 0) setImmediate(() => activity.runSettled(event.aborted ? "prompt" : "turn", jobIds));
+		if (jobIds.length > 0 && !event.aborted && endedQuietly(ctx.sessionManager.getBranch())) setImmediate(() => activity.runSettled(jobIds));
 	});
+	// A move to another branch of the session changes which completions are in the conversation.
+	pi.on("session_tree", async (_event, ctx) => activity.onBranch(retainedCompletions(ctx)));
 	pi.on("session_shutdown", async (_event, ctx) => {
 		closed = true;
 		try {
