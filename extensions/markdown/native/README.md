@@ -12,8 +12,19 @@ queue, never on the main thread: it takes an exclusive lock on `reading-state.lo
 250 milliseconds or does not write, applies only this process's changes to the file's current
 state and replaces the file atomically. Only a successful write clears the changes it covered;
 a change made while a save runs, and every change of a failed save, stays pending, and a failed
-save is logged and tried again a second later. The file keeps fractional seconds, so for one
-document the position captured later wins, whichever process saves first.
+save is logged and tried again after one second, then after twice the last wait, up to 30
+seconds. The file keeps fractional seconds, so for one document the position captured later
+wins, whichever process saves first.
+
+A save writes only over a file it could read. A missing file is created. A file that cannot be
+read (an I/O or permission error, or not a regular file) and a file with another `version` stay
+as they are, and the changes stay pending. A file that is not valid state (not JSON, the wrong
+shape, or over the 1 MiB limit) is corrupt: the save keeps it beside the state file as
+`reading-state.json.unreadable-<UTC time>-<UUID>`, never over an existing file, logs that name,
+and then writes this process's state; `ReadingStateStore.lastRecovery` names the kept file.
+A save with a deadline (`flush(timeout:)`) reports what it knows when the deadline passes:
+*saved* once the new file is in place, *not saved* when the write did not start (the save is
+then abandoned and never writes), and *unconfirmed* while the write is under way.
 
 Requirements: macOS 26 or later and Swift 6.2 (the Command Line Tools are enough). SwiftUI's
 `WebView` and `WebKit.WebPage` need macOS 26.
@@ -73,13 +84,21 @@ digest, the reference inventory), `MacPlatformTests` (the pane helper runner aga
 scripts: each outcome, a timeout, malformed output, refusal, an oversized origin and a helper that
 closes its input; the pane reader's coordinate conversion, window matching, printable
 placeholder text and bounded error lines; search rounds against a model screen with a slow
-application, a large tree, long text and copies of the marker; covering content found by hit test
-and by stacking report, and an element that its window no longer shows; stacking report parsing
-and a stacking command that ends with its input) and `ReaderFeatureTests` (the bounds of the
-reading-state file; saves from several stores in reverse order within one second; a lock that a
-second process holds, a failed write, a change during a save and bounded flushes; revision
-following with a held preparation: a publication during the first load, scrolling during
-preparation and a text selection). Under the Command Line Tools
+application, a large tree, long text, copies of the marker, a later window beyond one round's
+budget and many unanswered window lists; covering content found by hit test and by stacking
+report, with reported areas that match no drawn content, nearly equal candidates, a small pane
+and several covers that hide a frame together; an element that its window no longer shows;
+stacking report parsing and a stacking command that ends with its input; output to a pipe and a
+pseudo-terminal that stop reading), `ReaderFeatureTests` (the bounds of the reading-state file;
+saves from several stores in reverse order within one second; a lock that a second process
+holds, a failed write, unreadable, unsupported and corrupt state files, a change during a save
+and flush receipts before, during and after the write; revision following with a held
+preparation: a publication during the first load and during a manual refresh, a newer revision
+during a failing attempt, scrolling during preparation and a text selection) and
+`MarkdownReaderTests` (the built binary in pane mode on a pseudo-terminal, with its own store and
+home folder: `q`, termination, interruption, hang-up and a closed terminal; a held state lock;
+standard error and a terminal that stop reading; store text with terminal controls). Under the
+Command Line Tools
 the Testing framework is outside the default search path, so the script passes its directory.
 The tools also ship the `_Testing_Foundation` overlay without a module, so a test file imports
 `Testing` first and then the core with `@testable` (which re-exports Foundation), never
@@ -242,7 +261,9 @@ runs (every eighth round over all of them), otherwise over the frontmost applica
 every application with a window on screen. A round keeps its place between steps, leaves an
 application after 2500 nodes or two unanswered requests, and skips the subtrees of web areas,
 tables, outlines, lists, browsers and menus, so a slow or large application delays a round but
-never keeps it from the others. When a text area shows the marker, the process prints a new
+never keeps it from the others. When the node budget ends an application's walk before its last
+window, the next round continues that walk where it stopped (for up to eight applications), so
+every window of a large application is reached in turn. When a text area shows the marker, the process prints a new
 marker and accepts the element only if it shows the new one within 0.6 seconds; a copy of the
 screen elsewhere, such as captured output in another pane, never does, and the round continues
 behind it. While following, an element that misses the marker on three consecutive reads counts
@@ -263,18 +284,29 @@ is transparent, shows that content and passes clicks to the host. The anchor fin
 among the window's accessibility elements that overlap the pane outside the pane's own
 ancestors, and a hole takes the bounds of the element's children. When the pane's environment
 offers a stacking command (`docs/conventions/pane-stacking.md`), its reports decide which of
-those elements lie above the pane. Otherwise the host's accessibility hit test decides, which is
-right for content over a tiled pane but can order two overlapping floating panes wrongly: a
-host's hit test can return the first of two overlapping elements rather than the front one.
-When holes leave nothing of the pane, or the host keeps the pane's element but no longer lists
-it among its window's children (for example while another pane fills the window), the window
-hides.
+those elements lie above the pane. The reported areas, fractions of the window's layout, reach
+the screen through the pane's own container: the highest ancestor of the text area with its
+left, right and bottom edges and at most a 64-point title row more above it. Each area then
+pairs with at most one element, and each element with at most one area, when all four edges
+agree within 6 points or 1.5 % of the layout's size, whichever is larger; closer pairs win. An
+area that matches no drawn element, such as content that the layout keeps but does not draw,
+makes no hole, and content below the pane that overlaps an area makes none either. A report
+that lags behind the screen, for example during a drag, can leave a hole out until it catches
+up. Without a stacking command the host's accessibility hit test decides, which is right for
+content over a tiled pane but can order two overlapping floating panes wrongly: a host's hit
+test can return the first of two overlapping elements rather than the front one. When the holes
+together leave nothing of the pane, or the host keeps the pane's element but no longer lists it
+among its window's children (for example while another pane fills the window), the window
+hides; the mask and that decision use one computation of the visible region.
 
 All accessibility and window-server requests run on one background queue, one step at a time,
-so a slow host never stalls the reader's window. A search step visits at least one element and
-starts no new request after 0.1 seconds; a scan for covering content starts none after 0.3
-seconds or 400 requests, and an unfinished scan keeps the last holes. A request already waiting
-can take up to the 0.25-second messaging timeout. The anchor reads the
+so a slow host never stalls the reader's window. Deadlines use the monotonic clock. A search
+step starts no new unit of work, one window list or one element visit of at most two requests,
+once 0.1 seconds have passed since the step began; the title reads before the search count
+towards that time, and the first unit always runs, so every step moves the search forward. A
+scan for covering content starts no request after 0.3 seconds or 400 requests, and an
+unfinished scan keeps the last holes. A request already waiting can take up to the 0.25-second
+messaging timeout. The anchor reads the
 frame ten times a second and sixty times a second for a moment after a change or a terminal
 resize, and looks for covering content four times a second, after a frame change and after each
 stacking report. The window hides when the text area disappears (for example, the host shows
@@ -289,8 +321,11 @@ that returns the keyboard to the host and a close control. Escape outside a text
 returns the keyboard to the host. Pane mode follows new revisions: the model's `followsLatest`
 loads a revision as soon as the pointer watcher sees it, with the reader's block, heading and
 ratio restoration, and a failed load keeps the shown revision with a warning. The watcher
-starts before the first read, and the first displayed revision is checked against the pointer
-again, so a revision published while the document opens is not missed. The reading position
+starts before the first read, and after every load that settles, whether it opened, refreshed,
+chose or followed a revision and whether it succeeded or failed, the pointer is checked again,
+so a revision published meanwhile is followed or announced without another publication. An
+automatic load asks for the exact revision it follows, and a failure stops automatic attempts
+at that revision only. The reading position
 for the new revision is taken from the page at the moment of replacement, not before the
 revision was prepared. While the page scrolls, replacement waits until scrolling has been still
 for half a second; while text is selected or the find bar is open, the update notice waits for
@@ -301,16 +336,18 @@ again by itself until the pointer names another revision.
 Keys typed into the pane's terminal: `q`, Ctrl-C or Ctrl-D close the reader; any other key
 gives the reader window the keyboard. Closing the reader by key, close control, Command-W,
 Command-Q, a quit request, a termination signal or an interruption signal captures the reading
-position, saves the pending
-reading state, restores the terminal and ends with status 0. A hang-up signal or the end of
-input ends it the same way without writing to the terminal. Capture and save together get one
-second, measured on the main thread while the save runs in the background, so a stalled lock or
-file system never keeps the process alive. If the state was not saved in that time, the process
-restores the terminal, writes one line saying that the reading position was not saved (only
-when the terminal is still there) and ends with status 1, so a pane that closes only on success
-keeps the message; the last saved position then stands. A write to the terminal waits at most
-a fifth of a second, so a terminal that stops reading loses placeholder text but never holds the
-process. The placeholder places each line by row
+position, saves the pending reading state, restores the terminal and ends. A hang-up signal or
+the end of input ends it the same way without writing to the terminal. Each wait has a bound on
+the monotonic clock: the capture half a second, capture and save together one second, and each
+write at the end a fifth of a second. Terminal output and standard error go through writers on
+their own threads that never change the descriptors' flags, which other processes of the pane
+can share; a terminal or pipe that stops reading loses output but never holds the process, and
+the process ends without exit handlers that could wait for such output. The exit status is 0
+when the state was saved or had nothing to save. Otherwise it is 1, and one line on standard
+error, after the restored screen, says that the reading position was not saved (the save
+failed or never started) or may not have been saved (the deadline passed during the write, or
+the final capture did not finish); a pane that closes only on success keeps that line, and the
+last saved position stands. The placeholder places each line by row
 and stops at the last row, so a short pane keeps the marker on screen. The document, its
 revisions and the saved reading position never depend on the process: opening the document
 again restores the saved position.
