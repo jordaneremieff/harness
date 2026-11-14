@@ -99,12 +99,18 @@ describe("metadata search", () => {
 		assert.equal(selectRecords(records, parseQuery({ search: "path-only" })).length, 0);
 		assert.equal(selectRecords(records, parseQuery({ kind: "skill", search: "verify" })).length, 0);
 	});
-	it("keeps each field literal without joins across names, descriptions, or guidelines", () => {
+	it("requires every whitespace term in any field, in any order, without joining fields", () => {
 		const records = [record({ kind: "tool", name: "inspect", invocation: undefined,
-			description: "documents", promptGuidelines: ["first", "second"] })];
-		assert.equal(selectRecords(records, parseQuery({ search: "inspect\ndocuments" })).length, 0);
-		assert.equal(selectRecords(records, parseQuery({ search: "first\nsecond" })).length, 0);
-		assert.equal(selectRecords(records, parseQuery({ search: "first" })).length, 1);
+			description: "Session documents", promptGuidelines: ["first", "second"] })];
+		const count = (search: string) => selectRecords(records, parseQuery({ search })).length;
+		assert.equal(count("first"), 1);
+		assert.equal(count("session documents"), 1);
+		assert.equal(count("DOCUMENTS  session"), 1);
+		assert.equal(count("second inspect\nsession"), 1);
+		assert.equal(count("inspect missing"), 0);
+		assert.equal(count("inspectsession"), 0);
+		assert.equal(count("firstsecond"), 0);
+		assert.equal(count(" \t "), 0);
 	});
 });
 

@@ -67,6 +67,8 @@ test("setting queries inspect fresh public snapshots, origins and diagnostics wi
 		const file = await inspect({ kind: "setting", search: "bounded" });
 		assert.equal(verify(file)[0].origin, "file");
 		assert.equal(verify(file)[0].value, 5);
+		assert.deepEqual(verify(await inspect({ kind: "setting", search: "count BOUNDED pi_example" })).map((record) => record.name), ["example.count"]);
+		assert.equal((await inspect({ kind: "setting", search: "bounded secret" })).outcome, "missing");
 		assert.equal(verify(await inspect({ kind: "setting", name: "example", match: "substring" })).length, 2);
 		current.source.status = "invalid";
 		current.records[0] = { ...current.records[0], value: 2, origin: "default" };

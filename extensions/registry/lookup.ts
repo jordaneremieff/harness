@@ -499,12 +499,12 @@ function listingResult(
 		query.search === undefined
 			? ""
 			: query.kind === undefined || query.kind === "tool"
-				? "Search matches literal text in names, descriptions, and registered tool usage guidelines, not task meaning."
-				: "Search matches literal text in names and descriptions, not task meaning.",
+				? "Search requires every term as literal text in names, descriptions, or registered tool usage guidelines, not task meaning."
+				: "Search requires every term as literal text in names or descriptions, not task meaning.",
 		outcome === "missing"
 			? query.search === undefined
 				? "No registered resource matched within the requested tool/slash-command domain. Every required accessor answered."
-				: "No literal match in the searched metadata. Every required accessor answered. This does not establish that no resource supports the task."
+				: "No record holds every search term in the searched metadata. Every required accessor answered. This does not establish that no resource supports the task; drop or change a term."
 			: "",
 	]).filter((line) => line !== "");
 	const footer = (kept: number) => [

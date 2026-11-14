@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { BOUNDARY_LINES, MODEL_CATALOG_BOUNDARY, MODEL_SCOPE_BOUNDARY, boundResult, fullRecordQuery, isoTime, oneLine, type Block, type Outcome } from "./format.ts";
 import type { ModelRecord, ModelSnapshot } from "./models.ts";
 import { catalogHealth, HEALTH_BOUNDARIES, healthCoverage, type HealthFinding } from "./health.ts";
-import { encodeCursor, paginate, type Page, type Query } from "./query.ts";
+import { encodeCursor, matchesSearch, paginate, type Page, type Query } from "./query.ts";
 import type { ObservationSnapshot } from "./records.ts";
 
 export interface DiscoveryRequest {
@@ -80,14 +80,10 @@ function discoveryFingerprint(
 
 function matchesDiscovery(record: Record<string, unknown>, query: Query): boolean {
 	const name = String(record.name);
-	const text = `${name}\n${record.displayName ?? ""}`.toLowerCase();
-	const tokens = query.search?.toLowerCase().trim().split(/\s+/).filter(Boolean);
-	const matchesSearch = query.search === undefined || (query.kind === "model"
-		? tokens !== undefined && tokens.length > 0 && tokens.every((token) => text.includes(token))
-		: text.includes(query.search.toLowerCase()));
+	const searched = query.search === undefined || matchesSearch(query.search, [name, String(record.displayName ?? "")]);
 	return (
 		(query.name === undefined || (query.match === "exact" ? name === query.name : name.includes(query.name))) &&
-		matchesSearch &&
+		searched &&
 		(query.provider === undefined || record.provider === query.provider) &&
 		(query.available === undefined || record.available === query.available)
 	);

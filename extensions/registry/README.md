@@ -44,7 +44,7 @@ embedding's configured agent directory.
 | `name` | Optional text, 1–256 characters. Name comparisons are case-sensitive. Skills also match `skill:<name>`; ordinary sessions additionally match `/skill:<name>`. |
 | `match` | `exact` or `substring`; default `exact`. |
 | `kind` | Optional `tool`, `command`, `skill`, `prompt`, `model`, `context_file`, or `setting`. `model` covers chat models only, not classifier or image models. Without it, name/search queries cover only tools and slash-command resources. |
-| `search` | Optional text, 1–256 characters. Models require every whitespace-delimited token as a case-insensitive literal substring somewhere in the canonical name or display name, in any order; whitespace-only model queries match nothing. Other resources retain one case-insensitive literal substring within names, descriptions, registered tool usage guidelines, or tool namespace names and aliases; context files use path. Settings match names, descriptions, and environment variable names. Search does not scan resource contents and uses no index or semantic ranking. |
+| `search` | Optional text, 1–256 characters. A record matches when every whitespace-delimited term occurs as a case-insensitive literal substring of at least one searched field, in any order; terms may fall in different fields, and a whitespace-only query matches nothing. Tools, commands, skills and prompts search names, descriptions, registered tool usage guidelines, and tool namespace names and aliases. Models search canonical and display names; context files search the path. Settings search names, descriptions, and environment variable names. Search does not scan resource contents and uses no index or semantic ranking. |
 | `detail` | Optional boolean. Requires `kind: "tool"` and an exact name, without `search` or `contains`. `true` returns that tool's complete parameters and prompt guidelines as bounded data. Lists omit them. |
 | `provider` | Optional exact provider ID, 1–256 characters. Requires `kind: "model"`. |
 | `available` | Optional boolean filter on the cached availability snapshot. Requires `kind: "model"`. |
@@ -421,7 +421,9 @@ loads it; registry discovery does not require another lookup first.
 
 Search includes the usage guidelines Pi already registers for each tool, so
 operator phrases recorded there are discoverable without duplicating keyword
-lists across extensions. Each field is searched literally and independently.
+lists across extensions. A short task phrase such as `session history` matches a
+tool whose fields contain both words, in any order and in any field. Each term
+matches literally within one field; fields are never joined into one text.
 A phrase with no match does not prove that no relevant capability exists; try
 another short term or inspect a bounded kind list. Exact tool detail returns
 its schema and registered guidance without activating it.
@@ -761,7 +763,7 @@ zero-based scope positions, provider scope evidence, public authentication
 facts, nullable prices, exact price tiers, extension-provider registration,
 selection/scope distinctions, unavailable surfaces, stale continuations,
 privacy, and oversized output. Search tests cover tool-guideline
-matches, field-local literal semantics, explicit negative-result boundaries,
+matches, all-term matching across fields with field-local literal terms, explicit negative-result boundaries,
 and continuation invalidation after usage guidance changes. Compact-output tests
 check full-record recovery through exact selectors, per-kind caveats, retained
 host facts and uncertainty, and smaller list text. Structured model list records

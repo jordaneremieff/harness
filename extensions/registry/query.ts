@@ -191,15 +191,23 @@ export function matchesName(record: ResourceRecord, query: Query): boolean {
 		: candidates.some((candidate) => candidate.includes(query.name as string));
 }
 
+/** Search matches when every whitespace-delimited term occurs, case-insensitively,
+ * as a literal substring of at least one field. Terms match in any order and may
+ * fall in different fields; a query without terms matches nothing. */
+export function matchesSearch(search: string, fields: readonly string[]): boolean {
+	const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
+	const haystack = fields.map((field) => field.toLowerCase());
+	return terms.length > 0 && terms.every((term) => haystack.some((field) => field.includes(term)));
+}
+
 export function selectRecords(records: ResourceRecord[], query: Query): ResourceRecord[] {
-	const search = query.search?.toLowerCase();
+	const search = query.search;
 	return records
 		.filter((record) => (query.kind === undefined || record.kind === query.kind) && matchesName(record, query) &&
-			(search === undefined || [record.name, record.description ?? "",
+			(search === undefined || matchesSearch(search, [record.name, record.description ?? "",
 				...(record.kind === "tool" ? [
 					...(record.promptGuidelines ?? []), record.namespace?.name ?? "", ...(record.namespace?.aliases ?? []),
-				] : [])]
-				.some((value) => value.toLowerCase().includes(search))))
+				] : [])])))
 		.sort(compareRecords);
 }
 

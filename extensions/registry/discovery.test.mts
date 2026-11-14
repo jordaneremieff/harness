@@ -251,7 +251,7 @@ describe("metadata and tool detail", () => {
 		snapshot.tools[0].promptGuidelines = ["Use inspect to verify [draft] before release."];
 		const result = await run({ kind: "tool", search: "verify.*draft" }, snapshot);
 		assert.equal(result.outcome, "missing");
-		assert.match(result.text, /No literal match/);
+		assert.match(result.text, /No record holds every search term/);
 		assert.match(result.text, /does not establish that no resource supports the task/);
 		assert.match(result.text, /registered tool usage guidelines/);
 		assert.equal((await run({ name: "other", search: "verify" }, snapshot)).outcome, "missing");
@@ -266,9 +266,9 @@ describe("metadata and tool detail", () => {
 			snapshot.commands = [{ name, source, description: "Helps verify drafts before release", sourceInfo }];
 			const result = await run({ kind, search: "verify.*draft" }, snapshot);
 			assert.equal(result.outcome, "missing", kind);
-			assert.match(result.text, /No literal match in the searched metadata/);
+			assert.match(result.text, /No record holds every search term in the searched metadata/);
 			assert.match(result.text, /does not establish that no resource supports the task/);
-			assert.match(result.text, /Search matches literal text in names and descriptions, not task meaning\./);
+			assert.match(result.text, /Search requires every term as literal text in names or descriptions, not task meaning\./);
 			assert.doesNotMatch(result.text, /usage guidelines/);
 		}
 	});

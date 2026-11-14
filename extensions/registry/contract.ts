@@ -48,7 +48,7 @@ const registryParams = obj(
 			stringEnum(QUERY_KINDS, { description: "Resource kind. model queries chat models only, not classifiers or image models; context_file returns prior observed paths only. setting inspects fresh configured values from responding loaded publishers." }),
 		),
 		search: opt(str({ minLength: 1, maxLength: NAME_MAX,
-			description: "Case-insensitive literal search over names, descriptions, tool guidance, and tool namespace names and aliases, not file contents. Models require every whitespace token across canonical and display names, in any order. Settings match names, descriptions, and environment variable names." })),
+			description: "Case-insensitive search that requires every whitespace-separated term as a literal substring, in any order, in any searched field: names, descriptions, tool guidance, and tool namespace names and aliases, not file contents. Models search canonical and display names; settings search names, descriptions, and environment variable names." })),
 		detail: opt(bool({ description: "Return parameters and promptGuidelines for kind tool and one exact name; no search or contains." })),
 		provider: opt(str({ minLength: 1, maxLength: NAME_MAX, description: "Exact provider ID; requires kind model." })),
 		available: opt(bool({ description: "Filter cached availability; requires kind model. Not remote health." })),
@@ -90,5 +90,5 @@ export const REGISTRY_PROMPT_GUIDELINES = [
 	"Use registry with no arguments for current context usage and model facts. Read the observation time; unknown or unavailable context usage is not zero or a safe remaining budget.",
 	"Use registry kind setting for configured values, origins, validity, and diagnostics. Only responding loaded publishers are covered; inactive or nonresponding extensions remain unknown. Snapshots do not prove runtime application. Secrets show set/unset only.",
 	"Use registry with contains to quote a line from one named skill or prompt file rather than reading the file by path.",
-	"Treat a registry partial, unavailable, or not_yet_observed result as incomplete evidence, not absence. Search uses literal text, or all whitespace tokens for models: no match does not prove no relevant capability exists. Try another short term or inspect a bounded kind list.",
+	"Treat a registry partial, unavailable, or not_yet_observed result as incomplete evidence, not absence. Search requires every term literally: no match does not prove no relevant capability exists. Drop or change a term, or inspect a bounded kind list.",
 ] as const;

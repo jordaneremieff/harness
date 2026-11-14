@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { collectSettings, type SettingsBus, type SettingsPublication } from "./configuration-protocol.ts";
 import { boundResult, escapeJsonControls, isoTime, oneLine, queryLine, type Outcome } from "./format.ts";
-import { decodeCursor, encodeCursor, hasAnySelector, paginate, parseQuery, type Query, type RawParams } from "./query.ts";
+import { decodeCursor, encodeCursor, hasAnySelector, matchesSearch, paginate, parseQuery, type Query, type RawParams } from "./query.ts";
 
 export interface SettingsSnapshot {
 	publications: SettingsPublication[];
@@ -78,8 +78,7 @@ function fingerprint(snapshot: SettingsSnapshot): string {
 
 function matchesSetting(record: ReturnType<typeof projection>[number], query: Query): boolean {
 	if (query.name !== undefined && !(query.match === "exact" ? record.name === query.name : record.name.includes(query.name))) return false;
-	const search = query.search?.toLowerCase();
-	return search === undefined || [record.name, record.description, record.env].some((text) => text.toLowerCase().includes(search));
+	return query.search === undefined || matchesSearch(query.search, [record.name, record.description, record.env]);
 }
 function settingBlock(record: ReturnType<typeof projection>[number]) {
 	const value = record.secret ? record.secretState : record.value === undefined ? "unset" : escapeJsonControls(JSON.stringify(record.value));
