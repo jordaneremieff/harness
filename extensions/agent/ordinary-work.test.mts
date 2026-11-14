@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { ORDINARY_CONTINUE_TEXT, ORDINARY_NOTE_CHARS, ORDINARY_TEXT_ANSWER, ORDINARY_WORK_DESCRIPTION, OrdinaryWorkParams, registerOrdinaryWork } from "./ordinary-work.ts";
+import { ORDINARY_CONTINUE_TEXT, ORDINARY_NOTE_CHARS, ORDINARY_TEXT_ANSWER, ORDINARY_TEXT_REFUSED, ORDINARY_TEXT_REQUESTS, ORDINARY_WORK_DESCRIPTION, OrdinaryWorkParams, registerOrdinaryWork } from "./ordinary-work.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { ordinaryWorkCard } from "./tool-cards.ts";
 
@@ -21,8 +21,9 @@ function fixture(mode = "tui", entries: unknown[] = []) {
 	const registered = tool;
 	assert.equal(registered.renderCall, card.renderCall, "the registered renderers are the caller's card references");
 	assert.equal(registered.renderResult, card.renderResult);
-	const context = only({ mode, sessionManager: { getEntries: () => entries } }, "the tool") as unknown as ExtensionContext;
-	return { tool: registered, run: (input: unknown) => registered.execute("call", input as never, undefined, undefined, context as never) };
+	let aborts = 0;
+	const context = only({ mode, sessionManager: { getBranch: () => entries }, abort: () => { aborts++; } }, "the tool") as unknown as ExtensionContext;
+	return { tool: registered, aborts: () => aborts, run: (input: unknown) => registered.execute("call", input as never, undefined, undefined, context as never) };
 }
 
 it("continues a print or JSON run to a text answer, because its output is its last text message", async () => {
@@ -37,17 +38,31 @@ it("continues a print or JSON run to a text answer, because its output is its la
 	assert.match(ORDINARY_TEXT_ANSWER, /complete final answer/u);
 });
 
-it("ends a print run when the answer is already text or was already asked for since the latest input", async () => {
+it("never ends a print run in the call, and stops a run that calls it again after two reminders since the latest input", async () => {
 	const note = "Nothing remains.";
 	const user = { type: "message", message: { role: "user", content: [{ type: "text", text: "Review it." }] } };
 	const answer = { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Findings: none." }, { type: "toolCall", name: "agent_work" }] } };
 	const silent = { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "done" }, { type: "toolCall", name: "agent_work" }] } };
 	const asked = { type: "message", message: { role: "toolResult", toolName: "agent_work", content: [{ type: "text", text: ORDINARY_TEXT_ANSWER }] } };
 	const completion = { type: "custom_message", customType: "jobs.completion" };
-	assert.equal((await fixture("print", [user, answer]).run({ action: "continue", note })).terminate, true, "the call's own message carries the answer");
-	assert.notEqual((await fixture("print", [user, silent]).run({ action: "continue", note })).terminate, true, "a text-less message is asked once");
-	assert.equal((await fixture("json", [user, silent, asked, silent]).run({ action: "continue", note })).terminate, true, "a repeated call ends the run");
-	assert.notEqual((await fixture("print", [user, silent, asked, completion, silent]).run({ action: "continue", note })).terminate, true, "a new input starts a new answer");
+	const reminded = async (mode: string, entries: unknown[]) => {
+		const f = fixture(mode, entries);
+		const result = await f.run({ action: "continue", note });
+		assert.equal(f.aborts(), 0);
+		assert.notEqual(result.terminate, true);
+		return result.content;
+	};
+	assert.deepEqual(await reminded("print", [user, answer]), [{ type: "text", text: ORDINARY_TEXT_ANSWER }], "text in the call's own message is not printed, so the call still asks");
+	assert.deepEqual(await reminded("json", [user, silent, asked, silent]), [{ type: "text", text: ORDINARY_TEXT_ANSWER }], "a second reminder");
+	assert.deepEqual(await reminded("print", [asked, asked, user, silent]), [{ type: "text", text: ORDINARY_TEXT_ANSWER }], "a user message starts a new count");
+	assert.deepEqual(await reminded("print", [user, silent, asked, silent, asked, completion, silent]), [{ type: "text", text: ORDINARY_TEXT_ANSWER }], "a custom message starts a new count");
+
+	for (const mode of ["print", "json"]) {
+		const f = fixture(mode, [user, silent, asked, silent, asked, silent]);
+		await assert.rejects(f.run({ action: "continue", note }), (error: Error) => error.message === ORDINARY_TEXT_REFUSED, mode);
+		assert.equal(f.aborts(), 1, `${mode}: a further call aborts the run`);
+	}
+	assert.equal(ORDINARY_TEXT_REQUESTS, 2);
 });
 
 it("ends the turn in continue and keeps the note nowhere outside the call", async () => {

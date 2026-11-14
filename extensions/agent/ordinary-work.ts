@@ -29,42 +29,30 @@ export type OrdinaryWorkDetails = Static<typeof OrdinaryWorkOutputSchema>;
 export const ORDINARY_CONTINUE_TEXT = "The state note is shown to the operator. The turn ends here: write no chat text.";
 
 /**
- * Print and JSON runs answer with their last text message, and no person reads the card there. A turn that
- * ended in the tool call would leave that answer empty, for example after a follow-up message that arrived
- * once the answer was written, so the turn continues to a text answer instead. A call whose message already
- * carries text, or a repeated call since the latest input, ends the turn.
+ * Print and JSON runs answer with their last message, and no person reads the card there. Text print mode
+ * prints only a final assistant message, so a turn that ended in the tool call would print nothing, even
+ * when the message that holds the call carries text. In those modes the call never ends the turn: its
+ * result asks for the answer as one text message instead.
  */
-export const ORDINARY_TEXT_ANSWER = "This run has no operator view, and its output is its last text message. Write no state note: end the turn with a text message that states your complete final answer, including any result that you already wrote before this turn.";
+export const ORDINARY_TEXT_ANSWER = "This run has no operator view and prints only its last text message. Do not call agent_work: end the turn with one text message, with no tool call, that states your complete final answer, including results that you already wrote earlier in this run.";
+
+/** Requests for a text answer that one input admits before a further call stops the run. */
+export const ORDINARY_TEXT_REQUESTS = 2;
+
+export const ORDINARY_TEXT_REFUSED = `agent_work was called again after ${ORDINARY_TEXT_REQUESTS} requests for a text answer, so this run stops without an answer.`;
 
 type Entry = { type?: unknown; message?: { role?: unknown; toolName?: unknown; content?: unknown } };
 
-function texts(content: unknown): string[] {
-	return Array.isArray(content) ? content.flatMap((part: { type?: unknown; text?: unknown }) => part?.type === "text" && typeof part.text === "string" ? [part.text] : []) : [];
-}
-
-/**
- * Whether a print or JSON run already has its answer: the message that holds this call carries text, or an
- * earlier call since the latest input already asked for the answer, so asking again could only repeat.
- */
-function answerSettled(entries: readonly Entry[]): boolean {
-	let latest = true;
+/** The requests for a text answer since the latest user or custom message, which starts a new count. */
+function textRequests(entries: readonly Entry[]): number {
+	let count = 0;
 	for (let index = entries.length - 1; index >= 0; index--) {
-		const verdict = entryVerdict(entries[index], latest);
-		if (verdict !== undefined) return verdict;
-		if (entries[index]?.message?.role === "assistant") latest = false;
+		const entry = entries[index];
+		if (entry?.type === "custom_message" || (entry?.type === "message" && entry.message?.role === "user")) break;
+		const message = entry?.type === "message" ? entry.message : undefined;
+		if (message?.role === "toolResult" && message.toolName === "agent_work" && Array.isArray(message.content) && message.content.some((part: { text?: unknown }) => part?.text === ORDINARY_TEXT_ANSWER)) count++;
 	}
-	return false;
-}
-
-/** True or false when this entry decides, undefined to keep reading older entries. */
-function entryVerdict(entry: Entry | undefined, latestAssistant: boolean): boolean | undefined {
-	if (entry?.type === "custom_message") return false;
-	if (entry?.type !== "message" || !entry.message) return undefined;
-	const { role, toolName, content } = entry.message;
-	if (role === "user") return false;
-	if (role === "assistant" && latestAssistant && texts(content).some((text) => text.trim().length > 0)) return true;
-	if (role === "toolResult" && toolName === "agent_work" && texts(content).includes(ORDINARY_TEXT_ANSWER)) return true;
-	return undefined;
+	return count;
 }
 
 /** Register the ordinary `agent_work`. The caller owns `card`, so the registered renderers are the same references that it publishes for display. */
@@ -79,7 +67,13 @@ export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool">, car
 		async execute(_callId, input: Static<typeof OrdinaryWorkParams>, _signal, _update, ctx) {
 			if (!matchesSchema(OrdinaryWorkParams, input)) throw new Error("agent_work takes action continue and a note");
 			const details: OrdinaryWorkDetails = { action: "continue", note: input.note };
-			if ((ctx.mode === "print" || ctx.mode === "json") && !answerSettled(ctx.sessionManager.getEntries() as readonly Entry[])) {
+			if (ctx.mode === "print" || ctx.mode === "json") {
+				if (textRequests(ctx.sessionManager.getBranch() as readonly Entry[]) >= ORDINARY_TEXT_REQUESTS) {
+					// The aborted run ends in an aborted assistant message, which text print mode reports on stderr with exit code 1.
+					if (ctx.mode === "print") process.stderr.write(`${ORDINARY_TEXT_REFUSED}\n`);
+					ctx.abort();
+					throw new Error(ORDINARY_TEXT_REFUSED);
+				}
 				return { content: [{ type: "text", text: ORDINARY_TEXT_ANSWER }], details, structuredContent: details };
 			}
 			return { content: [{ type: "text", text: ORDINARY_CONTINUE_TEXT }], details, structuredContent: details, terminate: true };
