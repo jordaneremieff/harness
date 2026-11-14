@@ -128,6 +128,25 @@ it("closes every delivered tuple once, also after a reload, and leaves foreign t
 	assert.match(note, /with no delivered result here: \n\{"sessionId":"11111111-2222-4333-8444-555555555555","submissionId":3,"requestId":"other-submission"\}\nAdmission unconfirmed: none/u);
 });
 
+it("lists the open requests routed to this session, and neither closed nor foreign ones", () => {
+	const f = fixture();
+	const route = (requestId: string, extra: Record<string, unknown> = {}) => ({ sessionId: WORKER, requestId, replyTo: f.id, ...extra }) as const;
+	f.record({ phase: "requested", ...route("due") });
+	f.record({ phase: "admitted", ...route("due"), submissionId: 1 });
+	f.record({ phase: "requested", ...route("unconfirmed") });
+	f.record({ phase: "requested", ...route("scheduled", { timerId: 4 }) });
+	f.record({ phase: "requested", ...route("refused") });
+	f.record({ phase: "refused", ...route("refused") });
+	f.record({ phase: "requested", ...route("answered") });
+	f.record({ phase: "admitted", ...route("answered"), submissionId: 2 });
+	f.continuity.delivered(f.id, [{ sessionId: WORKER, requestId: "answered", submissionId: 2 }]);
+	f.record({ phase: "requested", sessionId: WORKER, requestId: "elsewhere", replyTo: `${WORKER}:3` });
+	assert.deepEqual(f.continuity.open(f.id).map((fact) => [fact.requestId, fact.phase, fact.timerId]), [["due", "admitted", undefined], ["unconfirmed", "requested", undefined], ["scheduled", "requested", 4]]);
+	assert.deepEqual(f.continuity.open("another-session"), [], "a session without facts has no open request");
+	f.continuity.start(f.id, f.session.getEntries());
+	assert.deepEqual(f.continuity.open(f.id).map((fact) => fact.requestId), ["due", "unconfirmed", "scheduled"], "a reload folds the retained facts to the same view");
+});
+
 it("accepts a delivery without the carrier and refuses an invalid carrier as a whole", () => {
 	assert.deepEqual(deliveredResults({ answer: "body" }), []);
 	assert.deepEqual(deliveredResults(undefined), []);

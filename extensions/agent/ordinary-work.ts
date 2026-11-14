@@ -8,7 +8,8 @@
  * reply route and no dependency, and nothing here calls a host.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { lit, obj, str, type Schema, type Static } from "@earendil-works/pi-schema";
+import { arr, int, lit, obj, opt, str, type Schema, type Static } from "@earendil-works/pi-schema";
+import type { ContinuityFact } from "./continuity-facts.ts";
 import { matchesSchema } from "./schema-check.ts";
 import type { AgentToolCard } from "./tool-cards.ts";
 
@@ -23,8 +24,38 @@ export const OrdinaryWorkParams = obj({
 	note: str({ minLength: 1, maxLength: ORDINARY_NOTE_CHARS, description: "The state for the operator in plain words: what is open and what happens next. One or two short sentences, no session, submission or request ID." }),
 });
 
-export const OrdinaryWorkOutputSchema = obj({ action: lit("continue"), note: str() });
+/** Open requests that a card lists, at most; the count of the rest stays in `waitingOmitted`. */
+export const ORDINARY_WAITING_ROWS = 16;
+
+const WaitingRowSchema = obj({
+	sessionId: str(),
+	state: StringEnum(["admitted", "unconfirmed", "scheduled"]),
+});
+
+/**
+ * The note, and in a session with an operator view also the time the turn ended and the requests that this
+ * session routed to itself and that had no delivered result then. The card shows them; the model does not
+ * receive them.
+ */
+export const OrdinaryWorkOutputSchema = obj({
+	action: lit("continue"),
+	note: str(),
+	at: opt(int({ minimum: 0 })),
+	waiting: opt(arr(WaitingRowSchema, { maxItems: ORDINARY_WAITING_ROWS })),
+	waitingOmitted: opt(int({ minimum: 1 })),
+});
 export type OrdinaryWorkDetails = Static<typeof OrdinaryWorkOutputSchema>;
+export type OrdinaryWaitingRow = Static<typeof WaitingRowSchema>;
+
+export interface OrdinaryWorkOptions {
+	/** The open requests of one session, as the continuity facts of this session hold them. */
+	readonly waiting?: (sessionId: string) => readonly ContinuityFact[];
+	readonly now?: () => number;
+}
+
+function waitingRow(fact: ContinuityFact): OrdinaryWaitingRow {
+	return { sessionId: fact.sessionId, state: fact.timerId !== undefined ? "scheduled" : fact.phase === "admitted" ? "admitted" : "unconfirmed" };
+}
 
 export const ORDINARY_CONTINUE_TEXT = "The state note is shown to the operator. The turn ends here: write no chat text.";
 
@@ -95,7 +126,7 @@ export class PrintAnswer {
 const machineMode = (mode: unknown) => mode === "print" || mode === "json";
 
 /** Register the ordinary `agent_work`. The caller owns `card`, so the registered renderers are the same references that it publishes for display. */
-export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool" | "on">, card: AgentToolCard): void {
+export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool" | "on">, card: AgentToolCard, options: OrdinaryWorkOptions = {}): void {
 	let answer = new PrintAnswer();
 	pi.on("session_start", () => { answer = new PrintAnswer(); });
 	// The answer state belongs to one run. An input that starts a later run follows no answer of that run.
@@ -126,9 +157,17 @@ export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool" | "on
 				}
 				return { content: [{ type: "text", text: ORDINARY_TEXT_ANSWER }], details, structuredContent: details };
 			}
-			return { content: [{ type: "text", text: ORDINARY_CONTINUE_TEXT }], details, structuredContent: details, terminate: true };
+			const open = options.waiting?.(ctx.sessionManager.getSessionId()).map(waitingRow) ?? [];
+			const shown: OrdinaryWorkDetails = {
+				...details,
+				at: (options.now ?? Date.now)(),
+				waiting: open.slice(0, ORDINARY_WAITING_ROWS),
+				...(open.length > ORDINARY_WAITING_ROWS ? { waitingOmitted: open.length - ORDINARY_WAITING_ROWS } : {}),
+			};
+			return { content: [{ type: "text", text: ORDINARY_CONTINUE_TEXT }], details: shown, structuredContent: shown, terminate: true };
 		},
 		renderCall: card.renderCall,
 		renderResult: card.renderResult,
+		...(card.renderShell === undefined ? {} : { renderShell: card.renderShell }),
 	});
 }

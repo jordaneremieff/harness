@@ -310,7 +310,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	let observedManager: AgentManager | undefined;
 	// One record per tool owns its registration, its renderer fallback and its display publication. An ordinary
 	// session registers its own `agent_work`, so that tool's record is the state note card.
-	const cards: Readonly<Record<string, AgentToolCard>> = { ...createAgentToolCards(() => observedManager?.observedToolCardRows() ?? []), agent_work: ordinaryWorkCard() };
+	const observedRows = () => observedManager?.observedToolCardRows() ?? [];
+	const cards: Readonly<Record<string, AgentToolCard>> = { ...createAgentToolCards(observedRows), agent_work: ordinaryWorkCard(observedRows) };
 	pi.registerToolRenderer((name, next) => next() ?? cards[name]);
 	publishToolDisplay(pi.events, Object.entries(cards).map(([name, presentation]) => ({ name, ...presentation })));
 	const primaries = new Map<string, AbortController>();
@@ -423,7 +424,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			return getManager().collaborate({ ...input, origin: "model", requestId: `collaboration:${ctx.sessionManager.getSessionId()}:${callId}` }, caller(ctx, pi));
 		},
 	);
-	registerOrdinaryWork(pi, cards.agent_work);
+	registerOrdinaryWork(pi, cards.agent_work, { waiting: (sessionId) => continuity.open(sessionId) });
 	register("agent_profile", "Read or revision-check an agent's durable role and sourced expertise. Saved expertise is evidence, not fresh authority. Profile edits start no model turn.", ProfileParams, (input, ctx, callId) => {
 		if (typeof input.sessionId !== "string") throw new Error("A primary profile control requires an agent sessionId");
 		return control(input.action === "read" ? "profile-read" : "profile-update", { ...input, requestId: `profile:${ctx.sessionManager.getSessionId()}:${callId}` }, ctx);

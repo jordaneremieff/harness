@@ -108,6 +108,12 @@ export class OrdinaryContinuity {
 		return true;
 	}
 
+	/** Requests this session sent and routed to itself that have no delivered result and no refusal. */
+	open(sessionId: string): ContinuityFact[] {
+		const facts = this.sessions.get(sessionId)?.facts;
+		return facts === undefined ? [] : [...facts.values()].filter((fact) => !closed(fact) && fact.replyTo === sessionId);
+	}
+
 	/** Validate, then retain a fact that changes its request. A repeated phase writes nothing. */
 	record(sessionId: string, fact: ContinuityFact): void {
 		const facts = this.session(sessionId).facts, id = key(fact), prior = facts.get(id);

@@ -1922,11 +1922,27 @@ settles (Pi's `agent_settled` event), it is cleared, so a custom message that
 starts a new run, such as a direct message from another session, gets its own
 answer and no request to restate the earlier run's answer.
 
-The card of the call in the transcript is the only display of the note. It
-shows `agent_work`, then the note with collapsed white space, wrapped on at
-most three lines; an expanded card shows the complete note. The tool stores
-no state, sets no widget and writes no session entry. The note is true when
-the session writes it. When an event or the operator starts the next run, the
+The card of the call in the transcript is the only display of the note. The
+turn ended there, so the card is a message to the operator, not a tool
+outcome: it registers `renderShell: "self"` and draws Pi's message background
+(`customMessageBg`) instead of the tool success background, and a failed call
+in the error background. Its title says what it is: `agent_work · turn ended`,
+then how many results were due here and how many scheduled inputs, then the
+local time the turn ended. Below it, the note with collapsed white space wraps
+at word boundaries on at most three lines, and a hint names the hidden lines
+and the expand key (`... (2 more lines, click or ctrl+o to expand)`). A click
+on the card or Pi's expand key shows the complete note, each request that was
+due with the agent's name, model and current roster state, and the sentence
+that the turn needed nothing from the operator and that a result, a message or
+the operator's input starts the next turn.
+
+In a session with an operator view, the call's result details hold the time
+the turn ended (`at`) and the requests that this session routed to itself and
+that had no delivered result or refusal then (`waiting`, at most 16 rows with
+`waitingOmitted` for the rest), read from the session's
+[continuity facts](#ordinary-sessions). The model receives only the result
+text, not these facts. The tool sets no widget and writes no session entry.
+The note is true when the session writes it. When an event or the operator starts the next run, the
 card is history in the transcript, so no surface shows a state that ended. A
 later turn that needs nothing from the operator ends with a new `continue`;
 no call clears a note. A client of Pi's RPC mode reads the note from the

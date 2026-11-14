@@ -52,6 +52,8 @@ export interface AgentCardContext extends Pick<KeybindingHints, "keyText"> {
 export interface AgentToolCard {
 	renderCall(args: unknown, theme: Theme, context: AgentCardContext): Component;
 	renderResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component;
+	/** `self` when the card draws its own background instead of Pi's tool outcome background. */
+	readonly renderShell?: "default" | "self";
 }
 
 /**
@@ -1718,51 +1720,152 @@ function workLines(details: Record<string, unknown>, theme: Theme, context: Agen
 	return action === "complete" ? closedWorkLines(details, item, subject, theme, context) : declaredWorkLines(item, subject, theme, context);
 }
 
-const NO_LINES: Component = { render: () => [], invalidate() {} };
-
 const STATE_NOTE_LINES = 3;
 
-/** The title and the note as wrapped text: every line when expanded, otherwise at most three lines. */
-class StateNoteText implements Component {
-	private note = "";
-	private expanded = false;
+/** The parts of Pi's tool render context that the state note card reads. */
+type NoteCardContext = AgentCardContext & { readonly outputPad?: number; readonly state?: Record<string, unknown> };
+
+type NoteCardFacts = {
+	note: string;
+	at?: number;
+	waiting: Record<string, unknown>[];
+	waitingOmitted: number;
+	error?: string;
+	settled: boolean;
+};
+
+/**
+ * One state note as a card in the message background. The turn ended there, so the card is a message to
+ * the operator, not a tool outcome. Collapsed, it shows its title, at most three note lines and a hint;
+ * expanded, the whole note, the requests that were due, and what starts the next turn. Lines wrap at word
+ * boundaries and keep the background to the edge.
+ */
+class StateNoteCard implements Component {
+	private facts: NoteCardFacts = { note: "", waiting: [], waitingOmitted: 0, settled: false };
 	private theme: Theme | undefined;
-	private readonly title: string;
-	constructor(title: string) { this.title = title; }
-	set(note: string, theme: Theme, expanded: boolean): void {
-		this.note = note;
+	private context: NoteCardContext | undefined;
+	/** The call slot hides itself once the result slot draws the card. */
+	private hidden: () => boolean = () => false;
+	set(facts: NoteCardFacts, theme: Theme, context: NoteCardContext, hidden: () => boolean): void {
+		this.facts = facts;
 		this.theme = theme;
-		this.expanded = expanded;
+		this.context = context;
+		this.hidden = hidden;
 	}
 	invalidate(): void {}
+	private title(theme: Theme): string {
+		const { waiting, waitingOmitted } = this.facts;
+		const due = waiting.filter((row) => row.state !== "scheduled").length;
+		const scheduled = waiting.length - due;
+		const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+		const parts = [this.facts.error !== undefined ? "failed" : this.facts.settled ? "turn ended" : "state note"];
+		if (waitingOmitted > 0) parts.push(plural(waiting.length + waitingOmitted, "open request"));
+		else {
+			if (due > 0) parts.push(`waiting for ${plural(due, "result")}`);
+			if (scheduled > 0) parts.push(plural(scheduled, "scheduled input"));
+		}
+		const clock = this.facts.at === undefined ? "" : theme.fg("muted", ` · ${dashboardClock(this.facts.at)}`);
+		return theme.fg("toolTitle", theme.bold("agent_work")) + theme.fg("accent", ` · ${parts.join(" · ")}`) + clock;
+	}
+	/** One open request: the agent's name and configuration from the roster, then its state now. */
+	private waitingRow(item: Record<string, unknown>, rows: readonly AgentConversationSummary[]): string {
+		const identity = text(item.sessionId);
+		const row = findTarget(identity, rows);
+		const parts = [row && this.context ? targetLabel(identity, this.context) : displayIdentity(identity)];
+		const model = row ? modelCaption(row.model) : "";
+		if (model) parts.push(displayText(model));
+		if (item.state === "unconfirmed") parts.push("admission unconfirmed");
+		if (item.state === "scheduled") parts.push("scheduled input");
+		if (row?.state) parts.push(`now ${displayText(row.state)}`);
+		return parts.join(" · ");
+	}
+	private waitingLines(theme: Theme, width: number): string[] {
+		if (this.facts.waiting.length === 0) return [];
+		const rows = this.context?.lookup?.() ?? [];
+		const lines = [theme.fg("muted", "Requests due here when the turn ended:")];
+		for (const item of this.facts.waiting) lines.push(clipCardLine(`  ${theme.fg("text", this.waitingRow(item, rows))}`, width));
+		if (this.facts.waitingOmitted > 0) lines.push(theme.fg("muted", `  ${this.facts.waitingOmitted} more not listed`));
+		return lines;
+	}
+	/** The due requests and, for a turn that ended, what starts the next one. */
+	private expandedLines(theme: Theme, width: number): string[] {
+		const lines: string[] = [];
+		const waiting = this.waitingLines(theme, width);
+		if (waiting.length > 0) lines.push("", ...waiting);
+		if (this.facts.settled && this.facts.error === undefined)
+			lines.push("", ...wrapTextWithAnsi("The turn ended here and needed nothing from you. A result, a message or your input starts the next turn.", width).map((line) => theme.fg("muted", line)));
+		return lines;
+	}
+	/** Expansion adds the hidden note lines, and for a turn that ended the due requests and what starts the next turn. */
+	private hint(theme: Theme, width: number, hiddenLines: number): string[] {
+		const context = this.context;
+		const expandable = hiddenLines > 0 || this.facts.error === undefined;
+		if (!this.facts.settled || !expandable || context?.hideExpansionHint) return [];
+		const key = context?.keyText("app.tools.expand");
+		const action = key ? `click or ${key} to expand` : "click to expand";
+		const more = hiddenLines > 0 ? `${hiddenLines} more line${hiddenLines === 1 ? "" : "s"}, ` : "";
+		return [clipCardLine(theme.fg("muted", `... (${more}${action})`), width)];
+	}
+	private body(theme: Theme, width: number): string[] {
+		const expanded = this.context?.expanded === true;
+		const lines = wrapTextWithAnsi(this.title(theme), width);
+		const note = this.facts.note ? wrapTextWithAnsi(this.facts.note, width) : [];
+		const shown = expanded ? note : note.slice(0, STATE_NOTE_LINES);
+		lines.push(...shown.map((line) => theme.fg("text", line)));
+		if (this.facts.error !== undefined) lines.push(...wrapTextWithAnsi(this.facts.error, width).map((line) => theme.fg("error", line)));
+		return [...lines, ...(expanded ? this.expandedLines(theme, width) : this.hint(theme, width, note.length - shown.length))];
+	}
 	render(width: number): string[] {
 		const theme = this.theme;
-		if (!theme) return [];
-		const space = Math.max(1, width);
-		const lines = wrapTextWithAnsi(this.note ? `${this.title} · ${this.note}` : this.title, space);
-		const shown = this.expanded ? lines : lines.slice(0, STATE_NOTE_LINES);
-		if (shown.length < lines.length) shown[STATE_NOTE_LINES - 1] = truncateToWidth(`${shown[STATE_NOTE_LINES - 1]} ${lines[STATE_NOTE_LINES]}`, space, "…");
-		return shown.map((line, index) => index === 0 && line.startsWith(this.title)
-			? theme.fg("toolTitle", theme.bold(this.title)) + theme.fg("accent", line.slice(this.title.length))
-			: theme.fg("accent", line));
+		if (!theme || this.hidden()) return [];
+		const pad = Math.max(0, Math.min(this.context?.outputPad ?? 1, Math.floor((width - 1) / 2)));
+		const inner = Math.max(1, width - pad * 2);
+		const color = this.facts.error === undefined ? "customMessageBg" : "toolErrorBg";
+		const background = theme.getBgAnsi(color);
+		const fill = (line: string): string => {
+			const content = line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background);
+			return theme.bg(color, " ".repeat(pad) + content + " ".repeat(Math.max(0, inner - visibleWidth(line)) + pad));
+		};
+		return ["", ...this.body(theme, inner), ""].map(fill);
 	}
+}
+
+function noteText(args: unknown): string {
+	return displayText(text(record(args).note)).replace(/\s+/gu, " ").trim();
 }
 
 /**
  * The card of `agent_work` in an ordinary session: the state note, which this card alone shows to the
- * operator. The note wraps on at most three lines; an expanded card shows all of it. The note is the call,
- * so a result adds no line unless the call failed.
+ * operator. Pi draws the row without its tool outcome background; the card draws the message background
+ * itself. The call slot shows the note while it arrives. Once the result exists, the result slot draws
+ * the whole card with the time the turn ended and the requests that were due, and the call slot draws
+ * nothing. A failed call shows its error in the error background.
  */
-export function ordinaryWorkCard(): AgentToolCard {
+export function ordinaryWorkCard(lookup: AgentCardLookup = () => []): AgentToolCard {
 	return {
+		renderShell: "self",
 		renderCall: (value, theme, context) => {
-			const component = context.lastComponent instanceof StateNoteText ? context.lastComponent : new StateNoteText("agent_work");
-			component.set(displayText(text(record(value).note)).replace(/\s+/gu, " ").trim(), theme, context.expanded);
+			const component = context.lastComponent instanceof StateNoteCard ? context.lastComponent : new StateNoteCard();
+			const state = (context as NoteCardContext).state;
+			component.set({ note: noteText(value), waiting: [], waitingOmitted: 0, settled: false }, theme, { ...context, lookup }, () => state?.workNoteResult === true);
 			return component;
 		},
-		renderResult: (result, options, theme, context) => context.isError === true
-			? cardLayout({ body: [theme.fg("error", resultPreview(resultText(result)))] }, theme, { expanded: options.expanded, previous: context.lastComponent })
-			: NO_LINES,
+		renderResult: (result, _options, theme, context) => {
+			const state = (context as NoteCardContext).state;
+			if (state) state.workNoteResult = true;
+			const details = record(result.details);
+			const at = details.at;
+			const component = context.lastComponent instanceof StateNoteCard ? context.lastComponent : new StateNoteCard();
+			component.set({
+				note: noteText(context.args ?? details),
+				waiting: array(details.waiting).map(record).filter((row) => text(row.sessionId) !== ""),
+				waitingOmitted: typeof details.waitingOmitted === "number" && Number.isSafeInteger(details.waitingOmitted) && details.waitingOmitted > 0 ? details.waitingOmitted : 0,
+				...(typeof at === "number" && Number.isSafeInteger(at) && at >= 0 ? { at } : {}),
+				...(context.isError === true ? { error: resultPreview(resultText(result)) } : {}),
+				settled: true,
+			}, theme, { ...context, lookup }, () => false);
+			return component;
+		},
 	};
 }
 
