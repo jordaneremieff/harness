@@ -117,9 +117,8 @@ function continuationNote(next: number | undefined): string {
 
 function archiveNote(details: Record<string, unknown>, theme: Theme): string {
 	const error = details.archiveError;
-	return typeof error === "string" && error
-		? theme.fg("warning", ` · archive write failed: ${displayValue(error, 160)}`)
-		: "";
+	if (typeof error === "string" && error) return theme.fg("warning", ` · archive write failed: ${displayValue(error, 160)}`);
+	return details.archived === false ? theme.fg("dim", " · not archived") : "";
 }
 
 /** Copy requests show the label and content size; the content itself stays out of the card. */

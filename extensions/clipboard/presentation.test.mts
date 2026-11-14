@@ -98,6 +98,17 @@ describe("clipboard_copy cards", () => {
 		assert.match(screen(card), /archive write failed: disk full/);
 	});
 
+	it("says when a copy was not archived", () => {
+		const card = renderCopyResult(
+			text("Copied to clipboard (1 lines, 26 chars)\nNot added to clipboard history.", { archived: false, lines: 1, chars: 26 }),
+			{ expanded: false, isPartial: false },
+			theme,
+			collapsed,
+		);
+		assert.match(screen(card), /^copied 26 chars · 1 lines · not archived/);
+		assertFits(card);
+	});
+
 	it("styles the error and partial states", () => {
 		const error = renderCopyResult(text("pbcopy failed: not found"), { expanded: false, isPartial: false }, theme, {
 			...collapsed,

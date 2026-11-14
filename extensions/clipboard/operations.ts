@@ -1,6 +1,6 @@
 /** Shared clipboard tool contract and operations behind the ordinary and Durable entrypoints. */
 
-import { int, obj, opt, str } from "@earendil-works/pi-schema";
+import { bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { pbCopy, pbPaste } from "./pb.ts";
 import { SEARCH_LIMITS, type SearchPage, searchEntries } from "./search.ts";
 import { appendEntry, type ClipboardEntry, makeEntry, readEntries } from "./store.ts";
@@ -10,10 +10,11 @@ const PAGE_CHARS = 8000;
 const PAGE_LINES = 1900;
 
 export const COPY_DESCRIPTION =
-	"Copy content to the macOS clipboard. Every write is appended to the private daily archive at <agentDir>/clipboard/YYYY-MM-DD.jsonl.";
+	"Copy content to the macOS clipboard. Each write is appended to the private daily archive at <agentDir>/clipboard/YYYY-MM-DD.jsonl unless archive is false.";
 export const COPY_SNIPPET = "Copy content to the macOS clipboard for pasting into external destinations";
 export const COPY_GUIDELINES: string[] = [
 	"Use clipboard_copy when the operator asks for content to copy-paste. Do not use the clipboard archive as storage for a handover or durable reference.",
+	"Set archive to false on clipboard_copy when the operator asks that the copy stay out of clipboard history. Otherwise keep the default.",
 	"If the operator asks to recover something previously copied, use clipboard_list then clipboard_restore; if they ask what is currently on the clipboard, use clipboard_paste.",
 ];
 export const PASTE_DESCRIPTION =
@@ -50,6 +51,12 @@ export const CLIPBOARD_GUIDANCE = [
 export const CopyParams = obj({
 	content: str({ description: "Content to copy to the clipboard", maxLength: 8 * 1024 * 1024 }),
 	label: opt(str({ description: "Brief label for what was copied", maxLength: 200 })),
+	archive: opt(
+		bool({
+			description:
+				"Add the copy to clipboard history (default true). False writes the clipboard only; the copy cannot be listed or restored later.",
+		}),
+	),
 }, { open: true });
 
 export const PasteParams = obj({
@@ -246,7 +253,7 @@ async function findEntry(
 
 export async function clipboardCopy(
 	dir: string,
-	params: { content: string; label?: string },
+	params: { content: string; label?: string; archive?: boolean },
 	signal?: AbortSignal,
 ) {
 	if (signal?.aborted) throw new Error("clipboard_copy cancelled");
@@ -255,10 +262,15 @@ export async function clipboardCopy(
 	} catch (error) {
 		throw new Error(`pbcopy failed: ${error instanceof Error ? error.message : String(error)}`);
 	}
+	const archived = params.archive !== false;
 	const entry = makeEntry(params.content, params.label);
-	const archiveError = await appendEntry(dir, entry);
+	const archiveError = archived ? await appendEntry(dir, entry) : null;
 	const label = params.label ? ` | ${safeLine(params.label)}` : "";
-	const warning = archiveError ? `\nWarning: archive write failed: ${safeLine(archiveError)}` : "";
+	const warning = archiveError
+		? `\nWarning: archive write failed: ${safeLine(archiveError)}`
+		: archived
+			? ""
+			: "\nNot added to clipboard history.";
 	const preview = safeLine(entry.preview);
 	const previewTruncated = entry.chars > countCharacters(entry.preview);
 	return {
@@ -269,7 +281,7 @@ export async function clipboardCopy(
 			},
 		],
 		details: {
-			id: entry.id,
+			...(archived ? { id: entry.id } : { archived: false }),
 			lines: entry.lines,
 			chars: entry.chars,
 			...(params.label === undefined ? {} : { label: params.label }),

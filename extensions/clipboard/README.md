@@ -10,7 +10,7 @@ the payload contains no execution functions. The renderers live in `display.ts`,
 
 | Surface | Kind | Purpose |
 |---|---|---|
-| `clipboard_copy` | tool | Write via stdin-fed `pbcopy` and archive the write. |
+| `clipboard_copy` | tool | Write via stdin-fed `pbcopy` and archive the write, unless `archive` is `false`. |
 | `clipboard_paste` | tool | Read the current clipboard in bounded pages. |
 | `clipboard_list` | tool | List recent entries or search full archived text, with bounded continuation and stable ids. |
 | `clipboard_get` | tool | Read one archived entry by stable id, in bounded pages. |
@@ -28,6 +28,19 @@ Call `clipboard_copy` with the text to write:
 ```json
 {"content":"Rollback instructions: restore the saved revision.","label":"rollback instructions"}
 ```
+
+When the operator asks that a copy stay out of clipboard history, set
+`archive` to `false`:
+
+```json
+{"content":"Reset link for the shared account.","archive":false}
+```
+
+The tool then writes the clipboard only. The result says that the copy was not
+added to history and carries `archived: false` instead of a stable id, so the
+copy cannot be listed, read, or restored later. The default, `true`, archives
+the write. The option changes only the archive: the content still reaches the
+system clipboard, where other applications and clipboard managers can read it.
 
 Call `clipboard_paste` only when you need the current clipboard:
 
@@ -218,6 +231,7 @@ archive directory, default `<agentDir>/clipboard/YYYY-MM-DD.jsonl`.
 - Readers scan files and records newest-first in bounded chunks and check cancellation between reads and records. Lists stop after the requested page and retain no body content; the browser reads no body content for list rows and at most 32,768 characters for a selected preview. Stable-id lookup refetches the full selected record without materializing a whole daily archive.
 - Individual JSONL records are capped at 64 MiB. This contains malformed or unexpectedly large historical data while accommodating the tool's string-length input limit of 8 × 1024 × 1024 and JSON escaping.
 - Restores add no archive entry: a restore writes the clipboard from an existing record and changes the archive only by that read.
+- A copy with `archive: false` opens no archive file and adds no record.
 
 A successful `pbcopy` followed by an archive failure is reported as a successful copy with a warning. A `pbcopy` failure remains an error and does not append a false history event. Archival continues after a confirmed copy even if cancellation arrives afterward.
 
@@ -335,7 +349,8 @@ full arguments or result text with a display bound, and terminal controls escape
 in every collapsed value.
 
 - `clipboard_copy` names the label and reports the content size in UTF-16 code units
-  (or that the content is still streaming), then the copied size and any archive warning.
+  (or that the content is still streaming), then the copied size, the id, and any archive
+  warning, or `not archived` for a copy with `archive: false`.
 - `clipboard_paste` names only the requested page bounds, then the page size, any
   continuation offset, the escaped-control note, and the empty state.
 - `clipboard_list` names the query or date and its bounds, then the entry or match count,

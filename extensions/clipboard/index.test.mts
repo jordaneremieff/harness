@@ -14,6 +14,7 @@ import { appendEntry, makeEntry } from "./store.ts";
 
 interface ClipboardDetails {
 	id: string;
+	archived?: boolean;
 	count: number;
 	hasMore: boolean;
 	ids: string[];
@@ -267,6 +268,30 @@ describe("clipboard entrypoint", () => {
 		assert.equal(after.length, before.length, "the archive record count is unchanged");
 		assert.deepEqual(after, before, "the archive holds the same ids as before the restore");
 		assert.equal((result.details as { archiveError?: string }).archiveError, undefined, "no archive outcome is reported");
+	});
+
+	it("copies without an archive record when archive is false", async () => {
+		const { tools } = registry();
+		const lines = async () => {
+			let count = 0;
+			for (const name of await readdir(archiveDir)) {
+				for (const line of (await readFile(join(archiveDir, name), "utf8")).split("\n")) if (line) count++;
+			}
+			return count;
+		};
+		const before = await lines();
+		const result = await execute(tools.get("clipboard_copy"), { content: "one-time body", label: "private", archive: false });
+		assert.equal(await readFile(clipboardFile, "utf8"), "one-time body");
+		assert.equal(await lines(), before, "the archive is unchanged");
+		assert.match(result.content[0].text, /Not added to clipboard history/);
+		assert.equal(result.details.archived, false);
+		assert.equal(result.details.id, undefined, "no stable id is offered for a record that does not exist");
+		const found = await execute(tools.get("clipboard_list"), { query: "one-time body" });
+		assert.deepEqual(JSON.parse(found.content[0].text).matches, []);
+
+		const kept = await execute(tools.get("clipboard_copy"), { content: "kept body", archive: true });
+		assert.equal(await lines(), before + 1, "archive true keeps the default");
+		assert.equal(typeof kept.details.id, "string");
 	});
 
 	it("aborts a restore promptly instead of waiting out the pbcopy timeout", async () => {
