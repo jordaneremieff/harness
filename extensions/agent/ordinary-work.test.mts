@@ -13,7 +13,7 @@ function only<T extends object>(members: T, name: string): T {
 	return new Proxy(members, { get: (target, key) => { if (key in target) return target[key as keyof T]; throw new Error(`${name} must not use ${String(key)}`); } });
 }
 
-function fixture(mode = "tui") {
+function fixture(mode = "tui", entries: unknown[] = []) {
 	let tool: ToolDefinition | undefined;
 	const card = ordinaryWorkCard();
 	registerOrdinaryWork(only({ registerTool: (definition: ToolDefinition) => { tool = definition; } }, "the registration") as unknown as ExtensionAPI, card);
@@ -21,7 +21,7 @@ function fixture(mode = "tui") {
 	const registered = tool;
 	assert.equal(registered.renderCall, card.renderCall, "the registered renderers are the caller's card references");
 	assert.equal(registered.renderResult, card.renderResult);
-	const context = only({ mode }, "the tool") as unknown as ExtensionContext;
+	const context = only({ mode, sessionManager: { getEntries: () => entries } }, "the tool") as unknown as ExtensionContext;
 	return { tool: registered, run: (input: unknown) => registered.execute("call", input as never, undefined, undefined, context as never) };
 }
 
@@ -35,6 +35,19 @@ it("continues a print or JSON run to a text answer, because its output is its la
 	}
 	for (const mode of ["tui", "rpc"]) assert.equal((await fixture(mode).run({ action: "continue", note })).terminate, true, mode);
 	assert.match(ORDINARY_TEXT_ANSWER, /complete final answer/u);
+});
+
+it("ends a print run when the answer is already text or was already asked for since the latest input", async () => {
+	const note = "Nothing remains.";
+	const user = { type: "message", message: { role: "user", content: [{ type: "text", text: "Review it." }] } };
+	const answer = { type: "message", message: { role: "assistant", content: [{ type: "text", text: "Findings: none." }, { type: "toolCall", name: "agent_work" }] } };
+	const silent = { type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "done" }, { type: "toolCall", name: "agent_work" }] } };
+	const asked = { type: "message", message: { role: "toolResult", toolName: "agent_work", content: [{ type: "text", text: ORDINARY_TEXT_ANSWER }] } };
+	const completion = { type: "custom_message", customType: "jobs.completion" };
+	assert.equal((await fixture("print", [user, answer]).run({ action: "continue", note })).terminate, true, "the call's own message carries the answer");
+	assert.notEqual((await fixture("print", [user, silent]).run({ action: "continue", note })).terminate, true, "a text-less message is asked once");
+	assert.equal((await fixture("json", [user, silent, asked, silent]).run({ action: "continue", note })).terminate, true, "a repeated call ends the run");
+	assert.notEqual((await fixture("print", [user, silent, asked, completion, silent]).run({ action: "continue", note })).terminate, true, "a new input starts a new answer");
 });
 
 it("ends the turn in continue and keeps the note nowhere outside the call", async () => {

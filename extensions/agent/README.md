@@ -1858,7 +1858,11 @@ message, and no person reads a card there. In those modes `continue` does not
 end the turn: its result asks for a text message that states the complete final
 answer again. Otherwise a follow-up that arrives after the answer, such as the
 completion of a background job that the run started, would end the run with an
-empty answer while the real answer stays only in the session file.
+empty answer while the real answer stays only in the session file. The call
+still ends the turn when the assistant message that holds it already carries
+text, which is then the answer, and when an earlier call since the latest user
+or custom message already asked for the answer, so a model that keeps calling
+the tool costs at most one more request.
 
 The card of the call in the transcript is the only display of the note. It
 shows `agent_work`, then the note with collapsed white space, wrapped on at

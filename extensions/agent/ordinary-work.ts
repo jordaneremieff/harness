@@ -31,9 +31,41 @@ export const ORDINARY_CONTINUE_TEXT = "The state note is shown to the operator. 
 /**
  * Print and JSON runs answer with their last text message, and no person reads the card there. A turn that
  * ended in the tool call would leave that answer empty, for example after a follow-up message that arrived
- * once the answer was written, so the turn continues to a text answer instead.
+ * once the answer was written, so the turn continues to a text answer instead. A call whose message already
+ * carries text, or a repeated call since the latest input, ends the turn.
  */
 export const ORDINARY_TEXT_ANSWER = "This run has no operator view, and its output is its last text message. Write no state note: end the turn with a text message that states your complete final answer, including any result that you already wrote before this turn.";
+
+type Entry = { type?: unknown; message?: { role?: unknown; toolName?: unknown; content?: unknown } };
+
+function texts(content: unknown): string[] {
+	return Array.isArray(content) ? content.flatMap((part: { type?: unknown; text?: unknown }) => part?.type === "text" && typeof part.text === "string" ? [part.text] : []) : [];
+}
+
+/**
+ * Whether a print or JSON run already has its answer: the message that holds this call carries text, or an
+ * earlier call since the latest input already asked for the answer, so asking again could only repeat.
+ */
+function answerSettled(entries: readonly Entry[]): boolean {
+	let latest = true;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const verdict = entryVerdict(entries[index], latest);
+		if (verdict !== undefined) return verdict;
+		if (entries[index]?.message?.role === "assistant") latest = false;
+	}
+	return false;
+}
+
+/** True or false when this entry decides, undefined to keep reading older entries. */
+function entryVerdict(entry: Entry | undefined, latestAssistant: boolean): boolean | undefined {
+	if (entry?.type === "custom_message") return false;
+	if (entry?.type !== "message" || !entry.message) return undefined;
+	const { role, toolName, content } = entry.message;
+	if (role === "user") return false;
+	if (role === "assistant" && latestAssistant && texts(content).some((text) => text.trim().length > 0)) return true;
+	if (role === "toolResult" && toolName === "agent_work" && texts(content).includes(ORDINARY_TEXT_ANSWER)) return true;
+	return undefined;
+}
 
 /** Register the ordinary `agent_work`. The caller owns `card`, so the registered renderers are the same references that it publishes for display. */
 export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool">, card: AgentToolCard): void {
@@ -47,7 +79,9 @@ export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool">, car
 		async execute(_callId, input: Static<typeof OrdinaryWorkParams>, _signal, _update, ctx) {
 			if (!matchesSchema(OrdinaryWorkParams, input)) throw new Error("agent_work takes action continue and a note");
 			const details: OrdinaryWorkDetails = { action: "continue", note: input.note };
-			if (ctx.mode === "print" || ctx.mode === "json") return { content: [{ type: "text", text: ORDINARY_TEXT_ANSWER }], details, structuredContent: details };
+			if ((ctx.mode === "print" || ctx.mode === "json") && !answerSettled(ctx.sessionManager.getEntries() as readonly Entry[])) {
+				return { content: [{ type: "text", text: ORDINARY_TEXT_ANSWER }], details, structuredContent: details };
+			}
 			return { content: [{ type: "text", text: ORDINARY_CONTINUE_TEXT }], details, structuredContent: details, terminate: true };
 		},
 		renderCall: card.renderCall,
