@@ -86,9 +86,11 @@ closes its input; the pane reader's coordinate conversion, window matching, prin
 placeholder text and bounded error lines; search rounds against a model screen with a slow
 application, a large tree, long text, copies of the marker, a later window beyond one round's
 budget and many unanswered window lists; covering content found by hit test and by stacking
-report, with reported areas that match no drawn content, nearly equal candidates, a small pane
-and several covers that hide a frame together; an element that its window no longer shows;
-stacking report parsing and a stacking command that ends with its input; output to a pipe and a
+report, with reported areas that match no drawn content, reach past the layout edge or reach
+the screen through an unusable container, nearly equal candidates, a pairing that the closest
+pairs alone would lose, a small pane and several covers that hide a frame together; an element
+that its window no longer shows; stacking report parsing, an oversized report line dropped
+whole, and a stacking command that ends with its input; output to a pipe and a
 pseudo-terminal that stop reading), `ReaderFeatureTests` (the bounds of the reading-state file;
 saves from several stores in reverse order within one second; a lock that a second process
 holds, a failed write, unreadable, unsupported and corrupt state files, a change during a save
@@ -286,11 +288,16 @@ ancestors, and a hole takes the bounds of the element's children. When the pane'
 offers a stacking command (`docs/conventions/pane-stacking.md`), its reports decide which of
 those elements lie above the pane. The reported areas, fractions of the window's layout, reach
 the screen through the pane's own container: the highest ancestor of the text area with its
-left, right and bottom edges and at most a 64-point title row more above it. Each area then
-pairs with at most one element, and each element with at most one area, when all four edges
-agree within 6 points or 1.5 % of the layout's size, whichever is larger; closer pairs win. An
-area that matches no drawn element, such as content that the layout keeps but does not draw,
-makes no hole, and content below the pane that overlaps an area makes none either. A report
+left, right and bottom edges and at most a 64-point title row more above it. Each area is
+clipped to the layout and then pairs with at most one element, and each element with at most
+one area, when all four edges agree within 6 points or 1.5 % of the layout's size, whichever is
+larger; closer pairs win, and an area that they leave out still pairs when another area can
+move to a different matching element. An area that matches no drawn element, such as content
+that the layout keeps but does not draw, makes no hole, and content below the pane that
+overlaps an area makes none either. When no area pairs although drawn content overlaps the
+pane, the container does not place the areas where the window draws them, and the hit test
+described below decides that scan. The command's output lines follow the contract's size limit:
+a longer line is dropped whole, up to and including its newline. A report
 that lags behind the screen, for example during a drag, can leave a hole out until it catches
 up. Without a stacking command the host's accessibility hit test decides, which is right for
 content over a tiled pane but can order two overlapping floating panes wrongly: a host's hit

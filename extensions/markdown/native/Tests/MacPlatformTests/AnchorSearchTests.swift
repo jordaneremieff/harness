@@ -392,9 +392,11 @@ final class ModelTree: AccessibilityTree {
 
         /// A floating layer above the window's other children that draws its pane at `visible`
         /// inside a margin.
-        func addFloating(_ visible: CGRect) {
+        @discardableResult
+        func addFloating(_ visible: CGRect) -> Int {
             let layer = tree.add("AXGroup", visible.insetBy(dx: -40, dy: -40), parent: layers)
             tree.add("AXSplitGroup", visible, parent: layer)
+            return layer
         }
 
         func scan(_ pane: CGRect, above: [CGRect]) -> CoverScan.Result? {
@@ -420,6 +422,48 @@ final class ModelTree: AccessibilityTree {
         #expect(layout.scan(reader, above: [CGRect(x: 0, y: 0, width: 0.8, height: 0.8)]) == .covers([]))
         // The tiled content below the reader shares three edges with this area, not the fourth.
         #expect(layout.scan(reader, above: [CGRect(x: 0, y: 0.036, width: 0.75, height: 0.964)]) == .covers([]))
+        // The hit test that decides when no area pairs finds the reader's own content there.
+        let text = layout.text
+        layout.tree.hit[1] = { _ in text }
+        #expect(layout.scan(reader, above: [CGRect(x: 0, y: 0, width: 0.8, height: 0.8)]) == .covers([]))
+    }
+
+    @Test func pairsAnAreaThatReachesPastTheLayoutEdge() {
+        // Every value of the area lies between 0 and 1, but its right edge reaches 1.15.
+        let layout = Layout(pane: reader)
+        layout.addFloating(CGRect(x: 750, y: 200, width: 250, height: 400))
+        let result = layout.scan(reader, above: [CGRect(x: 0.75, y: 0.2, width: 0.4, height: 0.4)])
+        #expect(result == .covers([CGRect(x: 750, y: 236, width: 250, height: 364)]))
+        // An area wholly outside the layout lies over nothing.
+        #expect(layout.scan(reader, above: [CGRect(x: 1, y: 0.2, width: 0.4, height: 0.4)]) == .covers([]))
+    }
+
+    @Test func decidesByHitTestWhenNoAreaPairsWithDrawnContent() throws {
+        let layout = Layout(pane: reader)
+        let visible = CGRect(x: 300, y: 300, width: 500, height: 400)
+        let floating = layout.addFloating(visible)
+        let above = [CGRect(x: 0.3, y: 0.3, width: 0.5, height: 0.4)]
+        #expect(layout.scan(reader, above: above) == .covers([CGRect(x: 700, y: 300, width: 100, height: 400)]))
+        // The pane's group pads the screen by 2 points on its left, so no ancestor qualifies as the
+        // container and the area reaches the screen 30 points too low to pair.
+        let group = try #require(layout.tree.items[layout.text]?.parent)
+        layout.tree.items[group]?.frame = CGRect(x: 698, y: 200, width: 302, height: 600)
+        let text = layout.text
+        layout.tree.hit[1] = { point in visible.contains(point) ? floating : text }
+        #expect(layout.scan(reader, above: above) == .covers([CGRect(x: 700, y: 300, width: 100, height: 400)]))
+    }
+
+    @Test func pairsAnAreaThatTheClosestPairsWouldLeaveOut() {
+        // The closest pair takes the only candidate near enough to the first area; the second
+        // area has another candidate within the tolerance.
+        let areas = [CGRect(x: 0, y: 0, width: 102, height: 100), CGRect(x: 0, y: 0, width: 101, height: 100)]
+        let drawn = [CGRect(x: 0, y: 0, width: 100, height: 100), CGRect(x: 0, y: 0, width: 95, height: 100)]
+        let result = CoverScan.pairs(areas: areas, drawn: drawn, tolerance: CGSize(width: 6, height: 6))
+        #expect(result.map(\.area) == [0, 1])
+        #expect(result.map(\.candidate) == [0, 1])
+        // An area with no candidate within the tolerance stays unpaired.
+        let wide = CoverScan.pairs(areas: [CGRect(x: 0, y: 0, width: 110, height: 100)], drawn: drawn, tolerance: CGSize(width: 6, height: 6))
+        #expect(wide.isEmpty)
     }
 
     @Test func pairsEachAreaWithOneOfNearlyEqualCandidates() {
@@ -478,6 +522,20 @@ final class ModelTree: AccessibilityTree {
         let many = Array(repeating: "[0,0,0.1,0.1]", count: 65).joined(separator: ",")
         #expect(parse(#"{"version":1,"pane":[0,0,1,1],"above":[\#(many)]}"#) == nil)
         #expect(parse("not json") == nil)
+    }
+
+    @Test func dropsTheWholeOfALineThatExceedsTheLimit() {
+        let valid = #"{"version":1,"pane":null}"#
+        var lines = StackingLines()
+        #expect(lines.append(Data("a\nb".utf8)) == [Data("a".utf8)])
+        #expect(lines.append(Data("c\n".utf8)) == [Data("bc".utf8)])
+        // The line passes the limit in its first chunk; its tail, a valid report, arrives later.
+        #expect(lines.append(Data(String(repeating: "x", count: StackingReport.lineLimit + 1).utf8)) == [])
+        #expect(lines.append(Data(valid.utf8)) == [])
+        #expect(lines.append(Data("\n\(valid)\n".utf8)) == [Data(valid.utf8)])
+        // A line of exactly the limit is kept.
+        let full = Data(String(repeating: "y", count: StackingReport.lineLimit).utf8)
+        #expect(lines.append(full + Data("\n".utf8)) == [full])
     }
 
     @Test func acceptsOnlyAnAbsoluteCommandOfAtMostSixteenWords() {

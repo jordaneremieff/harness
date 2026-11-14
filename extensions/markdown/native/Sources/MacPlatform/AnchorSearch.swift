@@ -281,10 +281,13 @@ struct AnchorSearch<Tree: AccessibilityTree> {
 /// accessibility tree decides where that content is drawn. The report's areas reach the screen
 /// through the pane's own container: the highest ancestor of the element, below its window, with
 /// the element's left, right and bottom edges, which takes in a title row that the terminal draws
-/// above the screen. Each area is then paired with at most one candidate, and each candidate with
-/// at most one area, when all four edges agree within a tolerance; the closest pairs win. An area
-/// without a drawn candidate, such as content that is not drawn, makes no hole, and a candidate
-/// that no area explains, such as the content below the pane, makes none either.
+/// above the screen. Each area is clipped to the window's layout area and then paired with at
+/// most one candidate, and each candidate with at most one area, when all four edges agree within
+/// a tolerance; the closest pairs win, and an area left over still pairs when another area can
+/// move to a different candidate. An area without a drawn candidate, such as content that is not
+/// drawn, makes no hole, and a candidate that no area explains, such as the content below the
+/// pane, makes none either. When no area pairs although drawn content overlaps the element, the
+/// container does not place the areas where the window draws them, and the hit test decides.
 ///
 /// Without a report the application's own hit test decides: a candidate is above when the
 /// frontmost element at one of a few points of the overlap belongs to it. That hit test can name
@@ -367,8 +370,17 @@ enum CoverScan {
             }
         }
         if let stacking {
-            return reported(tree, candidates, element: frame, ancestors: chain.dropLast(), stacking: stacking, budget: &budget)
+            switch reported(tree, candidates, element: frame, ancestors: chain.dropLast(), stacking: stacking, budget: &budget) {
+            case .decided(let result): return result
+            case .unmapped: break
+            }
         }
+        return hitTested(tree, candidates, element: element, frame: frame, ancestors: chain, application: application, budget: &budget)
+    }
+
+    /// Covers by the application's hit test: a candidate is above when the frontmost element at
+    /// one of its sample points belongs to it.
+    static func hitTested<Tree: AccessibilityTree>(_ tree: Tree, _ candidates: [(node: Tree.Node, frame: CGRect)], element: Tree.Node, frame: CGRect, ancestors chain: [Tree.Node], application: pid_t, budget: inout Budget) -> Result? {
         var covers: [CGRect] = []
         for candidate in candidates {
             let overlap = candidate.frame.intersection(frame)
@@ -390,25 +402,38 @@ enum CoverScan {
         return .covers(covers)
     }
 
+    /// What the stacking report establishes.
+    enum Reported {
+        /// The scan's result, or nil when the budget ran out.
+        case decided(Result?)
+        /// No area pairs although drawn content overlaps the element: the pane's container does
+        /// not place the areas where the window draws them.
+        case unmapped
+    }
+
     /// Covers by the stacking report. A report that places the pane in no layout, or lists an area
     /// over the whole pane, covers the whole frame.
-    static func reported<Tree: AccessibilityTree>(_ tree: Tree, _ candidates: [(node: Tree.Node, frame: CGRect)], element frame: CGRect, ancestors: ArraySlice<Tree.Node>, stacking: StackingReport, budget: inout Budget) -> Result? {
-        guard let pane = stacking.pane, pane.width > 0, pane.height > 0 else { return .covers([frame]) }
-        if stacking.above.contains(where: { $0.insetBy(dx: -0.001, dy: -0.001).contains(pane) }) { return .covers([frame]) }
-        guard !stacking.above.isEmpty, !candidates.isEmpty else { return .covers([]) }
-        guard let container = paneContainer(tree, element: frame, ancestors: ancestors, budget: &budget) else { return nil }
+    static func reported<Tree: AccessibilityTree>(_ tree: Tree, _ candidates: [(node: Tree.Node, frame: CGRect)], element frame: CGRect, ancestors: ArraySlice<Tree.Node>, stacking: StackingReport, budget: inout Budget) -> Reported {
+        guard let pane = stacking.pane, pane.width > 0, pane.height > 0 else { return .decided(.covers([frame])) }
+        if stacking.above.contains(where: { $0.insetBy(dx: -0.001, dy: -0.001).contains(pane) }) { return .decided(.covers([frame])) }
+        let whole = CGRect(x: 0, y: 0, width: 1, height: 1)
+        let inside = stacking.above.map { $0.intersection(whole) }.filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
+        guard !inside.isEmpty, !candidates.isEmpty else { return .decided(.covers([])) }
+        guard let container = paneContainer(tree, element: frame, ancestors: ancestors, budget: &budget) else { return .decided(nil) }
         let mapping = LayoutMapping(pane: pane, screen: container)
-        var drawn: [CGRect] = []
+        var bounds: [CGRect] = []
         for candidate in candidates {
-            guard let bounds = contentBounds(tree, candidate.node, frame: candidate.frame, budget: &budget) else { return nil }
-            drawn.append(bounds.intersection(mapping.layoutArea))
+            guard let content = contentBounds(tree, candidate.node, frame: candidate.frame, budget: &budget) else { return .decided(nil) }
+            bounds.append(content)
         }
-        let areas = stacking.above.map(mapping.screenRect)
-        let covers = pairs(areas: areas, drawn: drawn, tolerance: mapping.tolerance).compactMap { pair -> CGRect? in
+        let drawn = bounds.map { $0.intersection(mapping.layoutArea) }
+        let paired = pairs(areas: inside.map(mapping.screenRect), drawn: drawn, tolerance: mapping.tolerance)
+        if paired.isEmpty, bounds.contains(where: { overlaps($0, frame) }) { return .unmapped }
+        let covers = paired.compactMap { pair -> CGRect? in
             let covered = drawn[pair.candidate].intersection(frame)
             return overlaps(covered, frame) ? covered : nil
         }
-        return .covers(covers)
+        return .decided(.covers(covers))
     }
 
     /// The pane's own container: the highest ancestor that keeps the element's left, right and
@@ -429,27 +454,49 @@ enum CoverScan {
 
     /// Pairs reported areas with drawn candidates, both in screen coordinates: each area with at
     /// most one candidate and each candidate with at most one area, when every edge agrees within
-    /// the tolerance. Closer pairs win; ties keep the report's order.
+    /// the tolerance. Closer pairs win; ties keep the report's order. An area that the closest
+    /// pairs leave without a candidate then takes a free candidate, or one whose area can move to
+    /// another valid candidate, so no area loses a pairing that a one-to-one choice allows.
+    /// The result runs in the report's order.
     static func pairs(areas: [CGRect], drawn: [CGRect], tolerance: CGSize) -> [(area: Int, candidate: Int)] {
+        var choices: [[(distance: CGFloat, candidate: Int)]] = Array(repeating: [], count: areas.count)
         var options: [(distance: CGFloat, area: Int, candidate: Int)] = []
         for (areaIndex, area) in areas.enumerated() {
             for (candidateIndex, bounds) in drawn.enumerated() where !bounds.isNull {
                 let horizontal = [abs(area.minX - bounds.minX), abs(area.maxX - bounds.maxX)]
                 let vertical = [abs(area.minY - bounds.minY), abs(area.maxY - bounds.maxY)]
                 guard horizontal.allSatisfy({ $0 <= tolerance.width }), vertical.allSatisfy({ $0 <= tolerance.height }) else { continue }
-                options.append(((horizontal + vertical).reduce(0, +), areaIndex, candidateIndex))
+                let distance = (horizontal + vertical).reduce(0, +)
+                options.append((distance, areaIndex, candidateIndex))
+                choices[areaIndex].append((distance, candidateIndex))
             }
         }
         options.sort { ($0.distance, $0.area, $0.candidate) < ($1.distance, $1.area, $1.candidate) }
-        var usedAreas = Set<Int>()
-        var usedCandidates = Set<Int>()
-        var result: [(area: Int, candidate: Int)] = []
-        for option in options where !usedAreas.contains(option.area) && !usedCandidates.contains(option.candidate) {
-            usedAreas.insert(option.area)
-            usedCandidates.insert(option.candidate)
-            result.append((option.area, option.candidate))
+        for index in choices.indices { choices[index].sort { ($0.distance, $0.candidate) < ($1.distance, $1.candidate) } }
+        var candidateOf: [Int: Int] = [:]
+        var areaOf: [Int: Int] = [:]
+        for option in options where candidateOf[option.area] == nil && areaOf[option.candidate] == nil {
+            candidateOf[option.area] = option.candidate
+            areaOf[option.candidate] = option.area
         }
-        return result
+        // Gives `area` a candidate, moving paired areas to other candidates where needed.
+        func place(_ area: Int, visited: inout Set<Int>) -> Bool {
+            for choice in choices[area] where !visited.contains(choice.candidate) {
+                visited.insert(choice.candidate)
+                if let holder = areaOf[choice.candidate], !place(holder, visited: &visited) { continue }
+                candidateOf[area] = choice.candidate
+                areaOf[choice.candidate] = area
+                return true
+            }
+            return false
+        }
+        let unpaired = areas.indices.filter { candidateOf[$0] == nil && !choices[$0].isEmpty }
+            .sorted { (choices[$0][0].distance, $0) < (choices[$1][0].distance, $1) }
+        for area in unpaired {
+            var visited = Set<Int>()
+            _ = place(area, visited: &visited)
+        }
+        return candidateOf.sorted { $0.key < $1.key }.map { (area: $0.key, candidate: $0.value) }
     }
 
     static func overlaps(_ rect: CGRect, _ frame: CGRect) -> Bool {

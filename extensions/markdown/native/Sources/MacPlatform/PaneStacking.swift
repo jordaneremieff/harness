@@ -46,6 +46,43 @@ public struct StackingReport: Equatable, Sendable {
     }
 }
 
+/// Splits the command's output into lines of at most `limit` bytes. A longer line is dropped
+/// whole: once it passes the limit, every byte up to and including its newline is discarded, so no
+/// part of it is read as a line.
+struct StackingLines {
+    let limit: Int
+    private var pending = Data()
+    private var skipping = false
+
+    init(limit: Int = StackingReport.lineLimit) {
+        self.limit = limit
+    }
+
+    /// The lines that this chunk completes, without their newlines.
+    mutating func append(_ chunk: Data) -> [Data] {
+        var lines: [Data] = []
+        var start = chunk.startIndex
+        while start < chunk.endIndex {
+            let newline = chunk[start...].firstIndex(of: 0x0A)
+            let end = newline ?? chunk.endIndex
+            if !skipping {
+                if pending.count + (end - start) > limit {
+                    skipping = true
+                    pending = Data()
+                } else {
+                    pending.append(chunk[start ..< end])
+                }
+            }
+            guard let newline else { break }
+            if !skipping { lines.append(pending) }
+            pending = Data()
+            skipping = false
+            start = newline + 1
+        }
+        return lines
+    }
+}
+
 /// Runs the stacking command that the pane's environment offers and keeps its last valid report.
 /// The command ends when this process closes its input, at the latest when the process exits.
 public final class StackingFeed: @unchecked Sendable {
@@ -55,7 +92,7 @@ public final class StackingFeed: @unchecked Sendable {
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
-    private var buffer = Data()
+    private var lines = StackingLines()
     /// Called on an arbitrary queue after each new report.
     public var onReport: (@Sendable () -> Void)?
 
@@ -120,15 +157,10 @@ public final class StackingFeed: @unchecked Sendable {
     }
 
     private func receive(_ chunk: Data) {
-        buffer.append(chunk)
         var newest: StackingReport?
-        while let end = buffer.firstIndex(of: 0x0A) {
-            let line = buffer[buffer.startIndex ..< end]
-            buffer.removeSubrange(buffer.startIndex ... end)
-            if let parsed = StackingReport.parse(Data(line)) { newest = parsed }
+        for line in lines.append(chunk) {
+            if let parsed = StackingReport.parse(line) { newest = parsed }
         }
-        // A line longer than the limit is dropped up to its end.
-        if buffer.count > StackingReport.lineLimit { buffer.removeAll() }
         guard let newest else { return }
         lock.lock()
         let changed = newest != report
