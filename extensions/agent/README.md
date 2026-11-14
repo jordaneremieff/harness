@@ -2103,6 +2103,29 @@ states that limit instead of constructing a target. A subsequent send creates a
 new result reference; the original failed request remains inspectable with its
 original identity.
 
+An ordinary primary also keeps the provider blocks that its delivered results
+carry, so a later model choice can see them before another task fails the same
+way. The notes live in that Pi process only: the newest block per provider, at
+most eight providers, none older than seven days. A restart, a reload or
+another session starts without them, and blocks from results that this process
+never received are absent. While a note exists, the system prompt carries an
+`agent-provider-blocks` section with one line per provider, newest first: the
+provider and model, the receive time in ISO UTC, the blocked agent, and up to
+300 characters of the provider's own text with its redaction and truncation
+markers. The section carries no clock or age, so its bytes change only when a
+note arrives, is replaced or ages out, and Pi's section patch keeps the cached
+prompt prefix on other turns. It stays within 4,096 UTF-8 bytes and names how
+many older notes the bound omits. It calls the lines past evidence, not current
+provider state, and states that one provider's limit can cover all of its
+models. Without a note, the section is absent. The seven-day window covers a
+weekly usage limit; a monthly limit can outlast it. An `agent_spawn`, `agent_place` or
+`agent_configure` result whose compact status names a provider with a note adds
+the same line, with its age, as one more text block. Each turn reads only the
+in-process notes; nothing reads the catalog, a host or a store for them. Neither surface parses
+the provider text, refuses the choice, selects a model or clears a note; a
+newer block for the same provider replaces it. Source:
+`provider-block-notes.ts` and `ordinary-entry.ts`.
+
 Unknown provider-limit wording does not depend on the exhaustion classifier.
 For each observed native generation retry burst, the host retains attempt evidence
 without sending start or per-attempt reports. Failure retains one ordinary end

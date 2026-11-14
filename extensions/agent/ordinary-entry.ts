@@ -28,6 +28,7 @@ import {
 	type PreferenceSnapshot,
 } from "./agent-preferences.ts";
 import { ordinaryReportedUsage } from "./agent-usage.ts";
+import { appendProviderBlockReceipt, ProviderBlockNotes, renderProviderBlockSection } from "./provider-block-notes.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { CollaborationParams, validateCollaborationAction } from "./collaboration-contract.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
@@ -305,6 +306,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		},
 	});
 	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
+	const providerBlocks = new ProviderBlockNotes();
 	let observedManager: AgentManager | undefined;
 	// One record per tool owns its registration, its renderer fallback and its display publication. An ordinary
 	// session registers its own `agent_work`, so that tool's record is the state note card.
@@ -385,6 +387,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				const value = await execute(admitted, ctx, callId, admissionCaller);
 				const projected = name === "agent_send" && admitted.mode === "report" ? projectReportReceipt(value) : value;
 				const output = result(projected, schema);
+				appendProviderBlockReceipt(name, output.content, value, providerBlocks, Date.now());
 				if (name === "agent_compact" && typeof (value as { text?: unknown })?.text === "string")
 					return { ...output, content: [{ type: "text", text: (value as { text: string }).text }] };
 				return output;
@@ -980,6 +983,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			send: (text, details, sourceId, requireRetained) => {
 				// Only a result that the session file retains settles the requests that its tuples name.
 				const results = requireRetained ? deliveredResults(details) : [];
+				providerBlocks.observe(details);
 				retention.deliver(sourceId, text, details, requireRetained);
 				continuity.delivered(sessionId, results);
 			},
@@ -1015,6 +1019,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	pi.on("before_agent_start", async (event, ctx) => {
 		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
 		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd), "prompt");
+		const blocks = renderProviderBlockSection(providerBlocks, Date.now());
+		if (blocks !== undefined) event.systemPromptOptions.sections["agent-provider-blocks"] = blocks;
 	});
 	pi.on("input", (event, ctx) => {
 		const id = ctx.sessionManager.getSessionId();
