@@ -225,7 +225,10 @@ piped standard input and output. The helper reads `REX_SESSION`, `REX_BLOCK`
 and `REX_SERVER`, and uses `REX_BIN_DIR/rex` when available, otherwise `rex`.
 It writes only JSON report lines: the pane rectangle and intersecting layers
 above it, or a null pane when the block is absent. Reports use window fractions,
-account for zoom, and change only when the geometry changes.
+account for zoom, and change only when the geometry changes. They describe the
+session's layout, not one client's screen: a pane in a background tab still has
+its geometry. The layers of `session.view` carry no minimised or hidden state,
+so the helper has no undrawn layer to leave out.
 
 Each consumer costs one Rex events stream and one initial `session.view` call.
 A newer layout revision requests another `session.view`; concurrent events
