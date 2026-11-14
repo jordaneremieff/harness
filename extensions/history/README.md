@@ -20,7 +20,9 @@ sessions, see [Durable agents](#durable-agents) for committed ancestry, entry
 schemas, and visibility differences.
 
 1. Call `history_search` with a literal, case-sensitive `query`. Omit `query`
-   for a bounded entry listing, including summary navigation IDs.
+   for a bounded entry listing, including summary navigation IDs. Add
+   `mode: "arguments"` to find earlier tool calls by an argument such as a
+   file path or command; see [Argument search](#argument-search).
 2. Read a result with `history_read`, its `entryId`, and a `pointer`.
    Omit `pointer` for a manifest of standard fields.
 3. If a response has a continuation in `next`, copy those fields into the next
@@ -105,6 +107,62 @@ that position, not continuation of the original search. A text continuation
 that selects an excluded entry is rejected. Session and entry pinning remain
 unchanged.
 
+## Argument search
+
+Text search does not read tool-call arguments, so an earlier `edit`, `read`, or
+`bash` call is invisible to it when its result text does not repeat the path or
+command. Argument search is the explicit mode for that question:
+
+```json
+{ "query": "extensions/history/core.ts", "mode": "arguments" }
+```
+
+The walk, entry pinning, and session checks are those of text search. Inside each
+entry, the search examines `toolCall` content blocks and literally matches the
+query against the string values in their `arguments`, newest entry first and in
+stored order within an entry. A match carries the entry metadata, a `call` with
+the stored tool `name` and `id`, and the exact `pointer` of the matching string,
+for example `/message/content/2/arguments/edits/0/newText`. Pass that entry ID
+and pointer to `history_read` to read the complete value. Offsets, excerpts,
+match, scan and output bounds behave as in text search.
+
+Argument search requires a `query` and takes no `filter`: every filter source
+selects entries that hold no tool calls. When `mode` is omitted or `"text"`,
+text search keeps its results and response shape. It refuses an argument-search
+`position` (in native sessions, a `position` with a `path`), so a continuation
+that lost its `mode` cannot silently restart as a different search.
+
+The executing `history_search` call is left out, so a search does not report its
+own `query`. Earlier search calls, and calls such as a script that embeds the
+query in its own arguments, remain ordinary matches.
+
+Only string values match; numbers, booleans and object keys do not. The walk
+reads the `type` of each content block and the `id`, `name` and `arguments` of
+tool calls, nothing else. It never reads text or thinking content, tool result
+text, `details`, custom `data`, signatures or image payloads, so it exposes
+nothing that `history_read` withholds. A returned pointer names only the keys
+on the path to its match; no response lists the keys of an arguments object.
+
+Traversal bounds are explicit:
+
+- Each call examines at most `LIMITS.argumentNodes` nodes: content blocks and
+  argument values, plus messages in native sessions. `node_limit` returns a
+  continuation at the next node.
+- Containers `LIMITS.argumentDepth` levels below `arguments` are not entered.
+- A value whose pointer would exceed the reader's `LIMITS.pointerUnits` limit is
+  not read.
+
+The response reports `nodesVisited` in place of `slotsVisited` and a `skipped`
+object with `depth` and `pointerLength` counts for the values that the last two
+rules left unexamined in this call. A nonzero count makes the page partial even
+when the walk reaches `ancestry_exhausted`; `coverage` states the mode's scope.
+Skipped values have no continuation.
+
+A continuation carries `mode` and a `position`: the content block index and the
+child indexes below `arguments`, with object children in stored key order.
+Copy `next` intact and repeat the query and limits. A resumed call descends
+directly to that position; it does not walk the values before it.
+
 ## Terminal cards
 
 Both history tools render their own cards in the interactive transcript. A
@@ -121,7 +179,9 @@ diagnostic. Expansion hints use the host-injected key binding and name no key
 without one. Terminal controls are escaped and long values are clipped.
 
 - `history_search` names the literal query, or the bounded listing when the
-  query is omitted, with filter, start entry, and continuation qualifiers. The
+  query is omitted, with argument mode, filter, start entry, and continuation
+  qualifiers. Argument matches add the called tool's name to their identity
+  row, and the scope row counts skipped argument values. The
   outcome states matches returned, entries visited, and the walk status, plus
   the returned entry types; a bounded type list marks each omitted type. Each
   count agrees with its noun. An exhausted empty page reads as absence only
@@ -160,11 +220,12 @@ history.
   supply current operator authority.
 
 `ancestry_exhausted` means that the selected parent walk reached its root.
-It is not a whole-session absence claim. Literal search covers summaries,
+It is not a whole-session absence claim. Text search covers summaries,
 string content, text and non-redacted thinking blocks, bash command and output,
 message errors, entry names, and labels. It does not search structured details,
-custom data, tool arguments, images, signatures, or arbitrary fields. The
-response states those exclusions even when it has no matches.
+custom data, tool arguments, images, signatures, or arbitrary fields;
+[argument search](#argument-search) covers tool-call argument strings. The
+response states each mode's exclusions even when it has no matches.
 
 `unknown_entry`, `missing_parent`, and `cycle` describe separate boundaries.
 They return `next: null` and `gap` metadata with the affected ID and action,
@@ -181,7 +242,8 @@ never enumerate arbitrary object keys or serialize a complete source object.
 
 Opaque objects such as tool `details`, custom `data`, tool-call `arguments`,
 and system-message `sections` return `structured_omitted` with their pointer.
-Read a known child key directly; object-key discovery is not provided. This boundary preserves bounded work
+Read a known child key directly; object-key discovery is not provided.
+Argument search returns exact pointers to matching argument strings instead. This boundary preserves bounded work
 regardless of an opaque object's size. Ordinary fields named `data` inside
 those objects remain readable. Provider signatures, image payloads, and
 redacted thinking are withheld at typed content-block locations, including
@@ -207,7 +269,8 @@ candidates. Tool schemas and descriptions expose their defaults and maxima.
 The controls bound independent resources:
 
 - Search entry visits through `getEntry`, text-slot visits, source UTF-8 bytes,
-  matches, and individual excerpts.
+  matches, and individual excerpts. Argument search replaces text slots with
+  examined nodes and also bounds argument depth and pointer length.
 - Read string bytes, array or standard-field descriptors, and pointer depth.
 - The complete serialized tool result, including JSON escaping and the outer
   content wrapper. A smaller read page preserves an actionable continuation.
@@ -279,6 +342,11 @@ Semantic differences from the ordinary tools, all named in the tool results:
   entries. Search text is the committed model messages
   (`/model/<i>/content/...`), tool result content, and message errors; entry
   `data` and context-edit messages are not searched, as structured fields.
+- **Argument search walks committed model messages.** Matches point at
+  `/model/<i>/content/<b>/arguments/...`. Its `position` adds `path` to the
+  physical `message` and `block` coordinates, with `block` starting at 0. Each
+  examined message also counts as a node. The calling call is identified by the
+  tool execution's `callId`. Context-edit messages are not searched.
 - **Pointers address Durable entry records.** The root manifest exposes `id`,
   `conversationId`, `kind`, `model`, `data`, `head`, `edits`, and `byTaskId`;
   a message is `/model/<i>`, a content block `/model/<i>/content/<b>`, and a
@@ -324,6 +392,12 @@ schema-less output, and compares repeated pinned pages across growing entries.
 Proxy-counted native fixtures verify bounded candidate work, direct resume after
 large text/non-text prefixes, cancellation within skipped content, and physical
 cursor composition with filters, Unicode, query overlap and output limits.
+Argument-search tests in both adapters cover a value that only an `edit`
+argument holds, exact follow-up reads, match, scan and node continuations with
+proxy-counted direct resume, depth and pointer-length skips, exclusion of the
+calling call and withheld fields, and cursor validation. A real ordinary session
+and a real Durable Harness each run a model-issued edit, an argument search and
+a read of the returned pointer.
 Native codemode regressions use the public pi-durable codemode extension and a
 QuickJS sandbox against the same in-memory Harness. They check JSON text
 strings, exact escapes, read continuations, manifests, and rejection of

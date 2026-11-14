@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
 	SessionManager,
 	type ExtensionAPI,
@@ -576,4 +577,263 @@ test("abort during bounded source access stops before another entry", () => {
 	};
 	assert.throws(() => searchHistory(sm, { query: "x" }, controller.signal), /abort/i);
 	assert.equal(calls, 1);
+});
+
+type ArgumentMatch = {
+	entry: Record<string, unknown>;
+	call?: Record<string, unknown>;
+	pointer: string;
+	offset: number;
+	excerpt: string;
+};
+function argumentMatches(result: Result) {
+	return result.matches as ArgumentMatch[];
+}
+function callEntry(id: string, parentId: string | null, content: unknown[]): SessionEntry {
+	return {
+		id,
+		parentId,
+		timestamp: "2026-01-01T00:00:00Z",
+		type: "message",
+		message: { ...fauxAssistantMessage("placeholder"), content },
+	} as SessionEntry;
+}
+function nest(depth: number, leaf: string): unknown {
+	let value: unknown = leaf;
+	for (let level = 0; level < depth; level++) value = { k: value };
+	return value;
+}
+/** Follow argument-search continuations until the walk ends; every call keeps the original query and limits. */
+function allPages(sm: HistorySource, args: Record<string, unknown>) {
+	const pages = [searchHistory(sm, args)];
+	while (pages.at(-1)?.next !== null && pages.length < 50) pages.push(searchHistory(sm, { ...args, ...next(pages.at(-1) as Result) }));
+	return pages;
+}
+
+test("argument search finds an edit argument that text search cannot reach, and the reader returns it exactly", () => {
+	const sm = SessionManager.inMemory();
+	user(sm, "apply the planned change");
+	const token = 'const marker = "argument-only-token";';
+	const calls = sm.appendMessage(
+		fauxAssistantMessage(
+			[
+				{ type: "text", text: "Reading, then editing." },
+				fauxToolCall("read", { path: "extensions/demo/core.ts" }, { id: "call-read" }),
+				fauxToolCall(
+					"edit",
+					{ path: "extensions/demo/core.ts", edits: [{ oldText: "const marker = 1;", newText: token }] },
+					{ id: "call-edit" },
+				),
+			],
+			{ stopReason: "toolUse" },
+		),
+	);
+	sm.appendMessage({
+		role: "toolResult",
+		toolCallId: "call-read",
+		toolName: "read",
+		content: [{ type: "text", text: "const marker = 1;" }],
+		isError: false,
+		timestamp: 1,
+	});
+	const editResult = sm.appendMessage({
+		role: "toolResult",
+		toolCallId: "call-edit",
+		toolName: "edit",
+		content: [{ type: "text", text: "Successfully replaced 1 block(s) in extensions/demo/core.ts." }],
+		isError: false,
+		timestamp: 1,
+	});
+
+	const text = searchHistory(sm, { query: "argument-only-token" });
+	assert.equal(text.status, "ancestry_exhausted");
+	assert.equal(matches(text).length, 0);
+	assert.equal(text.mode, undefined);
+	assert.equal(typeof text.slotsVisited, "number");
+	assert.equal(text.nodesVisited, undefined);
+	assert.match(String(text.coverage), /tool arguments, images and other fields are not searched/);
+
+	const found = searchHistory(sm, { query: "argument-only-token", mode: "arguments" });
+	assert.equal(found.status, "ancestry_exhausted");
+	assert.equal(found.mode, "arguments");
+	assert.equal(found.slotsVisited, undefined);
+	assert.deepEqual(found.skipped, { depth: 0, pointerLength: 0 });
+	assert.match(String(found.coverage), /Argument search covers string values/);
+	assert.equal(argumentMatches(found).length, 1);
+	const [hit] = argumentMatches(found);
+	assert.equal(hit.entry.id, calls);
+	assert.equal(hit.entry.role, "assistant");
+	assert.deepEqual(hit.call, { name: "edit", id: "call-edit" });
+	assert.equal(hit.pointer, "/message/content/2/arguments/edits/0/newText");
+	assert.equal(hit.offset, token.indexOf("argument-only-token"));
+	assert.equal(hit.excerpt, 'argument-only-token";');
+	const read = readHistory(sm, { entryId: String(hit.entry.id), pointer: hit.pointer });
+	assert.equal(read.status, "complete");
+	assert.equal(read.text, token);
+
+	const byPath = searchHistory(sm, { query: "extensions/demo/core.ts", mode: "arguments" });
+	assert.deepEqual(
+		argumentMatches(byPath).map((match) => [match.call?.name, match.pointer]),
+		[
+			["read", "/message/content/1/arguments/path"],
+			["edit", "/message/content/2/arguments/path"],
+		],
+	);
+	assert.deepEqual(
+		matches(searchHistory(sm, { query: "extensions/demo/core.ts" })).map((match) => match.entry.id),
+		[editResult],
+	);
+});
+
+test("argument search continues across match, scan and node bounds without lost or repeated matches", () => {
+	const twice = callEntry("twice", null, [
+		fauxToolCall("edit", { edits: [{ newText: "needle one, needle two" }] }, { id: "a" }),
+		fauxToolCall("bash", { command: `${"x".repeat(3000)}needle${"y".repeat(3000)}` }, { id: "b" }),
+	]);
+	const pages = allPages(source([twice]), { query: "needle", mode: "arguments", maxMatches: 1, maxScanBytes: 2048 });
+	const statuses = pages.map((page) => page.status);
+	assert.ok(statuses.includes("match_limit"));
+	assert.ok(statuses.includes("scan_limit"));
+	assert.equal(statuses.at(-1), "ancestry_exhausted");
+	for (const page of pages.slice(0, -1)) {
+		const cursor = next(page);
+		assert.equal(cursor.mode, "arguments");
+		assert.equal(cursor.fromId, "twice");
+		assert.ok(Array.isArray((cursor.position as { path: unknown }).path));
+	}
+	assert.deepEqual(
+		pages.flatMap((page) => argumentMatches(page).map((match) => [match.pointer, match.offset])),
+		[
+			["/message/content/0/arguments/edits/0/newText", 0],
+			["/message/content/0/arguments/edits/0/newText", 12],
+			["/message/content/1/arguments/command", 3000],
+		],
+	);
+
+	const reads: number[] = [];
+	const items = new Proxy(
+		Array.from({ length: 3000 }, () => "v"),
+		{
+			getOwnPropertyDescriptor(target, key) {
+				if (typeof key === "string" && /^\d+$/.test(key)) reads.push(Number(key));
+				return Reflect.getOwnPropertyDescriptor(target, key);
+			},
+		},
+	);
+	const wide = source([callEntry("wide", null, [fauxToolCall("write", { items, tail: "needle" }, { id: "w" })])]);
+	const first = searchHistory(wide, { query: "needle", mode: "arguments" });
+	assert.equal(first.status, "node_limit");
+	assert.equal(first.nodesVisited, LIMITS.argumentNodes);
+	const position = next(first).position as { block: number; path: number[] };
+	assert.equal(position.block, 0);
+	assert.equal(position.path[0], 0);
+	const resumeAt = position.path[1];
+	assert.equal(Math.max(...reads), resumeAt, "the walk reads at most one value past its node budget");
+	reads.length = 0;
+	const rest = allPages(wide, { query: "needle", mode: "arguments", ...next(first) });
+	assert.equal(Math.min(...reads), resumeAt, "a resumed call starts at its position without a prefix walk");
+	assert.deepEqual(
+		[first, ...rest].flatMap((page) => argumentMatches(page).map((match) => match.pointer)),
+		["/message/content/0/arguments/tail"],
+	);
+	assert.ok(rest.every((page) => Number(page.nodesVisited) <= LIMITS.argumentNodes));
+});
+
+test("argument search reports depth and pointer-length skips and returns only pointers the reader accepts", () => {
+	const args = {
+		"a/b~c": "needle escaped",
+		d: nest(LIMITS.argumentDepth - 1, "needle deep"),
+		e: nest(LIMITS.argumentDepth, "needle deeper"),
+		["p".repeat(900)]: "needle long key",
+		["q".repeat(1000)]: "needle hidden",
+	};
+	const sm = source([callEntry("deep", null, [{ type: "toolCall", id: "c", name: "probe", arguments: args }])]);
+	const found = searchHistory(sm, { query: "needle", mode: "arguments" });
+	assert.equal(found.status, "ancestry_exhausted");
+	assert.deepEqual(found.skipped, { depth: 1, pointerLength: 1 });
+	const hits = argumentMatches(found);
+	assert.deepEqual(
+		hits.map((match) => match.excerpt),
+		["needle escaped", "needle deep", "needle long key"],
+	);
+	assert.equal(hits[0].pointer, "/message/content/0/arguments/a~1b~0c");
+	assert.equal(hits[1].pointer, `/message/content/0/arguments/d${"/k".repeat(LIMITS.argumentDepth - 1)}`);
+	for (const hit of hits) {
+		assert.ok(hit.pointer.length <= LIMITS.pointerUnits);
+		const read = readHistory(sm, { entryId: "deep", pointer: hit.pointer });
+		assert.equal(read.status, "complete", hit.pointer);
+		assert.equal(read.text, hit.excerpt);
+	}
+});
+
+test("argument search leaves out the calling call, withheld payloads and unrelated structured fields", () => {
+	const entries: SessionEntry[] = [
+		callEntry("call", null, [
+			{ type: "thinking", thinking: "needle", redacted: true, thinkingSignature: "needle" },
+			{ type: "text", text: "plain", textSignature: "needle" },
+			{ type: "toolCall", id: "other", name: "probe", arguments: { ok: "plain" }, thoughtSignature: "needle" },
+			{ type: "toolCall", id: "self", name: "history_search", arguments: { query: "needle", mode: "arguments" } },
+		]),
+		{
+			id: "result",
+			parentId: "call",
+			timestamp: "2026-01-01T00:00:00Z",
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolCallId: "other",
+				toolName: "probe",
+				content: [{ type: "image", data: "needle", mimeType: "image/png" }],
+				details: { note: "needle" },
+				isError: false,
+				timestamp: 1,
+			},
+		},
+		{
+			id: "custom",
+			parentId: "result",
+			timestamp: "2026-01-01T00:00:00Z",
+			type: "custom",
+			customType: "probe",
+			data: { arguments: { note: "needle" } },
+		} as SessionEntry,
+	];
+	const sm = source(entries);
+	assert.deepEqual(
+		argumentMatches(searchHistory(sm, { query: "needle", mode: "arguments" })).map((match) => match.pointer),
+		["/message/content/3/arguments/query"],
+	);
+	const own = searchHistory(sm, { query: "needle", mode: "arguments" }, undefined, "self");
+	assert.equal(own.status, "ancestry_exhausted");
+	assert.equal(own.visited, 3);
+	assert.equal(argumentMatches(own).length, 0);
+});
+
+test("argument search validates its mode, query, filter and position arguments", () => {
+	const sm = source([
+		callEntry("a", null, [{ type: "text", text: "plain" }, fauxToolCall("probe", { list: ["needle"] }, { id: "c" })]),
+	]);
+	const base = { query: "needle", mode: "arguments", fromId: "a" };
+	for (const [args, message] of [
+		[{ mode: "arguments" }, /requires a query/],
+		[{ query: "needle", mode: "arguments", filter: { source: "user" } }, /omit filter/],
+		[{ ...base, slot: 0 }, /omit slot/],
+		[{ query: "needle", fromId: "a", position: { block: 1 } }, /retain mode/],
+		[{ ...base, offset: 2 }, /requires a position/],
+		[{ query: "needle", mode: "arguments", position: { block: 1 } }, /requires fromId/],
+		[{ query: "needle", mode: "regex" }, /mode must be/],
+		[{ ...base, position: {} }, /block index/],
+		[{ ...base, position: { block: 1, path: [-1] } }, /nonnegative/],
+		[{ ...base, position: { block: 1, path: Array(LIMITS.argumentDepth + 1).fill(0) } }, /at most/],
+		[{ ...base, position: { block: 1, path: [1] } }, /does not select an argument value/],
+		[{ ...base, position: { block: 1, path: [0, 0, 0] } }, /does not select an argument value/],
+		[{ ...base, position: { block: 3 } }, /does not select a content block/],
+		[{ ...base, position: { block: 0, path: [0] } }, /does not select a tool call/],
+		[{ ...base, position: { block: 1, path: [0] }, offset: 1 }, /Offset does not select a text field/],
+	] as const) {
+		assert.throws(() => searchHistory(sm, args), message, JSON.stringify(args));
+	}
+	const resumed = searchHistory(sm, { ...base, position: { block: 1, path: [0, 0] }, offset: 1 });
+	assert.equal(argumentMatches(resumed).length, 0);
+	assert.equal(argumentMatches(searchHistory(sm, { ...base, position: { block: 1, path: [0, 0] } })).length, 1);
 });

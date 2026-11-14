@@ -84,6 +84,52 @@ describe("history_search cards", () => {
 		assert.match(emptyShown, /0 matches · \d+ entries visited · ancestry exhausted/);
 	});
 
+	it("names argument mode, its position continuation, the matched call and skipped values", () => {
+		const call = screen(
+			renderSearchCall(
+				{ query: "notes.txt", mode: "arguments", fromId: "entry-1", position: { block: 2, path: [0, 3] }, offset: 12 },
+				theme,
+				{ expanded: false, argsComplete: true },
+			),
+		);
+		assert.match(call, /history_search · "notes.txt"/);
+		assert.match(call, /in tool arguments · from entry-1 · continuation block 2 path 0\/3 offset 12/);
+		const native = screen(
+			renderSearchCall({ query: "x", position: { message: 1, block: -1 }, offset: 0 }, theme, { argsComplete: true }),
+		);
+		assert.match(native, /continuation message 1 block -1 offset 0/);
+
+		const value = {
+			status: "node_limit",
+			mode: "arguments",
+			visited: 1,
+			nodesVisited: 1024,
+			skipped: { depth: 1, pointerLength: 1 },
+			matches: [
+				{
+					entry: { id: "e1", type: "message", role: "assistant" },
+					call: { name: "edit", id: "call-1" },
+					pointer: "/message/content/0/arguments/path",
+					offset: 0,
+					endOffset: 9,
+					excerpt: "notes.txt",
+				},
+			],
+			next: { fromId: "e1", mode: "arguments", position: { block: 0, path: [1] }, offset: 0 },
+		};
+		const collapsed = screen(
+			renderSearchResult(emptyResult(JSON.stringify(value)), { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
+		assert.match(collapsed, /1 match · 1 entry visited · node limit/);
+		assert.match(collapsed, /continuation available/);
+		const expanded = screen(
+			renderSearchResult(emptyResult(JSON.stringify(value)), { expanded: true, isPartial: false }, theme, { isError: false }),
+		);
+		assert.match(expanded, /1 · message · assistant · call edit · e1/);
+		assert.match(expanded, /\/message\/content\/0\/arguments\/path · offsets 0\.\.9/);
+		assert.match(expanded, /node limit · 2 argument values skipped · continuation available/);
+	});
+
 	it("marks omitted entry types in the tally", () => {
 		const matches = ["message", "compaction", "branch_summary", "context_edit", "custom", "label"].map((type) => ({ entry: { type } }));
 		const value = { status: "ancestry_exhausted", matches, visited: 6, next: null };

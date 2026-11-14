@@ -619,3 +619,241 @@ text(JSON.stringify({ fixture: "history-errors", errors }));`;
 		await sandbox.close();
 	}
 });
+
+interface ArgumentSearchResult {
+	status: string;
+	mode?: string;
+	visited: number;
+	nodesVisited?: number;
+	slotsVisited?: number;
+	skipped?: { depth: number; pointerLength: number };
+	matches: (SearchMatch & { call?: { name?: string; id?: string } })[];
+	next: { fromId: number; mode?: string; position: { message: number; block: number; path?: number[] }; offset: number } | null;
+}
+
+async function nativeArgumentSearch(entries: Durable.EntryRecord[], callId?: string) {
+	const extension = await durableContribution(SOURCE).create({
+		durable: Durable,
+		services: undefined as unknown as AgentSessionServices,
+		cwd: ".",
+		agentDir: ".",
+		storageId: "synthetic",
+		signal: new AbortController().signal,
+		inventory: { contributions: [], ordinaryOnly: [] },
+	});
+	const tool = extension.tools?.find((item) => item.name === "history_search");
+	assert.ok(tool);
+	const tx = {
+		scanEntries: async (query: Durable.EntryQuery, limit: number) => ({
+			items: entries.filter((entry) => query.maxEntryId === undefined || entry.id <= query.maxEntryId).slice(0, limit),
+		}),
+	} as unknown as Durable.Tx;
+	const api = {
+		conversationId: 1,
+		callId,
+		commit: async (fn: (tx: Durable.Tx) => Promise<unknown>) => fn(tx),
+	} as unknown as Durable.ToolExecutionApi;
+	const search = async (args: Record<string, unknown>) => {
+		const result = await tool.execute(args, api, BACKGROUND_CONTEXT);
+		const output = result.output as { type: string; text: string }[];
+		return JSON.parse(output[0].text) as ArgumentSearchResult;
+	};
+	/** Follow continuations until the walk ends, keeping the original query and limits. */
+	const pages = async (args: Record<string, unknown>) => {
+		const all = [await search(args)];
+		while (all.at(-1)?.next && all.length < 50) all.push(await search({ ...args, ...all.at(-1)?.next }));
+		return all;
+	};
+	return { search, pages };
+}
+function toolCall(id: string, name: string, args: unknown) {
+	return { type: "toolCall", id, name, arguments: args };
+}
+
+test("native argument search finds tool-call strings by physical position and resumes without a prefix walk", async () => {
+	const reads: number[] = [];
+	const items = new Proxy(
+		Array.from({ length: 3000 }, () => "v"),
+		{
+			getOwnPropertyDescriptor(target, key) {
+				if (typeof key === "string" && /^\d+$/.test(key)) reads.push(Number(key));
+				return Reflect.getOwnPropertyDescriptor(target, key);
+			},
+		},
+	);
+	const entries = [
+		nativeEntry(
+			[
+				{ role: "assistant", content: [{ type: "text", text: "needle in text" }] },
+				{ role: "assistant", content: [toolCall("w", "write", { items, tail: "needle" })] },
+			],
+			2,
+			"pi.assistant",
+		),
+		nativeEntry(
+			[{ role: "assistant", content: [toolCall("e", "edit", { edits: [{ newText: "needle one, needle two" }] })] }],
+			1,
+			"pi.assistant",
+		),
+	];
+	const { search, pages } = await nativeArgumentSearch(entries);
+	const first = await search({ query: "needle", mode: "arguments" });
+	assert.equal(first.status, "node_limit");
+	assert.equal(first.mode, "arguments");
+	assert.equal(first.nodesVisited, 1024);
+	assert.equal(first.slotsVisited, undefined);
+	assert.ok(first.next);
+	assert.equal(first.next.mode, "arguments");
+	assert.equal(first.next.fromId, 2);
+	assert.equal(first.next.position.message, 1);
+	assert.equal(first.next.position.block, 0);
+	const resumeAt = first.next.position.path?.[1] ?? -1;
+	assert.equal(Math.max(...reads), resumeAt);
+	reads.length = 0;
+	const rest = await pages({ query: "needle", mode: "arguments", maxMatches: 1, ...first.next });
+	assert.equal(Math.min(...reads), resumeAt);
+	assert.deepEqual(
+		[first, ...rest].flatMap((page) => page.matches.map((match) => [match.entry.id, match.call?.name, match.pointer, match.offset])),
+		[
+			[2, "write", "/model/1/content/0/arguments/tail", 0],
+			[1, "edit", "/model/0/content/0/arguments/edits/0/newText", 0],
+			[1, "edit", "/model/0/content/0/arguments/edits/0/newText", 12],
+		],
+	);
+	assert.equal(rest.at(-1)?.status, "ancestry_exhausted");
+});
+
+test("native argument search reports skips, leaves out the calling call and validates its cursor", async () => {
+	let deep: unknown = "needle deeper";
+	for (let level = 0; level < 17; level++) deep = { k: deep };
+	const entries = [
+		nativeEntry(
+			[
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "needle", redacted: true, thinkingSignature: "needle" },
+						{ ...toolCall("other", "probe", { deep, ["q".repeat(1000)]: "needle hidden", ok: "needle kept" }), thoughtSignature: "needle" },
+						toolCall("self", "history_search", { query: "needle", mode: "arguments" }),
+					],
+				},
+			],
+			1,
+			"pi.assistant",
+		),
+	];
+	const { search } = await nativeArgumentSearch(entries, "self");
+	const found = await search({ query: "needle", mode: "arguments" });
+	assert.equal(found.status, "ancestry_exhausted");
+	assert.deepEqual(found.skipped, { depth: 1, pointerLength: 1 });
+	assert.deepEqual(
+		found.matches.map((match) => [match.call?.id, match.pointer]),
+		[["other", "/model/0/content/1/arguments/ok"]],
+	);
+
+	const base = { query: "needle", mode: "arguments", fromId: 1 };
+	for (const [args, message] of [
+		[{ mode: "arguments" }, /requires a query/],
+		[{ ...base, filter: { source: "user" } }, /omit filter/],
+		[{ query: "needle", fromId: 1, position: { message: 0, block: 1, path: [0] } }, /retain mode/],
+		[{ ...base, position: { message: 0, block: -1 } }, /outside its integer bounds/],
+		[{ ...base, position: { message: 0, block: 0, path: [0] } }, /does not select a tool call/],
+		[{ ...base, position: { message: 0, block: 1, path: [9] } }, /does not select an argument value/],
+		[{ ...base, position: { message: 0, block: 4 } }, /does not select a content block/],
+		[{ ...base, position: { message: 2, block: 0 } }, /does not select a message/],
+	] as const) {
+		await assert.rejects(search(args), message, JSON.stringify(args));
+	}
+});
+
+test("history contribution finds a model-issued edit through its arguments over the real Harness", async (t) => {
+	const fixture = Durable.defineExtension({
+		name: "edit-fixture",
+		tools: [
+			Durable.defineTool({
+				name: "edit",
+				description: "Replace text in a file.",
+				parameters: {
+					type: "object",
+					properties: {
+						path: { type: "string" },
+						edits: {
+							type: "array",
+							items: {
+								type: "object",
+								properties: { oldText: { type: "string" }, newText: { type: "string" } },
+							},
+						},
+					},
+				},
+				replay: "safe",
+				execute: async () => ({ output: [{ type: "text", text: "Replaced 1 block." }], details: {} }),
+			}),
+		],
+	});
+	const { context, faux, harness, listed, resultText, say, toolResults } = await openHarness(
+		"history-durable-arguments",
+		[fixture],
+	);
+	try {
+		faux.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall(
+					"edit",
+					{ path: "notes.txt", edits: [{ oldText: "draft", newText: "argument-only-token" }] },
+					{ id: "edit-call" },
+				),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("Edited."),
+		]);
+		await say("Change the note status.");
+		const editEntry = (await listed()).find(
+			(entry) => entry.kind === "pi.assistant" && JSON.stringify(entry.model).includes("edit-call"),
+		);
+		assert.ok(editEntry, "assistant entry with the edit call");
+
+		const parsed = (message: { role: string; toolCallId?: string; content?: unknown }) =>
+			JSON.parse((message.content as { text: string }[])[0].text) as ArgumentSearchResult;
+		faux.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("history_search", { query: "argument-only-token", mode: "arguments" }, { id: "args" }),
+				{ stopReason: "toolUse" },
+			),
+			(transcript) => {
+				const result = transcript.messages.find(
+					(message) => message.role === "toolResult" && message.toolCallId === "args",
+				);
+				assert.ok(result);
+				const match = parsed(result).matches[0];
+				return fauxAssistantMessage(
+					fauxToolCall("history_read", { entryId: match.entry.id, pointer: match.pointer }, { id: "read" }),
+					{ stopReason: "toolUse" },
+				);
+			},
+			fauxAssistantMessage("Found the edit."),
+		]);
+		await say("Find the earlier change to the note.");
+
+		const search = JSON.parse(resultText((await toolResults("history_search"))[0])) as ArgumentSearchResult;
+		assert.equal(search.status, "ancestry_exhausted");
+		assert.equal(search.matches.length, 1, "the calling search call is left out");
+		const [match] = search.matches;
+		assert.equal(match.entry.id, editEntry.id);
+		assert.equal(match.entry.kind, "pi.assistant");
+		assert.deepEqual(match.call, { name: "edit", id: "edit-call" });
+		assert.equal(match.pointer, "/model/0/content/0/arguments/edits/0/newText");
+		const read = JSON.parse(resultText((await toolResults("history_read"))[0])) as ReadResult;
+		assert.equal(read.status, "complete");
+		assert.equal(read.text, "argument-only-token");
+		assert.equal(read.membership, "checked_visible");
+		t.diagnostic(
+			JSON.stringify({
+				search: { status: search.status, visited: search.visited, pointer: match.pointer },
+				read: { status: read.status, text: read.text },
+			}),
+		);
+	} finally {
+		await harness.close(context);
+	}
+});

@@ -233,10 +233,12 @@ function continuationWord(value: Record<string, unknown>): string {
 
 export interface SearchDisplayArgs {
 	query?: string;
+	mode?: string;
 	filter?: unknown;
 	sessionId?: string;
 	fromId?: string;
 	slot?: number;
+	position?: unknown;
 	offset?: number;
 	maxVisits?: number;
 	maxScanBytes?: number;
@@ -251,6 +253,7 @@ export function renderSearchCall(input: unknown, theme: Theme, context: CallCont
 	const subject = query.text ? `"${query.text}"` : "listing";
 	const qualifiers: string[] = [];
 	let hint = query.clipped;
+	if (args?.mode === "arguments") qualifiers.push("in tool arguments");
 	const filter = filterLabel(args?.filter);
 	if (filter) qualifiers.push(filter);
 	if (typeof args?.fromId === "string" && args.fromId) {
@@ -258,7 +261,10 @@ export function renderSearchCall(input: unknown, theme: Theme, context: CallCont
 		qualifiers.push(`from ${from.text}`);
 		hint = hint || from.clipped;
 	}
-	if (typeof args?.slot === "number" || typeof args?.offset === "number") {
+	const position = asRecord(args?.position);
+	if (position) {
+		qualifiers.push(`continuation ${positionLabel(position)} offset ${args?.offset ?? 0}`);
+	} else if (typeof args?.slot === "number" || typeof args?.offset === "number") {
 		qualifiers.push(`continuation slot ${args?.slot ?? 0} offset ${args?.offset ?? 0}`);
 	}
 	if (args?.maxVisits !== undefined || args?.maxScanBytes !== undefined || args?.maxMatches !== undefined || args?.maxOutputBytes !== undefined) {
@@ -267,9 +273,24 @@ export function renderSearchCall(input: unknown, theme: Theme, context: CallCont
 	return callCard("history_search", subject, qualifiers, hint, input, theme, context);
 }
 
+/** A continuation position: native message index, content block, and argument index path. */
+function positionLabel(position: Record<string, unknown>): string {
+	const message = numberField(position, "message");
+	const block = numberField(position, "block");
+	const path = Array.isArray(position.path) ? position.path.filter((item) => typeof item === "number") : [];
+	return [
+		message !== undefined ? `message ${message}` : "",
+		block !== undefined ? `block ${block}` : "",
+		path.length > 0 ? previewMark(`path ${path.join("/")}`, 48).text : "",
+	]
+		.filter(Boolean)
+		.join(" ") || "position";
+}
+
 const SEARCH_STATUS: Record<string, string> = {
 	ancestry_exhausted: "ancestry exhausted",
 	visit_limit: "visit limit",
+	node_limit: "node limit",
 	scan_limit: "scan limit",
 	slot_limit: "slot limit",
 	match_limit: "match limit",
@@ -303,7 +324,9 @@ function typeTally(matches: unknown[]): string {
 function matchEvidence(matchValue: unknown, index: number): string[] {
 	const match = asRecord(matchValue) ?? {};
 	const entry = asRecord(field(match, "entry")) ?? {};
-	const identity = [entryIdentity(entry), entryLabel(field(entry, "id"))].filter(Boolean).join(" · ");
+	const callName = stringField(asRecord(field(match, "call")) ?? {}, "name");
+	const call = callName ? `call ${rowSafe(previewMark(callName, 60).text)}` : "";
+	const identity = [entryIdentity(entry), call, entryLabel(field(entry, "id"))].filter(Boolean).join(" · ");
 	const lines = [`${index + 1} · ${identity || "entry"}`];
 	const excerpt = stringField(match, "excerpt");
 	if (excerpt) lines.push(`  "${previewMark(excerpt, 160).text}"`);
@@ -333,6 +356,9 @@ function searchScope(value: Record<string, unknown>, statusWord: string): string
 		statusWord,
 	];
 	if (numberField(value, "excluded") !== undefined) parts.push(`${numberField(value, "excluded")} excluded by filter`);
+	const skipped = asRecord(field(value, "skipped"));
+	const unexamined = (skipped ? numberField(skipped, "depth") ?? 0 : 0) + (skipped ? numberField(skipped, "pointerLength") ?? 0 : 0);
+	if (unexamined > 0) parts.push(countNoun(unexamined, "argument value skipped", "argument values skipped"));
 	const next = continuationWord(value);
 	if (next) parts.push(next);
 	return parts.join(" · ");
