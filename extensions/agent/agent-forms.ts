@@ -43,7 +43,10 @@ export interface AgentFormHost {
 	profile(method: "profile-read" | "profile-update", input: Record<string, unknown>): Promise<unknown>;
 	/** Unsaved profile drafts by identity; they survive closing and reopening the form. */
 	readonly profileDrafts: Map<string, ProfileDraft>;
-	status(): Promise<unknown>;
+	/** Passive status read of the target; an aborted signal drops the answer. */
+	status(signal?: AbortSignal): Promise<unknown>;
+	/** Passive inspection with exact selectors, such as a result or final report page of any conversation. */
+	inspect(params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
 	/** Report an action's result to the work view's outcome line. */
 	outcome(result: ActionResult, name: string): void;
 }
@@ -388,7 +391,7 @@ function profileView(host: AgentFormHost, view: ViewHost): OperatorView {
 
 function detailsView(host: AgentFormHost, view: ViewHost): OperatorView {
 	let content = "Reading details…";
-	host.status().then(
+	host.status(view.signal).then(
 		(value) => {
 			if (view.signal.aborted) return;
 			content = JSON.stringify(value, null, 2);

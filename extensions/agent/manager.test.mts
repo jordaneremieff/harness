@@ -2258,3 +2258,48 @@ it("closes a refused request, keeps an unconfirmed one, and keeps an admission w
 	manager.continuityNoteFailure("primary", undefined);
 	assert.equal((await failures()).some((failure) => failure.storageId === "continuity-note:primary"), false);
 });
+
+it("ends a cold status read's wait when the caller's signal aborts", async (t) => {
+	const root = fixtureRoot(t);
+	let finish: (value: unknown) => void = () => {};
+	const reads: string[] = [];
+	const manager = new AgentManager(managerOptions(root, {
+		connect: noHost,
+		observe: async (_metadata, method) => {
+			reads.push(method);
+			return new Promise((resolve) => { finish = resolve; });
+		},
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	const controller = new AbortController();
+	const read = manager.control("status", { sessionId: record.storageId }, { id: "owner-1", cwd: root }, { signal: controller.signal });
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.deepEqual(reads, ["status"]);
+	controller.abort(new Error("another conversation was selected"));
+	await assert.rejects(read, /another conversation was selected/u);
+	finish({ conversation: {} });
+	await assert.rejects(manager.control("inspect", { sessionId: record.storageId, view: "result", submissionId: 1 }, { id: "owner-1", cwd: root }, { signal: controller.signal }), /another conversation was selected/u);
+	assert.deepEqual(reads, ["status"], "an aborted signal starts no read");
+});
+
+it("passes the caller's signal to a live host's result read", async (t) => {
+	const root = fixtureRoot(t);
+	const manager = new AgentManager(managerOptions(root, { connect: async () => connection }));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	const connection = fakeConnection(hostMetadata(record), async () => ({}));
+	const signals: Array<AbortSignal | undefined> = [];
+	connection.request = (_method, _params, options) => {
+		signals.push(options?.signal);
+		return new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true }));
+	};
+	const controller = new AbortController();
+	const read = manager.control("inspect", { sessionId: record.storageId, view: "result", submissionId: 4, finalReport: true, offset: 0 }, { id: "owner-1", cwd: root }, { signal: controller.signal });
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(signals.length, 1);
+	assert.equal(signals[0]?.aborted, false);
+	controller.abort(new Error("view left"));
+	await assert.rejects(read, /view left/u);
+	assert.equal(signals[0]?.aborted, true, "the live request is cancelled, not only abandoned");
+});

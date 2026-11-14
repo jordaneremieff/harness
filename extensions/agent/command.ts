@@ -303,7 +303,8 @@ export function createAgentCommand(
 		commands: () => nativeCommands(row.id, ctx),
 		profile: (method, input) => wiring.control(method, input, ctx),
 		profileDrafts,
-		status: () => wiring.control("status", { sessionId: row.id }, ctx),
+		status: (signal) => wiring.control("status", { sessionId: row.id }, ctx, signal),
+		inspect: (params, signal) => wiring.control("inspect", params, ctx, signal),
 		outcome: () => {},
 	});
 	const panels = (ctx: ExtensionContext) => async (row: AgentConversationSummary) => {

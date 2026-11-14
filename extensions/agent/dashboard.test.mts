@@ -676,7 +676,8 @@ it("the view opens on the list, / focuses Find, and Escape clears Find before it
 	await turn();
 	assert.equal(f.ui.focus.region, "list");
 	assert.match(shown(f), /one/u);
-	type(f, "two");
+	// Letters without a binding; `w` and the other footer keys run their actions here.
+	type(f, "yz");
 	assert.equal(f.state.filter, "", "letters over the list do not reach Find");
 	assert.equal(f.state.selected, "one");
 	press(f, "/");

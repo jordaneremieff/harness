@@ -205,6 +205,20 @@ class BoundedMap<V> {
 	}
 }
 
+/** The caller's wait ends when `signal` aborts; the work itself settles on its own with its outcome handled. */
+function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+	if (signal === undefined) return work;
+	return new Promise<T>((resolve, reject) => {
+		const abort = () => reject(signal.reason);
+		if (signal.aborted) abort();
+		else signal.addEventListener("abort", abort, { once: true });
+		work.then(
+			(value) => { signal.removeEventListener("abort", abort); resolve(value); },
+			(error: unknown) => { signal.removeEventListener("abort", abort); reject(error); },
+		);
+	});
+}
+
 /** A primary owns client connections, never a Durable scheduler or storage writer. */
 function catalogOwner(storageId: string, observedClaim: ClaimObservation, evidence: NativeOwnerEvidence | undefined) {
 	const verified = evidence?.kind === "verified" && evidence.storageId === storageId
@@ -415,25 +429,30 @@ export class AgentManager {
 		return new Error(`The peer runs ${older ? "older" : "different"} code: agent ${peer.release}, Pi ${peer.upstream.codingAgent}, Durable ${peer.upstream.durable}; this caller uses agent ${local.release}, Pi ${local.upstream.codingAgent}, Durable ${local.upstream.durable}. Replace the peer's loaded code: let its active work finish, then use agent_abort with release: true when it is idle. A host without release support names its stop step in that refusal. Then use agent_attach to start a host from the current installation. Restart an ordinary primary to replace its loaded code. No older observation shape was accepted. ${message}`, { cause: error });
 	}
 
-	private async observePeer(client: HostConnection, method: string, params: Record<string, unknown>): Promise<unknown> {
+	private async observePeer(client: HostConnection, method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
 		try {
-			const value = await client.request(method, params);
+			const value = await client.request(method, params, signal === undefined ? undefined : { signal });
 			if (method === "list") return structuredObservation(NativeListOutputSchema, value);
 			return method === "status" || method === "inspect" ? structuredObservation(observationSchema(method), value) : value;
 		} catch (error) { throw this.observationPeerError(error, client.runtimeContract); }
 	}
 
-	private observe(record: CatalogRecord, method: string, params: Record<string, unknown>, primary?: PrimaryClient): Promise<unknown> {
+	/**
+	 * An aborted `signal` ends the caller's wait at once and cancels a live host request. A cold read
+	 * cannot stop part way; it finishes, and only its result cache keeps the value.
+	 */
+	private observe(record: CatalogRecord, method: string, params: Record<string, unknown>, primary?: PrimaryClient, signal?: AbortSignal): Promise<unknown> {
 		const cold = this.coldObservations;
-		return (async () => {
+		return abortable((async () => {
+			signal?.throwIfAborted();
 			if (this.shuttingDown) throw new Error("Agent manager is closed");
 			const client = await this.observationConnection(record, primary);
-			if (client) return this.observePeer(client, method, params);
+			if (client) return this.observePeer(client, method, params, signal);
 			if (primary?.signal.aborted) throw new Error("Agent primary released during observation");
 			if (this.options.observe) return this.options.observe(record, method, params);
 			if (this.shuttingDown) throw new Error("Agent manager is closed");
 			return cold.observe(record, method, params);
-		})();
+		})(), signal);
 	}
 
 	/** Resolve one retained native target without guessing an ordinary primary or copying its catalog. */
@@ -641,7 +660,7 @@ export class AgentManager {
 		const params: Record<string, unknown> = { ...input, sessionId, ownerId: caller.id };
 		if (method === "task-submit") { params.requester = caller.id; params.origin ??= "operator"; params.requestId ??= randomUUID(); }
 		if (method === "profile-update") { params.senderIdentity = caller.id; params.requestId ??= randomUUID(); }
-		if (method === "inspect" || method === "status" || method === "snapshot" || method === "dashboard" || method === "profile-read") return this.observe(record, method, params);
+		if (method === "inspect" || method === "status" || method === "snapshot" || method === "dashboard" || method === "profile-read") return this.observe(record, method, params, undefined, options?.signal);
 		if (method === "attach") {
 			this.crashes.delete(record.storageId);
 			this.recoveryErrors.delete(record.storageId);

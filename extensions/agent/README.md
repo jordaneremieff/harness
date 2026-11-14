@@ -686,7 +686,8 @@ The view has a heading row, the list, and the selected agent's pane:
   list sits beside the pane at full height; narrower windows stack a strip
   above the pane whose first row holds Find, Related and All, and those facts
   together, with Load more at its end when the row has room for it.
-- **Pane.** The selected agent's header of two lines, then one blank line.
+- **Pane.** The selected agent's header of two lines, a third line while the
+  agent owes a final report or has unplaced inputs, then one blank line.
   Line 1 holds the bold label and the project in muted text. Line 2 holds the
   state glyph and label, then at most one status:
   the first that applies of the sizes of a resize drag in progress, a notice
@@ -783,10 +784,11 @@ borders.
 The footer's controls act on the agent shown in the header:
 
 - **Stop** (`s`, while the agent works), **Reconnect** (`r`, when it needs attention),
+  **Work** (`w`, while the agent owes a final report),
   **Configure** (`c`, disabled with its reason while the agent works) and
   **Tasks** (`k`) show directly when they fit.
 - **x more** (`ctrl+n` while a text field has focus) lists the rest with their
-  keys: the delivery effect, Owner views
+  keys: the delivery effect, Work when no work is open, Owner views
   (`o`), Fork, Rewind, Compact, Reset context, Schedule message, Scheduled
   messages, Run command, Profile, Details, Stop and release host, and host
   extras such as the terminal's Recover input (`u`).
@@ -838,6 +840,29 @@ nothing and states no failure.
 - **Tasks** shows the storage's live task graph. Open conversation selects the
   task's conversation, choosing among several when needed; Refresh retries an
   unavailable attachment. Closing Tasks releases only its task-graph watch.
+- **Work** lists each request the agent declared
+  [background work](#declared-background-work) for: open items first, oldest
+  declaration first, then the retained closed items, newest close first. Under
+  each request sit its dependencies and, once it closed, its final report. A
+  click on the work count in the header opens it too. The detail shows the
+  exact request, the input submission, requester, reply recipient and the
+  declared note of what remains; each dependency's session, submission and request; and the final
+  report's request, close status, delivery and exact read call. A dependency is
+  `pending` while its input has not settled, `state note` when its producer
+  answered with a state note and its own work stays open, `result arrived` when
+  its result arrived, and `not established` with the host's reason when no
+  committed fact or admitted delivery establishes its state. An arrived result
+  and a delivered report are not task acceptance. Enter on a dependency reads
+  its result page; Enter on a final report reads the complete retained report.
+  Both follow each exact continuation the host returns, and every page must
+  start where the previous one ended; after 64 pages the reader names the next
+  exact call. A result whose request declared work offers `f`, which reads that
+  request's final report. While the host is live, the list follows its live
+  frame; otherwise one status read fills it and `r` reads again. Reads start no
+  host, admit no input, acknowledge no delivery and change no work. Leaving a
+  view or selecting another agent aborts its reads, and a pending live host
+  request receives that abort. An ordinary session's `agent_work` note is not
+  declared work; it stays a card in that session's transcript.
 
 **New conversation** stages Purpose (the first message, literal text even when
 it looks like a flag; empty creates an idle conversation), Preset (the machine
@@ -880,7 +905,9 @@ Below 60 columns or 16 rows the view asks for a larger window.
 
 ### Header and fact lines
 
-The header holds exactly two lines. Line 1 shows the selected agent's bold
+The header holds two lines, and a third line while the agent owes a final
+report or has unplaced inputs: `work open: N, oldest: AGE` and `unplaced: N,
+oldest: AGE`. A click on the work count opens Work, as `w` does. Line 1 shows the selected agent's bold
 label and the project in muted text; a narrow pane drops the project, and only
 then does the label shorten. The agent's actions are keys in the footer. Line 2
 shows the state glyph and label, then at most one status: the first that
@@ -990,7 +1017,8 @@ a row; a message with only thinking keeps one `▸ Thinking` row, which a click
 opens. Ctrl+T here changes only this view and never writes primary settings.
 
 In Pi fullscreen mode, click a list row to select it, a footer control to run
-its key, the message field to focus it and place its caret, and a
+its key, the message field to focus it and place its caret, the header's work
+count to open Work, and a
 time to switch every time between relative age and local date and time. A
 control drawn before a refresh or resize never runs a replaced action. The
 wheel scrolls the pane under the pointer; list scroll does not change the
@@ -1746,7 +1774,9 @@ Compact and untargeted status retain `openWorkCount` and `openWorkOldest`,
 while compact status omits the full item list. The count covers work that still
 owes a final report; the oldest age is in milliseconds and is absent when the
 count is zero. The dashboard roster and selected conversation show that count
-and age even when the native input has settled.
+and age even when the native input has settled. In the agent work view, `w` or
+a click on the selected agent's count opens [Work](#controls-and-forms): each
+item with its dependencies and its retained final report.
 
 The text of each delivered receipt, which the receiving model reads, names the
 state of every request that the answer covers, one line per request (at most
@@ -1796,8 +1826,9 @@ Sources: `open-work.ts` (`AgentWorkParams`, `declareOpenWork`,
 `durable-agents.ts`
 (`workTool`, `exposedControl`), `durable-observation.ts`
 (`readConversationStatus`), `durable-delivery.ts` (`receiptFollowText`,
-`receiptStateLine`, `finalReportLead`, `reportBody`), and
-`durable-checkins.ts` (`CheckInTask`).
+`receiptStateLine`, `finalReportLead`, `reportBody`),
+`durable-checkins.ts` (`CheckInTask`), and `agent-work-view.ts` (`WorkView`,
+`workRows`, `dependencyWords`, `deliveryWords`).
 
 #### State note of an ordinary session
 

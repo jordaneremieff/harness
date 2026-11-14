@@ -176,6 +176,7 @@ export function formsHost(
 		profile: async (method, input) => record(method, [JSON.stringify(input)]),
 		profileDrafts: new Map(),
 		status: async () => ({ identity: target.id }),
+		inspect: async (params) => ({ view: "result", status: "unavailable", reason: `No result fixture for ${JSON.stringify(params)}` }),
 		outcome: () => {},
 		...patch,
 	};

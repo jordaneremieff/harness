@@ -57,6 +57,7 @@ import { AgentBranchCache, type AgentBranchReader } from "./agent-git.ts";
 import type { AgentModelInfo, DelegatedFigures } from "./agent-footer.ts";
 import { DashboardRelations, relationIdentity, type ReadRelationLineage } from "./dashboard-relations.ts";
 import { actionView, type ActionResult, type AgentFormHost } from "./agent-forms.ts";
+import { WorkView, type WorkSource } from "./agent-work-view.ts";
 import { createObservationPump, type ObservationClock, type ObservationPump } from "./observation-pump.ts";
 
 export interface DashboardResult {
@@ -140,6 +141,8 @@ const HELP = [
 	"Selected agent",
 	"s stops current work, f switches the next message between a correction (steer) and new work (follow-up), r reconnects a stopped host.",
 	"c configures name, model and reasoning; k shows the live tasks. x lists fork, rewind, compact, reset, schedules, commands, profile and details.",
+	"w opens Work, as a click on the work count above the conversation does: each request the agent declared background work for,",
+	"its dependencies and its final report. Enter on a dependency reads its result; Enter on a final report reads all of it. Reading changes nothing.",
 	"Forms open beside the conversation and bind to the agent they opened for; selecting another agent closes them without sending anything.",
 	"",
 	"Messages",
@@ -1025,6 +1028,34 @@ export class AgentDashboard implements Component, Focusable {
 		return labels[name] ?? name;
 	}
 
+	/**
+	 * Open Work for the selected agent. A live frame supplies the items while the host is live;
+	 * otherwise one passive status read does. Result and report pages read through the same owner.
+	 */
+	private openWork(): void {
+		const row = this.console?.row;
+		if (!row) {
+			this.show("Select an agent first", "warning");
+			return;
+		}
+		const id = row.id;
+		const forms = this.operations.forms(row);
+		const source: WorkSource = {
+			live: () => {
+				if (this.source.availability(id)?.state !== "live") return undefined;
+				const frame = this.source.frame(id);
+				return frame === undefined ? undefined : { status: frame.status, observedAt: frame.observedAt, revision: frame.revision };
+			},
+			status: async (signal) => {
+				const conversation = ((await forms.status(signal)) as { conversation?: unknown } | null)?.conversation;
+				if (conversation === undefined) throw new Error("The status read named no conversation");
+				return conversation;
+			},
+			inspect: (call, signal) => forms.inspect({ ...call }, signal),
+		};
+		this.openInspector([{ key: "work", label: "Work", open: (view) => new WorkView(view, source) }]);
+	}
+
 	private openTasks(): void {
 		const row = this.console?.row;
 		if (!row) return;
@@ -1341,6 +1372,7 @@ export class AgentDashboard implements Component, Focusable {
 		if (attention || this.source.availability(row.id)?.state === "unavailable")
 			actions.push({ id: "attach", label: "Reconnect", key: "r", short: "reconnect", primary: attention, description: "Start the host; unfinished work resumes", run: () => this.openAction("attach") });
 		actions.push(...(this.operations.extraActions?.(row) ?? []));
+		actions.push({ id: "work", label: "Work", key: "w", short: "work", primary: (row.openWorkCount ?? 0) > 0, description: "Requests this agent declared background work for, their dependencies and final reports", run: () => this.openWork() });
 		actions.push({ id: "configure", label: "Configure", key: "c", short: "configure", primary: true, disabled: working ? "Stop current work first; the owner configures idle agents only" : undefined, description: "Name, model and reasoning", run: () => this.openAction("configure") });
 		actions.push({ id: "tasks", label: "Tasks", key: "k", short: "tasks", primary: true, description: "The live tasks in this agent's storage", run: () => this.openTasks() });
 		return actions;
@@ -2105,6 +2137,9 @@ export class AgentDashboard implements Component, Focusable {
 		// Header, a spacing row, the conversation, the message field, and under it the agent's status lines in
 		// the main session's footer layout. A fact line with nothing known takes no row.
 		const header = [...this.renderTargetHeader(console, width), ""];
+		// The work count on header line 3 opens Work, as `w` does.
+		const work = openWorkText(console.row);
+		if (work && header.length > 3) this.hits.add({ x: x0 + 1, y: y0 + 2, width: Math.min(visibleWidth(work), Math.max(1, width - 1)), height: 1, click: () => this.openWork() });
 		const status = console
 			.statusLines(width - 1, this.modelInfo(console), this.branches.get(console.row.cwd), this.delegatedFigures())
 			.filter((line) => visibleWidth(line) > 0)

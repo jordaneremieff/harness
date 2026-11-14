@@ -408,7 +408,8 @@ export function terminalForms(controller: TerminalController, drafts: Map<string
 		},
 		profile: (method, input) => controller.manager.control(method, input, controller.caller),
 		profileDrafts: drafts,
-		status: () => control("status"),
+		status: (signal) => controller.manager.control("status", { sessionId: target.id }, controller.caller, signal ? { signal } : undefined),
+		inspect: (params, signal) => controller.manager.control("inspect", params, controller.caller, signal ? { signal } : undefined),
 		outcome: () => {},
 	};
 }
