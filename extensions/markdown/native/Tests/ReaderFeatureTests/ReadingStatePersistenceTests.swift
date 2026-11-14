@@ -51,6 +51,14 @@ private final class StateWriteSequence: @unchecked Sendable {
         ReadingStateIntake.position(block, at: seconds)
     }
 
+    private func waitForWriter(_ store: ReadingStateStore) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while store.isSaving, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!store.isSaving)
+    }
+
     private func expectNotSaved(_ result: ReadingStateFlushResult) {
         guard case .notSaved(let reason) = result else {
             Issue.record("Expected a not-saved result, got \(result)")
@@ -88,6 +96,7 @@ private final class StateWriteSequence: @unchecked Sendable {
         #expect(start.duration(to: clock.now) < .seconds(1))
         #expect(store.hasPendingChanges)
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("reading-state.json").path))
+        try await waitForWriter(store)
         // The writer's own lock deadline also reports failure without losing the mutation.
         expectNotSaved(await store.flush(timeout: 1))
         #expect(store.hasPendingChanges)
@@ -96,6 +105,7 @@ private final class StateWriteSequence: @unchecked Sendable {
         try input.fileHandleForWriting.close()
         process.waitUntilExit()
         #expect(process.terminationStatus == 0)
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("reading-state.json").path))
         #expect(await store.flush(timeout: 2) == .saved)
         #expect(!store.hasPendingChanges)
         #expect(ReadingStateStore(directory: directory).position(for: reference(1))?.blockKey == "pending")
@@ -115,7 +125,7 @@ private final class StateWriteSequence: @unchecked Sendable {
         #expect(await store.flush(timeout: 2) == .saved)
     }
 
-    @Test func failedAtomicWriteRetainsChangesAndRetriesWithoutAnotherMutation() async throws {
+    @Test func readFailureRetainsChangesAndRetriesWithoutAnotherMutation() async throws {
         let directory = try directory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = directory.appendingPathComponent("reading-state.json")
@@ -193,6 +203,8 @@ private final class StateWriteSequence: @unchecked Sendable {
         #expect(store.hasPendingChanges)
         #expect(ReadingStateStore(directory: directory).position(for: reference(1))?.blockKey == "first")
         sequence.gates[1].release()
+        try await waitForWriter(store)
+        #expect(ReadingStateStore(directory: directory).position(for: reference(1))?.blockKey == "first")
         #expect(await store.flush(timeout: 2) == .saved)
         #expect(ReadingStateStore(directory: directory).position(for: reference(1))?.blockKey == "replacement")
     }
@@ -215,6 +227,8 @@ private final class StateWriteSequence: @unchecked Sendable {
         #expect(store.isSaving)
         expectNotSaved(await store.flush(timeout: 0))
         gate.release()
+        try await waitForWriter(store)
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("reading-state.json").path))
         #expect(await store.flush(timeout: 2) == .saved)
         #expect(!store.hasPendingChanges)
     }
@@ -242,6 +256,130 @@ private final class StateWriteSequence: @unchecked Sendable {
         #expect(file.version == 1)
         #expect(file.positions[reference(1).key]?.savedAt == position("later", at: 0.123457).savedAt)
         #expect(String(decoding: data, as: UTF8.self).range(of: #"T\d{2}:\d{2}:\d{2}\.\d+Z"#, options: .regularExpression) != nil)
+    }
+
+    @Test func anUnreadableStatePreservesOtherReadersProgressAndMergesAfterRepair() async throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ReadingStateStore(directory: directory)
+        let other = ReadingStateStore(directory: directory)
+        other.setPosition(position("newer", at: 0.8), for: reference(1))
+        other.setPosition(position("other", at: 0.9), for: reference(2))
+        #expect(await other.flush(timeout: 2) == .saved)
+        let file = directory.appendingPathComponent("reading-state.json")
+        let original = try Data(contentsOf: file)
+        let kept = directory.appendingPathComponent("parked.json")
+        try FileManager.default.moveItem(at: file, to: kept)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+        let marker = file.appendingPathComponent("untouched")
+        try Data("keep".utf8).write(to: marker)
+        store.setPosition(position("older", at: 0.1), for: reference(1))
+        store.setPosition(position("ours", at: 0.2), for: reference(3))
+        expectNotSaved(await store.flush(timeout: 2))
+        #expect(store.hasPendingChanges)
+        #expect(try Data(contentsOf: kept) == original)
+        #expect(try String(contentsOf: marker, encoding: .utf8) == "keep")
+        #expect(store.lastRecovery == nil)
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.moveItem(at: kept, to: file)
+        #expect(await store.flush(timeout: 2) == .saved)
+        let disk = ReadingStateStore(directory: directory)
+        #expect(disk.position(for: reference(1))?.blockKey == "newer")
+        #expect(disk.position(for: reference(2))?.blockKey == "other")
+        #expect(disk.position(for: reference(3))?.blockKey == "ours")
+    }
+
+    @Test(arguments: ["2", "0", "-1", "1.5", "\"2\"", "null", "true"])
+    func anUnsupportedStateVersionStaysByteForByte(version: String) async throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("reading-state.json")
+        let original = Data("{\"version\":\(version),\"future\":\"progress\"}".utf8)
+        try original.write(to: file)
+        let store = ReadingStateStore(directory: directory)
+        store.setPosition(position("pending"), for: reference(1))
+        expectNotSaved(await store.flush(timeout: 2))
+        #expect(try Data(contentsOf: file) == original)
+        #expect(store.hasPendingChanges)
+        #expect(store.lastRecovery == nil)
+    }
+
+    @Test(arguments: [Data("not JSON\n".utf8), Data("{\"version\":1,\"positions\":[]}".utf8),
+                      Data(repeating: 0x20, count: ReadingStateStore.fileLimit + 1)])
+    func corruptStateIsKeptBeforeAValidReplacement(original: Data) async throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("reading-state.json")
+        try original.write(to: file)
+        let store = ReadingStateStore(directory: directory)
+        store.setPosition(position("recovered"), for: reference(1))
+        #expect(await store.flush(timeout: 2) == .saved)
+        let kept = try #require(store.lastRecovery)
+        #expect(kept.deletingLastPathComponent().path == directory.path)
+        #expect(kept.lastPathComponent.hasPrefix("reading-state.json.unreadable-"))
+        #expect(try Data(contentsOf: kept) == original)
+        #expect(ReadingStateStore(directory: directory).position(for: reference(1))?.blockKey == "recovered")
+        try original.write(to: file)
+        store.setPosition(position("again", at: 0.9), for: reference(2))
+        #expect(await store.flush(timeout: 2) == .saved)
+        let next = try #require(store.lastRecovery)
+        #expect(next != kept)
+        #expect(try Data(contentsOf: kept) == original)
+        #expect(try Data(contentsOf: next) == original)
+    }
+
+    @Test func aMissingStateFileIsCreated() async throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ReadingStateStore(directory: directory)
+        store.setPosition(position("created"), for: reference(1))
+        #expect(await store.flush(timeout: 2) == .saved)
+        #expect(ReadingStateStore(directory: directory).position(for: reference(1))?.blockKey == "created")
+        #expect(store.lastRecovery == nil)
+    }
+
+    @Test func deadlineDuringWriteReportsUnconfirmed() async throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let gate = StateWriteGate()
+        defer { gate.release() }
+        let store = ReadingStateStore(directory: directory, beforeWrite: {}, writing: { gate.wait() })
+        store.setPosition(position("in-progress"), for: reference(1))
+        store.saveNow()
+        var entries = gate.entries.makeAsyncIterator()
+        await entries.next()
+        guard case .unconfirmed(let reason) = await store.flush(timeout: 0.05) else {
+            Issue.record("Expected an unconfirmed receipt during the write")
+            return
+        }
+        #expect(!reason.isEmpty)
+        #expect(store.isSaving)
+        guard case .unconfirmed = await store.flush(timeout: 0) else {
+            Issue.record("An immediate deadline must retain write uncertainty")
+            return
+        }
+        gate.release()
+        #expect(await store.flush(timeout: 2) == .saved)
+        #expect(ReadingStateStore(directory: directory).position(for: reference(1))?.blockKey == "in-progress")
+    }
+
+    @Test func publicationBeforeMainActorCompletionReportsSaved() async throws {
+        let directory = try directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let gate = StateWriteGate()
+        defer { gate.release() }
+        let store = ReadingStateStore(directory: directory, beforeWrite: {}, afterPublish: { gate.wait() })
+        store.setPosition(position("published"), for: reference(1))
+        store.saveNow()
+        var entries = gate.entries.makeAsyncIterator()
+        await entries.next()
+        #expect(store.isSaving)
+        #expect(await store.flush(timeout: 0.05) == .saved)
+        #expect(store.hasPendingChanges)
+        #expect(ReadingStateStore(directory: directory).position(for: reference(1))?.blockKey == "published")
+        gate.release()
+        try await waitForWriter(store)
+        #expect(!store.hasPendingChanges)
     }
 
     @Test func memoryOnlyStoreHasNothingToFlush() async {

@@ -42,13 +42,67 @@ struct ReadingStateFile: Codable, Sendable {
 public enum ReadingStateFlushResult: Sendable, Equatable {
     case saved
     case notSaved(reason: String)
+    case unconfirmed(reason: String)
     case nothingToSave
 
     package func logFailure() {
-        if case .notSaved(let reason) = self {
-            Logger(subsystem: "local.harness.markdown-reader", category: "reading-state")
-                .error("State was not saved: \(reason, privacy: .public)")
+        let log = Logger(subsystem: "local.harness.markdown-reader", category: "reading-state")
+        switch self {
+        case .notSaved(let reason): log.error("State was not saved: \(reason, privacy: .public)")
+        case .unconfirmed(let reason): log.error("State save was not confirmed: \(reason, privacy: .public)")
+        case .saved, .nothingToSave: break
         }
+    }
+}
+
+/// The deadline and writer decide atomically whether an attempt still has permission to write.
+private final class SaveProgress: @unchecked Sendable {
+    private enum Phase { case preparing, abandoned, writing, published, failed(String) }
+    private let lock = NSLock()
+    private var phase = Phase.preparing
+    private var recovery: URL?
+
+    var keptFile: URL? { lock.withLock { recovery } }
+    func recovered(to url: URL) { lock.withLock { recovery = url } }
+
+    func checkAbandoned() throws {
+        try lock.withLock {
+            if case .abandoned = phase { throw Failure("The save deadline expired before the write.") }
+        }
+    }
+
+    func beginWriting() throws {
+        try lock.withLock {
+            if case .abandoned = phase { throw Failure("The save deadline expired before the write.") }
+            phase = .writing
+        }
+    }
+
+    func published() { lock.withLock { phase = .published } }
+    func failed(_ reason: String) {
+        lock.withLock {
+            if case .published = phase { return }
+            phase = .failed(reason)
+        }
+    }
+
+    func deadlineResult() -> ReadingStateFlushResult {
+        lock.withLock {
+            switch phase {
+            case .preparing:
+                phase = .abandoned
+                return .notSaved(reason: "The save deadline expired before the write.")
+            case .abandoned: return .notSaved(reason: "The save deadline expired before the write.")
+            case .writing: return .unconfirmed(reason: "The save deadline expired during the write.")
+            case .published: return .saved
+            case .failed(let reason): return .notSaved(reason: reason)
+            }
+        }
+    }
+
+    struct Failure: LocalizedError {
+        let errorDescription: String?
+        init(_ reason: String) { errorDescription = reason }
     }
 }
 
@@ -65,12 +119,16 @@ public final class ReadingStateStore {
     nonisolated public static let positionLimit = 500
     nonisolated public static let recentLimit = 30
     nonisolated public static let rootLimit = 20
-    /// Largest state file the reader reads; a larger file is ignored.
+    /// Largest state file the reader decodes; a larger file is kept during recovery.
     nonisolated public static let fileLimit = 1024 * 1024
 
     @ObservationIgnored private let file: URL?
     @ObservationIgnored private let writer = DispatchQueue(label: "markdown.reading-state.writer", qos: .utility)
     @ObservationIgnored private let beforeWrite: @Sendable () throws -> Void
+    @ObservationIgnored private let writing: @Sendable () throws -> Void
+    @ObservationIgnored private let afterPublish: @Sendable () -> Void
+    @ObservationIgnored private var activeSave: (covered: UInt64, progress: SaveProgress)?
+    @ObservationIgnored private var retryDelay: TimeInterval = 1
     @ObservationIgnored private var scheduledSave: Task<Void, Never>?
     @ObservationIgnored private var generation: UInt64 = 0
     @ObservationIgnored private var versions: [ChangeKey: UInt64] = [:]
@@ -78,6 +136,8 @@ public final class ReadingStateStore {
     private var state: ReadingStateFile
     public private(set) var hasPendingChanges = false
     public private(set) var isSaving = false
+    /// The original corrupt state file kept by this process's most recent recovery.
+    public private(set) var lastRecovery: URL?
 
     private enum ChangeKey: Hashable {
         case position(String), recent(String), forgotten(String), root(String), settings
@@ -131,30 +191,48 @@ public final class ReadingStateStore {
         }
     }
 
-    /// With a nil directory the state stays in memory, which the check modes use. An oversized or
-    /// undecodable state file is ignored and left in place; the reader starts with empty state.
+    /// With a nil directory the state stays in memory. An unreadable state starts empty in memory;
+    /// saves preserve unsupported files and read failures, and keep corrupt files before recovery.
     public convenience init(directory: URL?) {
         self.init(directory: directory, beforeWrite: {})
     }
 
-    /// The hook runs on the writer queue, under the file lock.
-    init(directory: URL?, beforeWrite: @escaping @Sendable () throws -> Void) {
+    /// Hooks run on the writer queue under the file lock, at the named save phases.
+    init(directory: URL?, beforeWrite: @escaping @Sendable () throws -> Void,
+         writing: @escaping @Sendable () throws -> Void = {}, afterPublish: @escaping @Sendable () -> Void = {}) {
         file = directory?.appendingPathComponent("reading-state.json")
         self.beforeWrite = beforeWrite
-        state = file.flatMap(Self.read) ?? ReadingStateFile()
+        self.writing = writing
+        self.afterPublish = afterPublish
+        if let file, case .valid(let decoded) = Self.read(file) { state = decoded }
+        else { state = ReadingStateFile() }
     }
 
-    nonisolated static func read(_ file: URL) -> ReadingStateFile? {
-        guard let data = try? FileAccess.readRegularFile(file, limit: fileLimit, missing: .notFound(file.lastPathComponent)),
-              let decoded = try? JSONDecoder.reading.decode(ReadingStateFile.self, from: data), decoded.version == 1
-        else { return nil }
-        return bounded(decoded)
+    enum ReadOutcome {
+        case missing, valid(ReadingStateFile), failed(String), unsupported, corrupt
+    }
+
+    nonisolated static func read(_ file: URL) -> ReadOutcome {
+        var info = stat()
+        guard lstat(file.path, &info) == 0 else {
+            return errno == ENOENT ? .missing : .failed(String(cString: strerror(errno)))
+        }
+        let data: Data
+        do {
+            data = try FileAccess.readRegularFile(file, limit: fileLimit, missing: .notFound(file.lastPathComponent))
+        } catch StoreError.tooLarge { return .corrupt }
+        catch { return .failed(String(describing: error)) }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], object["version"] != nil else { return .corrupt }
+        struct Header: Decodable { let version: Int }
+        guard let header = try? JSONDecoder().decode(Header.self, from: data), header.version == 1 else { return .unsupported }
+        guard let decoded = try? JSONDecoder.reading.decode(ReadingStateFile.self, from: data) else { return .corrupt }
+        return .valid(bounded(decoded))
     }
 
     /// Takes in what other reader processes saved since this process last read the file, and
     /// keeps this process's unsaved changes.
     public func reload() {
-        guard let file, let disk = Self.read(file) else { return }
+        guard let file, case .valid(let disk) = Self.read(file) else { return }
         state = Self.merged(ours: state, theirs: disk, changes: changes)
     }
 
@@ -246,11 +324,19 @@ public final class ReadingStateStore {
         let covered = generation
         let changes = changes
         let beforeWrite = beforeWrite
+        let writing = writing
+        let afterPublish = afterPublish
+        let progress = SaveProgress()
+        activeSave = (covered, progress)
         isSaving = true
         writer.async { [weak self] in
-            let result = Result { try Self.persist(snapshot, changes: changes, file: file, beforeWrite: beforeWrite) }
+            let result = Result {
+                try Self.persist(snapshot, changes: changes, file: file, progress: progress,
+                                 beforeWrite: beforeWrite, writing: writing, afterPublish: afterPublish)
+            }
+            if case .failure(let error) = result { progress.failed(error.localizedDescription) }
             Task { @MainActor [weak self] in
-                self?.finished(result, covered: covered)
+                self?.finished(result, covered: covered, progress: progress)
             }
         }
     }
@@ -259,19 +345,25 @@ public final class ReadingStateStore {
     /// The deadline is independent of the writer, including a stalled filesystem operation.
     public func flush(timeout: TimeInterval) async -> ReadingStateFlushResult {
         guard hasPendingChanges else { return .nothingToSave }
-        guard timeout.isFinite, timeout > 0 else {
-            return .notSaved(reason: "The save deadline expired.")
-        }
+        guard timeout.isFinite, timeout > 0 else { return deadlineResult(for: generation) }
         let target = generation
         let id = UUID()
         return await withCheckedContinuation { continuation in
             let timer = Task { @MainActor [weak self] in
                 do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
-                self?.resolve(id, with: .notSaved(reason: "The save deadline expired."))
+                guard let self else { return }
+                self.resolve(id, with: self.deadlineResult(for: target))
             }
             waiters[id] = FlushWaiter(generation: target, continuation: continuation, timer: timer)
             saveNow()
         }
+    }
+
+    private func deadlineResult(for target: UInt64) -> ReadingStateFlushResult {
+        guard let activeSave, activeSave.covered >= target else {
+            return .notSaved(reason: "The save deadline expired before a covered write started.")
+        }
+        return activeSave.progress.deadlineResult()
     }
 
     private func resolve(_ id: UUID, with result: ReadingStateFlushResult) {
@@ -280,10 +372,13 @@ public final class ReadingStateStore {
         waiter.continuation.resume(returning: result)
     }
 
-    private func finished(_ result: Result<ReadingStateFile, any Error>, covered: UInt64) {
+    private func finished(_ result: Result<ReadingStateFile, any Error>, covered: UInt64, progress: SaveProgress) {
         isSaving = false
+        activeSave = nil
+        if let keptFile = progress.keptFile { lastRecovery = keptFile }
         switch result {
         case .success(let saved):
+            retryDelay = 1
             versions = versions.filter { $0.value > covered }
             state = Self.merged(ours: state, theirs: saved, changes: changes)
             hasPendingChanges = !versions.isEmpty
@@ -293,8 +388,11 @@ public final class ReadingStateStore {
         case .failure(let error):
             let reason = error.localizedDescription
             Logger(subsystem: "markdown.reader", category: "reading-state").error("State save failed: \(reason, privacy: .public)")
-            for id in Array(waiters.keys) { resolve(id, with: .notSaved(reason: reason)) }
-            scheduleSave(after: .seconds(1))
+            for (id, waiter) in Array(waiters) {
+                resolve(id, with: waiter.generation <= covered ? progress.deadlineResult() : .notSaved(reason: reason))
+            }
+            scheduleSave(after: .seconds(retryDelay))
+            retryDelay = min(retryDelay * 2, 30)
         }
     }
 
@@ -304,8 +402,9 @@ public final class ReadingStateStore {
     }
 
     nonisolated private static func persist(
-        _ snapshot: ReadingStateFile, changes: Changes, file: URL,
-        beforeWrite: @Sendable () throws -> Void
+        _ snapshot: ReadingStateFile, changes: Changes, file: URL, progress: SaveProgress,
+        beforeWrite: @Sendable () throws -> Void, writing: @Sendable () throws -> Void,
+        afterPublish: @Sendable () -> Void
     ) throws -> ReadingStateFile {
         let directory = file.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -316,6 +415,7 @@ public final class ReadingStateStore {
         let deadline = clock.now.advanced(by: .milliseconds(250))
         while flock(lock, LOCK_EX | LOCK_NB) != 0 {
             let code = errno
+            try progress.checkAbandoned()
             guard code == EWOULDBLOCK || code == EINTR else {
                 throw SaveFailure("Could not acquire the state lock: \(String(cString: strerror(code)))")
             }
@@ -323,14 +423,36 @@ public final class ReadingStateStore {
             Thread.sleep(forTimeInterval: 0.01)
         }
         defer { flock(lock, LOCK_UN) }
-        // A missing file starts empty. A file that exists but cannot be read is replaced by this
-        // process's whole view of the state, not by its changes alone, so the entries that this
-        // process loaded survive.
-        let disk = Self.read(file) ?? (FileManager.default.fileExists(atPath: file.path) ? snapshot : ReadingStateFile())
+        try progress.checkAbandoned()
+        let disk: ReadingStateFile
+        let corrupt: Bool
+        switch Self.read(file) {
+        case .missing: disk = ReadingStateFile(); corrupt = false
+        case .valid(let decoded): disk = decoded; corrupt = false
+        case .failed(let reason): throw SaveFailure("The state file could not be read: \(reason)")
+        case .unsupported: throw SaveFailure("The state version is not supported; the file stays unchanged.")
+        case .corrupt: disk = snapshot; corrupt = true
+        }
         let merged = Self.merged(ours: snapshot, theirs: disk, changes: changes)
         let data = try JSONEncoder.reading.encode(merged)
         try beforeWrite()
+        try progress.beginWriting()
+        try writing()
+        if corrupt {
+            let formatter = ISO8601DateFormatter()
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            let stamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            let kept = directory.appendingPathComponent(file.lastPathComponent + ".unreadable-" + stamp + "-" + UUID().uuidString)
+            guard renamex_np(file.path, kept.path, UInt32(RENAME_EXCL)) == 0 else {
+                throw SaveFailure("Could not keep the corrupt state file: \(String(cString: strerror(errno)))")
+            }
+            progress.recovered(to: kept)
+            Logger(subsystem: "local.harness.markdown-reader", category: "reading-state")
+                .error("Kept corrupt state as \(kept.lastPathComponent, privacy: .public)")
+        }
         try data.write(to: file, options: [.atomic])
+        progress.published()
+        afterPublish()
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         return merged
     }
