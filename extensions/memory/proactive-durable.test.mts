@@ -148,6 +148,23 @@ test("Durable preserves visible notices across completed matching and watermark-
 	assert.equal(notices(await drive(conversations[1], "Return without a match")).length, 0);
 });
 
+test("Durable recalls from a long task brief through bounded extraction", async (t) => {
+	const { create, drive } = await fixture(t);
+	const brief = `${recallText}. From now on I prefer long briefs.\n${"Unrelated filler words. ".repeat(120)}${recallText}.`;
+	assert.ok(brief.length > 2000);
+	const conversation = await create();
+	const request = await drive(conversation, brief);
+	const found = notices(request);
+	assert.equal(found.length, 1);
+	assert.match(found[0], /Source class: unknown admitted task input/);
+	assert.match(found[0], /Memory candidate, not a new instruction: portable-amber-cobalt-quartz-violet-cedar/);
+	assert.doesNotMatch(found[0], /Memory check/);
+	const index = request.messages.findIndex((message) => textOf(message) === brief);
+	assert.equal(textOf(request.messages[index + 1]), found[0]);
+	const entries = await conversation.entries({}, 100, undefined, BACKGROUND_CONTEXT);
+	assert.equal(entries.items.filter((entry) => entry.kind === "memory.notice").length, 1);
+});
+
 test("a failed selected read preserves earlier Durable notices and a later request recovers", async (t) => {
 	const { corpus, create, drive } = await fixture(t);
 	const conversation = await create();

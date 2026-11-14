@@ -578,14 +578,27 @@ unavailable-state line. Existing tools, guidance and pointer indexes stay availa
 Environment booleans accept `true`, `false`, `1` and `0`; invalid selected input
 uses `true` with a settings diagnostic, not a lower-priority file value.
 
-For complete input of at most 2,000 UTF-16 units, automatic recall scores exact
-lowercase Unicode words from subject slugs, titles and the first 800 summary
-characters. It drops short words and a fixed stop list. Rare cue words carry more
-weight than summary-only words. The score sums the six largest term weights,
-normalises for cue and summary length, and requires at least two cue matches and
-a score of 18. It selects at most one positively active note. Scores are internal
-selection values, not confidence probabilities. There is no stemming, fuzzy
-matching, synonym expansion, short-token recall or model-specific routing.
+Automatic recall scores exact lowercase Unicode words from subject slugs, titles
+and the first 800 summary characters. It drops short words and a fixed stop list.
+Rare cue words carry more weight than summary-only words. The score sums the six
+largest term weights, normalises for cue and summary length, and requires at least
+two cue matches and a score of 18. It selects at most one positively active note.
+Scores are internal selection values, not confidence probabilities. There is no
+stemming, fuzzy matching, synonym expansion, short-token recall or model-specific
+routing.
+
+Input of at most 2,000 UTF-16 units is scored on all its words. Longer input, such
+as a task brief, a pasted handover, a report or a log, is scored on extracted
+words. Recall reads only its first 32,768 UTF-16 units and drops a word that this
+bound cuts. It counts the words that also occur among the scored cue and summary
+words of active notes and discards a word that occurs only once. It keeps the 48
+remaining words with the highest count multiplied by the scorer's rarity weight;
+an earlier first occurrence breaks ties. The same gates then apply. Scoring every
+word of a long input lets its broad vocabulary pass the gates for unrelated notes,
+and a single mention inside long text is not evidence of its subject. A subject
+that appears only after the first 32,768 units takes no part. Extraction and
+scoring work stay fixed for any input size. The adapters still compare and digest
+complete input for admission and occurrence identity.
 
 A notice contains a title, a discovery excerpt, the exact source digest, lifecycle
 and review state, and a requirement to read the full note before use. The excerpt
@@ -594,9 +607,11 @@ The title and excerpt fit at most 160 and 300 UTF-8 bytes respectively, which al
 bounds their character counts. The complete notice fits 2,048 UTF-8 bytes.
 
 A separate phrase detector recognises preference and future-use language outside
-Markdown fences and blockquotes. Its cue directs the agent to search with
-`memory_search`, then use `memory_edit` or `memory_write` if the message states
-knowledge that should guide future sessions. The cue tells the agent to skip
+Markdown fences and blockquotes in input of at most 2,000 UTF-16 units. Longer
+input receives no storage cue; recall extraction does not extend this detector.
+Its cue directs the agent to search with `memory_search`, then use `memory_edit`
+or `memory_write` if the message states knowledge that should guide future
+sessions. The cue tells the agent to skip
 task-only, quoted or already-stored content. The hook never writes memory; the
 agent decides whether the condition applies and performs the memory calls.
 Task-local phrases such as “we can use a loop here” also match; the cue is not a
@@ -994,18 +1009,20 @@ sources stay withheld in both call views. Presentation never changes model-visib
 Semantic tool behavior is identical in TUI and headless modes.
 
 Run focused tests with `node --test --test-concurrency=1 extensions/memory/*.test.mts`.
-`proactive.test.mts` checks scorer gates, storage cue boundaries, lifecycle,
-source bounds, deduplication, availability and settings. The controlled ordinary
-provider checks admission order, streamed input, stable notice bytes, delivery
-records and the off switch. The Durable MemoryStorage regression checks notice
+`proactive.test.mts` checks scorer gates, long-input extraction and its scan
+bound, storage cue boundaries, lifecycle, source bounds, deduplication,
+availability and settings. The controlled ordinary provider checks admission
+order, streamed input, stable notice bytes, delivery records, a long brief and the
+off switch. The Durable MemoryStorage regression checks notice
 bytes across provider retries, tool rounds and tasks, unknown provenance and
 non-context records. `proactive-adapter.test.mts` covers handled, rejected,
-aborted, transformed and expanded inputs, plus ordinary source-read fault recovery.
+aborted, transformed and expanded inputs, long-brief admission, plus ordinary
+source-read fault recovery.
 `proactive-provenance.test.mts` checks staggered duplicate admission, opaque
 markers, source labels, capture expiry and overflow. The native runtime test
 queues steering and follow-up together. `proactive-durable.test.mts` covers
 identical queued occurrences, notice preservation across completed conversations,
-and Durable source-read fault recovery. `durable-state.test.mts` checks
+a long task brief, and Durable source-read fault recovery. `durable-state.test.mts` checks
 watermark-only eviction, the host byte budget and retention order.
 Run the native loader with `node scripts/extension-load-check.mts extensions/memory/index.ts`.
 The native lifecycle regression loads the extension in an isolated ordinary Pi

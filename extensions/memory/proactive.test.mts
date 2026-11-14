@@ -22,7 +22,6 @@ test("scorer preserves strong, length, summary-only and one-note gates", async (
 	assert.equal(recallCandidate(recallText, scan.notes)?.slug, "portable-amber-cobalt-quartz-violet-cedar");
 	assert.equal(recallCandidate("portable", scan.notes), undefined);
 	assert.equal(recallCandidate("portable amber", scan.notes), undefined);
-	assert.equal(recallCandidate(`${recallText}${" ".repeat(2001)}`, scan.notes), undefined);
 	assert.equal(recallCandidate("discovery excerpt final answer", scan.notes), undefined);
 	const notice = await memoryNotice(corpus, recallText, "direct interactive input", true, new Set());
 	assert.ok(notice);
@@ -51,6 +50,76 @@ test("scorer preserves strong, length, summary-only and one-note gates", async (
 			new Set([noteKey(notice.root, notice.slug as string, notice.digest as string)]),
 		),
 	);
+});
+
+// Shared everyday vocabulary gives a fixture corpus the breadth of a real one.
+const COMMON =
+	"account balance cabinet daylight engine fabric garden harbor island jacket kitchen ladder market needle orange pencil quarter river saddle table umbrella valley window yellow zipper anchor bridge candle desert forest glacier hammer insect jungle kettle lemon mirror napkin oyster pepper rabbit silver ticket velvet walnut basket copper dragon feather helmet marble nickel pillow rocket spider tunnel violin wagon barrel cotton".split(
+		" ",
+	);
+function broadCorpus(root: string): string {
+	const corpus = proactiveCorpus(root);
+	for (let i = 0; i < COMMON.length; i++)
+		writeFileSync(
+			join(corpus, `broad-subject-${i}.md`),
+			`---\nstatus: active\nsuperseded_by: null\ntitle: Broad subject ${i}\n---\n## Summary\n${Array.from({ length: 30 }, (_, j) => COMMON[(i + j) % COMMON.length]).join(" ")}.\n## Details\nDetails.\n`,
+		);
+	return corpus;
+}
+// A long log-like input that repeats the shared vocabulary and names no subject of its own.
+const broadLog = Array.from({ length: 8 }, (_, round) =>
+	COMMON.map((word) => `${word} entry ${round}`).join("\n"),
+).join("\n");
+
+test("long input recall keeps repeated topic terms and drops incidental vocabulary", async (t) => {
+	const corpus = broadCorpus(fixture(t));
+	const scan = await recallSources(corpus);
+	assert.ok(scan);
+	const incidental = "amber cobalt quartz violet";
+	assert.equal(recallCandidate(incidental, scan.notes)?.slug, "portable-amber-cobalt-quartz-violet-cedar");
+	const line = (text: string, from: number) => text.indexOf("\n", from);
+	const once = `${broadLog.slice(0, line(broadLog, 1500))}\n${incidental}${broadLog.slice(line(broadLog, 1500))}`;
+	assert.ok(once.length > 2000);
+	assert.equal(recallCandidate(once, scan.notes), undefined);
+	// Repeated twice, the subject words pass the repetition rule but rank below the 48 broader words.
+	const twice = `${once.slice(0, line(once, 4000))}\n${incidental}${once.slice(line(once, 4000))}`;
+	assert.equal(recallCandidate(twice, scan.notes), undefined);
+	const brief = `Topic: ${recallText}.\n${broadLog}\nKeep the ${recallText} decision.\nRecheck ${recallText} first.\nClose ${recallText} last.`;
+	assert.equal(recallCandidate(brief, scan.notes)?.slug, "portable-amber-cobalt-quartz-violet-cedar");
+	const notice = await memoryNotice(
+		corpus,
+		`${brief}\nFrom now on I prefer long briefs.`,
+		"direct input",
+		true,
+		new Set(),
+	);
+	assert.equal(notice?.kind, "recall");
+	assert.ok(Buffer.byteLength(notice?.text ?? "") <= 2048);
+	assert.equal(storageCue(`From now on I prefer long briefs.\n${broadLog}`), false);
+	assert.equal(storageCue("From now on I prefer long briefs."), true);
+});
+
+test("long input extraction counts repeated words from a bounded opening of very large input", async (t) => {
+	const corpus = proactiveCorpus(fixture(t));
+	const scan = await recallSources(corpus);
+	assert.ok(scan);
+	const filler = "filler words ".repeat(1_000_000);
+	const topic = `${recallText}\n${recallText}`;
+	assert.equal(recallCandidate(`${recallText}\n${filler}`, scan.notes), undefined);
+	assert.equal(recallCandidate(`${topic}\n${filler}`, scan.notes)?.slug, "portable-amber-cobalt-quartz-violet-cedar");
+	const beyond = `${" ".repeat(32768)}${topic}`;
+	assert.equal(recallCandidate(beyond, scan.notes), undefined);
+	assert.equal(recallCandidate(`${beyond}\n${filler}`, scan.notes), undefined);
+	const cut = `cobalt quartz amber cobalt quartz${" ".repeat(32730)}ambers violet`;
+	assert.equal(cut.slice(32763, 32768), "amber");
+	assert.equal(recallCandidate(cut, scan.notes), undefined);
+	assert.equal(
+		recallCandidate(cut.replace("ambers", "amber "), scan.notes)?.slug,
+		"portable-amber-cobalt-quartz-violet-cedar",
+	);
+	const notice = await memoryNotice(corpus, `${topic}\n${filler}`, "direct input", true, new Set());
+	assert.ok(notice);
+	assert.ok(Buffer.byteLength(notice.text) <= 2048);
 });
 
 test("storage cues give concrete conditional actions, including task-local phrase matches", async (t) => {

@@ -196,6 +196,14 @@ test("native provider receives notices only at admission and preserves old bytes
 		const customNotices = noticeTexts(requests.at(-1) as TranscriptContext);
 		assert.match(customNotices.at(-1) as string, /Source class: custom task/);
 		assert.doesNotMatch(customNotices.at(-1) as string, /Memory check: this message uses preference/);
+		writeRecall(corpus, "Changed source permits recall from a long brief.");
+		const brief = `${recallText}. From now on I prefer long briefs.\n${"Unrelated filler words. ".repeat(120)}${recallText}.`;
+		await session.prompt(brief);
+		const briefRequest = requests.at(-1) as TranscriptContext;
+		const briefIndex = briefRequest.messages.findIndex((message) => textOf(message) === brief);
+		assert.ok(briefIndex >= 0);
+		assert.match(textOf(briefRequest.messages[briefIndex + 1]), /^Memory notice\.[\s\S]*Memory candidate/);
+		assert.doesNotMatch(textOf(briefRequest.messages[briefIndex + 1]), /Memory check/);
 		process.env.PI_MEMORY_PROACTIVE = "false";
 		delete process.env.PI_MEMORY_DIR;
 		await session.prompt("I prefer no notices here");

@@ -113,7 +113,7 @@ export function registerProactive(
 			append({ mode: "opaque" });
 			return;
 		}
-		if (text.length > 2000 || !text.trim()) return;
+		if (!text.trim()) return;
 		let after = -1;
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "message" && (entry.message.role === "user" || entry.message.role === "custom"))

@@ -7,6 +7,12 @@ const STOP = new Set(
 		" ",
 	),
 );
+/** Complete input up to this many UTF-16 units is scored on all its terms and may carry a storage cue. */
+const COMPLETE_INPUT_UNITS = 2000;
+/** Longer input contributes terms only from its opening, so extraction work stays fixed for any input size. */
+const SCAN_UNITS = 32768;
+/** Longer input keeps at most this many terms, which limits incidental matches across a broad vocabulary. */
+const EXTRACTED_TERMS = 48;
 export const inputDigest = (text: string): string => createHash("sha256").update(text).digest("hex");
 function terms(text: string): string[] {
 	return [
@@ -16,10 +22,47 @@ function terms(text: string): string[] {
 	];
 }
 
+/** The opening of a long input, without a final word that the bound cuts. */
+function opening(text: string): string {
+	if (text.length <= SCAN_UNITS) return text;
+	let end = SCAN_UNITS;
+	const unit = text.charCodeAt(end - 1);
+	if (unit >= 0xd800 && unit <= 0xdbff) end--;
+	const window = text.slice(0, end);
+	return /^[\p{L}\p{N}]/u.test(text.slice(end, end + 2)) ? window.replace(/[\p{L}\p{N}]+$/u, "") : window;
+}
+
+/**
+ * A long input keeps the recall-vocabulary terms that it repeats, ranked by count times the scorer's rarity
+ * weight. A single mention inside broad text, such as a report or a pasted log, is not evidence of its subject.
+ */
+function inputTerms(text: string, frequency: ReadonlyMap<string, number>, total: number): Set<string> {
+	if (text.length <= COMPLETE_INPUT_UNITS) return new Set(terms(text));
+	const counts = new Map<string, { count: number; first: number }>();
+	const window = opening(text).toLowerCase();
+	for (const [term] of window.matchAll(/[\p{L}\p{N}]+/gu)) {
+		if (!frequency.has(term)) continue;
+		const entry = counts.get(term);
+		if (entry) entry.count++;
+		else counts.set(term, { count: 1, first: counts.size });
+	}
+	return new Set(
+		[...counts]
+			.filter(([, { count }]) => count > 1)
+			.map(([term, { count, first }]) => ({
+				term,
+				first,
+				weight: count * Math.log(1 + total / (frequency.get(term) as number)),
+			}))
+			.sort((a, b) => b.weight - a.weight || a.first - b.first)
+			.slice(0, EXTRACTED_TERMS)
+			.map(({ term }) => term),
+	);
+}
+
 /** Fixed lexical selection values, not probabilities or a general-purpose search rank. */
 export function recallCandidate(text: string, notes: readonly RecallSource[]): RecallSource | undefined {
-	if (!text.trim() || text.length > 2000) return undefined;
-	const input = new Set(terms(text));
+	if (!text.trim()) return undefined;
 	const indexed = notes.map((note) => ({
 		note,
 		cue: terms(`${note.slug} ${note.title}`),
@@ -28,6 +71,7 @@ export function recallCandidate(text: string, notes: readonly RecallSource[]): R
 	const frequency = new Map<string, number>();
 	for (const note of indexed)
 		for (const term of new Set([...note.cue, ...note.summary])) frequency.set(term, (frequency.get(term) ?? 0) + 1);
+	const input = inputTerms(text, frequency, notes.length);
 	const ranked = indexed
 		.map(({ note, cue, summary }) => {
 			const matches = [...new Set([...cue, ...summary])].filter((term) => input.has(term));
@@ -47,7 +91,7 @@ export function recallCandidate(text: string, notes: readonly RecallSource[]): R
 
 /** A phrase cue invites judgement; it deliberately does not classify a durable fact. */
 export function storageCue(text: string): boolean {
-	if (!text.trim() || text.length > 2000) return false;
+	if (!text.trim() || text.length > COMPLETE_INPUT_UNITS) return false;
 	let fence: { marker: string; length: number } | undefined;
 	const bare: string[] = [];
 	for (const line of text.split(/\r?\n/)) {
@@ -119,7 +163,7 @@ async function prepareMemoryNotice(
 	satisfied: ReadonlySet<string>,
 	signal?: AbortSignal,
 ): Promise<Notice | undefined> {
-	if (!text.trim() || text.length > 2000 || signal?.aborted) return undefined;
+	if (!text.trim() || signal?.aborted) return undefined;
 	const scan = await recallSources(root, signal);
 	if (!scan || signal?.aborted) return undefined;
 	const candidate = recallCandidate(text, scan.notes);

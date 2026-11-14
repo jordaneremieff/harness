@@ -166,6 +166,45 @@ test("distinct queued captures each retain a notice while duplicate provenance r
 	assert.equal(ambiguous.messages.length, 2);
 });
 
+test("ordinary admission recalls from a long brief and withholds its storage cue", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "memory-long-brief-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const corpus = proactiveCorpus(root);
+	type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
+	const hooks = new Map<string, Handler>();
+	const records: Array<{ kind: string; slug: string | null }> = [];
+	const ctx = {
+		signal: new AbortController().signal,
+		sessionManager: { getBranch: () => [] },
+	} as unknown as ExtensionContext;
+	registerProactive(
+		{
+			on: (name: string, handler: Handler) => hooks.set(name, handler),
+			appendEntry: (_name: string, data: { kind: string; slug: string | null }) => records.push(data),
+		} as unknown as ExtensionAPI,
+		() => ({ dir: corpus, proactive: true }),
+	);
+	const brief = `${recallText}. From now on I prefer long briefs.\n${"Unrelated filler words. ".repeat(120)}${recallText}.`;
+	assert.ok(brief.length > 2000);
+	hooks.get("input")?.({ text: brief, source: "interactive" }, ctx);
+	hooks.get("before_agent_start")?.({ messageType: "user", prompt: brief }, ctx);
+	const result = (await hooks.get("context")?.(
+		{ messages: [{ role: "user", content: brief, timestamp: 1 }] },
+		ctx,
+	)) as { messages: Array<{ content: string }> };
+	assert.equal(result.messages.length, 2);
+	assert.match(result.messages[1].content, /Source class: direct interactive input/);
+	assert.match(
+		result.messages[1].content,
+		/Memory candidate, not a new instruction: portable-amber-cobalt-quartz-violet-cedar/,
+	);
+	assert.doesNotMatch(result.messages[1].content, /Memory check/);
+	assert.deepEqual(
+		records.map(({ kind, slug }) => ({ kind, slug })),
+		[{ kind: "recall", slug: "portable-amber-cobalt-quartz-violet-cedar" }],
+	);
+});
+
 test("a failed selected read preserves earlier ordinary notices and later requests recover", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "memory-source-failure-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
