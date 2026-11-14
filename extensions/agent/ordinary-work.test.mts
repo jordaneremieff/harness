@@ -34,6 +34,8 @@ function fixture(mode = "tui") {
 		/** A message that the agent loop delivers. */
 		deliver: (message: Record<string, unknown>) => handlers.get("message_end")?.({ type: "message_end", message }, context),
 		settle: () => handlers.get("agent_before_settle")?.({ type: "agent_before_settle", entries: [], continue: false }, context),
+		/** The run has fully settled. */
+		settled: () => handlers.get("agent_settled")?.({ type: "agent_settled", aborted: false }, context),
 	};
 }
 
@@ -113,6 +115,15 @@ it("asks once more for the complete answer when an input arrives after the answe
 	failed.deliver({ role: "assistant", stopReason: "error", content: [{ type: "text", text: "partial" }] });
 	failed.deliver(COMPLETION);
 	assert.equal(failed.settle(), undefined, "an error is no answer");
+
+	const nextRun = fixture("print");
+	nextRun.deliver(USER);
+	nextRun.deliver(text("Report."));
+	assert.equal(nextRun.settle(), undefined);
+	nextRun.settled();
+	nextRun.deliver({ role: "custom", customType: "agent.peer", content: "A note from another session." });
+	nextRun.deliver(text("Noted."));
+	assert.equal(nextRun.settle(), undefined, "a custom message that starts a new run follows no answer of that run");
 
 	const interactive = fixture("tui");
 	interactive.deliver(USER);

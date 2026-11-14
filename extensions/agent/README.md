@@ -1880,7 +1880,10 @@ be printed alone. When such an input arrived and no reminder followed it, the
 extension appends one context-only custom message at `agent_before_settle`
 (`agent-work-complete-answer`) that asks for the complete final answer with the
 results written before that input, and requests one more model turn. It asks
-once for each such input.
+once for each such input. The answer state belongs to one run: when the run
+settles (Pi's `agent_settled` event), it is cleared, so a custom message that
+starts a new run, such as a direct message from another session, gets its own
+answer and no request to restate the earlier run's answer.
 
 The card of the call in the transcript is the only display of the note. It
 shows `agent_work`, then the note with collapsed white space, wrapped on at

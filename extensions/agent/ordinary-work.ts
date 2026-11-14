@@ -98,6 +98,8 @@ const machineMode = (mode: unknown) => mode === "print" || mode === "json";
 export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool" | "on">, card: AgentToolCard): void {
 	let answer = new PrintAnswer();
 	pi.on("session_start", () => { answer = new PrintAnswer(); });
+	// The answer state belongs to one run. An input that starts a later run follows no answer of that run.
+	pi.on("agent_settled", () => { answer = new PrintAnswer(); });
 	pi.on("message_end", (event, ctx) => { if (machineMode(ctx.mode)) answer.delivered(event.message as Delivered); });
 	// An input after the answer, such as a job completion, gets a reply that print mode would print alone; the run
 	// states its complete answer once more before it settles.
