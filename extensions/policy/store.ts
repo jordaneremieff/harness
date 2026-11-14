@@ -11,6 +11,7 @@ import {
 	serializeTelemetryRecord,
 	TELEMETRY_BATCH_BYTES,
 	TELEMETRY_BATCH_RECORDS,
+	TELEMETRY_LOCK_FILE,
 	TELEMETRY_QUEUE_BYTES,
 	TELEMETRY_QUEUE_RECORDS,
 	TelemetryAcquisitionExpiredError,
@@ -73,6 +74,7 @@ export class PolicyWriter implements TelemetryWriter {
 	private accepting = true;
 	private discardQueued = false;
 	private currentHealth: TelemetryHealth = { state: "ok", lostRecords: 0, lostBytes: 0 };
+	private lossSignalled = false;
 	private closeDeadline: number | undefined;
 	private retryAbort: AbortController | undefined;
 	private queuedBytes = 0;
@@ -108,8 +110,15 @@ export class PolicyWriter implements TelemetryWriter {
 		};
 	}
 
+	/**
+	 * Signals a state change, and once the first loss under unchanged pressure: a lock left
+	 * by a stopped process keeps the writer in pressure while every batch drops.
+	 */
 	private state(state: TelemetryHealth["state"], reason?: string): void {
-		if (this.currentHealth.state === "failed" || this.currentHealth.state === state) return;
+		if (this.currentHealth.state === "failed") return;
+		const firstLoss = !this.lossSignalled && this.currentHealth.lostRecords > 0;
+		if (this.currentHealth.state === state && !firstLoss) return;
+		if (this.currentHealth.lostRecords > 0) this.lossSignalled = true;
 		this.currentHealth = { ...this.currentHealth, state, ...(reason === undefined ? {} : { reason }) };
 		try {
 			this.onStateChange(this.health());
@@ -252,9 +261,9 @@ export interface TelemetryNotice {
 /**
  * Selects the writer health changes that need operator attention. Lock contention
  * that recovers without loss is routine and stays visible only through health
- * inspection. The writer signals on state changes, so a loss is reported at the
- * first change whose snapshot shows it, once per writer; permanent failure is
- * reported once. Later cumulative counts stay in the health view.
+ * inspection. The first loss is reported once per writer, also while pressure
+ * persists; permanent failure is reported once. Later cumulative counts stay in
+ * the health view.
  */
 export class TelemetryNotices {
 	private lossReported = false;
@@ -273,7 +282,7 @@ export class TelemetryNotices {
 		this.lossReported = true;
 		return {
 			level: "warning",
-			text: `[policy] Telemetry dropped ${health.lostRecords} record(s) under write pressure. Rules still apply. Policy health shows the current counts.`,
+			text: `[policy] Telemetry dropped ${health.lostRecords} record(s) under write pressure. Rules still apply. If drops continue, another writer holds telemetry/${TELEMETRY_LOCK_FILE} in the policy directory, or a stopped process left it; Policy health shows the current counts.`,
 		};
 	}
 }

@@ -1768,11 +1768,12 @@ pressure but preserves cumulative losses. Only permanent failure stops future
 admission.
 
 Lock contention that recovers without loss is routine and produces no output;
-the `health` view shows it. The writer signals health on state changes, not
-once per refused record. Each writer reports record loss once, at the first
-state change whose snapshot shows a loss, and its permanent failure once; later
-counts stay in the `health` view. A loss during sustained pressure is therefore
-reported when the writer recovers or fails. An ordinary
+the `health` view shows it. The writer signals health on state changes, and
+once more at its first loss while pressure persists, not once per refused
+record. Each writer reports that first loss once and its permanent failure
+once; later counts stay in the `health` view. The loss notice names
+`telemetry/.telemetry-lock` in the policy directory, because a lock that stays
+held makes every batch drop (see Lock above). An ordinary
 session delivers these notices through its UI (`ctx.ui.notify`), never by
 writing to the terminal directly, because a TUI owns that terminal and a direct
 write paints over the editor. A session without UI writes them to stderr, and a

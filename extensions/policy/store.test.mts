@@ -498,7 +498,7 @@ describe("PolicyWriter", () => {
 		for (let index = 1; index < TELEMETRY_QUEUE_RECORDS; index++) assert.equal(writer.enqueue(row), true);
 		assert.equal(writer.enqueue(row), false, "in-flight record occupies the last slot");
 		assert.equal(writer.enqueue(row), false);
-		assert.deepEqual(states, ["pressure"]);
+		assert.deepEqual(states, ["pressure", "pressure"], "the first refused record signals once under unchanged pressure");
 		await unlink(lock);
 		await persisted;
 		await new Promise((resolve) => setImmediate(resolve));
@@ -657,7 +657,7 @@ describe("PolicyWriter", () => {
 		const elapsed = performance.now() - started;
 		assert.ok(elapsed >= 1900 && elapsed < 2800, `close took ${elapsed} ms`);
 		assert.deepEqual(writer.health(), { state: "pressure", lostRecords: 100, lostBytes: serializeTelemetryRecord(row).bytes * 100 });
-		assert.deepEqual(states, ["pressure"]);
+		assert.deepEqual(states, ["pressure", "pressure"], "the first dropped batch signals once under unchanged pressure");
 		const stopped = calls;
 		await unlink(lock);
 		await delay(120);

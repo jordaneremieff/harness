@@ -2639,6 +2639,23 @@ describe("telemetry health reporting", () => {
 		assert.deepEqual(f.terminal, []);
 	});
 
+	it("warns once with the lock path when a held lock makes every batch drop", async (t) => {
+		const f = await reporting(t, async (dir) => {
+			await mkdir(join(dir, "telemetry"), { mode: 0o700 });
+			await writeFile(join(dir, "telemetry", ".telemetry-lock"), "", { mode: 0o600 });
+		});
+		await f.run("first");
+		await f.run("second");
+		await f.close();
+		const health = await f.health();
+		assert.equal(health.state, "pressure");
+		assert.equal(health.lostRecords, 2);
+		assert.equal(f.notifications.length, 1);
+		assert.equal(f.notifications[0].level, "warning");
+		assert.match(f.notifications[0].text, /^\[policy\] Telemetry dropped \d record\(s\).*telemetry\/\.telemetry-lock in the policy directory/);
+		assert.deepEqual(f.terminal, []);
+	});
+
 	it("reports a permanent failure once through the session UI and never writes to the terminal", async (t) => {
 		const f = await reporting(t, (dir) => writeFile(join(dir, "telemetry"), "", { mode: 0o600 }));
 		await f.run("first");
