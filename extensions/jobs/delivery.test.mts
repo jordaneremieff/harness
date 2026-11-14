@@ -36,6 +36,7 @@ const model = {
 };
 const WAIT_FOR_RELEASE = "while [ ! -f release ]; do sleep 0.01; done; exit 0";
 const OUTCOME = "Background job succeeded · exit 0 · < 1 min";
+const RUNNING = "Background job running · its completion starts the next turn";
 const QUEUED = `${OUTCOME} · completion queued for the conversation`;
 const SENT = `${OUTCOME} · completion sent, not in the conversation`;
 const ADDED = `${OUTCOME} · completion in the conversation`;
@@ -283,7 +284,7 @@ describe("completion delivery state against a real AgentSession", () => {
 			open();
 			await run;
 			assert.equal(h.retained(jobId), 1);
-			assert.deepEqual(h.records(jobId), ["Background job running", QUEUED, ADDED]);
+			assert.deepEqual(h.records(jobId), ["Background job running", RUNNING, QUEUED, ADDED]);
 			assert.deepEqual(h.errors, []);
 		} finally {
 			await h.dispose();
@@ -303,7 +304,7 @@ describe("completion delivery state against a real AgentSession", () => {
 			assert.equal(h.session.agent.hasQueuedMessages(), true, "Pi still holds the completion after the abort");
 			await h.session.prompt("Resume.", { source: "rpc" });
 			assert.equal(h.retained(jobId), 1, "the next run delivers the held completion");
-			assert.deepEqual(h.records(jobId), ["Background job running", QUEUED, ABSENT, ADDED]);
+			assert.deepEqual(h.records(jobId), ["Background job running", RUNNING, QUEUED, ABSENT, ADDED]);
 		} finally {
 			await h.dispose();
 		}
@@ -321,7 +322,7 @@ describe("completion delivery state against a real AgentSession", () => {
 			assert.equal(h.session.agent.hasQueuedMessages(), false);
 			await h.session.prompt("Resume.", { source: "rpc" });
 			assert.equal(h.retained(jobId), 0, "the cleared completion never reaches the conversation");
-			assert.deepEqual(h.records(jobId), ["Background job running", QUEUED, ABSENT]);
+			assert.deepEqual(h.records(jobId), ["Background job running", RUNNING, QUEUED, ABSENT]);
 		} finally {
 			await h.dispose();
 		}
@@ -334,7 +335,7 @@ describe("completion delivery state against a real AgentSession", () => {
 			open();
 			await run;
 			assert.equal(h.retained(jobId), 1, "Pi reports the handler error and continues the run");
-			assert.deepEqual(h.records(jobId), ["Background job running", QUEUED, ADDED]);
+			assert.deepEqual(h.records(jobId), ["Background job running", RUNNING, QUEUED, ADDED]);
 			assert.deepEqual(h.errors.map((error) => error.event), ["before_agent_start"]);
 		} finally {
 			await h.dispose();
@@ -355,7 +356,7 @@ describe("completion delivery state against a real AgentSession", () => {
 			const idle = await h.launch(WAIT_FOR_RELEASE);
 			await idle.run;
 			assert.equal(h.retained(jobId), 1, "the next run delivers the held completion");
-			assert.deepEqual(h.records(jobId), ["Background job running", QUEUED, ADDED]);
+			assert.deepEqual(h.records(jobId), ["Background job running", RUNNING, QUEUED, ADDED]);
 			const gate = h.closeGate("break");
 			h.release();
 			await gate.entered;
@@ -363,7 +364,7 @@ describe("completion delivery state against a real AgentSession", () => {
 			await h.until(() => h.errors.some((error) => error.event === "send_message"));
 			assert.equal(h.session.isIdle, true);
 			assert.equal(h.retained(idle.jobId), 0, "the completion that started the failed run is lost");
-			assert.deepEqual(h.records(idle.jobId), ["Background job running", SENT]);
+			assert.deepEqual(h.records(idle.jobId), ["Background job running", RUNNING, SENT]);
 		} finally {
 			await h.dispose();
 		}
@@ -393,7 +394,7 @@ describe("completion delivery state against a real AgentSession", () => {
 			await h.until(() => h.shown(jobId) === ADDED);
 			await h.session.waitForIdle();
 			assert.equal(h.retained(jobId), 1);
-			assert.deepEqual(h.records(jobId), ["Background job running", SENT, ADDED]);
+			assert.deepEqual(h.records(jobId), ["Background job running", RUNNING, SENT, ADDED]);
 		} finally {
 			await h.dispose();
 		}
@@ -408,7 +409,7 @@ describe("completion delivery state against a real AgentSession", () => {
 			await h.until(() => h.shown(jobId) === UNSENT);
 			await h.session.prompt("Continue.", { source: "rpc" });
 			assert.equal(h.retained(jobId), 0);
-			assert.deepEqual(h.records(jobId), ["Background job running", UNSENT]);
+			assert.deepEqual(h.records(jobId), ["Background job running", RUNNING, UNSENT]);
 		} finally {
 			await h.dispose();
 		}

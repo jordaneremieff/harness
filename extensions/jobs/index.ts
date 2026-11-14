@@ -304,6 +304,11 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 	pi.on("agent_settled", async (event, ctx) => {
 		lastRunAborted = event.aborted;
 		reconcile(ctx, true);
+		// Pi writes its own record for the settled run after these handlers return. The update of each job that runs
+		// at this settlement follows it, so a job that still runs after the conversation went quiet is the newest
+		// record of the terminal.
+		const jobIds = activity.runningJobs();
+		if (jobIds.length > 0) setImmediate(() => activity.runSettled(event.aborted ? "prompt" : "turn", jobIds));
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		closed = true;

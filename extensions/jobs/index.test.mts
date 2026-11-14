@@ -424,6 +424,25 @@ describe("Command Jobs adapter", () => {
 		}
 	});
 
+	it("rewrites the record of a job that still runs after Pi's own report for a settled run", async () => {
+		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]> };
+		const { pi, call } = setup(root, false, terminal);
+		const record = (id: string, msg: string) => formatStatusRecord({ id: recordId(id) as string, state: "working", title: "Background job", msg: `Background job running · ${msg}` });
+		try {
+			const job = jobOf(await call("bash", { command: "sleep 30", background: true }));
+			const writes = terminal.writes.length;
+			await pi.emit("agent_settled", { type: "agent_settled", aborted: false });
+			assert.equal(terminal.writes.length, writes, "the update waits until the settled handlers have returned");
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(terminal.writes.at(-1), record(job.id, "its completion starts the next turn"));
+			await pi.emit("agent_settled", { type: "agent_settled", aborted: true });
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.equal(terminal.writes.at(-1), record(job.id, "its completion waits for the next prompt"));
+		} finally {
+			await pi.shutdown();
+		}
+	});
+
 	it("reports a completion that Pi appends before sendMessage returns as in the conversation", async () => {
 		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]> };
 		const { pi, call } = setup(root, false, terminal);

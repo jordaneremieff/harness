@@ -66,15 +66,26 @@ can show these records as tab indicators, activity lists, or notifications;
 other terminals ignore the sequence. The record id is `jobs/<job id without
 hyphens>`:
 
-- `working` when the job starts;
+- `working` when the job starts, and again when the session's run settles while
+  the job still runs;
 - `done` when it succeeds;
 - `error` when it fails or times out;
 - `clear` when it is cancelled, since cancellation is the caller's own act.
 
 Each record carries the title `Background job` and one message line made only
-from the job record: the outcome, exit code, and whole minutes elapsed, written
-when the job settles, followed by the delivery state of the completion message.
-For example:
+from the job record. A running job shows `Background job running`. When the
+session's run settles while the job runs, for example after a quiet turn that
+only waits for the job, the message also says what the completion will do:
+`its completion starts the next turn`, or after an aborted run `its completion
+waits for the next prompt`. Pi writes its own record for the settled run after
+the extensions' `agent_settled` handlers return; this update follows it, so the
+running job is the newest record of the terminal. A terminal that shows its
+newest activity, such as the Rex activity list, then shows the job as working
+instead of the finished quiet turn. Pi's own record stays as Pi wrote it.
+
+A settled job's message holds the outcome, exit code, and whole minutes
+elapsed, written when the job settles, followed by the delivery state of the
+completion message. For example:
 `Background job failed · exit 1 · 3 min · completion in the conversation`.
 
 The delivery state starts from Pi's own idle state (`ctx.isIdle()`) when the

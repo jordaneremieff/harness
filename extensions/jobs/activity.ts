@@ -167,6 +167,27 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 			}
 			showFooter();
 		},
+		/** Ids of the jobs that run now. */
+		runningJobs(): string[] {
+			return closed ? [] : [...running.keys()];
+		},
+		/**
+		 * Rewrites the records of the given jobs that still run after the session's run settled, with what their
+		 * completion will do: start the next turn, or wait for the next prompt after an aborted run. Returns the
+		 * records written.
+		 */
+		runSettled(next: "turn" | "prompt", jobIds: readonly string[]): number {
+			if (closed) return 0;
+			const msg = `Background job running · ${next === "turn" ? "its completion starts the next turn" : "its completion waits for the next prompt"}`;
+			let written = 0;
+			for (const jobId of jobIds) {
+				const id = running.get(jobId);
+				if (!id) continue;
+				write({ id, state: "working", title: RECORD_TITLE, msg });
+				written += 1;
+			}
+			return written;
+		},
 		/** Rewrites a retained settled record with a new delivery state; an evicted or unchanged record writes nothing. */
 		deliver(jobId: string, delivery: Delivery): void {
 			const record = settled.get(jobId);

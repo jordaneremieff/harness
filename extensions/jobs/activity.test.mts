@@ -216,3 +216,35 @@ describe("job activity presenter", () => {
 		assert.deepEqual(rpc.statuses, [["jobs", "jobs: 1 running"]]);
 	});
 });
+
+describe("records after a settled run", () => {
+	it("rewrites only records of jobs that still run, with what their completion will do", () => {
+		const { activity, writes, ctx } = fixture();
+		const other = job({ id: "2c4e28ba-2fa1-11d2-883f-0016d3cca427" });
+		activity.start(job(), ctx);
+		activity.start(other, ctx);
+		activity.settle({ ...other, status: "succeeded", exitCode: 0, endedAt: 1 });
+		writes.length = 0;
+		assert.equal(activity.runSettled("turn", activity.runningJobs()), 1);
+		assert.deepEqual(writes, [formatStatusRecord({ id: RECORD, state: "working", title: "Background job", msg: "Background job running · its completion starts the next turn" })]);
+		writes.length = 0;
+		assert.equal(activity.runSettled("prompt", activity.runningJobs()), 1);
+		assert.deepEqual(writes, [formatStatusRecord({ id: RECORD, state: "working", title: "Background job", msg: "Background job running · its completion waits for the next prompt" })]);
+		const atSettlement = activity.runningJobs();
+		activity.settle({ ...job(), status: "succeeded", exitCode: 0, endedAt: 1 });
+		writes.length = 0;
+		assert.equal(activity.runSettled("turn", atSettlement), 0, "a job that settled meanwhile keeps its settled record");
+		activity.start(job(), ctx);
+		activity.shutdown();
+		writes.length = 0;
+		assert.equal(activity.runSettled("turn", [JOB_ID]), 0);
+		assert.deepEqual(writes, []);
+	});
+
+	it("writes nothing for jobs that have no terminal record", () => {
+		const { activity, writes, ctx } = fixture({ tty: false });
+		activity.start(job(), ctx);
+		assert.equal(activity.runSettled("turn", activity.runningJobs()), 0);
+		assert.deepEqual(writes, []);
+	});
+});
