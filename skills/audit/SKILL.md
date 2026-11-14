@@ -56,6 +56,11 @@ The normal audit path is read-only:
   unless the operator gives a separate explicit grant and the appropriate
   workflow owns that act. Existing explicit grants remain valid; route them
   through their appropriate workflow instead of applying them through audit.
+- When the audit runs inside an authorised improvement workflow, such as an
+  operator-invoked `/evo`, return the findings to that workflow. It selects and
+  makes any change under its own grant, without asking the operator to relay
+  the findings. A plain audit request ends with findings and at most one
+  bounded next action.
 - Use direct work by default. Add proportionate collaboration only when it
   improves the selected audit. Honor no-worker, named participant, and model
   restrictions. Do not require a worker fleet.
@@ -153,8 +158,9 @@ duration evidence measures them.
 
 ## 5. Reconcile load-bearing figures
 
-Use a second pass when a figure supports a finding, comparison, or decision and
-its source complexity or instability warrants it. Use the same window and
+This section decides when a second pass is needed; the collection references
+describe how to perform one. Use a second pass when a figure supports a finding,
+comparison, or decision and its source complexity or instability warrants it. Use the same window and
 accepted source set. For a simple single-source result, label it single-source
 instead of adding a ritual pass. When a second pass is warranted, recheck source
 identity and stability, discovered versus read inputs, daily and per-tool

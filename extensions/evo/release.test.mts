@@ -20,6 +20,7 @@ import {
 	PI_PUBLICATION_RESPONSE_CAP_BYTES,
 	PI_RELEASE_HEADING_CAP,
 	PI_RELEASE_NOTES_CAP_BYTES,
+	type PiReleaseIntake,
 	type PiReleaseIntakeOptions,
 	readPiReleaseIntake,
 	releaseEvidenceString,
@@ -322,8 +323,21 @@ for (const [baseline, state, expected] of [
 		});
 		assert.equal(directed.split("\n").filter((line) => line === "Pi release state:").length, 1);
 		for (const kickoff of [bare, directed]) {
-			assert.equal(kickoff.match(/Latest Pi alignment applies to every run/g)?.length, 1);
-			assert.match(kickoff, /before unrelated directed work, subject to explicit operator restrictions/);
+			assert.equal(kickoff.match(/^Latest Pi alignment:$/gm)?.length, 1);
+			assert.match(kickoff, /No alignment work is pending; do not repeat these reads/);
+		}
+		const newer = setup(baseline, CHANGELOG, undefined, () => ({ latest: "0.99.3" }));
+		t.after(newer.close);
+		const pending = { ...options, harnessRoot: newer.root, invocationCwd: newer.root, release: await newer.read() };
+		const pendingBare = buildEvoKickoff(pending);
+		const pendingDirected = buildEvoKickoff({ ...pending, direction: "Improve docs" });
+		assert.match(pendingBare, /This run has no direction\. Pending alignment is part of its purpose and precedes unrelated work, subject to explicit operator restrictions/);
+		assert.match(
+			pendingDirected,
+			/This run is directed\. Align first only when the direction targets Pi alignment or its work depends on a changed Pi contract\. Otherwise keep the direction's focus, leave dependencies unchanged, and report pending alignment as separate work/,
+		);
+		for (const kickoff of [pendingBare, pendingDirected]) {
+			assert.equal(kickoff.match(/^Latest Pi alignment:$/gm)?.length, 1);
 			assert.match(kickoff, /Start from the Pi version facts below/);
 			assert.match(kickoff, /A registry failure is not a gate/);
 			assert.match(kickoff, /Keep wildcard Pi declarations/);
@@ -335,17 +349,63 @@ for (const [baseline, state, expected] of [
 		if (state === "behind" || state === "unavailable") {
 			assert.match(directed, /pending lead/);
 			assert.match(directed, /When it targets Pi release intake/);
-			assert.match(directed, /Audit every extension, skill, prompt, and script/);
+			assert.match(
+				directed,
+				/Inspect every release entry in scope, then trace each changed, added, removed, or deprecated contract to the extensions, skills, prompts, and scripts that consume it\. Do not reread unaffected surfaces/,
+			);
 			assert.match(directed, /accept the complete adoption before the coordinator advances/);
 			assert.doesNotMatch(directed, /purpose is the harness-wide release intake|first priority is autonomous/);
 		}
 	});
 }
 
+test("settled alignment facts leave one line and no dependency procedure", () => {
+	const durable = "@earendil-works/pi-durable";
+	const declared = (name: string, relation: "dependency" | "peer") => ({ name, relation, range: "*", version: "1.5.2", nested: [], nestedOmitted: 0 });
+	const release = {
+		state: "aligned",
+		installedVersion: "1.5.2",
+		installedPackageDir: "/pi/coding-agent",
+		baselineVersion: "1.5.2",
+		baselineCommit: "a".repeat(40),
+		baselinePath: "docs/pi-durable-harness.md",
+		changelogPath: "/pi/coding-agent/CHANGELOG.md",
+		releases: [],
+		notesCut: false,
+		publication: {
+			state: "observed",
+			registry: "https://registry.npmjs.org",
+			tag: "latest",
+			observedAt: "2026-01-01T00:00:00.000Z",
+			packages: [PI_HOST_PACKAGE, durable].map((name) => ({ name, version: "1.5.2" })),
+		},
+		graph: {
+			state: "observed",
+			commit: "a".repeat(40),
+			manifestPath: "package.json",
+			lockfilePath: "package-lock.json",
+			observedAt: "2026-01-01T00:00:00.000Z",
+			packages: [declared(PI_HOST_PACKAGE, "peer"), declared(durable, "dependency")],
+		},
+	} as const satisfies PiReleaseIntake;
+	for (const direction of [undefined, "Improve docs"]) {
+		const settled = buildEvoKickoff({ harnessRoot: "/harness", invocationCwd: "/workspace", origin: "operator", direction, release });
+		assert.match(settled, /^Latest Pi alignment:\n- The version facts below show publication, the running host, and the checkout graph at one version\. No alignment work is pending; do not repeat these reads\.$/m);
+		assert.doesNotMatch(settled, /npm update|Align first only|Pending alignment is part of its purpose/);
+	}
+	const behind = { ...release, graph: { ...release.graph, packages: [declared(PI_HOST_PACKAGE, "peer"), { ...declared(durable, "dependency"), version: "1.5.1" }] } };
+	const pending = buildEvoKickoff({ harnessRoot: "/harness", invocationCwd: "/workspace", origin: "operator", direction: "Improve docs", release: behind });
+	assert.match(pending, /Align first only when the direction targets Pi alignment/);
+	assert.match(pending, /run `npm update` for the @earendil-works packages/);
+	const ranged = { ...release, graph: { ...release.graph, packages: [declared(PI_HOST_PACKAGE, "peer"), { ...declared(durable, "dependency"), range: "^1.5.0" }] } };
+	assert.match(buildEvoKickoff({ harnessRoot: "/harness", invocationCwd: "/workspace", origin: "operator", release: ranged }), /Pending alignment is part of its purpose/);
+});
+
 test("kickoff requires latest alignment without release evidence", () => {
 	for (const direction of [undefined, "Review the latest Pi updates"]) {
 		const kickoff = buildEvoKickoff({ harnessRoot: "/harness", invocationCwd: "/workspace", origin: "operator", direction });
-		assert.match(kickoff, /Latest Pi alignment applies to every run/);
+		assert.match(kickoff, /^Latest Pi alignment:$/m);
+		assert.match(kickoff, /Check the latest published versions/);
 		assert.match(kickoff, /matching review coverage does not establish dependency alignment/);
 		assert.match(kickoff, /repair consumers, and run the required repository checks/);
 	}
@@ -425,7 +485,7 @@ test("newer published versions stay separate from the host, the checkout graph a
 		"- Every declared package in the checkout graph resolves 0.99.2, the running host's version.",
 		"Committed review coverage matches installed Pi 0.99.2; no newer listed release is pending.",
 	]);
-	assert.match(kickoff, /newer than the running host, continue independent repository alignment.*beyond this invocation's repository grant/);
+	assert.match(kickoff, /newer than the running host, identify the required Pi upgrade and new process.*beyond this invocation's repository grant/);
 });
 
 test("aligned versions produce one comparison line per pair of facts", async (t) => {

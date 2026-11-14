@@ -223,11 +223,8 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
 						}),
 					),
 				);
-				assert.match(texts[index], /docs\/agent-delivery.md.*in full before selection or governed work/);
-				assert.match(
-					texts[index],
-					/same concrete before\/after operator use path.*task contracts, acceptance, and final claims/,
-				);
+				assert.match(texts[index], /Before selection, read the repository AGENTS.md and docs\/agent-delivery.md/);
+				assert.match(texts[index], /unless this session already holds a current read of them/);
 			}
 			assert.match(texts[0], /No operator direction was supplied/);
 			assert.match(texts[1], /<evo-direction-json>\n"\/ignored-command/);
@@ -390,10 +387,12 @@ test("real evo command retains pending releases despite aligned dependencies and
 		assert.match(texts[0], /purpose is the harness-wide release intake/);
 		assert.match(texts[1], /pending lead/);
 		for (const text of texts) {
-			assert.match(text, /Latest Pi alignment applies to every run/);
+			assert.match(text, /^Latest Pi alignment:$/m);
 			assert.match(text, /Start from the Pi version facts below/);
-			assert.match(text, /Audit every extension, skill, prompt, and script/);
+			assert.match(text, /Inspect every release entry in scope, then trace each changed, added, removed, or deprecated contract/);
 		}
+		assert.match(texts[0], /This run has no direction\. Pending alignment is part of its purpose/);
+		assert.match(texts[1], /This run is directed\. Align first only when the direction targets Pi alignment/);
 		assert.match(texts[1], /When it targets Pi release intake/);
 		for (const release of expected.releases) {
 			assert.ok(texts[0].includes(`- ${release.version} (${release.date})`));

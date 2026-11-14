@@ -158,7 +158,7 @@ No warrant is needed for a fixed repair, an operator-selected outcome or archite
 - **Prompt template, theme, package, settings, SDK/RPC/JSON integration, or standalone CLI:** use [surface selection](references/surface-selection.md), then read the current installed Pi document for the selected surface. Use [extensions.md](references/extensions.md) when extension code or an extension boundary participates.
 - **Managed extension removal after the disposition is settled:** read [removal.md](references/removal.md).
 - **Session or harness evidence audit:** use the Audit skill at repository-root path `skills/audit/SKILL.md` as the entrypoint. It owns intent resolution, bounded collection, unit separation, reconciliation, and audit reporting.
-- **Extension-specific audit collection:** from the Audit skill, read repository-root path `skills/audit/references/extension-telemetry.md` for source contracts, windowed collection, and second-pass reconciliation.
+- **Extension-specific audit collection:** from the Audit skill, read repository-root path `skills/audit/references/extension-telemetry.md` for source contracts and windowed collection.
 - **Extension utility, retention, removal, or incident disposition:** from the Audit skill, read [extension-audit.md](references/extension-audit.md) after collection.
 
 **Complete when:** every loaded reference serves a live decision or verification claim.
@@ -202,3 +202,15 @@ Lead with the resulting operator-visible state and its consequence. Name the sel
 Report any discovery that changes the operator's available choices: evidence against the request's premise, a cheaper or safer route, an unanticipated cost, or an authority the next step will need. Report a limitation only when it blocks the requested conclusion, materially reduces confidence in it, or requires operator action. State the affected conclusion, the impact, and the narrowest next check or action. Omit irrelevant unperformed layers and optional stronger checks that would not change the conclusion. A binding repository completion or release gate remains material until satisfied or explicitly waived. Follow the owning repository's state-report requirements; otherwise, report repository state when it changes how the operator must handle the result.
 
 Keep durable documentation about the current system; keep task chronology, transcripts, evaluation output, and private provenance outside the package.
+
+### Retain what the work taught
+
+Retain a lesson only in the layer that applies it on a later relevant task:
+
+- a deterministic implementation fault: the code fix and proportionate regression protection;
+- a reusable operating method: its owning skill or reference, replacing contradicted text instead of adding an opposite rule;
+- a durable operator fact or preference: Memory, under its own rules;
+- sourced concern-specific expertise: the standing agent's profile through `agent_profile`;
+- temporary unresolved work: the current context or a handover.
+
+Keep the source, applicability, and material uncertainty with the lesson. Do not store repository facts in operator Memory, turn every error into a lesson, or record an agent interpretation as operator authority. A written note is not learning: the lesson counts when a later relevant task applies it. When a source or condition changes, revalidate the lesson where it lives, and correct or supersede it there.

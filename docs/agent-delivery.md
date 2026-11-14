@@ -33,6 +33,9 @@ judgment and integration ownership.
 
 Read only enough to form a useful purpose and identify the uncertainty that
 decides the next act. Broaden a read for a named gap, not an exhaustive inventory.
+Reuse what this session already read while its source revision and applicability
+remain current; reopen a source for a named gap or a change, and do not replace a
+needed read with unsupported memory.
 Preserve each source's scope, freshness, coverage, and unavailable boundaries.
 Batch independent reads through available public composition tools when useful,
 without losing those qualifications. Do not read another extension's private
@@ -45,25 +48,15 @@ supplied focus. Stronger leads outside it are recommendations, not substitute
 work. Keep an inferred purpose provisional; it never expands authority or
 replaces an operator's request.
 
-Every run completes the [latest Pi alignment obligation](../extensions/evo/README.md#release-intake)
-before unrelated directed work, subject to explicit operator restrictions.
-Publication, running-host version, checkout dependencies, and completed review
-coverage are separate evidence. Select a development checkout through the
-[development workflow](conventions/worktrees.md); do not treat the kickoff's
-package evidence root as a writable release checkout. A newer published host
-requires the separately authorised upgrade and fresh process, not a hot upgrade;
-complete independent repository work and apply the host-retirement procedure
-before activation.
-
-When the kickoff reports unaccounted Pi releases, a bare run treats release
-intake as its purpose. A directed run whose focus is release intake performs the
-same complete procedure. Other directed runs keep their focus and report the
-review as a pending lead without skipping latest-version alignment. Unknown
-coverage requires autonomous baseline recovery for release-intake runs, followed
-by cumulative changelog review if no prior complete review is established.
-Dependency installation does not establish release coverage. Follow the
-[review coverage procedure](pi-durable-harness.md#release-review-coverage) before
-advancing its declaration; unrelated directed work leaves it unchanged.
+The command reads the Pi version facts for every run.
+[Release intake](../extensions/evo/README.md#release-intake) owns when dependency
+alignment and release review are pending, when they precede other work, and how
+review coverage advances. A bare run takes pending alignment or intake as its
+purpose. A directed run keeps its focus, aligns first only where that work
+depends on a changed Pi contract, and reports other pending alignment or review
+as a separate lead. Select a development checkout through the
+[development workflow](conventions/worktrees.md); the kickoff's package evidence
+root is not a writable release checkout.
 
 Use history to learn from delivered outcomes and corrections, not to create a
 fixed roadmap or work quota. Maintenance-heavy recent sessions are activity
@@ -86,6 +79,11 @@ operator must still do. Choose an ordinary task that exposes the intended
 difference, then consider variations that reveal its useful reach. This is a way
 to reason about the outcome, not a required form, separate artifact, or invented
 user story. Keep known facts, inferred needs, and conjectured benefits distinct.
+
+When the run carries an improvement grant, take audit findings straight into
+selection and implementation through the harness skill; do not ask the operator
+to relay findings or repeat the grant. Evidence gathered under the Audit skill
+stays read-only until this workflow selects a change.
 
 Give the possibility enough form to learn from it through a use case, sketch,
 example, draft, or bounded experiment within authority. Investigate the
@@ -426,10 +424,8 @@ delivery contract.
 
 ## Deliver and report
 
-The invocation owns its grant and reservations. Apply its direction and governing
-conversation before deciding that an act lacks authority; carried grants do not
-require the operator to repeat a settled decision. Host authorization, project
-trust, required checks, and review still bind.
+The kickoff states the invocation's grant and reservations;
+[Evo authority](../extensions/evo/README.md#authority) describes them.
 
 Delivery follows the [development workflow](conventions/worktrees.md): land the
 accepted result on `main`, activate it when the outcome needs running code, and
@@ -455,9 +451,10 @@ Compare the actual result with the promised operator benefit on the same selecte
 use path; name benefits that remain unsupported rather than infer them from
 delivered code. State material limits and blocked decisions that affect
 acceptance, use, or the next action. No operator-curated report or intermediate
-artifact is required.
+artifact is required. Retain what the run taught in its owning layer, as the
+harness skill's closure describes.
 
-### No-change and blocked work
+### No-change, inconclusive, and blocked work
 
 Before no-change, assess value-creation opportunities as well as defects. Return
 scoped no-change only when bounded creative development yields no worthwhile
@@ -467,6 +464,12 @@ do not justify change. If no plausible possibility emerged, explain the explored
 scope and reasoning without inventing one. Passing checks, sparse history,
 rejected repairs, and task size alone do not justify no-change. Do not claim the
 whole harness has no useful work.
+
+An investigation whose bounded evidence cannot decide between live alternatives
+ends inconclusive: name the alternatives, the evidence that would decide them,
+and its cost. Do not manufacture a change to end a run; a change count is not an
+evolution target. Conversely, one cosmetic edit does not complete a run while the
+requested operational improvements remain achievable within its authority.
 
 A worthwhile contribution that needs an unavailable fact, capability, or
 authority is blocked, not worthless. Name the boundary and affected act. A

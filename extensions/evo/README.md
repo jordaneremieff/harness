@@ -20,17 +20,19 @@ development, collaboration, acceptance, continuity, and release checks.
 /evo <direction>
 ```
 
-Every `/evo` run first checks latest Pi dependency alignment, including directed
-runs and runs whose release review is already complete. Explicit operator
-restrictions remain binding. Bare `/evo` then prioritizes pending Pi release
-intake or unresolved release coverage.
-When review coverage matches the running host, it infers a useful purpose without
-asking the operator for a topic. Current capabilities and plausible uses suffice to start; incident history,
-populated stores, and proof of a defect are not prerequisites. The coordinator
-loads the harness skill, repository instructions, and delivery workflow before
-selection or governed work. The workflow links detailed mechanism references,
-such as session history, result waits, delivery recovery, and host refresh; the
-coordinator reads each one when the run uses that mechanism.
+Every `/evo` run reads the Pi version facts. Bare `/evo` takes pending dependency
+alignment, Pi release intake, or unresolved release coverage as its purpose; a
+directed run keeps its focus and aligns first only where that work depends on a
+changed Pi contract. Explicit operator restrictions remain binding.
+When nothing is pending, a bare run infers a useful purpose without asking the
+operator for a topic. Current capabilities and plausible uses suffice to start; incident history,
+populated stores, and proof of a defect are not prerequisites. Before selection,
+the coordinator reads the repository instructions and the delivery workflow,
+reusing a current read from the same session. It loads the harness skill before
+selecting or changing a harness surface, the Audit skill when the work needs
+evidence about past activity, and a linked mechanism reference, such as session
+history, result waits, delivery recovery, host refresh, or release review, only
+when the run uses that mechanism.
 
 The complete trailing input is an optional run direction, not a subcommand. It
 appears before orientation in the request. Its focus (targets, subjects,
@@ -97,12 +99,17 @@ shared contract and derivation.
 
 ## Release intake
 
-Latest-version alignment and release review are separate obligations. Every run
-starts from the [version facts](#version-facts) that the command reads: the
-latest published versions of existing Pi dependencies and peers, the running
-host, the checkout graph, and review coverage. The coordinator repairs a stale
-graph before unrelated directed work. Wildcard declarations remain; the lockfile
-records the current resolved versions. Upgrade defects require consumer repairs,
+Dependency checking, dependency changes, release review, activation, and runtime
+replacement are separate acts. Every run starts from the
+[version facts](#version-facts) that the command reads: the latest published
+versions of existing Pi dependencies and peers, the running host, the checkout
+graph, and review coverage. When the facts show one version everywhere with
+wildcard ranges, the kickoff states that alignment is settled in one line and no
+dependency work follows. Otherwise a bare run repairs a stale graph before
+unrelated work. A directed run repairs it first only when the direction targets
+Pi alignment or its work depends on a changed Pi contract; otherwise it keeps its
+focus and reports the pending alignment as separate work. Wildcard declarations
+remain; the lockfile records the current resolved versions. Upgrade defects require consumer repairs,
 not an older dependency target. Dependency versions do not establish review
 coverage.
 
@@ -112,7 +119,8 @@ the kickoff supplies evidence and worktree discovery, not permission to modify a
 loaded release checkout. Dependency changes require `npm ci` in affected
 development worktrees and the repository's required checks.
 
-If publication is ahead of the running host, repository alignment continues.
+If publication is ahead of the running host, repository alignment can proceed by
+the rule above.
 The coordinator identifies the required Pi upgrade and fresh process; those host
 changes require operator authority beyond the invocation's repository grant.
 The command itself performs no Git fetch, package install or update, activation,
@@ -236,8 +244,10 @@ Every selected release retains its path and line range if its text does not fit.
 The kickoff requires direct bounded reads of omitted text. Note lines are JSON
 strings, separate from trusted instructions.
 
-A release-intake run, bare or directed, also refreshes the host contract document
-and audits extensions, skills, prompts, and scripts for every release in scope.
+A release-intake run, bare or directed, also refreshes the host contract document,
+inspects every release entry in scope, and traces each changed contract to the
+extensions, skills, prompts, and scripts that consume it. Unaffected surfaces need
+no reread to claim coverage.
 The coordinator judges the direction's focus; the command does not classify
 free text. It adopts new capabilities where they serve the operator's work.
 The coordinator advances coverage only after complete review, resolved applicable
@@ -282,7 +292,7 @@ realistic use evidence when it decides acceptance. Source, test, and dispatch
 checks have narrower reach. The workflow also owns
 [session and edit ownership](../../docs/agent-delivery.md#collaborate-from-the-shared-purpose),
 [continuity](../../docs/agent-delivery.md#preserve-continuity-and-ownership), and
-[no-change versus blocked results](../../docs/agent-delivery.md#no-change-and-blocked-work).
+[no-change, inconclusive, and blocked results](../../docs/agent-delivery.md#no-change-inconclusive-and-blocked-work).
 An idea list, assessment, plan, or worker summary is not completion while
 worthwhile authorized delivery remains. No recurring operator report is required.
 

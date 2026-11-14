@@ -15,7 +15,7 @@ to retain an extension.
 - [Defining sources](#choose-defining-sources)
 - [Bounded reads](#read-within-explicit-bounds)
 - [Units and aggregation](#aggregate-without-changing-the-unit)
-- [Second-pass reconciliation](#reconcile-on-a-second-pass)
+- [Reconciliation](#reconcile-when-a-figure-carries-a-decision)
 - [Delivery](#deliver-collection-then-audit)
 
 ## Establish the collection boundary
@@ -149,9 +149,10 @@ action ran. Multiple rule attributions may refer to one call; do not add them
 as distinct interventions. Do not count an outer composition call and its
 nested calls as one interchangeable unit.
 
-## Reconcile on a second pass
+## Reconcile when a figure carries a decision
 
-Use the same window and accepted source set. Check:
+The Audit skill's reconciliation step decides when a second pass is needed.
+When it is, use the same window and accepted source set. Check:
 
 - Source file/byte identities and coverage agree between passes. Reconcile
   discovered, read, missing, malformed, skipped, and changed inputs.
@@ -176,7 +177,8 @@ Return a compact local result in chat unless the operator requests a file:
 - exact window, extension population, source boundaries, and collection time;
 - per-extension evidence class, counts with units, and explicit unavailable or
   unrecorded dimensions;
-- second-pass reconciliations, source-fidelity evidence, and unresolved gaps.
+- reconciliations performed, source-fidelity evidence, and unresolved gaps;
+  label other figures single-source.
 
 Cite defining paths or public results beside load-bearing claims. State whether
 coverage is complete only for the retained accepted scope, partial, or

@@ -6,12 +6,16 @@ the question requires a utility, retention, incident, repair, reposition,
 instrumentation, supersession, or removal judgment. Keep collection
 observations separate from the causal judgments below.
 
-## Trace six links separately
+## Trace the six links
 
-For each link, write **established**, **not established**, and **causal
-alternative**. Cite each established item to the most precise available
-repository-relative artifact, check/trace, release/version, date/window, or
-anonymized observation record.
+The six links locate where a capability's chain breaks. For a utility,
+retention, reposition, supersession, or removal judgment about a whole
+capability, write each link as **established**, **not established**, or
+**causal alternative**. For a narrow defect or incident, name the broken link,
+its evidence, and the causal alternative that the evidence excludes; the other
+links need no written entry. Cite each established item to the most precise
+available repository-relative artifact, check/trace, release/version,
+date/window, or anonymized observation record.
 
 1. **Underlying need** — What task, friction, or desired capability exists
    independently of this implementation? Who observed it, under what scope?

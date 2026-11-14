@@ -99,17 +99,48 @@ function releaseNotesBlock(releases: PiReleaseSection[]): string[] {
 	return lines;
 }
 
-const latestPiAlignment = (origin: EvoInvocationOrigin, release: PiReleaseIntake | undefined): string[] => [
-	"Latest Pi alignment applies to every run, before unrelated directed work, subject to explicit operator restrictions:",
-	release
-		? "- Start from the Pi version facts below. Published versions, the running host, the checkout graph, and review coverage are separate facts: matching review coverage does not establish dependency alignment, and checkout dependencies do not show what a running or retained process loaded. Read a source again only when its fact is unavailable or a change makes it stale."
-		: "- Check the latest published versions of the existing @earendil-works dependencies and peers. Compare publication, the running Pi host, and the resolved checkout graph separately; matching review coverage does not establish dependency alignment.",
-	"- Use docs/conventions/worktrees.md to select main or an isolated development worktree for writes. The harness package root is an evidence and discovery location, not permission to mutate a loaded release checkout.",
-	"- Keep wildcard Pi declarations. Where the graph is behind, run `npm update` for the @earendil-works packages, then `npm ci` in affected development worktrees, repair consumers, and run the required repository checks. An upgrade defect is work to repair now, not a reason to retain older dependencies. Dependency versions are not review coverage.",
-	`- If the latest published Pi is newer than the running host, continue independent repository alignment and identify the required Pi upgrade and new process. Those host changes need operator authority ${origin === "operator" ? "beyond this invocation's repository grant" : "that this invocation does not supply"}; do not hot-upgrade the running process or claim it uses the new graph.`,
-	"- If published versions are unavailable or partial, latest-version alignment stays unverified for the missing packages: report that with its reason and complete the rest of the alignment and the independent authorised work. A registry failure is not a gate.",
-	"- Before activation, follow docs/pi-durable-harness.md#storage-host-retirement. Do not combine a newer Durable/Chord graph with an older retained coding-agent host without the required host/source checks and safe process switch. Name an unresolved host boundary without blocking independent repository work.",
-];
+/**
+ * Alignment is settled when every fact was observed and publication, the running host, and every
+ * declared package resolve one version with wildcard ranges and no divergent nested copy.
+ */
+function alignmentSettled(release: PiReleaseIntake): boolean {
+	const { graph, publication } = release;
+	if (publication.state !== "observed" || graph.state !== "observed" || !isReleaseVersion(release.installedVersion)) return false;
+	const published = new Map(publication.packages.map((entry) => [entry.name, knownVersion(entry)]));
+	if (published.get(PI_HOST_PACKAGE) !== release.installedVersion) return false;
+	return graph.packages.every(
+		(entry) =>
+			entry.range === "*" &&
+			entry.nested.length === 0 &&
+			entry.nestedOmitted === 0 &&
+			knownVersion(entry) === release.installedVersion &&
+			published.get(entry.name) === release.installedVersion,
+	);
+}
+
+/** Checking is the command's job; dependency changes precede directed work only where that work needs them. */
+function latestPiAlignment(origin: EvoInvocationOrigin, release: PiReleaseIntake | undefined, directed: boolean): string[] {
+	if (release && alignmentSettled(release)) {
+		return [
+			"Latest Pi alignment:",
+			"- The version facts below show publication, the running host, and the checkout graph at one version. No alignment work is pending; do not repeat these reads.",
+		];
+	}
+	return [
+		"Latest Pi alignment:",
+		release
+			? "- Start from the Pi version facts below. Published versions, the running host, the checkout graph, and review coverage are separate facts: matching review coverage does not establish dependency alignment, and checkout dependencies do not show what a running or retained process loaded. Read a source again only when its fact is unavailable or a change makes it stale."
+			: "- Check the latest published versions of the existing @earendil-works dependencies and peers. Compare publication, the running Pi host, and the resolved checkout graph separately; matching review coverage does not establish dependency alignment.",
+		directed
+			? "- This run is directed. Align first only when the direction targets Pi alignment or its work depends on a changed Pi contract. Otherwise keep the direction's focus, leave dependencies unchanged, and report pending alignment as separate work with these facts. Explicit operator restrictions still bind."
+			: "- This run has no direction. Pending alignment is part of its purpose and precedes unrelated work, subject to explicit operator restrictions.",
+		"- For alignment work, use docs/conventions/worktrees.md to select main or an isolated development worktree for writes. The harness package root is an evidence and discovery location, not permission to mutate a loaded release checkout.",
+		"- Keep wildcard Pi declarations. Where the graph is behind, run `npm update` for the @earendil-works packages, then `npm ci` in affected development worktrees, repair consumers, and run the required repository checks. An upgrade defect is work to repair, not a reason to retain older dependencies. Dependency versions are not review coverage.",
+		`- If the latest published Pi is newer than the running host, identify the required Pi upgrade and new process. Those host changes need operator authority ${origin === "operator" ? "beyond this invocation's repository grant" : "that this invocation does not supply"}; do not hot-upgrade the running process or claim it uses the new graph.`,
+		"- If published versions are unavailable or partial, latest-version alignment stays unverified for the missing packages: report that with its reason and complete the independent authorised work. A registry failure is not a gate.",
+		"- Before activation, follow docs/pi-durable-harness.md#storage-host-retirement. Do not combine a newer Durable/Chord graph with an older retained coding-agent host without the required host/source checks and safe process switch. Name an unresolved host boundary without blocking independent repository work.",
+	];
+}
 
 function publishedLine(release: PiReleaseIntake): string {
 	const { publication } = release;
@@ -261,7 +292,7 @@ function versionFactsBlock(release: PiReleaseIntake | undefined): string[] {
 
 const RELEASE_WORK = [
 	"- Refresh docs/pi-durable-harness.md from current sources with current verification dates.",
-	"- Audit every extension, skill, prompt, and script against changed, added, removed, or deprecated behavior in every release in scope. Assess superseded changes against the current host.",
+	"- Inspect every release entry in scope, then trace each changed, added, removed, or deprecated contract to the extensions, skills, prompts, and scripts that consume it. Do not reread unaffected surfaces to claim exhaustive coverage. Assess superseded changes against the current host.",
 	"- Adopt new capabilities where they serve what the operator accomplishes with agents.",
 	"- Resolve every applicable finding, pass repository gates, and accept the complete adoption before the coordinator advances the reviewed-through marker. Commit completed adoption and its marker on main; report publication separately. Partial, failed, or unrelated directed work leaves the marker unchanged.",
 ];
@@ -378,7 +409,7 @@ export function buildEvoKickoff(options: EvoKickoffOptions): string {
 		"",
 		directionBlock(options.direction, options.origin, options.release),
 		"",
-		...latestPiAlignment(options.origin, options.release),
+		...latestPiAlignment(options.origin, options.release, options.direction !== undefined),
 		"",
 		...versionFactsBlock(options.release),
 		...(options.release ? [""] : []),
@@ -387,11 +418,8 @@ export function buildEvoKickoff(options: EvoKickoffOptions): string {
 		...authorityBlock(options.origin),
 		"",
 		"Required delivery workflow:",
-		"- Load the harness skill, repository instructions, and docs/agent-delivery.md under the harness package root in full before selection or governed work. That document owns orientation, outcome development, collaboration, acceptance, continuity, and release checks; follow it rather than inventing a second process. Read each mechanism reference it links, such as session history, result waits, delivery recovery, or host refresh, when the run uses that mechanism.",
-		"- When orientation needs session history, task the standing @session-history expert as docs/session-history.md directs. Reuse its expertise instead of repeating a corpus brief.",
-		"- The active session owns the integrated outcome and remains free to investigate, implement, and verify substantive work itself. Choose direct work, collaboration, delegation, or a dedicated coordinator by the task, and revise the choice as the work develops. When other agents implement, discover the registered full Pi agent controls and use full Pi sessions. An unavailable execution capability that the chosen arrangement needs is an exact blocker, not permission to substitute a reduced backend.",
-		"- Carry the same concrete before/after operator use path from exploration through task contracts, acceptance, and final claims. Develop and challenge it with collaborators where useful; revise agent-authored recipes when discoveries change the approach.",
-		"- Preserve concurrent work and inherited attribution. Within this effort, one session integrates its workers' branches and performs the effort's integration on main, activation, and push. Do not build another scheduler, store, model loop, fixed roster, or evaluation framework.",
-		`- Finish with one concise integrated chat result after acceptance and verified authorized delivery: the result is on main, is live where the outcome needs running code, and its publication state is reported separately. ${operator ? "A plan or an unmerged branch is not completion." : "A plan or an unmerged branch is not completion where authority covers its delivery; name each act that waits for an operator decision."} Follow the delivery workflow's scoped no-change and blocked-work distinctions; stop only affected acts at an exact boundary and complete independent authorized work. Resolve live worker ownership before exit.`,
+		"- Before selection, read the repository AGENTS.md and docs/agent-delivery.md under the harness package root, unless this session already holds a current read of them. That document owns orientation, outcome development, collaboration, acceptance, continuity, and delivery; follow it rather than inventing a second process.",
+		"- Load the harness skill before selecting or changing a harness surface, and the Audit skill when the work needs evidence about past activity. Read a linked reference only when its branch applies, such as session history, result waits, delivery recovery, host refresh, or release review. Reuse current reads instead of repeating them.",
+		`- Finish with one concise integrated chat result after acceptance and verified authorized delivery: the result is on main, is live where the outcome needs running code, and its publication state is reported separately. ${operator ? "A plan or an unmerged branch is not completion." : "A plan or an unmerged branch is not completion where authority covers its delivery; name each act that waits for an operator decision."} A scoped no-change, inconclusive, or blocked result ends the run as docs/agent-delivery.md defines it; stop only affected acts at an exact boundary and complete independent authorized work.`,
 	].join("\n");
 }

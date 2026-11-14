@@ -320,43 +320,29 @@ for (const direction of [undefined, "Improve ordinary document tasks; do not pub
 			["operator outcome", /Evolve what the operator can accomplish with agents/],
 			["healthy system opportunity", /healthy harness is a starting point, not a reason to stop/],
 			[
-				"mandatory owning workflow",
-				/Load the harness skill, repository instructions, and docs\/agent-delivery.md.*in full before selection or governed work/,
+				"owning workflow before selection",
+				/Before selection, read the repository AGENTS.md and docs\/agent-delivery.md under the harness package root, unless this session already holds a current read of them/,
+			],
+			["workflow owns the process", /That document owns orientation, outcome development, collaboration, acceptance, continuity, and delivery/],
+			[
+				"skills loaded by branch",
+				/Load the harness skill before selecting or changing a harness surface, and the Audit skill when the work needs evidence about past activity/,
 			],
 			[
-				"conditional mechanism references",
-				/Read each mechanism reference it links, such as session history, result waits, delivery recovery, or host refresh, when the run uses that mechanism/,
+				"conditional references",
+				/Read a linked reference only when its branch applies, such as session history, result waits, delivery recovery, host refresh, or release review/,
 			],
-			[
-				"conditional history expertise",
-				/When orientation needs session history, task the standing @session-history expert as docs\/session-history.md directs/,
-			],
-			["reuse before repeated briefing", /Reuse its expertise instead of repeating a corpus brief/],
-			[
-				"owner keeps substantive work",
-				/active session owns the integrated outcome and remains free to investigate, implement, and verify substantive work itself/,
-			],
-			["arrangement chosen by task", /Choose direct work, collaboration, delegation, or a dedicated coordinator by the task/],
-			["full-session delegated implementation", /When other agents implement, discover the registered full Pi agent controls and use full Pi sessions/],
-			[
-				"no silent reduced replacement",
-				/unavailable execution capability that the chosen arrangement needs is an exact blocker, not permission to substitute a reduced backend/,
-			],
-			[
-				"outcome continuity",
-				/same concrete before\/after operator use path from exploration through task contracts, acceptance, and final claims/,
-			],
-			[
-				"shared mutation owner",
-				/one session integrates its workers' branches and performs the effort's integration on main, activation, and push/,
-			],
-			["no second runtime", /Do not build another scheduler, store, model loop, fixed roster, or evaluation framework/],
+			["current reads reused", /Reuse current reads instead of repeating them/],
 			[
 				"complete delivery",
 				/after acceptance and verified authorized delivery: the result is on main, is live where the outcome needs running code, and its publication state is reported separately/,
 			],
-			["ownership resolved", /Resolve live worker ownership before exit/],
+			[
+				"legitimate end states",
+				/A scoped no-change, inconclusive, or blocked result ends the run as docs\/agent-delivery.md defines it/,
+			],
 		]);
+		assert.doesNotMatch(prompt, /in full before selection/, "the kickoff does not demand complete prerequisite reads");
 		const workflow = prompt.indexOf("Required delivery workflow:");
 		assert.ok(workflow > prompt.indexOf("Authority and boundaries:"));
 		if (direction) {
@@ -402,7 +388,7 @@ for (const origin of ["model", "unknown"] as const) {
 						: /Invocation origin: not established\. The caller did not state who invoked this command, so the invocation itself grants nothing\. Invocation identity: "task:41"\./,
 				],
 				["host upgrade stays outside", /Those host changes need operator authority that this invocation does not supply/],
-				["same owning workflow", /Load the harness skill, repository instructions, and docs\/agent-delivery.md.*in full before selection or governed work/],
+				["same owning workflow", /Before selection, read the repository AGENTS.md and docs\/agent-delivery.md under the harness package root/],
 				["held acts are named", /not completion where authority covers its delivery; name each act that waits for an operator decision/],
 			]);
 			assertContracts(authority, [
@@ -668,6 +654,10 @@ test("collaboration preserves the use path and accepts observed task improvement
 			/real transcript content and operation outcomes, correction delivery, and native context\/session control/,
 		],
 		["availability is current", /Check active availability, not just configured presence/],
+		[
+			"no reduced substitute",
+			/Do not silently substitute a reduced worker loop or separate implementation backend for a full session/,
+		],
 		[
 			"arrangement remains a judgment",
 			/Choose the arrangement by the task and revise it as the work develops. The invoking session can investigate, implement, and verify substantive work itself, collaborate, delegate, or use a dedicated coordinator/,
