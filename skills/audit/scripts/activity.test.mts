@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdtemp, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { collect, decode, defaults, fingerprint, parseArgs, type Filters, type Options, type StoreKind } from "./activity.mts";
+import { captureHooks, collect, decode, defaults, fingerprint, parseArgs, type Filters, type Options, type StoreKind } from "./activity.mts";
 
 const time = Date.parse("2026-10-20T12:00:00Z");
 const hour = 3600000;
@@ -30,7 +30,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }): Promise
 const only = (stores: StoreKind[], extra: Partial<Filters> = {}): Filters => ({ stores, sources: [], tools: [], models: [], ...extra });
 function storage(t: { after: (fn: () => void) => void }, path: string) {
 	const db = new DatabaseSync(path);
-	t.after(() => db.close());
+	t.after(() => { if (db.isOpen) db.close(); });
 	db.exec(`PRAGMA journal_mode=WAL;
 		CREATE TABLE tasks(id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, kind TEXT NOT NULL, record TEXT NOT NULL);
 		CREATE TABLE entries(id INTEGER PRIMARY KEY, conversation_id INTEGER NOT NULL, head INTEGER, commit_seq INTEGER NOT NULL, record TEXT NOT NULL);
@@ -113,10 +113,15 @@ test("bounds records, bytes, file discovery and oversized records", async t => {
 test("reports unavailable stores, catalogs and corrupt SQLite without treating them as zero coverage", async t => {
 	const f = await fixture(t);
 	await writeFile(join(f.durable, "broken.sqlite"), "broken");
+	await writeFile(join(f.durable, "header.sqlite"), "x".repeat(64));
+	const journaled = join(f.durable, "journaled.sqlite");
+	storage(t, journaled).entry("pi.assistant", assistant());
+	await writeFile(`${journaled}-journal`, "pending rollback");
 	const report = await collect({ ...f.o, filters: only(["durable"]) });
-	assert.equal(report.stores[0].coverage.filesUnreadable, 1);
-	assert.equal(report.stores[0].coverage.catalogUnavailable, 1);
-	assert.equal(report.stores[0].sources.unreadable, 1);
+	assert.equal(report.stores[0].coverage.filesUnreadable, 3);
+	assert.equal(report.stores[0].coverage.catalogUnavailable, 3);
+	assert.equal(report.stores[0].sources.unreadable, 3);
+	assert.equal(report.total.modelResponses, 0);
 	const absent = await collect({ ...f.o, agentSessionsDir: join(f.root, "absent"), filters: only(["native"]) });
 	assert.equal(absent.stores[0].coverage.storesVisited, 0);
 	assert.equal(absent.stores[0].coverage.discoveryComplete, false);
@@ -210,6 +215,67 @@ test("counts identical calls and calls after an error per session without emitti
 	const filtered = await collect({ ...f.o, filters: only(["primary"], { tools: ["read"] }) });
 	assert.deepEqual(filtered.tools.rows.map(row => row.tool), ["read"]);
 	assert.equal(filtered.repetition.calls, 0);
+	const sessions = Object.fromEntries(report.sessions.rows.map(row => [row.session.split("/").at(-1), row]));
+	assert.deepEqual([sessions["a.jsonl"]?.responses, sessions["a.jsonl"]?.toolCalls, sessions["a.jsonl"]?.errorResults], [3, 4, 1]);
+	assert.equal(sessions["a.jsonl"]?.responseCost.cost, 0.375);
+	assert.equal(sessions["a.jsonl"]?.first, new Date(time).toISOString());
+	assert.equal(sessions["a.jsonl"]?.last, new Date(time + 5).toISOString());
+	assert.equal(sessions["a.jsonl"]?.firstRef.byte, 0);
+	assert.deepEqual([sessions["b.jsonl"]?.responses, sessions["b.jsonl"]?.errorResults], [1, 1]);
+	const one = await collect({ ...f.o, filters: only(["primary"]), limits: { ...defaults, groups: 1 } });
+	assert.deepEqual([one.sessions.rows.length, one.sessions.other?.sessions, one.sessions.other?.responses], [1, 1, 1]);
+});
+
+async function listing(directory: string) {
+	const rows = [];
+	for (const name of (await readdir(directory)).sort()) {
+		const info = await lstat(join(directory, name), { bigint: true });
+		rows.push([name, info.size, info.mtimeNs, info.ctimeNs]);
+	}
+	return rows;
+}
+test("reads private copies and leaves the source directory unchanged, with or without WAL companions", async t => {
+	const f = await fixture(t);
+	const closed = join(f.durable, "closed.sqlite");
+	const quiet = storage(t, closed);
+	quiet.entry("pi.assistant", assistant());
+	quiet.db.close();
+	const live = storage(t, join(f.durable, "live.sqlite"));
+	live.entry("pi.assistant", assistant());
+	await writeFile(join(f.durable, "live.json"), JSON.stringify({ storageId: "live" }));
+	const names = (await readdir(f.durable)).sort();
+	assert.ok(!names.includes("closed.sqlite-wal") && !names.includes("closed.sqlite-shm"));
+	assert.ok(names.includes("live.sqlite-wal"));
+	const before = await listing(f.durable);
+	const scratch = async () => (await readdir(tmpdir())).filter(name => name.startsWith("pi-audit-activity-")).length;
+	const scratchBefore = await scratch();
+	const report = await collect({ ...f.o, filters: only(["durable"]) });
+	assert.equal(report.total.modelResponses, 2);
+	assert.equal(report.stores[0].sources.done, 2);
+	assert.deepEqual(await listing(f.durable), before);
+	assert.equal(await scratch(), scratchBefore);
+});
+
+test("reports a storage that changes during every copy and counts none of its records", async t => {
+	const f = await fixture(t);
+	const s = storage(t, join(f.durable, "busy.sqlite"));
+	s.entry("pi.assistant", assistant());
+	let copies = 0;
+	captureHooks.afterCopy = () => { copies++; s.entry("pi.assistant", assistant()); };
+	t.after(() => { captureHooks.afterCopy = undefined; });
+	const busy = await collect({ ...f.o, filters: only(["durable"]) });
+	assert.equal(copies, 3);
+	assert.equal(busy.total.modelResponses, 0);
+	assert.equal(busy.stores[0].sources.changed, 1);
+	assert.equal(busy.changes.rows[0]?.change.split(";")[0], "changed during each copy");
+	captureHooks.afterCopy = () => { if (copies++ === 3) s.entry("pi.assistant", assistant()); };
+	const settled = await collect({ ...f.o, filters: only(["durable"]) });
+	assert.equal(settled.total.modelResponses, 5);
+	assert.equal(settled.changes.count, 0);
+	captureHooks.afterCopy = undefined;
+	const small = await collect({ ...f.o, filters: only(["durable"]), limits: { ...defaults, bytes: 1024 } });
+	assert.equal(small.stores[0].sources.oversized, 1);
+	assert.ok(small.stores[0].coverage.capsReached.includes("bytes"));
 });
 
 async function fullFixture(t: Parameters<typeof storage>[0] & { after: (fn: () => Promise<void>) => void }) {
@@ -230,7 +296,7 @@ async function fullFixture(t: Parameters<typeof storage>[0] & { after: (fn: () =
 	s.ledger(1, { models: { "p/m": usage(40, 0.5) }, tools: {} });
 	return { f, s };
 }
-const comparable = (report: Awaited<ReturnType<typeof collect>>) => ({ total: report.total, tools: report.tools, models: report.models, usage: report.usage, repetition: report.repetition,
+const comparable = (report: Awaited<ReturnType<typeof collect>>) => ({ total: report.total, sessions: report.sessions, tools: report.tools, models: report.models, usage: report.usage, repetition: report.repetition,
 	stores: report.stores.map(store => ({ units: store.units, records: store.coverage.recordsRead, outside: store.coverage.outsideWindow, sources: store.sources })) });
 
 test("a resumed collection equals one complete pass", async t => {

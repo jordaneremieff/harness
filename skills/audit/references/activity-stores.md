@@ -66,9 +66,13 @@ the window (`olderRecordStops`). `outOfOrderRecords` counts records whose time i
 later than the next record in the file; a non-zero value qualifies that stop rule.
 The read covers bytes up to the size seen when the file was first opened.
 
-Durable SQLite reads `tasks` and then `entries` newest identifier first. SQLite
-selects candidate kinds; the collector checks each row's time before retrieving
-the record. Only in-window records consume the record and byte budgets.
+Durable SQLite is read from a private copy (see the source contract below). The
+copied database and WAL bytes count against the byte budget. The copy is read
+`tasks` and then `entries`, newest identifier first. SQLite selects candidate
+kinds; the collector checks each row's time before retrieving the record. Only
+in-window records consume the record budget. A storage whose copy exceeds the
+per-run byte bound is `oversized` and unread; raise `--bytes` to read it. A copy
+that does not fit the remaining budget waits for a resumed run.
 `rowsScanned` counts the rows examined. Window selection is not indexed, so a
 large storage still costs a scan of its rows within the time bound.
 
@@ -92,7 +96,10 @@ state moved after the collection first used them:
 - a finished source modified afterwards keeps its earlier counts;
 - a JSONL file appended after its snapshot excludes the appended records;
 - a Durable storage with rows added after its snapshot excludes those rows;
-- a JSONL file replaced or truncated keeps earlier counts and stops reading.
+- a JSONL file replaced or truncated keeps earlier counts and stops reading;
+- a Durable storage that changed during each of three copies is `changed`, and
+  no record from those copies is counted. Counts from a consistent copy in an
+  earlier run remain.
 
 Durable task records change state in place. A task that had no `startedAt` when
 its storage was read is counted as a missing timestamp, not as a later start.
@@ -111,15 +118,29 @@ new shapes. Do not add retired-schema readers to make old records appear current
 The harness catalog layout is defined in `extensions/agent/catalog.ts` in the
 owning package. Catalog absence or invalid identity is reported separately and
 does not suppress a readable database. Never open the Durable writer factory to
-inspect activity: it performs initialisation. The collector uses
-`new DatabaseSync(path, { readOnly: true })`, `query_only`, and a deferred read
-transaction. This sees committed WAL data in a per-database snapshot. It does
-not use `immutable`, checkpoint, vacuum, migrate, escalate to a write lock, or
-change journal mode. SQLite still coordinates with live writers: when a
-WAL-mode database has no `-wal` or `-shm` file, a read-only open creates empty
-ones and leaves them, and every read updates read marks in `-shm`. Database
-content is unchanged. A busy, inaccessible, or unsupported database is
-unreadable, not an empty store.
+inspect activity: it performs initialisation.
+
+The collector never opens a source database through SQLite. Even a read-only
+SQLite open of a WAL database writes beside it: it creates empty `-wal` and
+`-shm` files when none exist and updates read marks in `-shm`. Instead, for
+each storage the collector:
+
+1. records the identity (device, inode, size, modification and change times) of
+   the database, `-wal`, and `-journal` files, opened read-only without
+   following links;
+2. refuses a non-empty `-journal`, an unfinished rollback;
+3. copies the database and a non-empty `-wal` into a new private directory
+   under the operating system's temporary directory, outside the source
+   directory, and checks the SQLite header of the copied database;
+4. compares every identity after the copy, and discards a copy whose source
+   changed;
+5. opens only the copy with `readOnly`, `query_only`, and a deferred read
+   transaction, then removes the private directory.
+
+The `-shm` file is not copied; SQLite rebuilds its index from the copied WAL.
+A copy is a consistent snapshot of committed data at that moment. Copies of
+different storages are not one atomic machine-wide snapshot. A missing,
+truncated, unsupported, or journaled database is unreadable, not an empty store.
 
 Keep these units separate in both per-store rows and totals:
 
@@ -191,6 +212,14 @@ can still repeat records across files; do not present totals as unique spend.
 
 ## Rows, references, and repetition
 
+`sessions.rows` gives per JSONL session file or Durable conversation its model
+responses, top-level tool calls, error results, nested calls, `responseCost` and
+`otherCost` (recorded nominal cost from responses and from other windowed
+carriers, with counts of records with and without cost), first and last record
+instants, `firstRef`, and the newest `refs`. Rows are ordered by response cost.
+Use them to find the sessions that consumed work, then follow `firstRef` or a
+reference into the sequence. Cost is never divided among tools.
+
 `tools.rows` gives per tool `calls`, `results`, `errorResults`, `nestedCalls`,
 `nestedErrors`, `repeatedCalls`, and `callsAfterError`, with `errorRefs` and
 `callRefs`. `models.rows` gives per model response counts, response usage,
@@ -229,10 +258,10 @@ malformed and unsupported records, missing timestamps, outside-window records,
 older-record stops, out-of-order records, files changed during a read, trailing
 fragments, ledger documents, runs, and caps reached in the latest run. `sources`
 counts the frozen source list by state: `done`, `partial`, `pending`,
-`unreadable`, `changed`. A failed read can retain an already-read prefix; its
-aggregate remains partial. SQLite bytes are retrieved record and catalog bytes,
-not file size or page I/O. An oversized record is skipped after its length is
-known. `discoveryComplete` covers the declared depth only; a discovery cap
+`unreadable`, `changed`, `oversized`. A failed read can retain an already-read
+prefix; its aggregate remains partial. SQLite bytes are copied database, WAL, and
+catalog bytes, including copies discarded after a change. An oversized record is
+skipped after its length is known. `discoveryComplete` covers the declared depth only; a discovery cap
 leaves the undiscovered remainder unknown, never zero. `complete` is true only
 when discovery finished and no source is pending or partial.
 

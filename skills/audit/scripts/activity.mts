@@ -1,9 +1,9 @@
-import type { Dirent } from "node:fs";
+import { constants, type BigIntStats, type Dirent } from "node:fs";
 import { createHash } from "node:crypto";
-import { lstat, open, opendir, readFile } from "node:fs/promises";
+import { lstat, mkdtemp, open, opendir, readFile, realpath, rm } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { homedir } from "node:os";
-import { basename, join, resolve, sep } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync, type SQLOutputValue, type StatementSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
@@ -60,17 +60,20 @@ type Coverage = ReturnType<typeof coverage>;
 type Ref = [number, number, number, number | string | null, number];
 type ToolRow = { calls: number; results: number; errorResults: number; nestedCalls: number; nestedErrors: number; callRefs: Ref[]; errorRefs: Ref[] };
 type ModelRow = { responses: number; errorResponses: number; abortedResponses: number; usage: UsageSum; refs: Ref[]; errorRefs: Ref[] };
+type SessionRow = { responses: number; toolCalls: number; errorResults: number; nestedCalls: number; responseUsage: UsageSum; otherUsage: UsageSum;
+	first: number; last: number; firstRef: Ref; refs: Ref[] };
 type Repeat = { tool: string; times: number[]; errorTimes: number[]; refs: Ref[] };
 /** Per session: call key to `[fingerprint, tool, time, ref]`, and call key to error flag of its result. */
 type Pairing = { calls: Map<string, [string, string, number, Ref]>; results: Map<string, boolean> };
 type JsonlCursor = { snapshotSize: number; end: number; atEnd: boolean; skipping: boolean; lastTime: number | null };
 type SqliteCursor = { maxTasks: number; maxEntries: number; phase: "tasks" | "entries" | "ledger"; below: number | null };
-type Source = { path: string; ino: number; stamp: string; mtimeMs: number; status: "pending" | "partial" | "done" | "unreadable" | "changed";
+type Source = { path: string; ino: number; stamp: string; mtimeMs: number; status: "pending" | "partial" | "done" | "unreadable" | "changed" | "oversized";
 	inWindow: number; cursor?: JsonlCursor | SqliteCursor; pairing?: Pairing; changeNoted?: boolean };
 type StoreState = { kind: StoreKind; roots: string[]; units: Units; coverage: Coverage; sources: Source[] };
 type State = { version: 1; from: number; to: number; filters: Filters; refs: number; stores: StoreState[];
 	tools: Map<string, ToolRow>; models: Map<string, ModelRow>; usage: Map<string, UsageSum>; withoutUsage: Map<string, number>;
 	ledger: { models: Map<string, UsageSum>; tools: Map<string, UsageSum>; storages: number };
+	sessions: Map<string, SessionRow>;
 	repetition: { keys: Map<string, Repeat>; fingerprints: number; callsWithoutResult: number; resultsWithoutCall: number };
 	changes: Array<{ path: string; change: string }> };
 type Ctx = { state: State; store: StoreState; storeIndex: number; sourceIndex: number; source: Source; limits: Limits; deadline: number; run: { records: number; bytes: number } };
@@ -114,6 +117,18 @@ function category(x: Ctx, name: string) {
 	if (!sum) { sum = usageSum(); x.state.usage.set(name, sum); }
 	return sum;
 }
+/** One row per JSONL session file or Durable conversation; every counted record marks its first and last instants. */
+function sessionRow(x: Ctx, r: At) {
+	let row = x.state.sessions.get(r.session);
+	if (!row) {
+		row = { responses: 0, toolCalls: 0, errorResults: 0, nestedCalls: 0, responseUsage: usageSum(), otherUsage: usageSum(), first: r.time, last: r.time, firstRef: r.ref, refs: [] };
+		x.state.sessions.set(r.session, row);
+	}
+	if (r.time < row.first || (r.time === row.first && compareRefs(r.ref, row.firstRef) > 0)) { row.first = r.time; row.firstRef = r.ref; }
+	if (r.time > row.last) row.last = r.time;
+	pushRef(row.refs, r.ref, x.state.refs);
+	return row;
+}
 function canonical(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map(canonical);
 	if (value === null || typeof value !== "object") return value;
@@ -127,10 +142,11 @@ function pairing(x: Ctx) { x.source.pairing ??= { calls: new Map(), results: new
 
 type At = { session: string; ref: Ref; time: number; durable: boolean };
 function countResponse(m: ObjectValue, r: At, x: Ctx) {
-	const u = x.store.units, f = x.state.filters;
+	const u = x.store.units, f = x.state.filters, session = sessionRow(x, r);
 	const model = `${text(m.provider) ?? "unknown"}/${text(m.model) ?? "unknown"}`;
 	if (selected(f.models, model)) {
 		const row = modelRow(x, model);
+		session.responses++; addUsage(session.responseUsage, m.usage);
 		u.modelResponses++; row.responses++;
 		pushRef(row.refs, r.ref, x.state.refs);
 		if (m.stopReason === "error") { u.errorResponses++; row.errorResponses++; pushRef(row.errorRefs, r.ref, x.state.refs); }
@@ -145,17 +161,18 @@ function countCall(block: ObjectValue, r: At, x: Ctx) {
 	const u = x.store.units, row = toolRow(x, name);
 	u.responseToolCalls++; if (!r.durable) u.topLevelToolCalls++;
 	row.calls++; pushRef(row.callRefs, r.ref, x.state.refs);
+	sessionRow(x, r).toolCalls++;
 	const id = text(block.id);
 	if (id) pairing(x).calls.set(`${r.session}\0${id}`, [fingerprint(name, block.arguments), name, r.time, r.ref]);
 }
 function countResult(m: ObjectValue, r: At, x: Ctx) {
-	const name = text(m.toolName) ?? "unknown";
-	if (m.usage !== undefined && x.state.filters.models.length === 0) addUsage(category(x, "toolResults"), m.usage);
+	const name = text(m.toolName) ?? "unknown", session = sessionRow(x, r);
+	if (m.usage !== undefined && x.state.filters.models.length === 0) { addUsage(category(x, "toolResults"), m.usage); addUsage(session.otherUsage, m.usage); }
 	if (name === "codemode") countNested(object(m.details).calls, r, x);
 	if (!selected(x.state.filters.tools, name)) return;
 	const u = x.store.units, row = toolRow(x, name), error = m.isError === true;
 	u.toolResults++; row.results++;
-	if (error) { u.errorToolResults++; row.errorResults++; pushRef(row.errorRefs, r.ref, x.state.refs); }
+	if (error) { u.errorToolResults++; row.errorResults++; session.errorResults++; pushRef(row.errorRefs, r.ref, x.state.refs); }
 	const id = text(m.toolCallId);
 	if (id) pairing(x).results.set(`${r.session}\0${id}`, error);
 }
@@ -171,7 +188,7 @@ function countNested(value: unknown, r: At, x: Ctx) {
 		seen.add(row.id);
 		if (!selected(x.state.filters.tools, row.name)) continue;
 		const tool = toolRow(x, row.name);
-		u.nestedCodemodeCalls++; tool.nestedCalls++;
+		u.nestedCodemodeCalls++; tool.nestedCalls++; sessionRow(x, r).nestedCalls++;
 		if (row.status === "error") { u.nestedErrorCalls++; tool.nestedErrors++; pushRef(tool.errorRefs, r.ref, x.state.refs); }
 	}
 }
@@ -181,13 +198,14 @@ function countMessage(message: unknown, r: At, x: Ctx) {
 	if (m.role === "toolResult") countResult(m, r, x);
 }
 /** Usage carriers outside assistant messages that the ordinary session format defines. */
-function countCarrier(row: ObjectValue, x: Ctx) {
+function countCarrier(row: ObjectValue, r: At, x: Ctx) {
 	const kind = row.type === "usage" ? `usage:${text(row.kind) ?? "unknown"}` : row.type === "compaction" ? "compaction" : "branchSummary";
 	const model = row.type === "usage" ? `${text(row.provider) ?? "unknown"}/${text(row.model) ?? "unknown"}` : undefined;
 	const models = x.state.filters.models;
 	if (models.length > 0 && (model === undefined || !models.includes(model))) return;
+	const session = sessionRow(x, r);
 	if (row.usage === undefined) { x.state.withoutUsage.set(kind, (x.state.withoutUsage.get(kind) ?? 0) + 1); return; }
-	addUsage(category(x, kind), row.usage);
+	addUsage(category(x, kind), row.usage); addUsage(session.otherUsage, row.usage);
 }
 
 function parseRecord(raw: string, c: Coverage): ObjectValue {
@@ -210,8 +228,8 @@ function countLine(line: Buffer, byte: number, cursor: JsonlCursor, x: Ctx): boo
 	if (where === "missing") { c.missingTimestamps++; return false; }
 	if (where !== "in") { c.outsideWindow++; if (where === "older") c.olderRecordStops++; return where === "older"; }
 	x.source.inWindow++;
-	if (row.type !== "message") { countCarrier(row, x); return false; }
-	countMessage(row.message, { session: x.source.path, ref: [x.storeIndex, x.sourceIndex, byte, text(row.id) ?? null, time], time, durable: false }, x);
+	const at: At = { session: x.source.path, ref: [x.storeIndex, x.sourceIndex, byte, text(row.id) ?? null, time], time, durable: false };
+	if (row.type === "message") countMessage(row.message, at, x); else countCarrier(row, at, x);
 	return false;
 }
 /** Splits complete lines from the end of `buffer`; returns the unprocessed prefix length, or -1 after an older record. */
@@ -286,7 +304,7 @@ async function readJsonl(x: Ctx): Promise<Source["status"]> {
 		const after = await file.stat();
 		if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) c.changedFiles++;
 		c.filesRead++;
-		if (done) source.stamp = `${after.size}:${after.mtimeMs}`;
+		if (done) source.stamp = await fileStamp(source.path);
 		return done ? "done" : "partial";
 	} finally { await file.close(); }
 }
@@ -323,16 +341,14 @@ const scans: Scan[] = [
 	{ table: "entries", sql: "json_extract(record, '$.kind') IN ('pi.assistant', 'pi.tool-result')" },
 ];
 type Row = Record<string, SQLOutputValue>;
-/** Counts one candidate row; returns false when the byte budget leaves the row for a later run. */
+/** Counts one candidate row from the private copy, whose bytes the copy already counted. */
 function scanRow(row: Row, content: StatementSync, scan: Scan, cursor: SqliteCursor, x: Ctx): boolean {
 	const c = x.store.coverage, bytes = Number(row.bytes), where = place(row.t, x.state);
 	c.rowsScanned++;
 	if (where !== "in") { if (where === "missing") c.missingTimestamps++; else c.outsideWindow++; cursor.below = Number(row.id); return true; }
-	if (bytes > x.limits.bytes - x.run.bytes) { cap(c, "bytes"); return false; }
 	c.recordsRead++; x.run.records++; x.source.inWindow++;
 	cursor.below = Number(row.id);
 	if (bytes > x.limits.recordBytes) { cap(c, "recordBytes"); c.unsupportedRecords++; return true; }
-	c.bytesRead += bytes; x.run.bytes += bytes;
 	const record = parseRecord(String(content.get(row.id)?.record), c);
 	if (scan.table === "tasks") countTask(record, x); else countEntry(record, Number(row.conversation), Number(row.id), x);
 	return true;
@@ -348,22 +364,13 @@ function scanTable(db: DatabaseSync, scan: Scan, cursor: SqliteCursor, x: Ctx): 
 	return true;
 }
 /** Adds each current conversation `pi.usage` document. It is a lifetime ledger: never windowed or added to records. */
-function readLedger(db: DatabaseSync, x: Ctx): boolean {
+function readLedger(db: DatabaseSync, x: Ctx) {
 	const c = x.store.coverage, f = x.state.filters;
 	const documents = db.prepare(`SELECT d.id AS id, (SELECT seq FROM document_revisions r WHERE r.document_id = d.id ORDER BY seq DESC LIMIT 1) AS seq
 		FROM documents d WHERE d.retired_at IS NULL AND (CASE WHEN json_valid(d.kind) THEN json_extract(d.kind, '$') ELSE d.kind END) = 'pi.usage'`).all();
-	const revision = db.prepare("SELECT kind, length(CAST(content AS BLOB)) AS bytes, content FROM document_revisions WHERE document_id = ? AND seq = ?");
-	const rows = [];
-	let total = 0;
+	const revision = db.prepare("SELECT kind, content FROM document_revisions WHERE document_id = ? AND seq = ?");
 	for (const document of documents) {
 		const row = revision.get(document.id, document.seq);
-		total += Number(row?.bytes ?? 0);
-		// The ledger of one storage is added whole, so a resumed collection never adds part of it twice.
-		if (total > x.limits.bytes - x.run.bytes) { cap(c, "bytes"); return false; }
-		rows.push(row);
-	}
-	c.bytesRead += total; x.run.bytes += total;
-	for (const row of rows) {
 		if (row?.kind !== "base") { c.ledgerUnsupported++; continue; }
 		const value = parseRecord(String(row.content), c);
 		c.ledgerDocuments++;
@@ -371,7 +378,6 @@ function readLedger(db: DatabaseSync, x: Ctx): boolean {
 		if (f.models.length === 0) addLedger(object(value.tools), f.tools, x.state.ledger.tools);
 	}
 	x.state.ledger.storages++;
-	return true;
 }
 function addLedger(bucket: ObjectValue, filter: string[], into: Map<string, UsageSum>) {
 	for (const [key, usage] of Object.entries(bucket)) {
@@ -386,31 +392,139 @@ function sqlitePhases(db: DatabaseSync, cursor: SqliteCursor, x: Ctx): boolean {
 		if (!scanTable(db, scan, cursor, x)) return false;
 		cursor.phase = scan.table === "tasks" ? "entries" : "ledger"; cursor.below = null;
 	}
-	return x.source.inWindow === 0 || readLedger(db, x);
+	if (x.source.inWindow > 0) readLedger(db, x);
+	return true;
 }
-async function readSqlite(x: Ctx): Promise<Source["status"]> {
-	const source = x.source;
-	if (!source.cursor) await catalog(source.path.replace(/\.sqlite$/u, ".json"), x);
-	const db = new DatabaseSync(source.path, { readOnly: true });
+/** Test barrier between copying and the stability check; production installs none. */
+export const captureHooks: { afterCopy?: (source: string) => void | Promise<void> } = {};
+function fileIdentity(info: BigIntStats) { return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`; }
+async function identityOf(path: string): Promise<string | undefined> {
 	try {
-		// A deferred read transaction sees WAL commits without opening a writer or running migrations.
+		const info = await lstat(path, { bigint: true });
+		if (!info.isFile()) throw new Error("not a regular file");
+		return fileIdentity(info);
+	} catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+}
+type Held = { path: string; handle: FileHandle; identity: string; size: number };
+async function hold(path: string, held: Held[]): Promise<Held | undefined> {
+	let handle: FileHandle;
+	try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+	const info = await handle.stat({ bigint: true }).catch(async error => { await handle.close(); throw error; });
+	const file = { path, handle, identity: fileIdentity(info), size: Number(info.size) };
+	held.push(file);
+	if (!info.isFile()) throw new Error("not a regular file");
+	return file;
+}
+class CopyStop extends Error {
+	readonly reason: "changed" | "seconds";
+	constructor(reason: "changed" | "seconds") { super(reason); this.reason = reason; }
+}
+async function copyHeld(file: Held, target: string, header: boolean, x: Ctx) {
+	const destination = await open(target, "wx", 0o600);
+	try {
+		const buffer = Buffer.alloc(1 << 20);
+		for (let offset = 0; offset < file.size;) {
+			if (Date.now() >= x.deadline) throw new CopyStop("seconds");
+			const { bytesRead } = await file.handle.read(buffer, 0, Math.min(buffer.length, file.size - offset), offset);
+			if (bytesRead === 0) throw new CopyStop("changed");
+			if (header && offset === 0 && buffer.subarray(0, 16).toString("latin1") !== "SQLite format 3\u0000") throw new Error("not a SQLite database");
+			x.store.coverage.bytesRead += bytesRead; x.run.bytes += bytesRead;
+			await destination.write(buffer, 0, bytesRead, offset);
+			offset += bytesRead;
+		}
+	} finally { await destination.close(); }
+}
+async function stable(held: Held[], path: string) {
+	for (const suffix of ["", "-wal", "-journal"]) {
+		const file = held.find(item => item.path === `${path}${suffix}`);
+		if (await identityOf(`${path}${suffix}`) !== file?.identity) return false;
+		if (file && fileIdentity(await file.handle.stat({ bigint: true })) !== file.identity) return false;
+	}
+	return true;
+}
+async function privateDirectory(path: string) {
+	const source = await realpath(dirname(path)), scratch = await realpath(tmpdir());
+	const inside = relative(source, scratch);
+	if (inside === "" || (!isAbsolute(inside) && !inside.startsWith(".."))) throw new Error("temporary directory lies inside the source directory");
+	return mkdtemp(join(scratch, "pi-audit-activity-"));
+}
+/** Refuses an unfinished rollback journal and copies that the byte bounds cannot hold. */
+function admit(db: Held, wal: Held | undefined, journal: Held | undefined, x: Ctx): "oversized" | "budget" | undefined {
+	if (db.size < 16) throw new Error("truncated database");
+	if (journal && journal.size > 0) throw new Error("rollback journal present");
+	const total = db.size + (wal?.size ?? 0);
+	if (total > x.limits.bytes) return "oversized";
+	return total > x.limits.bytes - x.run.bytes ? "budget" : undefined;
+}
+type Capture = { directory: string; database: string; stamp: string } | "changed" | "oversized" | "budget" | "seconds";
+/** Copies the database and a non-empty WAL into a private directory; the source is never opened through SQLite. */
+async function capture(path: string, x: Ctx): Promise<Capture> {
+	const held: Held[] = [];
+	let directory: string | undefined;
+	try {
+		const db = await hold(path, held), wal = await hold(`${path}-wal`, held), journal = await hold(`${path}-journal`, held);
+		if (!db) throw new Error("missing database");
+		const refusal = admit(db, wal, journal, x);
+		if (refusal) return refusal;
+		directory = await privateDirectory(path);
+		const database = join(directory, "copy.sqlite");
+		await copyHeld(db, database, true, x);
+		if (wal && wal.size > 0) await copyHeld(wal, `${database}-wal`, false, x);
+		await captureHooks.afterCopy?.(path);
+		if (!await stable(held, path)) throw new CopyStop("changed");
+		const result = { directory, database, stamp: `${db.identity}+${wal?.identity ?? "absent"}` };
+		directory = undefined;
+		return result;
+	} catch (error) {
+		if (error instanceof CopyStop) return error.reason;
+		throw error;
+	} finally {
+		await Promise.allSettled(held.map(file => file.handle.close()));
+		if (directory) await rm(directory, { recursive: true, force: true });
+	}
+}
+/** A live storage can change during a copy; a few fresh copies settle most races before it is reported. */
+async function captureSettled(path: string, x: Ctx): Promise<Capture> {
+	let result: Capture = "changed";
+	for (let attempt = 0; attempt < 3 && result === "changed"; attempt++) result = await capture(path, x);
+	return result;
+}
+function readCopy(database: string, x: Ctx): boolean {
+	const source = x.source;
+	const db = new DatabaseSync(database, { readOnly: true });
+	try {
 		db.exec("PRAGMA query_only=ON; BEGIN");
 		const tasks = maxId(db, "tasks"), entries = maxId(db, "entries");
 		const prior = source.cursor as SqliteCursor | undefined;
 		if (prior && (tasks > prior.maxTasks || entries > prior.maxEntries)) noteChange(x.state, source, "rows added after its snapshot; added rows excluded");
 		source.cursor ??= { maxTasks: tasks, maxEntries: entries, phase: "tasks", below: null };
 		const done = sqlitePhases(db, source.cursor as SqliteCursor, x);
-		db.exec("ROLLBACK"); x.store.coverage.filesRead++;
-		if (done) source.stamp = await sqliteStamp(source.path);
-		return done ? "done" : "partial";
+		db.exec("ROLLBACK");
+		return done;
 	} finally { db.close(); }
+}
+async function readSqlite(x: Ctx): Promise<Source["status"]> {
+	const source = x.source, c = x.store.coverage;
+	if (!source.cursor) await catalog(source.path.replace(/\.sqlite$/u, ".json"), x);
+	const copy = await captureSettled(source.path, x);
+	const waiting = source.cursor ? "partial" : "pending";
+	if (copy === "budget" || copy === "seconds") { cap(c, copy === "budget" ? "bytes" : "seconds"); return waiting; }
+	if (copy === "oversized") { cap(c, "bytes"); return "oversized"; }
+	if (copy === "changed") { noteChange(x.state, source, "changed during each copy; no records from those copies counted"); return "changed"; }
+	try {
+		const done = readCopy(copy.database, x);
+		c.filesRead++;
+		if (done) source.stamp = copy.stamp;
+		return done ? "done" : "partial";
+	} finally { await rm(copy.directory, { recursive: true, force: true }); }
 }
 
 function noteChange(state: State, source: Source, change: string) {
 	if (source.changeNoted) return;
 	source.changeNoted = true; state.changes.push({ path: source.path, change });
 }
-async function fileStamp(path: string) { try { const info = await lstat(path); return `${info.size}:${info.mtimeMs}`; } catch { return "absent"; } }
+async function fileStamp(path: string) { return await identityOf(path) ?? "absent"; }
 async function sqliteStamp(path: string) { return `${await fileStamp(path)}+${await fileStamp(`${path}-wal`)}`; }
 /** Folds one finished source's calls into repeated-call groups; each session lies within one source. */
 function fold(state: State, source: Source, sourceKey: string) {
@@ -502,7 +616,7 @@ function newState(o: Options): State {
 	return { version: 1, from: o.from, to: o.to, filters, refs: o.limits.refs,
 		stores: kinds.map(kind => ({ kind, roots: explicit ? ["explicit sources"] : [storeRoot(kind, o)], units: units(), coverage: coverage(), sources: [] })),
 		tools: new Map(), models: new Map(), usage: new Map(), withoutUsage: new Map(), ledger: { models: new Map(), tools: new Map(), storages: 0 },
-		repetition: { keys: new Map(), fingerprints: 0, callsWithoutResult: 0, resultsWithoutCall: 0 }, changes: [] };
+		sessions: new Map(), repetition: { keys: new Map(), fingerprints: 0, callsWithoutResult: 0, resultsWithoutCall: 0 }, changes: [] };
 }
 async function checkFinished(state: State) {
 	for (const store of state.stores) for (const source of store.sources) {
@@ -515,7 +629,7 @@ async function collectSource(x: Ctx) {
 	const status = await (x.store.kind === "durable" ? readSqlite(x) : readJsonl(x)).catch(() => "unreadable" as const);
 	if (status === "unreadable") x.store.coverage.filesUnreadable++;
 	x.source.status = status;
-	if (status !== "partial") fold(x.state, x.source, `${x.storeIndex}/${x.sourceIndex}`);
+	if (status !== "partial" && status !== "pending") fold(x.state, x.source, `${x.storeIndex}/${x.sourceIndex}`);
 }
 async function collectStore(state: State, storeIndex: number, limits: Limits) {
 	const store = state.stores[storeIndex];
@@ -621,8 +735,21 @@ function usageReport(state: State, n: number) {
 			storages: state.ledger.storages, models: ledgerRows(state.ledger.models, n), tools: ledgerRows(state.ledger.tools, n) },
 	};
 }
+function sessionsReport(state: State, n: number) {
+	const keys = ["responses", "toolCalls", "errorResults", "nestedCalls"] as const;
+	const { shown, rest } = top([...state.sessions.entries()], n, row => row.responseUsage.cost * 1e6 + row.responses);
+	const responseUsage = usageSum(), otherUsage = usageSum();
+	for (const [, row] of rest) { mergeUsage(responseUsage, row.responseUsage); mergeUsage(otherUsage, row.otherUsage); }
+	const cost = (sum: UsageSum) => ({ cost: rounded(sum).cost, costRecords: sum.costRecords, missingCost: sum.missingCost + sum.missing });
+	return {
+		scope: "One row per JSONL session file or Durable conversation. responseCost is assistant response usage; otherCost is other windowed carriers. Neither is divided among tools.",
+		rows: shown.map(([session, row]) => ({ session, ...sumRows([row], keys), responseCost: cost(row.responseUsage), otherCost: cost(row.otherUsage),
+			first: new Date(row.first).toISOString(), last: new Date(row.last).toISOString(), firstRef: resolveRefs(state, [row.firstRef])[0], refs: resolveRefs(state, row.refs) })),
+		other: rest.length ? { sessions: rest.length, ...sumRows(rest.map(([, row]) => row), keys), responseCost: cost(responseUsage), otherCost: cost(otherUsage) } : null,
+	};
+}
 function sourceCounts(store: StoreState) {
-	const counts = { total: store.sources.length, done: 0, partial: 0, pending: 0, unreadable: 0, changed: 0 };
+	const counts = { total: store.sources.length, done: 0, partial: 0, pending: 0, unreadable: 0, changed: 0, oversized: 0 };
 	for (const source of store.sources) counts[source.status]++;
 	return counts;
 }
@@ -636,7 +763,7 @@ function report(state: State, limits: Limits) {
 		complete: !unfinished && state.stores.every(store => store.coverage.discoveryComplete),
 		modelRequests: { exactProviderAttempts: null, reason: "Retained responses and generation tasks do not record every provider attempt; retries and preparation failures differ." },
 		stores: state.stores.map(store => ({ kind: store.kind, roots: store.roots, units: store.units, coverage: store.coverage, sources: sourceCounts(store) })),
-		total, tools: toolsReport(state, limits.groups, perTool), models: modelsReport(state, limits.groups), usage: usageReport(state, limits.groups), repetition,
+		total, sessions: sessionsReport(state, limits.groups), tools: toolsReport(state, limits.groups, perTool), models: modelsReport(state, limits.groups), usage: usageReport(state, limits.groups), repetition,
 		changes: { count: state.changes.length, rows: state.changes.slice(0, limits.groups) },
 		scope: "Retained records, not selected ancestry or unique executed work. Converted or copied histories may repeat across stores. Tool results record completion, not acceptance.",
 		continuation: unfinished ? encode(state) : null,
