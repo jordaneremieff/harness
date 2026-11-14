@@ -72,15 +72,39 @@ hyphens>`:
 - `clear` when it is cancelled, since cancellation is the caller's own act.
 
 Each record carries the title `Background job` and one message line made only
-from the job record: outcome, exit code, whole minutes elapsed, and what happened
-to the completion message. While no run is active, Pi adds that message to the
-conversation at once (`result added to the conversation`). During a run it waits
-in Pi's follow-up queue (`completion queued for the conversation`), and an
-operator abort can still discard it there before the agent reads it; no public
-Pi hook reports that later outcome. If the completion message cannot be sent,
-the record settles without that clause and an interactive session shows an
-error notice instead of ending the process. For example:
-`Background job failed · exit 1 · 3 min · result added to the conversation`.
+from the job record: the outcome, exit code, and whole minutes elapsed, written
+when the job settles, followed by the delivery state of the completion message.
+For example:
+`Background job failed · exit 1 · 3 min · completion in the conversation`.
+
+The delivery state starts from Pi's own idle state (`ctx.isIdle()`) when the
+message is sent:
+
+- `completion queued for the conversation`: Pi was busy, including while a run
+  prepares, and holds the message as a follow-up.
+- `completion sent, not in the conversation`: Pi was idle; the message starts a
+  run, or waits for one that is ending.
+- `completion not sent`: `sendMessage()` threw. An interactive session also
+  shows an error notice instead of ending the process.
+
+The record changes to `completion in the conversation` only on an exact signal
+for that job's message: the extension `message_end` event for the
+`jobs.completion` message with that job ID, which Pi emits for follow-ups and
+for the starting message of a run, or a `custom_message` entry with that job ID
+on the current branch of the session. Pi appends some messages without an
+extension event: a message that starts no turn, and one held during a tool
+round. The extension checks the session entries for those right after
+`sendMessage()` returns and at `agent_start`, `turn_end`, `agent_end`, and
+`agent_settled`. When a run settles and the message is still not in the
+session, the record shows `completion not in the conversation`: Pi may still
+hold it for the next run, or an abort may have discarded it, for example when
+Escape clears the queue. A later arrival still changes the record. Pi reports
+an asynchronous send failure only through its own error listener, so a message
+lost that way keeps its submission state, which never claims addition. Each
+change rewrites the existing record with the same id and state; a record
+already cleared from the retained set is not written again. The delivery state
+says only where the message is; it does not say that the agent has acted on it.
+
 Records never contain the command, its output, prompts, or model text, because
 a terminal can forward them to notifications and other devices. Messages are
 at most 160 characters, with control characters replaced by spaces.
@@ -382,6 +406,12 @@ The adapter tests cover foreground behavior, output-schema conformance,
 contextual environment, shell settings, turn-abort ownership, shutdown, and
 completion delivery: one bounded message per finite job, none for
 cancellation or shutdown, and the quiet append after an aborted run.
+The delivery test runs a real `AgentSession` with a deterministic provider and
+a `before_agent_start` gate. It settles jobs while a run prepares, during a
+streaming turn, and while idle, then lets the run continue, aborts it, clears
+the queue as Escape does, throws from the handler, or breaks run preparation.
+It checks that the decoded record never claims addition without the matching
+session entry, and that it does claim addition once the entry exists.
 The colocated codemode test runs an ordinary Pi session with synthetic model
 calls and native codemode. It checks foreground success and nonzero results,
 job admission, management actions, bounded logs, errors, shutdown, and the

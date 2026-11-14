@@ -55,18 +55,24 @@ class TestPi {
 			return () => handlers.delete(handler);
 		},
 	};
-	#handlers = new Map<string, (event: unknown) => Promise<void>>();
+	#handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
+	/** Pi's idle state as `ctx.isIdle()` reports it. */
+	idle = true;
+	/** Session entries on the current branch; an idle send that starts no turn appends at once, as Pi does. */
+	branch: Array<{ type: string; customType: string; details?: unknown }> = [];
+	ctx: ExtensionContext | undefined;
 	registerTool(tool: Tool) {
 		this.tools.set(tool.name, tool);
 	}
 	on(name: string, handler: (event: unknown) => Promise<void>) {
-		assert.ok(["agent_start", "agent_settled", "session_shutdown"].includes(name), `unexpected event ${name}`);
+		assert.ok(["agent_start", "message_end", "turn_end", "agent_end", "agent_settled", "session_shutdown"].includes(name), `unexpected event ${name}`);
 		this.#handlers.set(name, handler);
 	}
 	failSend = false;
 	sendMessage(message: SentMessage["message"], options?: SentMessage["options"]) {
 		if (this.failSend) throw new Error("send failed");
 		this.sent.push({ message, options });
+		if (this.idle && options?.triggerTurn === false) this.branch.push({ type: "custom_message", customType: message.customType, details: message.details });
 	}
 	tool(name: string): Tool {
 		const tool = this.tools.get(name);
@@ -74,7 +80,8 @@ class TestPi {
 		return tool;
 	}
 	async emit(name: string, event: unknown = {}): Promise<void> {
-		await this.#handlers.get(name)?.(event);
+		assert.ok(this.ctx, "context bound");
+		await this.#handlers.get(name)?.(event, this.ctx);
 	}
 	async shutdown(): Promise<void> {
 		await this.emit("session_shutdown", { reason: "quit" });
@@ -122,8 +129,10 @@ function setup(cwd = root, trusted = false, terminal?: { writes: string[]; statu
 		ui: { setStatus: (key: string, text: string | undefined) => terminal?.statuses.push([key, text]), notify: (text: string) => terminal?.notices?.push(text) },
 		model: { provider: "fixture", id: "deterministic" },
 		thinkingLevel: "low",
-		sessionManager: { getSessionId: () => "job-session", getSessionFile: () => undefined },
+		isIdle: () => pi.idle,
+		sessionManager: { getSessionId: () => "job-session", getSessionFile: () => undefined, getBranch: () => pi.branch },
 	} as unknown as ExtensionContext;
+	pi.ctx = base;
 	const ctx = {
 		...base,
 		tools: [],
@@ -341,7 +350,7 @@ describe("Command Jobs adapter", () => {
 			assert.equal(terminal.writes[0], formatStatusRecord({ id, state: "working", title: "Background job", msg: "Background job running" }));
 			assert.equal(
 				terminal.writes[1],
-				formatStatusRecord({ id, state: "error", title: "Background job", msg: "Background job failed · exit 3 · < 1 min · result added to the conversation" }),
+				formatStatusRecord({ id, state: "error", title: "Background job", msg: "Background job failed · exit 3 · < 1 min · completion sent, not in the conversation" }),
 			);
 			assert.deepEqual(terminal.statuses.at(-1), ["jobs", undefined]);
 			assert.ok(!terminal.writes.join("").includes(Buffer.from("hidden").toString("base64")));
@@ -371,26 +380,62 @@ describe("Command Jobs adapter", () => {
 			await delay(10);
 			assert.equal(
 				terminal.writes.at(-1),
-				formatStatusRecord({ id: recordId(job.id) as string, state: "done", title: "Background job", msg: "Background job succeeded · exit 0 · < 1 min" }),
+				formatStatusRecord({ id: recordId(job.id) as string, state: "done", title: "Background job", msg: "Background job succeeded · exit 0 · < 1 min · completion not sent" }),
 			);
 			assert.deepEqual(terminal.statuses.at(-1), ["jobs", undefined]);
+			const writes = terminal.writes.length;
+			await pi.emit("agent_settled", { type: "agent_settled", aborted: false });
+			assert.equal(terminal.writes.length, writes, "a completion that was never sent is not reconsidered");
 			assert.match(terminal.notices[0] ?? "", /completion message could not be sent: send failed/);
 		} finally {
 			await pi.shutdown();
 		}
 	});
 
-	it("reports a completion that waits behind an active run as queued, not added", async () => {
+	it("reports a completion sent while Pi is busy as queued until the message reaches the conversation", async () => {
+		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]> };
+		const { pi, call } = setup(root, false, terminal);
+		const record = (id: string, msg: string) => formatStatusRecord({ id: recordId(id) as string, state: "done", title: "Background job", msg: `Background job succeeded · exit 0 · < 1 min · ${msg}` });
+		try {
+			pi.idle = false;
+			const job = jobOf(await call("bash", { command: "printf done", background: true }));
+			const sent = await completion(pi, job.id);
+			await delay(0);
+			assert.equal(terminal.writes.at(-1), record(job.id, "completion queued for the conversation"));
+			await pi.emit("turn_end", { type: "turn_end" });
+			await pi.emit("message_end", { type: "message_end", message: { role: "custom", customType: JOB_COMPLETION_MESSAGE, details: { job: { id: "other" } } } });
+			assert.equal(terminal.writes.at(-1), record(job.id, "completion queued for the conversation"), "only an exact match changes the state");
+			await pi.emit("message_end", { type: "message_end", message: { role: "custom", ...sent.message } });
+			assert.equal(terminal.writes.at(-1), record(job.id, "completion in the conversation"));
+			const writes = terminal.writes.length;
+			await pi.emit("agent_settled", { type: "agent_settled", aborted: false });
+			assert.equal(terminal.writes.length, writes, "a completion in the conversation stays there");
+
+			const missing = jobOf(await call("bash", { command: "printf done", background: true }));
+			const missingSent = await completion(pi, missing.id);
+			await delay(0);
+			await pi.emit("agent_settled", { type: "agent_settled", aborted: true });
+			assert.equal(terminal.writes.at(-1), record(missing.id, "completion not in the conversation"), "a settled run without the message claims no addition");
+			pi.branch.push({ type: "custom_message", customType: JOB_COMPLETION_MESSAGE, details: missingSent.message.details });
+			await pi.emit("agent_end", { type: "agent_end" });
+			assert.equal(terminal.writes.at(-1), record(missing.id, "completion in the conversation"), "a later retained entry establishes the addition");
+		} finally {
+			await pi.shutdown();
+		}
+	});
+
+	it("reports a completion that Pi appends before sendMessage returns as in the conversation", async () => {
 		const terminal = { writes: [] as string[], statuses: [] as Array<[string, string | undefined]> };
 		const { pi, call } = setup(root, false, terminal);
 		try {
-			await pi.emit("agent_start", { type: "agent_start" });
+			await pi.emit("agent_settled", { type: "agent_settled", aborted: true });
 			const job = jobOf(await call("bash", { command: "printf done", background: true }));
-			await completion(pi, job.id);
+			assert.equal((await completion(pi, job.id)).options?.triggerTurn, false);
 			await delay(0);
+			assert.equal(terminal.writes.length, 2, "the settled record is written once");
 			assert.equal(
 				terminal.writes.at(-1),
-				formatStatusRecord({ id: recordId(job.id) as string, state: "done", title: "Background job", msg: "Background job succeeded · exit 0 · < 1 min · completion queued for the conversation" }),
+				formatStatusRecord({ id: recordId(job.id) as string, state: "done", title: "Background job", msg: "Background job succeeded · exit 0 · < 1 min · completion in the conversation" }),
 			);
 		} finally {
 			await pi.shutdown();

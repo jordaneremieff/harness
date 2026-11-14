@@ -10,7 +10,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { arr, bool, int, nul, num, obj, opt, str, type Schema, type Static, union } from "@earendil-works/pi-schema";
 import { createJobActivity, type Delivery } from "./activity.ts";
-import { commandPreview, completionContent, completionTail, displayText, JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./completion.ts";
+import {
+	commandPreview,
+	completionContent,
+	completionJobId,
+	completionTail,
+	displayText,
+	JOB_COMPLETION_MESSAGE,
+	type JobCompletionDetails,
+} from "./completion.ts";
 import { createJobsContribution } from "./durable.ts";
 import { toolDisplay } from "./display.ts";
 import { JOB_LIMITS, JobManager, type JobSnapshot } from "./manager.ts";
@@ -129,16 +137,15 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 	assert(native.outputSchema, "Native Bash must declare its output schema.");
 	let closed = false;
 	let lastRunAborted = false;
-	let runActive = false;
 
 	/**
-	 * One message per settled finite job; explicit cancellation and shutdown settle quietly. Returns what
-	 * happened to the message: added at once while no run is active, or queued behind the active run.
+	 * One message per settled finite job; explicit cancellation and shutdown settle quietly. Returns the state at
+	 * submission from Pi's own idle state: queued while Pi is busy, including run preparation, or sent while idle.
 	 */
-	function deliverCompletion(job: JobSnapshot, command: string): Delivery | undefined {
+	function deliverCompletion(job: JobSnapshot, command: string, ctx: ExtensionContext): Delivery | undefined {
 		if (closed || job.status === "cancelled") return undefined;
 		const details: JobCompletionDetails = { job, command, tail: completionTail((cursor) => manager.logs(job.id, cursor)) };
-		const delivery: Delivery = runActive ? "queued" : "added";
+		const delivery: Delivery = ctx.isIdle() ? "sent" : "queued";
 		pi.sendMessage(
 			{ customType: JOB_COMPLETION_MESSAGE, content: completionContent(details), display: true, details },
 			{ deliverAs: "followUp", triggerTurn: !lastRunAborted },
@@ -148,15 +155,54 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 
 	/** Delivers the completion and settles the job's activity even when delivery fails. */
 	function settleJob(settled: JobSnapshot, preview: string, ctx: ExtensionContext): void {
+		if (settled.status === "cancelled") {
+			activity.cancel(settled);
+			return;
+		}
 		let delivery: Delivery | undefined;
 		try {
-			delivery = deliverCompletion(settled, preview);
+			delivery = deliverCompletion(settled, preview, ctx);
+			// Pi appends a message that starts no turn before sendMessage returns, and extensions get no event for it.
+			if (delivery && retained(ctx, settled.id)) delivery = "added";
 		} catch (error) {
-			// A rejection here would end the Pi process; the operator learns of the lost completion instead.
-			if (ctx.hasUI) ctx.ui.notify(`Job ${settled.id} settled, but its completion message could not be sent: ${error instanceof Error ? error.message : String(error)}`, "error");
+			// A failed session read after a successful send keeps the submission state.
+			if (delivery === undefined && !closed) {
+				delivery = "unsent";
+				notifySendFailure(settled.id, error, ctx);
+			}
 		} finally {
-			if (settled.status === "cancelled") activity.cancel(settled);
-			else activity.settle(settled, delivery);
+			activity.settle(settled, delivery);
+		}
+	}
+
+	/** A rejection would end the Pi process; the operator learns of the lost completion instead. */
+	function notifySendFailure(jobId: string, error: unknown, ctx: ExtensionContext): void {
+		if (ctx.hasUI) ctx.ui.notify(`Job ${jobId} settled, but its completion message could not be sent: ${error instanceof Error ? error.message : String(error)}`, "error");
+	}
+
+	/** Job ids of the completion messages on the current branch of the session. */
+	function retainedCompletions(ctx: ExtensionContext): Set<string> {
+		const ids = new Set<string>();
+		for (const entry of ctx.sessionManager.getBranch()) {
+			const jobId = entry.type === "custom_message" ? completionJobId(entry) : undefined;
+			if (jobId !== undefined) ids.add(jobId);
+		}
+		return ids;
+	}
+	const retained = (ctx: ExtensionContext, jobId: string) => retainedCompletions(ctx).has(jobId);
+
+	/**
+	 * Moves awaiting records to `added` when their message is retained. Pi appends messages that start no turn,
+	 * and messages held during a tool round, without an extension event, so lifecycle events check the session.
+	 * After a settled run, a message still missing is shown as not in the conversation.
+	 */
+	function reconcile(ctx: ExtensionContext, runSettled = false): void {
+		const awaiting = activity.awaiting();
+		if (awaiting.length === 0) return;
+		const present = retainedCompletions(ctx);
+		for (const jobId of awaiting) {
+			if (present.has(jobId)) activity.deliver(jobId, "added");
+			else if (runSettled) activity.deliver(jobId, "absent");
 		}
 	}
 
@@ -241,14 +287,23 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 		},
 	});
 
-	pi.on("agent_start", async () => {
+	pi.on("agent_start", async (_event, ctx) => {
 		lastRunAborted = false;
-		runActive = true;
+		reconcile(ctx);
 	});
+	// The agent loop reports messages it delivers, follow-ups and run starting messages, before Pi persists them.
+	pi.on("message_end", async (event) => {
+		const { message } = event;
+		if (message.role !== "custom") return;
+		const jobId = completionJobId(message);
+		if (jobId !== undefined && activity.awaiting().includes(jobId)) activity.deliver(jobId, "added");
+	});
+	pi.on("turn_end", async (_event, ctx) => reconcile(ctx));
+	pi.on("agent_end", async (_event, ctx) => reconcile(ctx));
 	// After an operator abort, a settled job is recorded for the next turn instead of restarting work.
-	pi.on("agent_settled", async (event) => {
+	pi.on("agent_settled", async (event, ctx) => {
 		lastRunAborted = event.aborted;
-		runActive = false;
+		reconcile(ctx, true);
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		closed = true;

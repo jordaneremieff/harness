@@ -87,19 +87,21 @@ describe("job status records", () => {
 		assert.equal(elapsedText(0, minutes(18) + 59_000), "18 min");
 		assert.equal(
 			settledMessage(job({ status: "succeeded", exitCode: 0, endedAt: minutes(18) }), "added"),
-			"Background job succeeded · exit 0 · 18 min · result added to the conversation",
+			"Background job succeeded · exit 0 · 18 min · completion in the conversation",
 		);
 		assert.equal(
-			settledMessage(job({ status: "failed", exitCode: 1, endedAt: minutes(3) }), "added"),
-			"Background job failed · exit 1 · 3 min · result added to the conversation",
+			settledMessage(job({ status: "failed", exitCode: 1, endedAt: minutes(3) }), "sent"),
+			"Background job failed · exit 1 · 3 min · completion sent, not in the conversation",
 		);
 		assert.equal(
 			settledMessage(job({ status: "timed_out", endedAt: minutes(10), timeoutSeconds: 600 }), "added"),
-			"Background job timed out after 10 min · result added to the conversation",
+			"Background job timed out after 10 min · completion in the conversation",
 		);
 		assert.equal(settledMessage(job({ status: "failed", exitCode: null, error: "secret", endedAt: 1 })), "Background job failed · < 1 min");
-		assert.equal(settledMessage(job({ status: "succeeded", exitCode: 0, endedAt: minutes(4) }), "queued"), "Background job succeeded · exit 0 · 4 min · completion queued for the conversation", "a completion behind an active run is only queued");
-		assert.equal(settledMessage(job({ status: "lost", endedAt: minutes(2) }), "added"), "Background job lost · 2 min · result added to the conversation");
+		assert.equal(settledMessage(job({ status: "succeeded", exitCode: 0, endedAt: minutes(4) }), "queued"), "Background job succeeded · exit 0 · 4 min · completion queued for the conversation", "a completion sent while Pi is busy is only queued");
+		assert.equal(settledMessage(job({ status: "succeeded", exitCode: 0, endedAt: 1 }), "absent"), "Background job succeeded · exit 0 · < 1 min · completion not in the conversation");
+		assert.equal(settledMessage(job({ status: "succeeded", exitCode: 0, endedAt: 1 }), "unsent"), "Background job succeeded · exit 0 · < 1 min · completion not sent");
+		assert.equal(settledMessage(job({ status: "lost", endedAt: minutes(2) }), "added"), "Background job lost · 2 min · completion in the conversation");
 		assert.ok(!settledMessage(job({ status: "failed", commandPreview: "rm -rf x", cwd: "/w", endedAt: 1 }), "added").includes("rm"));
 	});
 });
@@ -114,13 +116,38 @@ describe("job activity presenter", () => {
 		activity.settle(job({ status: "succeeded", exitCode: 0, endedAt: 120_000 }), "added");
 		assert.equal(
 			writes[2],
-			formatStatusRecord({ id: RECORD, state: "done", title: "Background job", msg: "Background job succeeded · exit 0 · 2 min · result added to the conversation" }),
+			formatStatusRecord({ id: RECORD, state: "done", title: "Background job", msg: "Background job succeeded · exit 0 · 2 min · completion in the conversation" }),
 		);
 		activity.settle(job({ id: "2b4e28ba-2fa1-11d2-883f-0016d3cca427", status: "failed", exitCode: 2, endedAt: 1 }), "added");
 		assert.match(writes[3], /^\x1b\]7501;state=error:id=jobs\/2b4e28ba/u);
 		assert.deepEqual(statuses.slice(2), [["jobs", "jobs: 1 running"], ["jobs", undefined]]);
 		activity.settle(job({ status: "succeeded", endedAt: 1 }), "added");
 		assert.equal(writes.length, 4, "a second settlement of one job writes nothing");
+	});
+
+	it("rewrites a retained settled record when its delivery state changes", () => {
+		const { activity, writes, ctx } = fixture();
+		const settledJob = job({ status: "failed", exitCode: 2, endedAt: 1 });
+		activity.start(job(), ctx);
+		activity.settle(settledJob, "queued");
+		assert.deepEqual(activity.awaiting(), [JOB_ID]);
+		activity.deliver(JOB_ID, "absent");
+		activity.deliver(JOB_ID, "absent");
+		activity.deliver(JOB_ID, "added");
+		assert.deepEqual(writes.slice(1), [
+			formatStatusRecord({ id: RECORD, state: "error", title: "Background job", msg: "Background job failed · exit 2 · < 1 min · completion queued for the conversation" }),
+			formatStatusRecord({ id: RECORD, state: "error", title: "Background job", msg: "Background job failed · exit 2 · < 1 min · completion not in the conversation" }),
+			formatStatusRecord({ id: RECORD, state: "error", title: "Background job", msg: "Background job failed · exit 2 · < 1 min · completion in the conversation" }),
+		]);
+		assert.deepEqual(activity.awaiting(), [], "a completion in the conversation awaits nothing");
+		activity.start(job({ id: "unsent" }), ctx);
+		activity.settle(job({ id: "unsent", status: "succeeded", exitCode: 0, endedAt: 1 }), "unsent");
+		assert.deepEqual(activity.awaiting(), []);
+		const before = writes.length;
+		activity.deliver("unknown", "added");
+		activity.shutdown(ctx);
+		activity.deliver("unsent", "added");
+		assert.equal(writes.length, before, "unknown records and records after shutdown are not rewritten");
 	});
 
 	it("keeps at most eight settled records and clears the oldest", () => {
@@ -136,6 +163,11 @@ describe("job activity presenter", () => {
 			formatStatusRecord({ id: "jobs/job1", state: "clear" }),
 		]);
 		assert.equal(writes.at(-1), clears[1], "the clear follows the newer settlement");
+		const before = writes.length;
+		activity.deliver(ids[0], "absent");
+		assert.equal(writes.length, before, "an evicted record is not rewritten");
+		activity.deliver(ids[2], "absent");
+		assert.equal(writes.length, before + 1, "a retained record is rewritten");
 	});
 
 	it("clears the record of a cancelled job and of jobs still running at shutdown", () => {

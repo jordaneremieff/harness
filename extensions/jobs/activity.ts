@@ -72,16 +72,26 @@ export function elapsedText(startedAt: number, endedAt: number): string {
 }
 
 /**
- * What happened to the completion message: added to the conversation while no run was active, or queued
- * behind an active run, where an operator abort can still discard it before the agent reads it.
+ * What is known about the completion message. `queued`: Pi was busy when the message was sent and holds it for
+ * the conversation. `sent`: Pi was idle when the message was sent and it is not in the conversation yet.
+ * `added`: an exact signal showed the message in the conversation. `absent`: a run settled and the message is not
+ * in the conversation; Pi may still hold it or may have discarded it. `unsent`: sending failed at once.
  */
-export type Delivery = "added" | "queued";
+export type Delivery = "queued" | "sent" | "added" | "absent" | "unsent";
 const DELIVERY_TEXT: Record<Delivery, string> = {
-	added: "result added to the conversation",
 	queued: "completion queued for the conversation",
+	sent: "completion sent, not in the conversation",
+	added: "completion in the conversation",
+	absent: "completion not in the conversation",
+	unsent: "completion not sent",
 };
 
-/** The settled record's message, made only from the job record and the delivery fact. */
+/** Delivery states that a later signal can still change to `added`. */
+export function awaitsConversation(delivery: Delivery | undefined): boolean {
+	return delivery === "queued" || delivery === "sent" || delivery === "absent";
+}
+
+/** The settled record's message: the job outcome, then the delivery state when one is known. */
 export function settledMessage(job: CompletionJob, delivery?: Delivery): string {
 	const elapsed = job.endedAt === undefined ? undefined : elapsedText(job.startedAt, job.endedAt);
 	const parts: string[] = [];
@@ -116,10 +126,13 @@ const processOutput: ActivityOutput = {
 
 type FooterContext = Pick<ExtensionContext, "hasUI" | "mode" | "ui">;
 
+const settledState = (job: CompletionJob): StatusRecordState => (job.status === "succeeded" ? "done" : "error");
+
 /** Tracks this session's jobs for the footer and the terminal; every call after shutdown has no effect. */
 export function createJobActivity(output: ActivityOutput = processOutput) {
 	const running = new Map<string, string | undefined>();
-	const settled: string[] = [];
+	/** Retained settled records by job id, oldest first; each keeps what its rewrite needs. */
+	const settled = new Map<string, { id: string; job: CompletionJob; delivery?: Delivery }>();
 	let footer: FooterContext | undefined;
 	let closed = false;
 
@@ -144,11 +157,27 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 			const id = running.get(job.id);
 			running.delete(job.id);
 			if (id) {
-				write({ id, state: job.status === "succeeded" ? "done" : "error", title: RECORD_TITLE, msg: settledMessage(job, delivery) });
-				settled.push(id);
-				while (settled.length > ACTIVITY_LIMITS.settledRecords) write({ id: settled.shift() as string, state: "clear" });
+				write({ id, state: settledState(job), title: RECORD_TITLE, msg: settledMessage(job, delivery) });
+				settled.set(job.id, { id, job, delivery });
+				for (const [jobId, record] of settled) {
+					if (settled.size <= ACTIVITY_LIMITS.settledRecords) break;
+					settled.delete(jobId);
+					write({ id: record.id, state: "clear" });
+				}
 			}
 			showFooter();
+		},
+		/** Rewrites a retained settled record with a new delivery state; an evicted or unchanged record writes nothing. */
+		deliver(jobId: string, delivery: Delivery): void {
+			const record = settled.get(jobId);
+			if (closed || !record || record.delivery === delivery) return;
+			record.delivery = delivery;
+			write({ id: record.id, state: settledState(record.job), title: RECORD_TITLE, msg: settledMessage(record.job, delivery) });
+		},
+		/** Job ids of retained settled records whose completion is not yet known to be in the conversation. */
+		awaiting(): string[] {
+			if (closed) return [];
+			return [...settled].flatMap(([jobId, record]) => (awaitsConversation(record.delivery) ? [jobId] : []));
 		},
 		cancel(job: CompletionJob): void {
 			if (closed || !running.has(job.id)) return;

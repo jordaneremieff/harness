@@ -15,6 +15,14 @@ export type JobCompletionDetails = {
 	tail: { text: string; omitted: boolean; outputBytes: number };
 };
 
+/** The job id of a jobs.completion message or session entry, or undefined for any other message. */
+export function completionJobId(message: { customType?: unknown; details?: unknown }): string | undefined {
+	if (message.customType !== JOB_COMPLETION_MESSAGE) return undefined;
+	const job = typeof message.details === "object" && message.details !== null ? (message.details as { job?: unknown }).job : undefined;
+	const id = typeof job === "object" && job !== null ? (job as { id?: unknown }).id : undefined;
+	return typeof id === "string" ? id : undefined;
+}
+
 /** Model-visible text keeps newlines and tabs and drops terminal controls and other control or format characters. */
 export function displayText(text: string): string {
 	return stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, (character) =>
