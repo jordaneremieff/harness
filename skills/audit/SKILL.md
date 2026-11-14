@@ -106,12 +106,19 @@ Use the public source that matches the unit:
 - Use policy, Pillars, clipboard, or stash readers only when their retained
   evidence answers the selected question. Treat current rule and usage views as
   snapshots or retained observations, not universal event logs.
-- For cross-session tool, model, token, or cost counts, read
-  [activity-stores.md](references/activity-stores.md). It covers primary session
-  JSONL, Durable SQLite with companion catalog records, and native JSONL through
-  a bounded read-only collector. Report each store separately and preserve its
-  gaps. Exact provider request attempts are unavailable in these stores; keep
+- For cross-session tool, model, token, cost, error, or repeated-call evidence,
+  read [activity-stores.md](references/activity-stores.md) and run its bounded
+  read-only collector instead of writing a new parser. Select the window,
+  stores or exact sources, and tool or model filters that the question needs.
+  Resume a capped collection from its saved output instead of a new scan.
+  Follow its exact references before an outcome or causal claim. Report each
+  store separately and preserve its gaps. Treat repetition as observed, not as
+  waste. Exact provider request attempts are unavailable in these stores; keep
   generation starts and retained model responses separate instead.
+- For policy decisions, denials, tool errors, and text-output volume, use
+  `policy_control` with `operation: "telemetry"` as
+  [extension-telemetry.md](references/extension-telemetry.md) describes. Its
+  structured page and cursor replace parsing of the report text.
 - For an extension-specific audit, read `references/extension-telemetry.md`
   before collection. Read `../harness/references/extension-audit.md` only when
   the question requires a utility, retention, incident, repair, reposition, or
