@@ -261,8 +261,10 @@ of arrays (`offset`, `maxItems` and the output limit). Each item carries the
 UTF-16 code units appears inline as `text` with `totalCodeUnits`. A longer
 string, an array or a scalar has its usual descriptor. A nested object gives a
 pointer whose read lists its own keys. Array items inside arguments use the
-same item form. Listings reach the depth that argument search enters: an object
-`LIMITS.argumentDepth` levels below `arguments` keeps the opaque descriptor. A
+same item form. Key listings reach the depth that argument search enters: an
+object `LIMITS.argumentDepth` levels below `arguments` keeps the opaque
+descriptor. Arrays keep their ordinary item paging at every depth, and past that
+depth their items use the ordinary descriptors. A
 key whose pointer would exceed `LIMITS.pointerUnits` appears as
 `{ "kind": "skipped", "reason": "pointerLength" }` with the key's length. Every
 other opaque object keeps the behaviour above. Ordinary fields named `data` inside
