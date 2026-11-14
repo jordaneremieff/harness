@@ -19,7 +19,7 @@ import { createAgentContribution } from "./durable-agents.ts";
 import { runHost, type HostProcess } from "./host-process.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { hostPaths } from "./host-protocol.ts";
-import { StatusToolOutputSchema, StorageStatusCoverageSchema, StorageStatusPageInputSchema, structuredObservation } from "./observation-schema.ts";
+import { StatusToolInputSchema, StatusToolOutputSchema, StorageStatusCoverageSchema, StorageStatusPageInputSchema, structuredObservation } from "./observation-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { storageStatusCoverage, storageStatusPageInput, validateStatusSelectors, type StorageStatusPageInput } from "./storage-status.ts";
 
@@ -43,6 +43,11 @@ it("storage page selectors are closed and keep backend JSON cursors unchanged", 
 		assert.throws(() => validateStatusSelectors(invalid));
 	}
 	for (const invalid of [{ storageId }, { cursor }, { limit: 1 }, { view: "fleet", sessionId: storageId }]) assert.throws(() => validateStatusSelectors(invalid));
+	for (const [input, key] of [[{ limit: 20 }, "limit"], [{ view: "fleet", limit: 20 }, "limit"], [{ storageId }, "storageId"], [{ sessionId: storageId, cursor }, "cursor"]] as const) {
+		assert.throws(() => validateStatusSelectors(input), { message: `${key} requires view: storage-page with an exact storageId. Omit ${key} for every other view: each returns one bounded result with no page selector.` });
+	}
+	const declared = StatusToolInputSchema.properties as Record<string, { description?: string }>;
+	for (const key of ["storageId", "cursor", "limit"]) assert.match(declared[key]?.description ?? "", /Only with view: storage-page\./u);
 	const coverage = storageStatusCoverage(storageId, 1, 1, 0, cursor);
 	assert.equal(matchesSchema(StorageStatusCoverageSchema, coverage), true);
 	assert.equal(coverage.complete, false);

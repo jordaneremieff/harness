@@ -26,7 +26,7 @@ export function storageStatusPageInput(value: unknown): StorageStatusPageInput &
 /** Provider object schemas declare all fields; execution enforces mutually exclusive selectors. */
 export function validateStatusSelectors(value: Readonly<Record<string, unknown>>): void {
 	if (value.view === "storage-page") { storageStatusPageInput(value); return; }
-	for (const key of ["storageId", "cursor", "limit"]) if (value[key] !== undefined) throw new Error(`${key} requires view: storage-page`);
+	for (const key of ["storageId", "cursor", "limit"]) if (value[key] !== undefined) throw new Error(`${key} requires view: storage-page with an exact storageId. Omit ${key} for every other view: each returns one bounded result with no page selector.`);
 	if (value.view !== undefined && value.view !== "fleet") throw new Error("Status view must be fleet or storage-page");
 	if (value.view === "fleet" && value.sessionId !== undefined) throw new Error("Fleet status does not accept sessionId");
 }

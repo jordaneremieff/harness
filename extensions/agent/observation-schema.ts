@@ -57,7 +57,9 @@ export const StatusToolInputSchema = obj({
 	detail: opt(bool({ description: "Request full selected status with true and an explicit sessionId. False is equivalent to omission on every view." })),
 	view: opt<Schema<"fleet" | "storage-page">>({ type: "string", enum: ["fleet", "storage-page"], description: "Read sampled machine-local model evidence with fleet, without a sessionId. Optional exact model/provider filters select published evidence, not provider health. Use storage-page for one exact storageId." }),
 	...FleetSelectionProperties,
-	storageId: opt(storageStatusId), cursor: opt(map(unknown(), { description: "Opaque backend cursor. Pass the returned cursor object unchanged." })), limit: opt(storageStatusLimit),
+	storageId: opt(str({ pattern: STORAGE_STATUS_ID_PATTERN, description: "Exact bare storage ID. Only with view: storage-page." })),
+	cursor: opt(map(unknown(), { description: "Opaque backend cursor. Pass the returned cursor object unchanged. Only with view: storage-page." })),
+	limit: opt(int({ minimum: 1, maximum: 50, description: "Rows per storage page; default 50. Only with view: storage-page. Every other view is already bounded and takes no limit." })),
 });
 export const StorageStatusCoverageSchema = obj({
 	complete: boolean, returned: count, scanned: count,
