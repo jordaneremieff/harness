@@ -160,7 +160,10 @@ keeps the old identity. In the `elements` view and among ambiguous-selector
 candidates, elements that share a name (one Archive button per row) also carry
 `context`: up to 100 characters of text from the nearest ancestor that says
 more than the name, such as the row, so the ref of the intended element can be
-chosen from one inspection.
+chosen from one inspection. A ref issued with a `context` also keeps that
+context as part of what it names. Inspecting the same element again in a row
+that now says something else returns a new ref, and the old ref keeps the old
+row.
 
 The page world keeps the newest 500 refs; a ref that inspection reports again
 becomes the newest. Each inspection, action, and wait read first releases
@@ -190,6 +193,7 @@ Otherwise the action refuses with `blocked.reason: "stale-reference"` and one
 | `not-retained` | Newer inspections displaced the ref, or this document never issued it. |
 | `detached` | The page removed or replaced the element. |
 | `repurposed` | The element's role, name, type, or link target changed; `inspected` and `current` show both identities. |
+| `context-changed` | The element is unchanged, but the text of the row around it is not, for example a list that recycles rows for other items; `inspected` and `current` show both contexts. |
 
 The tool never looks for a replacement: a page with several matching controls,
 such as one Archive button per row, would make that a guess. Inspect again and
@@ -206,11 +210,16 @@ when they fail, dispatches nothing: the page record reads `not-dispatched` with
 the `cause`, the wait ends at that read, and the result status is
 `stale-reference`.
 
-The identity check covers the element itself, not its surroundings. A page that
-reuses one element for different content without changing that element's role,
-name, type, or link target (for example a virtualized list that recycles rows)
-passes the check; a `waitFor` condition that names the intended outcome shows
-whether the action reached it.
+The identity check covers the element itself. The context check covers its
+surroundings only for a ref issued with a `context`, that is, an element whose
+name another inspected element shared. The comparison leaves out the
+element's own name, so a control that shows or hides itself in its row keeps
+its ref. Any other change to the first 100 characters of the row text refuses
+the ref, including text that the page updates on its own, such as a relative
+time; inspect again to continue. A page that reuses an element with a unique
+name for different content without changing the element's role, name, type,
+or link target passes both checks; a `waitFor` condition that names the
+intended outcome shows whether the action reached it.
 
 The action is scheduled in a new page task, so a JavaScript dialog opened by a
 page handler blocks later reads, not the dispatch. Each result keeps these

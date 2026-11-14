@@ -380,6 +380,8 @@ const STALE_CAUSES: Record<string, string> = {
 		"This document no longer holds the ref: newer inspections displaced it, or it was not issued in this document.",
 	detached: "The inspected element is no longer in the page; the page removed or replaced it.",
 	repurposed: "The inspected element now has a different role, name, type, or link target.",
+	"context-changed":
+		"The inspected element is unchanged, but the text around it is not: the page reused the element for other content, such as a recycled list row.",
 };
 
 /** A reference that no longer reaches the element as inspected, before anything was dispatched. */

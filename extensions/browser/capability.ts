@@ -117,7 +117,7 @@ export const ACT_PARAMETERS = obj(
 		ref: opt(
 			str({
 				description:
-					"Element reference from browser_inspect or an earlier browser_act result. The action reaches that exact element and refuses when the page navigated, removed, replaced, or repurposed it. Give ref or selector for every action except navigate.",
+					"Element reference from browser_inspect or an earlier browser_act result. The action reaches that exact element and refuses when the page navigated, removed, replaced, or repurposed it, or reused it in a changed row. Give ref or selector for every action except navigate.",
 				minLength: 3,
 				maxLength: 50,
 				pattern: REF_PATTERN,
@@ -281,7 +281,7 @@ export const TOOL_TEXT = {
 	browser_act: {
 		label: "Act in browser tab",
 		description:
-			"Perform one action in a selected tab (click, fill, select, check, uncheck, press, submit, focus, scroll, navigate) after confirming its origin, on the element that an inspection ref names, then wait for an optional postcondition. Refuses a ref whose element the page navigated away from, removed, replaced, or repurposed. Reports transport, dispatch, observed application responses, and postcondition separately. A failed read after dispatch keeps the known dispatch and marks the outcome unknown. Never repeats an action.",
+			"Perform one action in a selected tab (click, fill, select, check, uncheck, press, submit, focus, scroll, navigate) after confirming its origin, on the element that an inspection ref names, then wait for an optional postcondition. Refuses a ref whose element the page navigated away from, removed, replaced, repurposed, or reused in a changed row. Reports transport, dispatch, observed application responses, and postcondition separately. A failed read after dispatch keeps the known dispatch and marks the outcome unknown. Never repeats an action.",
 		snippet: "Perform one verified action in a selected browser tab",
 	},
 	browser_evaluate: {

@@ -572,6 +572,7 @@ it("refuses a replaced element by ref while the old positional selector clicks t
 		type: "button",
 		name: "Archive",
 		href: null,
+		context: "Bravo Archive",
 	});
 	assert.equal(byRef.record, null, "no action was scheduled");
 	assert.equal(page.document.events.length, 0, "nothing was dispatched to any element");
@@ -619,6 +620,72 @@ it("refuses a repurposed element and gives the same element a new ref on the nex
 	assert.equal(clicks(page, buttons[1]), 1);
 });
 
+it("refuses a ref whose recycled row now shows other content, and issues a new ref with the new context", () => {
+	const page = fakePage(PAGE_URL);
+	const { rows, buttons } = inbox(page);
+	const bravo = elementsOf(inspectElements(page))[1];
+	rows[1].children[0].textContent = "Delta";
+
+	const stale = act(page, { ref: String(bravo.ref) });
+	assert.equal(stale.reply.kind, "stale-reference");
+	assert.equal(stale.reply.cause, "context-changed");
+	assert.equal(obj(stale.reply.inspected).context, "Bravo Archive");
+	assert.equal(obj(stale.reply.current).context, "Delta Archive");
+	assert.equal(obj(stale.reply.current).name, "Archive");
+	assert.equal(stale.record, null, "no action was scheduled");
+	assert.equal(page.document.events.length, 0);
+
+	const fresh = elementsOf(inspectElements(page))[1];
+	assert.equal(fresh.context, "Delta Archive");
+	assert.notEqual(fresh.ref, bravo.ref);
+	assert.equal(act(page, { ref: String(bravo.ref) }).reply.cause, "context-changed", "the old ref keeps the old row");
+	assert.equal(obj(act(page, { ref: String(fresh.ref) }).record).state, "dispatched");
+	assert.equal(clicks(page, buttons[1]), 1);
+});
+
+it("accepts refs that another process recorded without a context in the same document", () => {
+	const page = fakePage(PAGE_URL);
+	const { rows, buttons } = inbox(page);
+	const refs = elementsOf(inspectElements(page)).map((element) => String(element.ref));
+	const withoutContext = () =>
+		page.world("for (const r of globalThis.__piBrowser.refs.byRef.values()) delete r.context; true");
+	withoutContext();
+
+	assert.equal(obj(act(page, { ref: refs[0] }).record).state, "dispatched");
+	assert.equal(clicks(page, buttons[0]), 1);
+	buttons[1].textContent = "Delete";
+	const repurposed = act(page, { ref: refs[1] });
+	assert.equal(repurposed.reply.cause, "repurposed");
+	assert.equal("context" in obj(repurposed.reply.inspected), false);
+	rows[2].remove();
+	assert.equal(act(page, { ref: refs[2] }).reply.cause, "detached");
+
+	buttons[1].textContent = "Archive";
+	const again = elementsOf(inspectElements(page));
+	assert.equal(again[0].ref, refs[0], "a held record without a context takes the reported one");
+	assert.equal(again[0].context, "Alpha Archive");
+	rows[0].children[0].textContent = "Delta";
+	assert.equal(act(page, { ref: refs[0] }).reply.cause, "context-changed");
+});
+
+it("keeps a ref whose row is unchanged when a later inspection reports the element without a context", () => {
+	const page = fakePage(PAGE_URL);
+	const { rows, buttons } = inbox(page);
+	const bravo = elementsOf(inspectElements(page))[1];
+	rows[0].remove();
+	rows[2].remove();
+
+	const alone = elementsOf(inspectElements(page));
+	assert.equal(alone.length, 1);
+	assert.equal("context" in alone[0], false, "a unique name carries no context");
+	assert.equal(alone[0].ref, bravo.ref);
+	rows[1].children[0].textContent = "Delta";
+	assert.equal(act(page, { ref: String(bravo.ref) }).reply.cause, "context-changed", "the held context still applies");
+	rows[1].children[0].textContent = "Bravo";
+	assert.equal(obj(act(page, { ref: String(bravo.ref) }).record).state, "dispatched");
+	assert.equal(clicks(page, buttons[1]), 1);
+});
+
 it("refuses a ref from the previous document after a same-origin navigation", () => {
 	const page = fakePage(PAGE_URL);
 	inbox(page);
@@ -649,7 +716,7 @@ it("records not-dispatched when the referenced element changes between the reply
 			change = null;
 		},
 	});
-	const { buttons } = inbox(page);
+	const { rows, buttons } = inbox(page);
 	const refs = elementsOf(inspectElements(page)).map((element) => String(element.ref));
 	const replacement = page.document.create("button", { type: "button" }, "Archive");
 
@@ -666,6 +733,14 @@ it("records not-dispatched when the referenced element changes between the reply
 	const repurposed = act(page, { ref: refs[2] });
 	assert.equal(obj(repurposed.record).state, "not-dispatched");
 	assert.equal(obj(obj(repurposed.record).error).cause, "repurposed");
+
+	change = () => {
+		rows[0].children[0].textContent = "Delta";
+	};
+	const recycled = act(page, { ref: refs[0] });
+	assert.equal(recycled.reply.kind, "scheduled");
+	assert.equal(obj(recycled.record).state, "not-dispatched");
+	assert.equal(obj(obj(recycled.record).error).cause, "context-changed");
 	assert.equal(page.document.events.length, 0, "no element received an event");
 });
 

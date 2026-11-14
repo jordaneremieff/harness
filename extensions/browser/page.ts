@@ -101,31 +101,57 @@ const identityKey = (value) => JSON.stringify([value.tag, value.role, value.type
 const attached = (el) => Boolean(el) && el.isConnected === true && el.ownerDocument === document;
 const R = S.refs || (S.refs = { seq: 0, byRef: new Map(), byEl: new WeakMap() });
 for (const record of R.byRef.values()) if (record.el !== null && !attached(record.el)) record.el = null;
-const refFor = (el) => {
+// Text of the nearest ancestor that says more than the element's own name, such as the row of a
+// per-row button: the text as reported, and a key without the element's own name, so the element
+// showing or hiding itself does not change it.
+const contextOf = (el, name) => {
+  for (let node = el.parentElement, depth = 0; node && node !== document.body && node !== document.documentElement && depth < 8; node = node.parentElement, depth++) {
+    const text = squash(node.innerText);
+    if (text && text !== name) return { text: clip(text, 100), key: clip(squash(name ? text.split(name).join(" ") : text), 100) };
+  }
+  return null;
+};
+const contextNow = (el) => contextOf(el, clip(accName(el), 120));
+// A reference reported with a context also holds it: a list that recycles rows keeps the
+// element and its identity but changes the row around it. Without a context in this
+// description, a held context stays.
+const refFor = (el, context) => {
   const now = identity(el);
   const key = identityKey(now);
   const known = R.byEl.get(el);
   const record = known === undefined ? undefined : R.byRef.get(known);
-  if (record && record.el === el && record.key === key) {
+  if (record && record.el === el && record.key === key && (!context || !record.context || record.context.key === context.key)) {
+    if (context) record.context = context;
     R.byRef.delete(known);
     R.byRef.set(known, record);
     return S.doc + ":" + known;
   }
   const n = ++R.seq;
   while (R.byRef.size >= ${REF_LIMIT}) R.byRef.delete(R.byRef.keys().next().value);
-  R.byRef.set(n, { el, key, identity: now });
+  R.byRef.set(n, { el, key, identity: now, context: context || null });
   R.byEl.set(el, n);
   return S.doc + ":" + n;
 };
+// Names how a held reference no longer matches its element, or returns null when it does.
+// Another process in the same document can hold records without a context; they have none.
+const drift = (record, el) => {
+  const now = identity(el);
+  if (identityKey(now) !== record.key) return { cause: "repurposed", current: now };
+  if (!record.context) return null;
+  const context = contextNow(el);
+  if (context !== null && context.key === record.context.key) return null;
+  return { cause: "context-changed", current: { ...now, context: context === null ? null : context.text } };
+};
+const heldIdentity = (record) => (!record.context ? record.identity : { ...record.identity, context: record.context.text });
 // Resolves a reference to its retained element, or names why the reference no longer reaches it.
 const resolveRef = (ref) => {
   const at = ref.lastIndexOf(":");
   if (at < 1 || ref.slice(0, at) !== S.doc) return { cause: "other-document" };
   const record = R.byRef.get(Number(ref.slice(at + 1)));
   if (!record) return { cause: "not-retained" };
-  if (!attached(record.el)) { record.el = null; return { cause: "detached", inspected: record.identity }; }
-  const now = identity(record.el);
-  if (identityKey(now) !== record.key) return { cause: "repurposed", inspected: record.identity, current: now };
+  if (!attached(record.el)) { record.el = null; return { cause: "detached", inspected: heldIdentity(record) }; }
+  const changed = drift(record, record.el);
+  if (changed) return { cause: changed.cause, inspected: heldIdentity(record), current: changed.current };
   return { el: record.el, record };
 };
 const unique = (selector) => { try { return document.querySelectorAll(selector).length === 1; } catch (e) { return false; } };
@@ -148,8 +174,8 @@ const cssPath = (el) => {
   }
   return parts.join(" > ");
 };
-const describe = (el) => {
-  const out = { ref: refFor(el), selector: cssPath(el), tag: el.localName, role: el.getAttribute("role"), name: clip(accName(el), 120), visible: isVisible(el) };
+const describe = (el, context) => {
+  const out = { ref: refFor(el, context), selector: cssPath(el), tag: el.localName, role: el.getAttribute("role"), name: clip(accName(el), 120), visible: isVisible(el) };
   if ((el instanceof HTMLInputElement || el instanceof HTMLButtonElement) && el.type) out.type = el.type;
   if ("disabled" in el) out.disabled = Boolean(el.disabled);
   if (el instanceof HTMLAnchorElement && el.href) out.href = clip(el.href, 300);
@@ -157,23 +183,15 @@ const describe = (el) => {
     out.value = sensitive(el) ? "[redacted]" : clip(el.value, 200);
   }
   if (el instanceof HTMLInputElement && (el.type === "checkbox" || el.type === "radio")) out.checked = el.checked;
+  if (context) out.context = context.text;
   return out;
-};
-// Text of the nearest ancestor that says more than the element's own name, such as the row of a per-row button.
-const contextOf = (el, name) => {
-  for (let node = el.parentElement, depth = 0; node && node !== document.body && node !== document.documentElement && depth < 8; node = node.parentElement, depth++) {
-    const text = squash(node.innerText);
-    if (text && text !== name) return clip(text, 100);
-  }
-  return null;
 };
 // Describes elements; one whose name another of them shares also carries its context to tell them apart.
 const describeAll = (elements) => {
-  const described = elements.map(describe);
+  const names = elements.map((el) => clip(accName(el), 120));
   const counts = new Map();
-  for (const item of described) counts.set(item.name, (counts.get(item.name) || 0) + 1);
-  described.forEach((item, i) => { if (counts.get(item.name) > 1) { const context = contextOf(elements[i], item.name); if (context !== null) item.context = context; } });
-  return described;
+  for (const name of names) counts.set(name, (counts.get(name) || 0) + 1);
+  return elements.map((el, i) => describe(el, counts.get(names[i]) > 1 ? contextOf(el, names[i]) : null));
 };
 const INTERACTIVE = "a[href], button, input, select, textarea, summary, [role=button], [role=link], [role=checkbox], [role=radio], [role=tab], [role=menuitem], [role=switch], [role=option], [role=combobox], [contenteditable=''], [contenteditable=true], [tabindex]:not([tabindex='-1'])";
 const select = (selector) => { try { return { nodes: Array.from(document.querySelectorAll(selector)) }; } catch (e) { return { error: clip(e && e.message, 300) }; } };
@@ -213,7 +231,7 @@ if (O.view === "summary") {
     headings: Array.from(document.querySelectorAll("h1, h2, h3")).filter(isVisible).slice(0, 20).map((h) => ({ level: Number(h.localName[1]), text: clip(squash(h.innerText), 160) })),
     counts: { links: document.links.length, forms: document.forms.length, interactive: document.querySelectorAll(INTERACTIVE).length, iframes: document.querySelectorAll("iframe").length },
     focused: document.activeElement && document.activeElement !== document.body && document.activeElement !== document.documentElement ? describe(document.activeElement) : null,
-    dialogs: Array.from(document.querySelectorAll("dialog[open], [role=dialog], [role=alertdialog]")).filter(isVisible).slice(0, 3).map(describe),
+    dialogs: Array.from(document.querySelectorAll("dialog[open], [role=dialog], [role=alertdialog]")).filter(isVisible).slice(0, 3).map((el) => describe(el)),
     text: window_(text),
   };
 } else if (O.view === "text") {
@@ -299,9 +317,10 @@ if (A.ref !== null) {
 const changed = () => {
   if (held === null) return null;
   if (!attached(el)) return { cause: "detached", message: "The referenced element left the page before the action ran." };
-  const now = identity(el);
-  if (identityKey(now) !== held.key) return { cause: "repurposed", message: "The referenced element changed its role, name, type, or link target before the action ran.", current: now };
-  return null;
+  const moved = drift(held, el);
+  if (moved === null) return null;
+  const message = moved.cause === "repurposed" ? "The referenced element changed its role, name, type, or link target before the action ran." : "The text around the referenced element changed before the action ran.";
+  return { cause: moved.cause, message, current: moved.current };
 };
 const refuse = (reason) => JSON.stringify({ kind: "not-actionable", reason, element: describe(el), page: page() });
 const isInput = el instanceof HTMLInputElement;
