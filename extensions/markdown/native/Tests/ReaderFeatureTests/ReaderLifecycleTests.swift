@@ -192,6 +192,61 @@ private final class LifecycleGate {
         await model.close()
     }
 
+    @Test func aNewRevisionFollowsAfterAnEarlierAutomaticAttemptFails() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1)
+        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
+        let window = window(model)
+        defer { window.close() }
+        await model.open(origin: nil)
+        #expect(await wait { !model.isScrollingForCheck })
+        model.followsLatest = true
+        let gate = LifecycleGate()
+        defer { gate.release() }
+        var targets: [Int?] = []
+        model.preparationGate = { revision in
+            targets.append(revision)
+            if revision == 2 { await gate.wait() }
+        }
+        try store.publish(2)
+        try store.corrupt(2)
+        #expect(await wait { gate.reached })
+        try store.publish(3)
+        await model.checkForUpdate()
+        #expect(model.latestRevision == 3)
+        gate.release()
+        #expect(await wait { model.snapshot?.revision == 3 && !model.isLoadingForCheck })
+        #expect(targets == [2, 3])
+        await model.close()
+    }
+
+    @Test(arguments: [false, true])
+    func manualRefreshReconcilesAPublicationDuringPreparation(followsLatest: Bool) async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1)
+        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
+        let window = window(model)
+        defer { window.close() }
+        await model.open(origin: nil)
+        #expect(await wait { !model.isScrollingForCheck })
+        let gate = LifecycleGate()
+        defer { gate.release() }
+        model.preparationGate = { revision in if revision == 2 { await gate.wait() } }
+        try store.publish(2)
+        let refreshing = Task { await model.refresh() }
+        #expect(await wait { gate.reached })
+        model.followsLatest = followsLatest
+        try store.publish(3)
+        await model.checkForUpdate()
+        gate.release()
+        await refreshing.value
+        #expect(await wait { followsLatest ? model.snapshot?.revision == 3 : model.update == .revision(3) })
+        if !followsLatest { #expect(model.snapshot?.revision == 2) }
+        await model.close()
+    }
+
     @Test(arguments: [false, true])
     func firstInstallReconcilesASinglePublication(followsLatest: Bool) async throws {
         let store = try LifecycleStore()

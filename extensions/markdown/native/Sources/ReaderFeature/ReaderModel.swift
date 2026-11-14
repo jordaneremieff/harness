@@ -112,7 +112,7 @@ public final class ReaderModel {
     /// names another revision.
     @ObservationIgnored private var failedRevision: Int?
     @ObservationIgnored private var interactionGeneration = 0
-    /// Suspends a prepared revision before installation for controlled lifecycle checks.
+    /// Suspends a preparation result before installation or failure handling.
     @ObservationIgnored package var preparationGate: (@MainActor (Int?) async -> Void)?
     @ObservationIgnored var expectingLoad = false
 
@@ -181,10 +181,15 @@ public final class ReaderModel {
         generation += 1
         let token = generation
         loadPending = true
-        defer { if token == generation { loadPending = false } }
-        let started = Date()
-        let firstInstall = snapshot == nil
         startWatching()
+        await prepareAndInstall(revision: revision, pinnedDigest: pinnedDigest, restore: restore, automatic: automatic, token: token)
+        guard token == generation, !closed else { return }
+        loadPending = false
+        await checkForUpdate()
+    }
+
+    private func prepareAndInstall(revision: Int?, pinnedDigest: String?, restore: RestoreMode, automatic: Bool, token: Int) async {
+        let started = Date()
         var position: ReadingPosition?
         switch restore {
         case .saved:
@@ -207,13 +212,14 @@ public final class ReaderModel {
                 )
             }
         }.value
-        if case .success(let prepared) = result {
-            await preparationGate?(prepared.snapshot.revision)
+        switch result {
+        case .success(let prepared): await preparationGate?(prepared.snapshot.revision)
+        case .failure: await preparationGate?(revision)
         }
         guard token == generation, !closed else { return }
         switch result {
         case .failure(let error):
-            if automatic { failedRevision = latestRevision }
+            if automatic { failedRevision = revision }
             fail(String(describing: error))
         case .success(let prepared):
             if automatic, await interacting() { return }
@@ -224,16 +230,12 @@ public final class ReaderModel {
             if automatic, interaction != interactionGeneration { return }
             let previousRevision = snapshot?.revision
             guard await install(prepared, position: position, token: token, started: started) else {
-                if automatic, token == generation, failure != nil { failedRevision = latestRevision }
+                if automatic, token == generation, failure != nil { failedRevision = revision }
                 return
             }
             if automatic { failedRevision = nil }
             if case .current = restore, previousRevision != nil, previousRevision != prepared.snapshot.revision {
                 reportRestore()
-            }
-            if firstInstall || automatic {
-                loadPending = false
-                await checkForUpdate()
             }
         }
     }
@@ -389,7 +391,7 @@ public final class ReaderModel {
             readerLog.notice("update available \(self.reference.key, privacy: .public) revision=\(latest, privacy: .public)")
             if followsNow, await !interacting() {
                 guard token == generation, !closed, !loadPending else { return }
-                await load(revision: nil, restore: .current, automatic: true)
+                await load(revision: newest, restore: .current, automatic: true)
             }
         case .file:
             if marker != snapshot.digest { update = .fileChanged }
@@ -413,7 +415,7 @@ public final class ReaderModel {
             self.positionTask = nil
             if self.followsNow, await !self.interacting() {
                 guard !self.closed, !self.loadPending else { return }
-                await self.load(revision: nil, restore: .current, automatic: true)
+                await self.load(revision: self.latestRevision, restore: .current, automatic: true)
             }
         }
     }
