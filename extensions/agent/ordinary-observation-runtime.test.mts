@@ -119,7 +119,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	}
 	const unsupported = await invoke("agent_inspect", { sessionId: ordinaryId, view: "exact", entryId: 1 });
 	assert.equal(unsupported.isError, true);
-	assert.match(JSON.stringify(unsupported.diagnostics), /supports activity and history only/u);
+	assert.match(JSON.stringify(unsupported.diagnostics), /exact inspection requires the textCursor/u);
 	assert.deepEqual(opened, [record.storageId]);
 	assert.equal(existsSync(catalog.path(ordinaryId)), false);
 	assert.equal(existsSync(join(catalog.root, `${ordinaryId}.sqlite`)), false);

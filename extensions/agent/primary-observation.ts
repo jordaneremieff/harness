@@ -9,19 +9,27 @@ import type { PrimaryInfo } from "./primary-channel.ts";
 export const PRIMARY_OBSERVATION_LIMITS = {
 	headerBytes: 16 * 1024, bytes: 512 * 1024, lines: 2048, lineBytes: 64 * 1024,
 	parentVisits: 256, items: 20, textSlots: 128, textScanBytes: 32 * 1024,
-	textBytes: 2048, outputBytes: 24 * 1024,
+	textBytes: 2048, outputBytes: 24 * 1024, exactPageBytes: 16 * 1024,
 } as const;
-const ViewSchema = union([lit("status"), lit("activity"), lit("history")]);
+const AncestryViewSchema = union([lit("status"), lit("activity"), lit("history")]);
+const ViewSchema = union([lit("status"), lit("activity"), lit("history"), lit("exact")]);
 const locatorProperties = { id: str(), parentId: union([str(), nul()]), timestamp: str(), byteOffset: int({ minimum: 0 }) };
 const LocatorSchema = obj(locatorProperties);
 const PinSchema = obj({ dev: str(), ino: str(), size: int({ minimum: 0 }), mtimeNs: str(), ctimeNs: str() });
-const CursorSchema = obj({ version: lit(1), sessionId: str(), path: str(), pin: PinSchema, headId: str(), nextId: str(), view: ViewSchema });
+const CursorSchema = obj({ version: lit(1), sessionId: str(), path: str(), pin: PinSchema, headId: str(), nextId: str(), view: AncestryViewSchema });
+/** Locates one immutable record of an append-only session file: its identity survives later appends. */
+const ExactCursorSchema = obj({
+	version: lit(1), view: lit("exact"), sessionId: str(), file: obj({ dev: str(), ino: str() }),
+	entryId: str(), byteOffset: int({ minimum: 0 }), offset: int({ minimum: 0 }),
+});
 const EntrySchema = obj({
 	...locatorProperties, kind: str(), role: opt(str()), text: opt(str()),
 	toolNames: opt(arr(str(), { maxItems: 16 })), isError: opt(bool()),
 	error: opt(str()), stopReason: opt(str()),
 	targetId: opt(str()), firstKeptEntryId: opt(str()), fromId: opt(str()),
+	textCursor: opt(ExactCursorSchema),
 });
+const PageSchema = obj({ offset: int({ minimum: 0 }), endOffset: int({ minimum: 0 }), totalUnits: int({ minimum: 0 }) });
 const IntentSchema = obj({
 	purpose: str(), integration: str(), authority: str(), updatedAt: str(),
 	contactThread: opt(str()),
@@ -36,14 +44,18 @@ export const OrdinaryPrimaryObservationSchema = obj({
 		process: obj({ pid: int(), hostname: str(), state: union([lit("live"), lit("dead"), lit("unknown")]), basis: lit("local-pid-probe"), attribution: lit("process-existence-not-session-progress") }),
 	}),
 	unknown: obj({ idle: lit("unknown"), selectedLeaf: lit("unknown"), timers: lit("unknown"), tasks: lit("unknown"), unretainedActivity: lit("unknown") }),
-	source: obj({ path: opt(str()), pin: opt(PinSchema), ancestry: lit("latest-retained-ancestry"), head: opt(LocatorSchema), latestKnown: bool() }),
+	source: obj({ path: opt(str()), pin: opt(PinSchema), ancestry: union([lit("latest-retained-ancestry"), lit("retained-entry")]), head: opt(LocatorSchema), latestKnown: bool() }),
 	entries: arr(EntrySchema, { maxItems: PRIMARY_OBSERVATION_LIMITS.items }),
+	page: opt(PageSchema),
 	coverage: obj({ complete: bool(), reasons: arr(str()), bytesRead: int(), linesVisited: int(), parentVisits: int(), textScanBytes: int(), omissions: obj({ credentials: int(), fields: int(), text: int() }) }),
-	nextCursor: opt(CursorSchema),
+	nextCursor: opt(union([CursorSchema, ExactCursorSchema])),
 });
 export type OrdinaryPrimaryObservation = Static<typeof OrdinaryPrimaryObservationSchema>;
 type Entry = Static<typeof EntrySchema>;
 type Cursor = Static<typeof CursorSchema>;
+type ExactCursor = Static<typeof ExactCursorSchema>;
+/** Set when a text field of the projected entry was clipped or omitted for size. */
+type Clip = { clipped: boolean };
 type Pin = Static<typeof PinSchema>;
 type Raw = Record<string, unknown>;
 const ENTRY_ID = /^(?:[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/u;
@@ -173,12 +185,14 @@ export function safeProviderError(value: string, maxBytes = 4096): { text: strin
 	const text = safe(value, result, maxBytes);
 	return { text: text ?? "[text unavailable: scan budget exceeded]", redacted: result.coverage.omissions.credentials > 0, truncated: text === undefined || result.coverage.reasons.includes("text-output-budget") };
 }
-function safe(value: unknown, result: TextObservation, maxBytes = 512): string | undefined {
+function safe(value: unknown, result: TextObservation, maxBytes = 512, clip?: Clip, scanLimit: number = PRIMARY_OBSERVATION_LIMITS.textScanBytes): string | undefined {
 	if (typeof value !== "string") return undefined;
 	// Oversized fields are omitted intact so a credential is never cut before recognition.
-	const available = PRIMARY_OBSERVATION_LIMITS.textScanBytes - result.coverage.textScanBytes;
+	const available = scanLimit - result.coverage.textScanBytes;
 	if (value.length > available || Buffer.byteLength(value) > available) {
-		result.coverage.omissions.fields++; reason(result, "text-scan-budget"); return undefined;
+		result.coverage.omissions.fields++; reason(result, "text-scan-budget");
+		if (clip) clip.clipped = true;
+		return undefined;
 	}
 	result.coverage.textScanBytes += Buffer.byteLength(value);
 	const wellFormed = Buffer.from(value, "utf8").toString("utf8");
@@ -187,7 +201,10 @@ function safe(value: unknown, result: TextObservation, maxBytes = 512): string |
 	if (escaped !== wellFormed) { result.coverage.omissions.text++; reason(result, "control-text-escaped"); }
 	const redacted = redact(escaped, result);
 	const short = excerpt(redacted, maxBytes);
-	if (short !== redacted) { result.coverage.omissions.text++; reason(result, "text-output-budget"); }
+	if (short !== redacted) {
+		result.coverage.omissions.text++; reason(result, "text-output-budget");
+		if (clip) clip.clipped = true;
+	}
 	return short;
 }
 function presence(primary: PrimaryInfo, result: OrdinaryPrimaryObservation): void {
@@ -225,6 +242,13 @@ function exactKeys(value: Raw, allowed: readonly string[]): boolean {
 		if (!Object.hasOwn(value, key) || !allowed.includes(key) || ++count > allowed.length) return false;
 	}
 	return count === allowed.length;
+}
+function digits(value: unknown): boolean { return typeof value === "string" && value.length <= 32 && /^\d+$/u.test(value); }
+function exactCursor(value: unknown): value is ExactCursor {
+	if (!object(value) || !exactKeys(value, ["version", "view", "sessionId", "file", "entryId", "byteOffset", "offset"]) || value.version !== 1 || value.view !== "exact") return false;
+	if (typeof value.sessionId !== "string" || value.sessionId.length > 128 || !id(value.entryId)) return false;
+	if (!object(value.file) || !exactKeys(value.file, ["dev", "ino"]) || !digits(value.file.dev) || !digits(value.file.ino)) return false;
+	return [value.byteOffset, value.offset].every(n => Number.isSafeInteger(n) && Number(n) >= 0);
 }
 function cursor(value: unknown): value is Cursor {
 	if (!object(value) || !exactKeys(value, ["version", "sessionId", "path", "pin", "headId", "nextId", "view"]) || value.version !== 1 || typeof value.sessionId !== "string" || value.sessionId.length > 128 || typeof value.path !== "string" || value.path.length > 4096 || !id(value.headId) || !id(value.nextId) || typeof value.view !== "string" || !["status", "activity", "history"].includes(value.view)) return false;
@@ -265,14 +289,17 @@ const MESSAGE_FIELDS: Record<string, (message: Raw) => boolean> = {
 function validMessage(message: Raw): boolean {
 	return typeof message.timestamp === "number" && Number.isFinite(message.timestamp) && typeof message.role === "string" && Object.hasOwn(MESSAGE_FIELDS, message.role) && (MESSAGE_FIELDS[message.role]?.(message) ?? false);
 }
-function project(raw: Raw, offset: number, result: OrdinaryPrimaryObservation): Entry {
+/** Text limits of one projection: compact ancestry entries, or the complete text of one exact entry. */
+interface Projection { textBytes: number; scanLimit: number; clip: Clip }
+const compactProjection = (): Projection => ({ textBytes: PRIMARY_OBSERVATION_LIMITS.textBytes, scanLimit: PRIMARY_OBSERVATION_LIMITS.textScanBytes, clip: { clipped: false } });
+function project(raw: Raw, offset: number, result: OrdinaryPrimaryObservation, p: Projection = compactProjection()): Entry {
 	const entry: Entry = { id: raw.id as string, parentId: raw.parentId as string | null, timestamp: raw.timestamp as string, byteOffset: offset, kind: raw.type as string };
 	for (const key of ["targetId", "firstKeptEntryId"] as const) if (id(raw[key])) entry[key] = raw[key];
 	if (raw.type === "branch_summary" && fromId(raw.fromId)) entry.fromId = raw.fromId;
-	if (raw.type === "message" && object(raw.message)) projectMessage(raw.message, entry, result);
+	if (raw.type === "message" && object(raw.message)) projectMessage(raw.message, entry, result, p);
 	return entry;
 }
-function projectMessage(message: Raw, entry: Entry, result: OrdinaryPrimaryObservation): void {
+function projectMessage(message: Raw, entry: Entry, result: OrdinaryPrimaryObservation, p: Projection): void {
 	entry.role = String(message.role);
 	if (!["user", "assistant", "toolResult"].includes(entry.role)) return;
 	entry.isError = entry.role === "toolResult" ? message.isError === true : entry.role === "assistant" && ["error", "aborted"].includes(String(message.stopReason));
@@ -281,43 +308,43 @@ function projectMessage(message: Raw, entry: Entry, result: OrdinaryPrimaryObser
 	const names: string[] = [];
 	const toolName = entry.role === "toolResult" ? safe(message.toolName, result, 128) : undefined;
 	if (toolName !== undefined) names.push(toolName);
-	const text = projectContent(message.content, names, result, entry.role === "assistant");
+	const text = projectContent(message.content, names, result, entry.role === "assistant", p);
 	if (text) entry.text = text;
 	if (names.length) entry.toolNames = names;
 }
-function appendText(text: string, value: unknown, result: OrdinaryPrimaryObservation): string {
-	const chunk = safe(value, result, PRIMARY_OBSERVATION_LIMITS.textBytes);
+function appendText(text: string, value: unknown, result: OrdinaryPrimaryObservation, p: Projection): string {
+	const chunk = safe(value, result, p.textBytes, p.clip, p.scanLimit);
 	if (chunk === undefined) return text;
 	const joined = text ? `${text}\n${chunk}` : chunk;
-	const short = excerpt(joined, PRIMARY_OBSERVATION_LIMITS.textBytes);
-	if (short !== joined) { result.coverage.omissions.text++; reason(result, "text-output-budget"); }
+	const short = excerpt(joined, p.textBytes);
+	if (short !== joined) { result.coverage.omissions.text++; reason(result, "text-output-budget"); p.clip.clipped = true; }
 	return short;
 }
-function projectContent(content: unknown, names: string[], result: OrdinaryPrimaryObservation, allowCalls: boolean): string {
-	if (typeof content === "string") return appendText("", content, result);
+function projectContent(content: unknown, names: string[], result: OrdinaryPrimaryObservation, allowCalls: boolean, p: Projection): string {
+	if (typeof content === "string") return appendText("", content, result, p);
 	if (!Array.isArray(content)) return "";
 	let text = "", slots = 0;
 	for (const block of content) {
 		if (++slots > PRIMARY_OBSERVATION_LIMITS.textSlots) { reason(result, "text-slot-budget"); break; }
-		text = projectBlock(block, text, names, result, allowCalls);
+		text = projectBlock(block, text, names, result, allowCalls, p);
 	}
 	return text;
 }
-function projectBlock(block: unknown, text: string, names: string[], result: OrdinaryPrimaryObservation, allowCalls: boolean): string {
+function projectBlock(block: unknown, text: string, names: string[], result: OrdinaryPrimaryObservation, allowCalls: boolean, p: Projection): string {
 	if (!object(block)) { reason(result, "malformed-content-block"); return text; }
-	if (block.type === "text" && typeof block.text === "string") return appendText(text, block.text, result);
+	if (block.type === "text" && typeof block.text === "string") return appendText(text, block.text, result, p);
 	if (block.type === "image" || block.type === "thinking") return text;
-	if (block.type === "toolCall" && allowCalls && typeof block.name === "string") { appendToolName(block.name, names, result); return text; }
+	if (block.type === "toolCall" && allowCalls && typeof block.name === "string") { appendToolName(block.name, names, result, p.scanLimit); return text; }
 	reason(result, "malformed-content-block");
 	return text;
 }
-function appendToolName(value: unknown, names: string[], result: OrdinaryPrimaryObservation): void {
+function appendToolName(value: unknown, names: string[], result: OrdinaryPrimaryObservation, scanLimit: number): void {
 	if (names.length >= 16) { reason(result, "tool-name-budget"); return; }
-	const name = safe(value, result, 128);
+	const name = safe(value, result, 128, undefined, scanLimit);
 	if (name !== undefined) names.push(name);
 }
 
-type Input = { view?: "status" | "activity" | "history"; limit?: number; cursor?: unknown; signal?: AbortSignal };
+type Input = { view?: "status" | "activity" | "history" | "exact"; limit?: number; cursor?: unknown; signal?: AbortSignal };
 type RecordLocation = { raw: Raw; offset: number };
 type Records = Map<string, RecordLocation>;
 interface Snapshot { records: Records; pin: Pin }
@@ -335,16 +362,21 @@ function initial(primary: PrimaryInfo, input: Input): OrdinaryPrimaryObservation
 	return result;
 }
 function validateInput(input: Input, result: OrdinaryPrimaryObservation): boolean {
+	if (result.view === "exact") {
+		if (!exactCursor(input.cursor)) { reason(result, "invalid-cursor"); return false; }
+		if (input.cursor.sessionId !== result.sessionId) { reason(result, "cursor-source-mismatch"); return false; }
+		return true;
+	}
 	if (input.cursor !== undefined && !cursor(input.cursor)) { reason(result, "invalid-cursor"); return false; }
 	if (!["status", "activity", "history"].includes(result.view) || (input.limit !== undefined && (!Number.isSafeInteger(input.limit) || input.limit < 1))) { reason(result, "invalid-input"); return false; }
 	return true;
 }
-function validatePath(path: string | undefined, continuation: Cursor | undefined, result: OrdinaryPrimaryObservation): path is string {
+function validatePath(path: string | undefined, continuation: Cursor | ExactCursor | undefined, result: OrdinaryPrimaryObservation): path is string {
 	if (!path) { reason(result, "no-session-file"); return false; }
 	if (!isAbsolute(path) || path.length > 4096 || Buffer.byteLength(path) > 4096 || /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(path)) { reason(result, "invalid-session-path"); return false; }
 	if (safe(path, result, 4096) !== path) { reason(result, "sensitive-session-path"); return false; }
 	result.source.path = path;
-	if (continuation && (continuation.path !== path || continuation.sessionId !== result.sessionId || continuation.view !== result.view)) { reason(result, "cursor-source-mismatch"); return false; }
+	if (continuation && continuation.view !== "exact" && (continuation.path !== path || continuation.sessionId !== result.sessionId || continuation.view !== result.view)) { reason(result, "cursor-source-mismatch"); return false; }
 	return true;
 }
 async function readRange(file: FileHandle, offset: number, length: number, result: OrdinaryPrimaryObservation, signal?: AbortSignal): Promise<Buffer> {
@@ -355,6 +387,14 @@ async function readRange(file: FileHandle, offset: number, length: number, resul
 	if (bytesRead !== length) reason(result, "source-changed");
 	return data.subarray(0, bytesRead);
 }
+/** Offset of the first entry record after a valid header of this session, or undefined. */
+async function headerEnd(file: FileHandle, size: number, result: OrdinaryPrimaryObservation, signal?: AbortSignal): Promise<number | undefined> {
+	const headerBytes = await readRange(file, 0, Math.min(size, PRIMARY_OBSERVATION_LIMITS.headerBytes), result, signal);
+	const newline = headerBytes.indexOf(10);
+	const header = newline < 0 ? undefined : parse(headerBytes.subarray(0, newline));
+	if (header?.type !== "session" || header.version !== 3 || header.id !== result.sessionId || !timestamp(header.timestamp) || typeof header.cwd !== "string") { reason(result, "invalid-header-or-identity"); return undefined; }
+	return newline + 1;
+}
 async function snapshot(file: FileHandle, continuation: Cursor | undefined, result: OrdinaryPrimaryObservation, signal?: AbortSignal): Promise<Snapshot | undefined> {
 	const stat = await file.stat({ bigint: true });
 	if (!stat.isFile() || stat.size > BigInt(Number.MAX_SAFE_INTEGER)) { reason(result, "not-regular-file"); return undefined; }
@@ -362,11 +402,8 @@ async function snapshot(file: FileHandle, continuation: Cursor | undefined, resu
 	result.source.pin = sourcePin;
 	if (continuation && !same(sourcePin, continuation.pin)) { reason(result, "source-changed"); return undefined; }
 	const size = Number(stat.size);
-	const headerBytes = await readRange(file, 0, Math.min(size, PRIMARY_OBSERVATION_LIMITS.headerBytes), result, signal);
-	const newline = headerBytes.indexOf(10);
-	const header = newline < 0 ? undefined : parse(headerBytes.subarray(0, newline));
-	if (header?.type !== "session" || header.version !== 3 || header.id !== result.sessionId || !timestamp(header.timestamp) || typeof header.cwd !== "string") { reason(result, "invalid-header-or-identity"); return undefined; }
-	const firstOffset = newline + 1;
+	const firstOffset = await headerEnd(file, size, result, signal);
+	if (firstOffset === undefined) return undefined;
 	const start = Math.max(firstOffset, size - PRIMARY_OBSERVATION_LIMITS.bytes);
 	const data = await readRange(file, start, size - start, result, signal);
 	return { pin: sourcePin, records: scanRecords(data, start, firstOffset, result, signal) };
@@ -407,12 +444,17 @@ function scanRecords(data: Buffer, start: number, firstOffset: number, result: O
 function continuationFor(nextId: string, snapshot: Snapshot, result: OrdinaryPrimaryObservation): Cursor | undefined {
 	const head = result.source.head;
 	const path = result.source.path;
-	return head && path ? { version: 1, sessionId: result.sessionId, path, pin: snapshot.pin, headId: head.id, nextId, view: result.view } : undefined;
+	return head && path ? { version: 1, sessionId: result.sessionId, path, pin: snapshot.pin, headId: head.id, nextId, view: result.view as Cursor["view"] } : undefined;
 }
 function emit(record: RecordLocation, snapshot: Snapshot, limit: number, result: OrdinaryPrimaryObservation): boolean {
 	const candidate = continuationFor(record.raw.id as string, snapshot, result);
 	if (result.entries.length >= limit) { reason(result, "item-budget"); result.nextCursor = candidate; return false; }
-	result.entries.push(project(record.raw, record.offset, result));
+	const projection = compactProjection();
+	const entry = project(record.raw, record.offset, result, projection);
+	if (projection.clip.clipped && result.view !== "status") {
+		entry.textCursor = { version: 1, view: "exact", sessionId: result.sessionId, file: { dev: snapshot.pin.dev, ino: snapshot.pin.ino }, entryId: entry.id, byteOffset: record.offset, offset: 0 };
+	}
+	result.entries.push(entry);
 	// Only bounded projected fields reach serialization, never raw entries.
 	if (Buffer.byteLength(JSON.stringify({ ...result, nextCursor: candidate })) > PRIMARY_OBSERVATION_LIMITS.outputBytes - 1024) {
 		result.entries.pop(); reason(result, "output-budget");
@@ -467,12 +509,83 @@ function readError(error: unknown, signal: AbortSignal | undefined, result: Ordi
 	reason(result, signal?.aborted ? "aborted" : failures[code ?? ""] ?? "session-file-read-failed");
 	discard(result);
 }
+function splitsPair(text: string, offset: number): boolean {
+	const low = text.charCodeAt(offset), high = text.charCodeAt(offset - 1);
+	return offset > 0 && low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff;
+}
+/** Read the one record that the cursor locates: its line starts at byteOffset, after a newline. */
+async function exactRecord(file: FileHandle, at: ExactCursor, result: OrdinaryPrimaryObservation, signal?: AbortSignal): Promise<Raw | undefined> {
+	const stat = await file.stat({ bigint: true });
+	if (!stat.isFile() || stat.size > BigInt(Number.MAX_SAFE_INTEGER)) { reason(result, "not-regular-file"); return undefined; }
+	result.source.pin = pin(stat);
+	if (result.source.pin.dev !== at.file.dev || result.source.pin.ino !== at.file.ino) { reason(result, "source-changed"); return undefined; }
+	const size = Number(stat.size);
+	const firstOffset = await headerEnd(file, size, result, signal);
+	if (firstOffset === undefined) return undefined;
+	if (at.byteOffset < firstOffset || at.byteOffset >= size) { reason(result, "unknown-entry"); return undefined; }
+	const length = Math.min(size - at.byteOffset + 1, PRIMARY_OBSERVATION_LIMITS.lineBytes + 2);
+	const data = await readRange(file, at.byteOffset - 1, length, result, signal);
+	const end = data.indexOf(10, 1);
+	if (data[0] !== 10) { reason(result, "unknown-entry"); return undefined; }
+	if (end < 0) { reason(result, data.length < PRIMARY_OBSERVATION_LIMITS.lineBytes + 2 ? "partial-tail-record" : "oversize-record"); return undefined; }
+	result.coverage.linesVisited = 1;
+	const raw = parseRecord(data, 1, end, result);
+	if (raw && raw.id !== at.entryId) { reason(result, "unknown-entry"); return undefined; }
+	return raw;
+}
+/** Page the complete allowed text of one record under the same projection and redaction rules. */
+function pageExact(raw: Raw, at: ExactCursor, result: OrdinaryPrimaryObservation): void {
+	const entry = project(raw, at.byteOffset, result, { textBytes: Number.POSITIVE_INFINITY, scanLimit: PRIMARY_OBSERVATION_LIMITS.lineBytes, clip: { clipped: false } });
+	const text = entry.text ?? "";
+	if (at.offset > text.length || splitsPair(text, at.offset)) { reason(result, "invalid-cursor"); return; }
+	// JSON escaping can grow a page, so the page shrinks until the whole observation fits.
+	for (let budget: number = PRIMARY_OBSERVATION_LIMITS.exactPageBytes; budget >= 256; budget = Math.floor(budget / 2)) {
+		const candidate = exactPage(entry, text, at, result, budget);
+		if (Buffer.byteLength(JSON.stringify(candidate)) <= PRIMARY_OBSERVATION_LIMITS.outputBytes - 1024) { Object.assign(result, candidate); return; }
+	}
+	reason(result, "output-budget");
+}
+function exactPage(entry: Entry, text: string, at: ExactCursor, result: OrdinaryPrimaryObservation, budget: number): OrdinaryPrimaryObservation {
+	const page = excerpt(text.slice(at.offset), budget);
+	const endOffset = at.offset + page.length;
+	const { text: _whole, ...rest } = entry;
+	const candidate: OrdinaryPrimaryObservation = { ...result, entries: [page ? { ...rest, text: page } : rest], page: { offset: at.offset, endOffset, totalUnits: text.length } };
+	if (endOffset < text.length) candidate.nextCursor = { ...at, offset: endOffset };
+	return candidate;
+}
+async function verifyIdentity(file: FileHandle, path: string, result: OrdinaryPrimaryObservation): Promise<void> {
+	const after = await file.stat({ bigint: true });
+	const named = await lstat(path, { bigint: true });
+	const sourcePin = result.source.pin;
+	const kept = (stat: typeof after) => sourcePin !== undefined && String(stat.dev) === sourcePin.dev && String(stat.ino) === sourcePin.ino;
+	if (!named.isFile() || !kept(after) || !kept(named) || result.coverage.reasons.includes("source-changed")) { reason(result, "source-changed"); discard(result); }
+}
+async function readExactObservation(path: string, at: ExactCursor, result: OrdinaryPrimaryObservation, signal?: AbortSignal): Promise<OrdinaryPrimaryObservation> {
+	result.source.ancestry = "retained-entry";
+	let file: FileHandle | undefined;
+	try {
+		signal?.throwIfAborted();
+		file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+		const raw = await exactRecord(file, at, result, signal);
+		if (raw) { pageExact(raw, at, result); await verifyIdentity(file, path, result); }
+		signal?.throwIfAborted();
+	} catch (error) { readError(error, signal, result); }
+	finally {
+		try { await file?.close(); }
+		catch { reason(result, "session-file-close-failed"); discard(result); }
+	}
+	return result;
+}
 /** Observe retained public v3 evidence without opening a session or contacting its endpoint. */
 export async function readPrimaryObservation(primary: PrimaryInfo & { sessionFile?: string }, input: Input = {}): Promise<OrdinaryPrimaryObservation> {
 	const result = initial(primary, input);
 	if (!validateInput(input, result)) return result;
-	const continuation = input.cursor as Cursor | undefined;
 	const path = primary.sessionFile;
+	if (result.view === "exact") {
+		const at = input.cursor as ExactCursor;
+		return validatePath(path, at, result) ? readExactObservation(path, at, result, input.signal) : result;
+	}
+	const continuation = input.cursor as Cursor | undefined;
 	if (!validatePath(path, continuation, result)) return result;
 	const limit = Math.min(input.limit ?? (result.view === "status" ? 5 : 10), PRIMARY_OBSERVATION_LIMITS.items);
 	let file: FileHandle | undefined;
@@ -492,12 +605,13 @@ export async function readPrimaryObservation(primary: PrimaryInfo & { sessionFil
 }
 
 type RenderText = (value: unknown, bytes?: number) => string;
-function formatEntry(entry: Entry, render: RenderText): string[] {
+function formatEntry(entry: Entry, render: RenderText, textBytes: number): string[] {
 	const names = entry.toolNames?.slice(0, 16).map(name => render(name, 128));
 	const tools = names?.length ? ` tools: ${names.join(", ")}` : "";
 	const lines = [`${render(entry.timestamp, 64)} ${render(entry.id, 36)} ${render(entry.role ?? entry.kind, 64)}${entry.isError ? " ERROR" : ""}${tools}`];
-	if (entry.text) lines.push(render(entry.text, PRIMARY_OBSERVATION_LIMITS.textBytes));
+	if (entry.text) lines.push(render(entry.text, textBytes));
 	if (entry.error) lines.push(render(entry.error, 1024));
+	if (entry.textCursor) lines.push("Text clipped; its textCursor reads the complete text.");
 	return lines;
 }
 function formatterState(result: OrdinaryPrimaryObservation): OrdinaryPrimaryObservation {
@@ -508,7 +622,9 @@ function formatHeader(result: OrdinaryPrimaryObservation, render: RenderText): s
 	const lines = [
 		`Ordinary primary ${render(result.sessionId, 128)}${name}`,
 		`Process: ${render(result.presence.process.state, 64)} (${render(result.presence.process.attribution, 128)}); idle/selected leaf/timers/tasks: unknown.`,
-		`Source: ${render(result.source.path ?? "unavailable", 4096)}; latest-retained ancestry, not the live selected branch.`,
+		result.source.ancestry === "retained-entry"
+			? `Source: ${render(result.source.path ?? "unavailable", 4096)}; one retained entry by identity, not proof that it is on the live selected branch.`
+			: `Source: ${render(result.source.path ?? "unavailable", 4096)}; latest-retained ancestry, not the live selected branch.`,
 	];
 	if (result.presence.model) lines.push(`Recorded model: ${render(result.presence.model.provider, 128)}/${render(result.presence.model.modelId, 128)}`);
 	if (result.presence.intentClaim) lines.push(`Declared purpose: ${render(result.presence.intentClaim.purpose, 768)}`);
@@ -520,12 +636,15 @@ export function formatPrimaryObservation(result: OrdinaryPrimaryObservation): st
 	const state = formatterState(result);
 	const render: RenderText = (value, bytes) => safe(value, state, bytes) ?? "[omitted]";
 	const lines = formatHeader(result, render);
-	for (const entry of result.entries.slice(0, PRIMARY_OBSERVATION_LIMITS.items)) lines.push(...formatEntry(entry, render));
+	const exact = result.view === "exact";
+	if (exact && result.page) lines.push(`Entry text UTF-16 units ${result.page.offset}-${result.page.endOffset} of ${result.page.totalUnits}.`);
+	const textBytes = exact ? PRIMARY_OBSERVATION_LIMITS.exactPageBytes : PRIMARY_OBSERVATION_LIMITS.textBytes;
+	for (const entry of result.entries.slice(0, PRIMARY_OBSERVATION_LIMITS.items)) lines.push(...formatEntry(entry, render, textBytes));
 	if (!result.coverage.complete) lines.push(`Incomplete: ${result.coverage.reasons.slice(0, 32).map(value => render(value, 64)).join(", ")}`);
 	if (!state.coverage.complete) lines.push(`Presentation limits: ${state.coverage.reasons.join(", ")}`);
 	const original = result.coverage.omissions, projected = state.coverage.omissions;
 	const credentials = original.credentials + projected.credentials, fields = original.fields + projected.fields, text = original.text + projected.text;
 	if (credentials || fields || text) lines.push(`Omissions: credentials=${credentials}, fields=${fields}, text=${text}.`);
-	if (result.nextCursor) lines.push("More retained ancestry is available with nextCursor.");
+	if (result.nextCursor) lines.push(exact ? "More text of this entry is available with nextCursor." : "More retained ancestry is available with nextCursor.");
 	return excerpt(lines.join("\n"), PRIMARY_OBSERVATION_LIMITS.outputBytes);
 }

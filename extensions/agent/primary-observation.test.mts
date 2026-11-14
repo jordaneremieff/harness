@@ -71,7 +71,7 @@ it("returns pinned continuation and refuses append, replacement, mtime, and malf
 	const second = await readPrimaryObservation(f.primary, { view: "history", limit: 1, cursor: first.nextCursor });
 	assert.deepEqual(second.entries.map(e => e.id), [entryId(2)]);
 	assert.equal(matchesSchema(OrdinaryPrimaryObservationSchema, second), true);
-	for (const bad of [null, {}, { ...first.nextCursor, extra: true }, { ...first.nextCursor, nextId: "bad" }, { ...first.nextCursor, pin: { ...first.nextCursor.pin, size: -1 } }]) {
+	for (const bad of [null, {}, { ...first.nextCursor, extra: true }, { ...first.nextCursor, nextId: "bad" }, { ...first.nextCursor, pin: { ...(first.nextCursor as { pin: object }).pin, size: -1 } }]) {
 		const refused = await readPrimaryObservation(f.primary, { view: "history", cursor: bad });
 		assert.deepEqual(refused.coverage.reasons, ["invalid-cursor"]);
 		assert.equal(refused.coverage.bytesRead, 0);
@@ -168,11 +168,15 @@ it("bounds bytes, lines, parent visits, items, scan, and serialized output indep
 	assert.ok(result.coverage.textScanBytes <= limits.textScanBytes);
 	assert.ok(Buffer.byteLength(JSON.stringify(result)) <= limits.outputBytes);
 	assert.ok(result.coverage.reasons.includes("byte-budget"));
-	assert.ok(result.coverage.reasons.includes("item-budget"));
+	assert.ok(result.coverage.reasons.includes("output-budget"));
 	for (const e of result.entries) if (e.text) {
 		assert.ok(Buffer.byteLength(e.text) <= limits.textBytes);
 		assert.equal(e.text, Buffer.from(e.text).toString("utf8"));
 	}
+	f.write(Array.from({ length: limits.items + 5 }, (_, i) => message(i + 1, i === 0 ? null : i)));
+	const items = await readPrimaryObservation(f.primary, { view: "history", limit: 10000 });
+	assert.equal(items.entries.length, limits.items);
+	assert.ok(items.coverage.reasons.includes("item-budget"));
 	f.write(Array.from({ length: limits.lines + 20 }, (_, i) => message(i + 1, i === 0 ? null : i, "system", "")));
 	const lines = await readPrimaryObservation(f.primary);
 	assert.equal(lines.coverage.linesVisited, limits.lines);
@@ -333,7 +337,7 @@ it("limits projected output before serialization and returns a resumable item bo
 	assert.ok(Buffer.byteLength(JSON.stringify(result)) <= limits.outputBytes);
 	assert.doesNotMatch(JSON.stringify(result), /raw arguments/u);
 	const page = await readPrimaryObservation(f.primary, { view: "activity", limit: 1, cursor: result.nextCursor });
-	assert.equal(page.entries[0]?.id, result.nextCursor.nextId);
+	assert.equal(page.entries[0]?.id, (result.nextCursor as { nextId: string }).nextId);
 });
 it("reports malformed content fields instead of claiming complete useful text", async t => {
 	const f = fixture(t, [message(1, null, "assistant", [{ type: "text", text: 12 }, null, { type: "unknown" }])]);
@@ -442,7 +446,7 @@ it("refuses existing sensitive paths before reads or continuation and preserves 
 	writeFileSync(ordinary, readFileSync(f.sessionFile));
 	const first = await readPrimaryObservation({ ...f.primary, sessionFile: ordinary }, { limit: 1 });
 	assert.equal(first.source.path, ordinary);
-	assert.equal(first.nextCursor?.path, ordinary);
+	assert.equal((first.nextCursor as { path?: string } | undefined)?.path, ordinary);
 });
 it("keeps credential redaction intact through the actual dashboard cleanup for Unicode controls", async t => {
 	const f = fixture(t), body = "aB3x".repeat(8), uuid = randomUUID();
@@ -488,4 +492,85 @@ it("refuses source paths whose control removal would reconstruct a credential", 
 		assert.equal(result.nextCursor, undefined);
 		assert.ok(!cleanDashboardText(formatPrimaryObservation(result)).includes("aB3x".repeat(8)));
 	}
+});
+async function readAllPages(primary: PrimaryInfo & { sessionFile?: string }, start: unknown) {
+	const pages = [];
+	for (let cursor: unknown = start; cursor !== undefined && pages.length < 32;) {
+		const page = await readPrimaryObservation(primary, { view: "exact", cursor });
+		assert.equal(matchesSchema(OrdinaryPrimaryObservationSchema, page), true);
+		assert.ok(Buffer.byteLength(JSON.stringify(page)) <= limits.outputBytes);
+		pages.push(page);
+		cursor = page.nextCursor;
+	}
+	return pages;
+}
+it("pages the complete allowed text of a clipped entry through its textCursor", async t => {
+	const secret = `sk-${"aB3x".repeat(6)}`;
+	const body = `${"report line 🙂\n".repeat(1500)}key ${secret} end\nFINAL_MARKER`;
+	const f = fixture(t, [message(1, null, "user", "summarise"), message(2, 1, "assistant", [
+		{ type: "thinking", thinking: "HIDDEN_THINKING" }, { type: "toolCall", name: "bash", arguments: { command: "HIDDEN_ARGS" } }, { type: "text", text: body },
+	])]);
+	const activity = await readPrimaryObservation(f.primary, { view: "activity" });
+	const clipped = activity.entries.find(entry => entry.id === entryId(2));
+	assert.ok(clipped?.textCursor);
+	assert.equal(activity.entries.find(entry => entry.id === entryId(1))?.textCursor, undefined);
+	assert.match(formatPrimaryObservation(activity), /textCursor reads the complete text/u);
+	assert.equal((await readPrimaryObservation(f.primary, { view: "status" })).entries.some(entry => entry.textCursor), false);
+	const pages = await readAllPages(f.primary, clipped.textCursor);
+	assert.ok(pages.length > 1);
+	const total = pages[0]?.page?.totalUnits ?? 0;
+	let offset = 0;
+	for (const page of pages) {
+		assert.equal(page.view, "exact");
+		assert.equal(page.source.ancestry, "retained-entry");
+		assert.equal(page.page?.offset, offset);
+		assert.equal(page.page?.totalUnits, total);
+		offset = page.page?.endOffset ?? -1;
+	}
+	assert.equal(offset, total);
+	assert.equal(pages.at(-1)?.nextCursor, undefined);
+	const text = pages.map(page => page.entries[0]?.text ?? "").join("");
+	assert.equal(text.length, total);
+	assert.ok(text.startsWith(clipped.text ?? "\u0000"));
+	assert.ok(text.endsWith("FINAL_MARKER"));
+	assert.ok(text.includes("[credential omitted]"));
+	assert.ok(!text.includes(secret));
+	assert.doesNotMatch(JSON.stringify(pages), /HIDDEN_/u);
+	assert.deepEqual(pages[0]?.entries[0]?.toolNames, ["bash"]);
+	assert.match(formatPrimaryObservation(pages[0]), /More text of this entry is available with nextCursor/u);
+	assert.match(formatPrimaryObservation(pages[0]), /one retained entry by identity/u);
+});
+it("keeps an exact cursor valid across appends and refuses replaced, forged, and split cursors", async t => {
+	const f = fixture(t, [message(1, null, "assistant", "x".repeat(limits.textBytes * 3))]);
+	const cursor = (await readPrimaryObservation(f.primary, { view: "history" })).entries[0]?.textCursor;
+	assert.ok(cursor);
+	appendFileSync(f.sessionFile, `${JSON.stringify(message(2, 1))}\n`);
+	const appended = await readPrimaryObservation(f.primary, { view: "exact", cursor });
+	assert.equal(appended.coverage.complete, true);
+	assert.equal(appended.page?.totalUnits, limits.textBytes * 3);
+	const refusals: Array<[unknown, string]> = [
+		[{ ...cursor, entryId: entryId(2) }, "unknown-entry"],
+		[{ ...cursor, byteOffset: cursor.byteOffset + 1 }, "unknown-entry"],
+		[{ ...cursor, byteOffset: 0 }, "unknown-entry"],
+		[{ ...cursor, offset: limits.textBytes * 3 + 1 }, "invalid-cursor"],
+		[{ ...cursor, sessionId: randomUUID() }, "cursor-source-mismatch"],
+		[{ ...cursor, extra: true }, "invalid-cursor"],
+		[{ ...cursor, file: { dev: "x", ino: "1" } }, "invalid-cursor"],
+		[{ ...cursor, view: "history" }, "invalid-cursor"],
+	];
+	for (const [bad, why] of refusals) {
+		const refused = await readPrimaryObservation(f.primary, { view: "exact", cursor: bad });
+		assert.ok(refused.coverage.reasons.includes(why), `${why}: ${refused.coverage.reasons.join(",")}`);
+		assert.deepEqual(refused.entries, []);
+	}
+	f.write([message(1, null, "assistant", `${"a".repeat(limits.textBytes)}🙂`)]);
+	const emoji = (await readPrimaryObservation(f.primary, { view: "history" })).entries[0]?.textCursor;
+	assert.ok(emoji);
+	const split = await readPrimaryObservation(f.primary, { view: "exact", cursor: { ...emoji, offset: limits.textBytes + 1 } });
+	assert.ok(split.coverage.reasons.includes("invalid-cursor"));
+	renameSync(f.sessionFile, join(f.root, "old.jsonl"));
+	f.write([message(1, null, "assistant", "x".repeat(limits.textBytes * 3))]);
+	const replaced = await readPrimaryObservation(f.primary, { view: "exact", cursor: emoji });
+	assert.ok(replaced.coverage.reasons.includes("source-changed"));
+	assert.deepEqual(replaced.entries, []);
 });

@@ -2693,7 +2693,23 @@ entry and its parent chain in the public current session format. Entry IDs,
 timestamps and byte offsets identify evidence. This is not proof of the live
 selected leaf or effective model context. Live idle state, tasks, timers and
 unretained activity remain unknown. A recorded error is evidence, not a diagnosed
-cause. Native-only branch, search, exact and result views refuse ordinary targets.
+cause. Native-only branch, search and result views refuse ordinary targets, and so
+does an `exact` view without an ordinary text cursor.
+
+Activity and history clip each entry's text to a compact excerpt so that one
+page shows many entries. When an entry's text was clipped, or omitted because it
+exceeded the page's scan budget, the entry carries a `textCursor`. Pass it as
+`cursor` to `agent_inspect` to read that entry's complete allowed text in pages;
+each page returns `page` (`offset`, exclusive `endOffset`, `totalUnits`, in UTF-16
+code units of the projected text) and a `nextCursor` while text remains. A final
+report or a long answer of another session is therefore readable in full without
+opening its session file. The cursor locates one record by file identity (device
+and inode), byte offset and entry ID, not by the file's size or modification
+time: session files are append-only, so the cursor stays valid while the session
+appends. A replaced file, a different record at that offset, an offset inside a
+surrogate pair or beyond the text, or a cursor for another session is refused.
+The page is tagged `retained-entry`: it reads one record by identity and does not
+establish that the record is on the live selected branch.
 
 The reader checks a regular, non-symlink file and matching session header. It
 bounds bytes, lines, line size, parent visits, text scanning, items and output
@@ -2707,7 +2723,11 @@ promise access beyond its retained byte window.
 Only allowed text and locator fields appear. Thinking, signatures, images,
 system prompts, arbitrary details and raw tool arguments stay omitted. Recognized
 credentials are omitted with safe counts; ordinary prose and non-secret identity
-references remain readable. Compaction and context-edit records remain raw
+references remain readable. An exact page applies the same projection,
+control escaping and credential recognition to the complete text of one record
+before it selects the page, so paging never cuts a credential before
+recognition. Its scan budget is the record line bound, and the page with its
+envelope stays inside the observation output budget. Compaction and context-edit records remain raw
 locators, not a reconstruction of the model's effective context.
 
 For quiet coordination and composed delegated results, see

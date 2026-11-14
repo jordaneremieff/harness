@@ -276,6 +276,11 @@ describe("agent result cards", () => {
 		const history = { view: "history", sessionId: "s", conversationId: 1, entries: [{}, {}], nextCursor: { after: 1 }, order: "newestFirst", detail: "redacted" };
 		assert.match(screen(renderInspectResult(result(history), { ...cardKeys, expanded: false, isPartial: false }, theme, context())), /history page · 2 entries/);
 		assert.match(screen(renderInspectResult(result(history), { ...cardKeys, expanded: false, isPartial: false }, theme, context())), /older page available/);
+		const primaryPage = { kind: "ordinary-primary", view: "exact", sessionId: "p", entries: [{ id: "f392f536" }], page: { offset: 0, endOffset: 16000, totalUnits: 24000 }, nextCursor: { view: "exact" } };
+		const primaryCard = screen(renderInspectResult(result(primaryPage), { ...cardKeys, expanded: false, isPartial: false }, theme, context()));
+		assert.match(primaryCard, /entry f392f536 · text 0-16000 of 24000/);
+		assert.match(primaryCard, /more of this entry remains/);
+		assert.match(screen(renderInspectResult(result({ ...primaryPage, nextCursor: undefined }), { ...cardKeys, expanded: false, isPartial: false }, theme, context())), /text complete/);
 		const search = { view: "search", sessionId: "s", conversationId: 1, matches: [{}], nextCursor: { after: 1 }, coverage: { scannedEntries: 12, scannedBytes: 90, complete: false }, detail: "literal" };
 		assert.match(screen(renderInspectResult(result(search), { ...cardKeys, expanded: false, isPartial: false }, theme, context())), /search · 1 match · 12 entries scanned/);
 		assert.match(screen(renderInspectResult(result(search), { ...cardKeys, expanded: false, isPartial: false }, theme, context())), /Continuation available/);

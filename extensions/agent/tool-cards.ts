@@ -1141,6 +1141,7 @@ export function renderListResult(result: AgentToolResult<unknown>, options: Tool
 function inspectSummary(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	const view = text(details.view);
 	if (view === "result") return inspectResultSummary(details, theme, context);
+	if (view === "exact" && details.kind === "ordinary-primary") return inspectPrimaryEntrySummary(details, theme);
 	if (view === "exact" || (count(details.nextOffset) !== undefined && identifier(details.entryId) !== "")) return inspectEntrySummary(details, theme);
 	if (view === "search") return inspectSearchSummary(details, theme);
 	if (view === "activity") return inspectActivitySummary(details, theme);
@@ -1161,6 +1162,16 @@ function inspectResultSummary(details: Record<string, unknown>, theme: Theme, co
 	if (details.providerBlock !== undefined) lines.push(...providerBlockLines(details.providerBlock, theme, true));
 	if (count(details.offset) !== undefined) lines.push(muted(theme, `Answer offset ${String(details.offset)} (UTF-16 units)${details.truncated === true ? " · more answer text remains" : ""}`));
 	for (const continuation of resultContinuationLines(details)) lines.push(muted(theme, continuation));
+	return lines;
+}
+
+function inspectPrimaryEntrySummary(details: Record<string, unknown>, theme: Theme): string[] {
+	const entry = Array.isArray(details.entries) ? record(details.entries[0]) : {};
+	const page = record(details.page);
+	const [from, to, total] = [count(page.offset), count(page.endOffset), count(page.totalUnits)];
+	const range = from !== undefined && to !== undefined && total !== undefined ? ` · text ${from}-${to} of ${total}` : "";
+	const lines = [theme.fg("toolOutput", `entry ${displayIdentity(identifier(entry.id))}${range}`)];
+	lines.push(muted(theme, details.nextCursor ? "more of this entry remains" : page.totalUnits === undefined ? "entry unavailable" : "text complete"));
 	return lines;
 }
 

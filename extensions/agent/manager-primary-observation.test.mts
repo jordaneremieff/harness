@@ -38,7 +38,7 @@ it("reads ordinary status and ancestry without host acquisition or message deliv
 		structuredObservation(InspectToolOutputSchema, result);
 		assert.ok(result.entries.some(entry => entry.isError && entry.text?.includes("Parser test failed")));
 	}
-	await assert.rejects(manager.control("inspect", { sessionId: id, view: "exact", entryId: 1 }, { id: randomUUID(), cwd: root }), /supports activity and history only/u);
+	await assert.rejects(manager.control("inspect", { sessionId: id, view: "exact", entryId: 1 }, { id: randomUUID(), cwd: root }), /exact inspection requires the textCursor/u);
 	assert.equal(deliveries, 0);
 	assert.equal(prompts, 0);
 	assert.equal(readFileSync(sessionFile, "utf8"), before);

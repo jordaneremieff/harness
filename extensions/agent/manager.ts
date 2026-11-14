@@ -742,8 +742,10 @@ export class AgentManager {
 
 	/** Retained ordinary evidence never connects to a peer or acquires a Durable host. */
 	async observePrimary(sessionId: string, input: Record<string, unknown> = {}): Promise<OrdinaryPrimaryObservation> {
-		const view = input.view ?? "activity";
-		if (view !== "status" && view !== "activity" && view !== "history") throw new Error("Ordinary primary inspection supports activity and history only; native branch, search, exact and result views are unavailable.");
+		const exactCursor = (input.cursor as { view?: unknown } | undefined)?.view === "exact";
+		const view = input.view ?? (exactCursor ? "exact" : "activity");
+		if (view === "exact" && !exactCursor) throw new Error("Ordinary primary exact inspection requires the textCursor of a clipped entry, or a nextCursor from an exact page, as cursor.");
+		if (view !== "status" && view !== "activity" && view !== "history" && view !== "exact") throw new Error("Ordinary primary inspection supports activity, history and cursor-selected exact pages only; native branch, search and result views are unavailable.");
 		for (const key of ["entryId", "fromId", "offset", "query", "source", "submissionId", "operationId", "receiptCursor", "finalReport"]) {
 			if (input[key] !== undefined) throw new Error(`Ordinary primary inspection does not support ${key}; use its returned cursor for retained ancestry.`);
 		}
