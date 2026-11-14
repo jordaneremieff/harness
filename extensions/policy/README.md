@@ -1694,9 +1694,10 @@ the policy directory.
   future admission stays open. Directory preparation consumes that same budget.
   Expiry before the first lock creation produces `TelemetryAcquisitionExpiredError`,
   not held-lock contention or a permanent failure; no retention or append occurs.
-  Policy never removes a lock because of its age;
-  if a process stopped while holding it, stop all policy writers before removing
-  `.telemetry-lock` by hand. A writer notes its process ID and host name in
+  Policy never removes a lock because of its age.
+  If a process stopped while holding it, stop all policy writers before removing
+  `.telemetry-lock` by hand, unless the lock's note names a process that is not
+  running on this host: such a lock has no owner left to release it. A writer notes its process ID and host name in
   the lock after it acquires it. Older writers create an empty lock and never
   read the note, so the note changes no lock behaviour. A writer that waits on a
   held lock reads the note (at most 256 bytes) as evidence only.
@@ -1780,8 +1781,11 @@ held makes every batch drop (see Lock above). While contention keeps the writer
 in pressure, the `health` snapshot adds `lock`: the path relative to the
 policy directory, `ageMs` since the lock last changed, and the noted `pid`.
 When the note names this host, `running` tells whether that process exists.
-The notice says that a lock whose process is not running can be removed. It
-says nothing more about a running owner or an empty lock from an older writer.
+The notice says that a lock whose process is not running can be removed, if
+the file still names that process. It says nothing more about a running owner
+or an empty lock from an older writer. The check assumes that one host name
+means one process table: a policy directory shared by hosts or containers with
+the same host name can show a false `running: false`.
 Recovery removes `lock` from the snapshot. An ordinary
 session delivers these notices through its UI (`ctx.ui.notify`), never by
 writing to the terminal directly, because a TUI owns that terminal and a direct

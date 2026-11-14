@@ -730,7 +730,7 @@ describe("telemetry lock owner evidence", () => {
 		assert.equal(health.lostRecords, 1);
 		assert.deepEqual({ ...health.lock, ageMs: 0 }, { path: "telemetry/.telemetry-lock", ageMs: 0, pid: stopped, running: false });
 		const warning = changes.map((change) => notice.next(change)).find(Boolean);
-		assert.match(warning?.text ?? "", new RegExp(`belongs to process ${stopped}, which is not running on this host\\. If Policy health still names that process, remove that file`));
+		assert.match(warning?.text ?? "", new RegExp(`names process ${stopped}, which is not running on this host\\. If that file still exists and still names process ${stopped}, remove it`));
 		await stat(join(dir, "telemetry", ".telemetry-lock"));
 	});
 
@@ -739,7 +739,7 @@ describe("telemetry lock owner evidence", () => {
 		const { health, notice, changes } = await dropUnderHeldLock(dir);
 		assert.equal(health.lock?.running, true);
 		const warning = changes.map((change) => notice.next(change)).find(Boolean);
-		assert.match(warning?.text ?? "", new RegExp(`Process ${process.pid} has held telemetry/\\.telemetry-lock in the policy directory for \\d+ s\\.`));
+		assert.match(warning?.text ?? "", new RegExp(`names process ${process.pid}, which is running on this host; the lock has existed for \\d+ s\\.`));
 		assert.doesNotMatch(warning?.text ?? "", /remove/);
 	});
 

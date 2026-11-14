@@ -271,9 +271,9 @@ function lockAdvice(lock: TelemetryLockHolder | undefined): string {
 	const path = lock?.path ?? `telemetry/${TELEMETRY_LOCK_FILE}`;
 	const age = lock ? ` for ${Math.round(lock.ageMs / 1000)} s` : "";
 	if (lock?.pid !== undefined && lock.running === false)
-		return `The lock ${path} in the policy directory belongs to process ${lock.pid}, which is not running on this host. If Policy health still names that process, remove that file to restore telemetry.`;
+		return `The lock ${path} in the policy directory names process ${lock.pid}, which is not running on this host. If that file still exists and still names process ${lock.pid}, remove it to restore telemetry.`;
 	if (lock?.pid !== undefined && lock.running === true)
-		return `Process ${lock.pid} has held ${path} in the policy directory${age}.`;
+		return `The lock ${path} in the policy directory names process ${lock.pid}, which is running on this host; the lock has existed${age}.`;
 	return `If drops continue, another writer holds ${path} in the policy directory${age}, or a stopped process left it.`;
 }
 
