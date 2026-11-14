@@ -70,7 +70,7 @@ it("composed list schemas retain optional fields and reject unknown fields", () 
 	assert.equal(compile(ListRowSchema).check(row), true);
 	assert.equal(compile(ListRowSchema).check({ ...row, extra: true }), false);
 	assert.equal(compile(NativeListOutputSchema).check({ items: [native], next: null }), true);
-	const listed = { rows: [{ ...row, handle: null, role: null, profile: null, profileCoverage: "unknown" }], nextCursor: null, coverage: { complete: true, storagesVisited: 1, unavailable: [], profileHints: { complete: false, unknownStorages: 1, omitted: 0 } }, observedAt: "now", authority: "retained" };
+	const listed = { rows: [{ ...row, handle: null, role: null, profile: null, profileCoverage: "unknown" }], nextCursor: null, coverage: { complete: true, storagesVisited: 1, unavailable: [], catalog: { storages: 1, pass: "candidates", pending: 0, settled: 0 }, basis: "Every storage in scope was observed.", next: null, profileHints: { complete: false, unknownStorages: 1, omitted: 0 } }, observedAt: "now", authority: "retained" };
 	assert.equal(compile(ProfiledListOutputSchema).check(listed), true);
 	assert.equal(compile(ProfiledListOutputSchema).check({ ...listed, rows: [{ ...listed.rows[0], busy: undefined }] }), false);
 });

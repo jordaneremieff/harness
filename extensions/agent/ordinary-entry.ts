@@ -436,7 +436,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_list",
-		"Discover Durable agent identities and names without a writer. Repeat the query and cursor to continue bounded results.",
+		"Discover Durable agent identities and names without a writer. A query observes first the storages whose catalog record carries it. While coverage.complete is false, a page without rows is not absence: call agent_list again with the fields of coverage.next.",
 		obj(
 			{
 				query: opt(str({ minLength: 1, maxLength: 256 })),

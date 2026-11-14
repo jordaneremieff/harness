@@ -323,7 +323,7 @@ function record(storageId: string, rows: CatalogViewRow[] = [], modelEvidence?: 
 			...(modelEvidence === undefined ? {} : { modelEvidence }), ...viewFields } };
 }
 function page(records: CatalogRecord[], nextCursor: string | null = null, fields: Partial<CatalogPage["coverage"]> = {}): CatalogPage {
-	return { records, recordCursors: records.map((_, index) => `record-${index}`), nextCursor, observedAt,
+	return { records, nextCursor, observedAt,
 		coverage: { visited: records.length, skipped: 0, complete: nextCursor === null, ...fields } };
 }
 class FixtureCatalog extends AgentCatalog {

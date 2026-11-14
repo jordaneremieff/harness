@@ -14,7 +14,7 @@ import { matchesSchema } from "./schema-check.ts";
 
 const listing = {
 	rows: [], nextCursor: null,
-	coverage: { complete: true, storagesVisited: 0, unavailable: [], profileHints: { complete: true, unknownStorages: 0, omitted: 0 } },
+	coverage: { complete: true, storagesVisited: 0, unavailable: [], catalog: { storages: 0, pass: "candidates", pending: 0, settled: 0 }, basis: "Every storage in scope was observed.", next: null, profileHints: { complete: true, unknownStorages: 0, omitted: 0 } },
 	observedAt: "2026-10-13T00:00:00.000Z", authority: "native catalog scan",
 };
 

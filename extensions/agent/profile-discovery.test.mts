@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { matchesSchema } from "./schema-check.ts";
 import { AgentManager } from "./manager.ts";
 import { AgentConversationSummarySchema, StatusToolOutputSchema } from "./observation-schema.ts";
-import { composeListRow, enrichDashboardRow, matchesListRow } from "./profile-discovery.ts";
+import { classifyListStorage, composeListRow, enrichDashboardRow, matchesListRow } from "./profile-discovery.ts";
+import { boundCatalogView, type CatalogView } from "./catalog-view.ts";
+import type { CatalogRecord } from "./catalog.ts";
 import type { ProfileHints } from "./profile-schema.ts";
 import { row } from "./dashboard-test-fixture.mts";
 
@@ -50,4 +52,36 @@ it("manager list searches handle and role through retained hints without acquiri
 	assert.equal(empty.rows.length, 0);
 	assert.equal(empty.coverage.profileHints.complete, false);
 	assert.equal(empty.coverage.profileHints.omitted, 2);
+});
+
+it("classifies a storage for a query from its catalog record and writer claim", () => {
+	const storageId = "11111111-1111-4111-8111-111111111111";
+	const view: CatalogView = { updatedAt: "2026-01-02T00:00:00.000Z", storageId, rows: [row(storageId, { storageId, name: "Parser review", firstMessage: "Check the grammar" })], coverage: { complete: false, omitted: 0 },
+		profiles: { rows: [{ ...hints.rows[0], identity: storageId }], coverage: { complete: false, omitted: 2 } } };
+	const record = { storageId, cwd: "/work/site", name: "spawn label", recoveryDue: false, view } as CatalogRecord;
+	const ended = { kind: "dead", label: "PID 1", writerId: "writer", endedAt: "2026-01-02T00:00:01.000Z" } as const;
+	for (const query of ["PARSER", "grammar", "@history", "operator decisions", "spawn label", "/work/site", storageId.slice(0, 8)]) assert.equal(classifyListStorage(record, ended, query), "candidate", query);
+	assert.equal(classifyListStorage(record, ended, ""), "candidate", "an unfiltered scan observes every storage");
+	assert.equal(classifyListStorage(record, ended, "absent"), "settled", "trimmed display text and incomplete hints leave the published rows whole");
+	for (const [name, patch] of Object.entries({
+		"no publication": { view: undefined },
+		"unavailable publication": { view: { ...view, rows: [], unavailable: "projection failed" } },
+		"omitted rows": { view: { ...view, coverage: { complete: false, omitted: 1 } } },
+		"no published row": { view: { ...view, rows: [], profiles: undefined } },
+		"recovery due": { recoveryDue: true },
+		"no recovery marker": { recoveryDue: undefined },
+	})) assert.equal(classifyListStorage({ ...record, ...patch } as CatalogRecord, ended, "absent"), "candidate", name);
+	for (const claim of [
+		{ kind: "absent" },
+		{ kind: "dead", label: "PID 1", writerId: "writer" },
+		{ kind: "dead", label: "PID 1", writerId: "writer", endedAt: "2026-01-01T23:59:59.000Z" },
+		{ kind: "live", label: "PID 1" },
+		{ kind: "unknown", error: "Writer claim is unreadable" },
+	] as const) assert.equal(classifyListStorage(record, claim, "absent"), "remainder", JSON.stringify(claim));
+});
+it("a publication at the publisher's 200-conversation scan bound always reports omitted rows", () => {
+	const storageId = "11111111-1111-4111-8111-111111111111";
+	const rows = Array.from({ length: 200 }, (_, index) => ({ id: index === 0 ? storageId : `${storageId}:${index + 1}`, storageId, cwd: "", modifiedAt: 0, owner: "here" as const, state: "new" as const, cost: 0, partial: false }));
+	const view = boundCatalogView({ updatedAt: new Date().toISOString(), rows, storageId, rootId: storageId });
+	assert.ok(view.coverage.omitted > 0);
 });

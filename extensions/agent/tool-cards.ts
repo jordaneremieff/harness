@@ -1081,18 +1081,25 @@ function listedProfiles(rows: unknown[], theme: Theme): string[] {
 	if (rows.length > 4) lines.push(muted(theme, `${rows.length - 4} more rows`));
 	return lines;
 }
+/** Catalog counts of one discovery page: `settled` storages need no observation, `pending` ones are not observed yet. */
+function listCatalogText(coverage: Record<string, unknown>, field: "settled" | "pending"): string {
+	const value = count(record(coverage.catalog)[field]) ?? 0;
+	if (!value) return "";
+	return field === "settled" ? ` · ${value} settled by publication` : ` · ${value} storage observation${value === 1 ? "" : "s"} open`;
+}
+
 function listSummary(details: Record<string, unknown>, theme: Theme): string[] | undefined {
 	const rows = details.rows;
 	if (!Array.isArray(rows)) return undefined;
 	const coverage = record(details.coverage);
 	const visited = count(coverage.storagesVisited);
 	const unavailable = array(coverage.unavailable).length;
-	const lines = [theme.fg("toolOutput", `${rows.length} conversation${rows.length === 1 ? "" : "s"} on this page · ${visited ?? "?"} storage${visited === 1 ? "" : "s"} scanned${unavailable ? ` · ${unavailable} storage${unavailable === 1 ? "" : "s"} unavailable (unknown, not absent)` : ""}`)];
+	const lines = [theme.fg("toolOutput", `${rows.length} conversation${rows.length === 1 ? "" : "s"} on this page · ${visited ?? "?"} storage${visited === 1 ? "" : "s"} observed${listCatalogText(coverage, "settled")}${unavailable ? ` · ${unavailable} storage${unavailable === 1 ? "" : "s"} unavailable (unknown, not absent)` : ""}`)];
 	const profiles = record(coverage.profileHints);
 	if (profiles.complete === false) lines.push(theme.fg("warning", `Profile search incomplete · ${count(profiles.unknownStorages) ?? "?"} stores with unknown hints · ${count(profiles.omitted) ?? "?"} omitted hints`));
 	lines.push(...listedProfiles(rows, theme));
 	const next = details.nextCursor;
-	lines.push(muted(theme, typeof next === "string" && next ? "Next page available; repeat with nextCursor, including after an empty page" : coverage.complete === false ? "Inventory may be incomplete; continue discovery" : "Inventory covered; no further page"));
+	lines.push(muted(theme, typeof next === "string" && next ? `Next page available${listCatalogText(coverage, "pending")}; repeat with coverage.next, including after an empty page` : coverage.complete === false ? "Inventory may be incomplete; continue discovery" : "Inventory covered; no further page"));
 	return lines;
 }
 

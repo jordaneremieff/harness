@@ -107,7 +107,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_compact` | Run native compaction without stopping active work or withdrawing queued inputs. The summary applies at the next native boundary. Self-compaction uses its completed tool boundary. |
 | `agent_command` | Invoke a contributed command, reload host registrations while idle, or fork to a tree entry. |
 | `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths, none unless configured; optional `checkInMinutes` sets an interval. |
-| `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. Reads start no host. |
+| `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. A query observes first the storages whose catalog record carries it, and `coverage.next` holds the exact continuation call. Reads start no host. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected read returns compact state with an exact full-detail call; `detail: true` with one explicit `sessionId` returns the full selected status and cannot be combined with `view`, `storageId`, `cursor`, or `limit`. The full status of a selected session lists its pending timers, nearest deadline first. `view: "storage-page"` continues one exact storage's bounded status scan; `storageId`, `cursor`, and `limit` apply to that view only, and a refusal of one of them elsewhere names the view and tells the caller to omit the field. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. The result view returns the answer in pages with separate continuations for answer text and for recipient references; see [result pages](#result-pages). |
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 characters and `message` within 8,000 characters; write longer content to a file and post its path. Handler length errors include this remedy because Pi's pre-handler schema errors omit field descriptions. |
@@ -165,14 +165,48 @@ and the replacement steps. Wait for active work to finish, release the idle
 host, then attach it from the current installation. Restart an ordinary
 primary to replace its loaded code. No older observation shape is accepted.
 
-Each `agent_list` call collects one bounded catalog batch before it observes
-hosts. Continuations retain both the native page position and the last visited
-catalog filename. Catalog discovery sorts filenames and resumes strictly after
-that name, so view publications and record creation or removal do not invalidate
-continuations or repeat records. Repeat the same query and cwd with a cursor;
-a different query or cwd is refused explicitly. `agent_list` reports each
-unreadable catalog record in `coverage.unavailable`, even when
-`coverage.complete` is true.
+Each `agent_list` call reads the shared catalog inventory once, then observes
+at most 32 storages. A storage observation is the costly step: a cold storage
+is copied before it is read. With a query, the call classifies every storage in
+scope from its catalog record and writer claim:
+
+- A **candidate** has a record that carries the query text, or a record that
+  cannot decide the query. The text fields are the storage identity, the cwd,
+  the spawn name, each published row's identity, name and first message, and
+  each handle and role hint. A record cannot decide the query when it has no
+  publication, an unavailable publication, omitted rows, no row, or a recovery
+  marker that is not false.
+- A **settled** storage has a deciding publication without a match, and a
+  writer claim whose end marker is not earlier than that publication. A host
+  writes the end marker only after a clean idle close, and that close publishes
+  first. The publication is then the last state of the store, and the call
+  never observes the storage.
+- Every other storage is in the **remainder**. Its publication has no match,
+  but the catalog cannot prove that the publication is the last state of the
+  store: the claim is open, crashed, unreadable or absent.
+
+Discovery observes the candidates first and the remainder second, each in
+storage identity order. Rows come only from observations. Without a query,
+every storage is a candidate.
+
+Coverage keeps observed and unobserved storages apart.
+`coverage.storagesVisited` counts the observations of the call.
+`coverage.catalog` gives the readable storages in scope, the current pass, the
+open observations (`pending`), and the settled storages. `coverage.basis`
+states what the result rests on. `coverage.complete` is true only when no
+observation is open. While it is false, a page without rows is not absence:
+`coverage.next` names the tool and holds the exact fields of the continuation
+call, and `nextCursor` holds its cursor.
+
+Continuations retain the pass, the last finished storage identity, the native
+page position, and the start time of the discovery. Repeat the same query and
+cwd with a cursor; a different query or cwd is refused explicitly. A record
+that changes behind the position needs a new discovery, with one exception:
+the remainder pass also observes each candidate whose record file changed after
+the discovery began, because the candidates pass can have read an earlier
+record that was no candidate. Such a storage can return its rows in both
+passes. `agent_list` reports each unreadable catalog record in
+`coverage.unavailable`, even when `coverage.complete` is true.
 
 Agent catalogue readers compile their projection schemas once per process.
 They keep a bounded process-local cache of validated records: at most 512
@@ -243,7 +277,7 @@ Roster continuation uses the last priority, modification time, and identity,
 bound to the caller's ownership set and local active stores. Each page ranks the
 current shared observation. Activity or claim changes between pages can move
 records across this position; refresh the
-roster to rediscover them. Use `agent_list` for stable filename-based continuation.
+roster to rediscover them. Use `agent_list` for stable identity-ordered continuation.
 Exact-target attachment and controls read their own current evidence regardless
 of roster membership. Recovery still considers every source within its existing
 bound: availability of one recipient can wake a parked delivery in another store.
@@ -1157,7 +1191,8 @@ only when source coverage is complete; source gaps or byte exclusions make it
 false. `coverage.reasons` names recovery paths and boundaries. The overview
 returns `coverage.nextCursor: null` because `agent_status` accepts no cursor;
 it never exposes the dashboard's catalog cursor. Call `agent_list` without a
-cursor, then repeat its returned `nextCursor` to find other identities. Use
+cursor, then call it again with the fields of its returned `coverage.next` to find
+other identities. Use
 targeted `agent_status` with `detail: true` for
 full conversation state. Native agents without a status target read their own
 storage's conversation state rather than the primary's fleet overview.
@@ -1512,7 +1547,9 @@ Profile hints are a separate retained catalog projection joined by canonical
 identity, not added fields in base host observation rows. Missing hints mean
 unknown profile coverage, not an empty role. `agent_list` reports
 `coverage.profileHints` even on an empty match page: omitted hints and storages
-with unknown hints qualify the search. Hints contain no expertise bodies and
+with unknown hints qualify the search. The counts cover every readable storage
+in scope, observed or not, because a handle or role reaches a row only through
+these hints. Hints contain no expertise bodies and
 may shorten a role. Use Profile for the complete bounded role and expertise.
 Exact handle resolution does not depend on roster or list completeness.
 

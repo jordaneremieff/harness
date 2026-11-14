@@ -333,11 +333,20 @@ export const NativeListOutputSchema = obj({
 	next: nullable(cursorSchema),
 });
 
-/** `agent_list` output: the manager's bounded catalog scan over native list rows. */
+/**
+ * `agent_list` output: native list rows from the storages one call observed.
+ * `storagesVisited` counts host observations. `catalog` counts the storages in
+ * scope that this call read from the catalog only: `settled` ones need no
+ * observation, `pending` ones are not observed yet.
+ */
 export const ListCoverageProperties = {
 	complete: boolean,
 	storagesVisited: count,
 	unavailable: arr(obj({ storageId: string, reason: string })),
+	catalog: obj({ storages: count, pass: union([lit("candidates"), lit("remainder")]), pending: count, settled: count }),
+	basis: string,
+	/** The exact continuation: call the named tool with the remaining fields. Null when discovery is complete. */
+	next: nullable(obj({ tool: lit("agent_list"), query: opt(string), cwd: opt(string), limit: opt(id), cursor: string })),
 };
 export const ListOutputProperties = {
 	rows: arr(ListRowSchema),

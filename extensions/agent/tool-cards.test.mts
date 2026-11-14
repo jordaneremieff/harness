@@ -263,12 +263,12 @@ describe("agent result cards", () => {
 	});
 
 	it("summarizes a discovery page with coverage and the next page", () => {
-		const details = { rows: [{}, {}], nextCursor: "Y3Vyc29y", coverage: { complete: false, storagesVisited: 3, unavailable: [{ storageId: "s", reason: "x" }] }, observedAt: "t", authority: "Observation grants no control or task authority" };
-		const text = screen(renderListResult(result(details), { ...cardKeys, expanded: false, isPartial: false }, theme, context()));
-		assert.match(text, /2 conversations on this page · 3 storages scanned · 1 storage unavailable \(unknown, not absent\)/);
-		assert.match(text, /Next page available; repeat with nextCursor/);
+		const details = { rows: [{}, {}], nextCursor: "Y3Vyc29y", coverage: { complete: false, storagesVisited: 3, unavailable: [{ storageId: "s", reason: "x" }], catalog: { storages: 40, pass: "remainder", pending: 12, settled: 5 } }, observedAt: "t", authority: "Observation grants no control or task authority" };
+		const text = screen(renderListResult(result(details), { ...cardKeys, expanded: false, isPartial: false }, theme, context()), 180);
+		assert.match(text, /2 conversations on this page · 3 storages observed · 5 settled by publication · 1 storage unavailable \(unknown, not absent\)/);
+		assert.match(text, /Next page available · 12 storage observations open; repeat with coverage\.next, including after an empty page/);
 		const covered = screen(renderListResult(result({ rows: [], nextCursor: null, coverage: { complete: true, storagesVisited: 1, unavailable: [] } }), { ...cardKeys, expanded: false, isPartial: false }, theme, context()));
-		assert.match(covered, /0 conversations on this page · 1 storage scanned/);
+		assert.match(covered, /0 conversations on this page · 1 storage observed/);
 		assert.match(covered, /Inventory covered; no further page/);
 	});
 

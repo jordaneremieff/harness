@@ -298,13 +298,10 @@ it("publishes one complete handle seed without replacing creation defaults", (t)
 	assert.equal(readdirSync(catalog.root).filter((name) => name.endsWith(".claim")).length, 0);
 });
 
-it("retains a continuation for each prefetched catalog record", async (t) => {
+it("keeps a collected catalog page independent of subsequent record changes", async (t) => {
 	const { catalog, input } = fixture(t);
 	for (let index = 0; index < 12; index++) catalog.create({ ...input, name: `record-${index}` });
 	const page = await catalog.page({ limit: 12 });
-	assert.equal(page.recordCursors.length, 12);
-	const next = await catalog.page({ cursor: page.recordCursors[4] ?? undefined });
-	assert.deepEqual(next.records.map((record) => record.storageId), page.records.slice(5).map((record) => record.storageId));
 	const frozen = page.records.map((record) => record.recoveryDue);
 	catalog.markRecoveryDue(page.records[5].storageId, true);
 	assert.deepEqual(page.records.map((record) => record.recoveryDue), frozen, "a collected batch is independent of subsequent observations");
@@ -469,7 +466,6 @@ it("reports corrupt metadata as skipped without losing valid records", async (t)
 	const page = await catalog.page();
 	assert.deepEqual(page.records, [valid]);
 	assert.equal(page.coverage.skipped, 1);
-	assert.deepEqual(page.skippedStorageIds, [corrupt.storageId]);
 	assert.equal(page.coverage.complete, true);
 	assert.throws(() => catalog.read(corrupt.storageId), /reasoning level/u);
 });

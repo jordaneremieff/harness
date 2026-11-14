@@ -287,7 +287,7 @@ function listObservation(): Record<string, unknown> {
 	return {
 		rows: [],
 		nextCursor: null,
-		coverage: { complete: true, storagesVisited: 0, unavailable: [], profileHints: { complete: true, unknownStorages: 0, omitted: 0 } },
+		coverage: { complete: true, storagesVisited: 0, unavailable: [], catalog: { storages: 0, pass: "candidates", pending: 0, settled: 0 }, basis: "Every storage in scope was observed.", next: null, profileHints: { complete: true, unknownStorages: 0, omitted: 0 } },
 		observedAt: OBSERVED_AT,
 		authority: "native catalog scan",
 	};

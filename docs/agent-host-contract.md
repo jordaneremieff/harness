@@ -551,7 +551,7 @@ H-list          1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6
 H-dashboard     4c8bb08f1d45d17bbd2233fc90851992ec5440b58a6b99c3f77080d001f4866e
 H-profile-read  396c6aa90325ba4f92e72f38538561c810d31eb6dde087341591b34af479400b
 H-profile-update 8eb14a948f9d42366d9d4eb211d498563693d48806495032fe28f22ca66d942f
-H-profile-list  99b00a455cf50a2a24de4a0f9e328a12e775caa9c5031becbef462e06e65a7cf
+H-profile-list  c0ed7d36ad6652094183a7728db9874eccc72a86842868a356ca26640d8d9a49
 ```
 
 Schema owners in table order are `InspectOutputSchema`, `StatusOutputSchema`, `ListRowSchema`, `AgentConversationSummarySchema`, `AgentProfileSchema`, `ProfileUpdateSchema`, and `ProfiledListOutputSchema`. `dashboard` returns an array despite its response identity hashing the row schema. Maintain these identities with the defining schemas; do not infer a complete result shape from the schema name alone. Source: `extensions/agent/version-contract.ts:30-56`; `extensions/agent/durable-host.ts:454-457`.
@@ -781,7 +781,7 @@ Every shared inventory read captures the current directory snapshot and checks e
 
 Publishers accumulate identities during an in-flight broadcast. Managers combine namespace changes and connected-host notices, whose connection supplies the storage identity. Known changes refresh affected claims; overflow invalidates claims across the namespace. On the next read after two seconds, the shared owner refreshes all claims to detect silent writer death, without reopening unchanged record payloads. Directory validation also detects missed publications, deletions and unreadable records. The dashboard's existing reconciliation demand drives this path without another timer or persistent mirror. Failed discovery leaves the inventory dirty for another read.
 
-Roster continuations bind the caller's ownership set and local active stores, and rank the current shared observation, so changed publication time or claims can move records across the cursor; refresh to rediscover them. `AgentCatalog.page()` retains bounded filename-based reads for stable `agent_list` and thread discovery. Exact-target reads and controls remain independent of this observation. Recovery conservatively considers all source records within its existing bound, then checks recipient availability freshly: a notice for recipient B also reaches parked work in source A. Sources: `extensions/agent/catalog.ts`; `extensions/agent/catalog-events.ts`; `extensions/agent/manager.ts`; `extensions/agent/dashboard-types.ts`.
+Roster continuations bind the caller's ownership set and local active stores, and rank the current shared observation, so changed publication time or claims can move records across the cursor; refresh to rediscover them. `AgentCatalog.page()` retains bounded filename-based reads for fleet status and thread discovery. `agent_list` orders its two passes from the shared observation by storage identity and keeps its own cursor; `extensions/agent/README.md` owns that contract. Exact-target reads and controls remain independent of this observation. Recovery conservatively considers all source records within its existing bound, then checks recipient availability freshly: a notice for recipient B also reaches parked work in source A. Sources: `extensions/agent/catalog.ts`; `extensions/agent/catalog-events.ts`; `extensions/agent/manager.ts`; `extensions/agent/dashboard-types.ts`.
 
 ## Transcript pages and inspection
 

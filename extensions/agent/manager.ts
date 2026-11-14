@@ -9,11 +9,11 @@ import { readFleetStatus, validateFleetSelection, type FleetSelection } from "./
 import { handleSlug, handleStorageId } from "./identity.ts";
 import { profileText, type AgentProfile } from "./profile-schema.ts";
 import { NativeListOutputSchema, observationSchema, structuredObservation } from "./observation-schema.ts";
-import { composeListRow, matchesListRow, enrichDashboardRow } from "./profile-discovery.ts";
+import { composeListRow, matchesListRow, enrichDashboardRow, planListScan, listCoverageBasis, type ListPass, type ListScanPlan, type ListScanStep } from "./profile-discovery.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { AgentCatalog, CatalogObservation, projectCatalogPriority, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
+import { AgentCatalog, CatalogObservation, projectCatalogPriority, hostMetadata, storageIdOf, type CatalogInventory, type CatalogRecord } from "./catalog.ts";
 import type { CatalogView } from "./catalog-view.ts";
 import type { NativeOwnerEvidence } from "./host-changes.ts";
 import { subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
@@ -109,9 +109,8 @@ export interface AgentManagerOptions {
 interface PrimaryClient { sentWork?: Set<string>; retainSentWork?(sessionId: string): void; retainContinuity?(fact: ContinuityFact): void; send(text: string, details: unknown, sourceId: string, requireRetained: boolean): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; sessionFile?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; observedInputCanCapture?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
 type RecoveryOwner = { signal: AbortSignal };
 interface ConversationPage { items: Array<{ identity: string; name?: string; busy?: boolean; parent?: string }>; next?: unknown }
-interface ListCursor { storage?: string; catalog?: string; native?: unknown; query: string; cwd: string }
-interface ListRecordStep { record: CatalogRecord; catalog?: string }
-interface ListBatch { steps: ListRecordStep[]; skippedStorageIds: string[]; nextCursor: string | null; complete: boolean }
+/** `after` is the last storage the pass finished; `storage` and `native` hold a storage page in progress. */
+interface ListCursor { query: string; cwd: string; pass: ListPass; since: number; after?: string; storage?: string; native?: unknown }
 
 const DEFAULT_DELIVERED_LIMIT = 1024;
 const DEFAULT_FAILURE_LIMIT = 256;
@@ -803,29 +802,22 @@ export class AgentManager {
 	private listCursor(input: { cursor?: string; query?: string; cwd?: string }): ListCursor {
 		const query = input.query ?? "";
 		const cwd = input.cwd ?? "";
-		if (input.cursor === undefined) return { query, cwd };
-		const parsed = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as Partial<ListCursor>;
+		if (input.cursor === undefined) return { query, cwd, pass: "candidates", since: Date.now() };
+		let parsed: Partial<ListCursor> | null;
+		try { parsed = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as Partial<ListCursor> | null; }
+		catch { parsed = null; }
+		if (parsed === null || typeof parsed !== "object" || (parsed.pass !== "candidates" && parsed.pass !== "remainder") || typeof parsed.since !== "number" || !Number.isFinite(parsed.since))
+			throw new Error("List cursor is not an agent_list continuation; restart discovery without a cursor");
 		if (parsed.query !== query || parsed.cwd !== cwd) throw new Error("Repeat the same query and cwd with the cursor");
 		return {
 			query,
 			cwd,
+			pass: parsed.pass,
+			since: parsed.since,
+			...(typeof parsed.after === "string" ? { after: parsed.after } : {}),
 			...(typeof parsed.storage === "string" ? { storage: parsed.storage } : {}),
-			...(typeof parsed.catalog === "string" ? { catalog: parsed.catalog } : {}),
 			...(parsed.native === undefined ? {} : { native: parsed.native }),
 		};
-	}
-
-	/** Freeze one bounded catalog batch before observations publish metadata rewrites. */
-	private async listBatch(cursor: ListCursor, cwd?: string): Promise<ListBatch> {
-		const resumed = cursor.storage !== undefined;
-		if (resumed && cursor.catalog === undefined) throw new Error("List cursor lacks a catalog continuation; restart discovery");
-		const page = await this.catalog.page({ cursor: cursor.catalog, limit: MAX_LIST_VISITS - Number(resumed), cwd });
-		const steps: ListRecordStep[] = [];
-		if (cursor.storage !== undefined) steps.push({ record: this.catalog.read(cursor.storage), catalog: cursor.catalog });
-		for (let index = 0; index < page.records.length; index++) {
-			steps.push({ record: page.records[index], catalog: page.recordCursors[index] ?? undefined });
-		}
-		return { steps, skippedStorageIds: page.skippedStorageIds ?? [], nextCursor: page.nextCursor, complete: page.coverage.complete };
 	}
 
 	private async collectListPage(record: CatalogRecord, cursor: ListCursor, limit: number, rows: unknown[], unavailable: Array<{ storageId: string; reason: string }>): Promise<void> {
@@ -842,34 +834,66 @@ export class AgentManager {
 		}
 	}
 
+	/** The storages the current pass still has to observe; a storage page in progress comes first. */
+	private listQueue(plan: ListScanPlan, cursor: ListCursor, facts: CatalogInventory["facts"]): ListScanStep[] {
+		const steps = cursor.pass === "candidates" ? plan.candidates : plan.remainder;
+		const position = cursor.storage ?? cursor.after;
+		const queue = position === undefined ? steps : steps.filter((step) => step.storageId > position);
+		if (cursor.storage === undefined) return queue;
+		const record = facts.get(cursor.storage)?.record;
+		if (record) return [{ storageId: cursor.storage, record }, ...queue];
+		cursor.storage = undefined;
+		cursor.native = undefined;
+		return queue;
+	}
+
+	/** Observe queued storages until the row limit or the observation budget ends the call; return the steps left. */
+	private async observeListSteps(queue: ListScanStep[], cursor: ListCursor, limit: number, rows: unknown[], unavailable: Array<{ storageId: string; reason: string }>, progress: { visits: number; finished: Set<string> }): Promise<number> {
+		let index = 0;
+		while (index < queue.length && rows.length < limit && progress.visits < MAX_LIST_VISITS) {
+			const step = queue[index];
+			if (step.record) {
+				cursor.storage = step.storageId;
+				progress.visits += 1;
+				await this.collectListPage(step.record, cursor, limit - rows.length, rows, unavailable);
+				if (cursor.native !== undefined) continue;
+				cursor.storage = undefined;
+				progress.finished.add(step.storageId);
+			} else unavailable.push({ storageId: step.storageId, reason: "Catalog record could not be read" });
+			cursor.after = step.storageId;
+			index++;
+		}
+		return queue.length - index;
+	}
+
 	async list(input: { cursor?: string; query?: string; cwd?: string; limit?: number } = {}): Promise<unknown> {
 		const limit = input.limit ?? 10;
 		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new Error("List limit must be between 1 and 20");
 		const cursor = this.listCursor(input);
 		const rows: unknown[] = [];
-		const batch = await this.listBatch(cursor, input.cwd);
-		const unavailable = batch.skippedStorageIds.map((storageId) => ({ storageId, reason: "Catalog record could not be read" }));
-		let visits = 0;
-		const profileHints = { complete: true, unknownStorages: 0, omitted: 0 };
-		let index = 0;
-		while (rows.length < limit && visits < MAX_LIST_VISITS && index < batch.steps.length) {
-			const step = batch.steps[index];
-			cursor.storage = step.record.storageId;
-			cursor.catalog = step.catalog;
-			visits += 1;
-			const hints = step.record.view?.profiles;
-			if (!hints) { profileHints.complete = false; profileHints.unknownStorages++; }
-			else { profileHints.complete &&= hints.coverage.complete; profileHints.omitted += hints.coverage.omitted; }
-			await this.collectListPage(step.record, cursor, limit - rows.length, rows, unavailable);
-			if (cursor.native === undefined) {
-				cursor.storage = undefined;
-				index++;
-			}
+		const unavailable: Array<{ storageId: string; reason: string }> = [];
+		// One inventory reading orders the whole call; observations can rewrite catalog records.
+		const inventory = await this.inventory.read();
+		const plan = planListScan(inventory.facts, cursor.query, cursor.cwd, cursor.since);
+		const progress = { visits: 0, finished: new Set<string>() };
+		let open = await this.observeListSteps(this.listQueue(plan, cursor, inventory.facts), cursor, limit, rows, unavailable, progress);
+		// The remainder pass repeats no storage that this call finished as a candidate.
+		const remainder = plan.remainder.filter((step) => !progress.finished.has(step.storageId));
+		if (open === 0 && cursor.pass === "candidates" && remainder.length > 0) {
+			cursor.pass = "remainder";
+			cursor.after = undefined;
+			open = await this.observeListSteps(remainder, cursor, limit, rows, unavailable, progress);
 		}
-		const exhausted = index === batch.steps.length;
-		if (exhausted) cursor.catalog = batch.nextCursor ?? undefined;
-		const complete = exhausted && batch.complete;
-		return { rows, nextCursor: complete ? null : Buffer.from(JSON.stringify(cursor)).toString("base64url"), coverage: { complete, storagesVisited: visits, unavailable, profileHints }, observedAt: new Date().toISOString(), authority: "Observation grants no control or task authority" };
+		const visits = progress.visits;
+		const pending = open + (cursor.pass === "candidates" ? remainder.length : 0);
+		const complete = pending === 0;
+		const nextCursor = complete ? null : Buffer.from(JSON.stringify(cursor)).toString("base64url");
+		const next = nextCursor === null ? null : { tool: "agent_list" as const,
+			...(input.query === undefined ? {} : { query: input.query }), ...(input.cwd === undefined ? {} : { cwd: input.cwd }), ...(input.limit === undefined ? {} : { limit }), cursor: nextCursor };
+		const coverage = { complete, storagesVisited: visits, unavailable, profileHints: plan.profileHints,
+			catalog: { storages: plan.storages, pass: cursor.pass, pending, settled: plan.settled },
+			basis: listCoverageBasis({ query: cursor.query, pass: cursor.pass, pending, settled: plan.settled }), next };
+		return { rows, nextCursor, coverage, observedAt: new Date().toISOString(), authority: "Observation grants no control or task authority" };
 	}
 
 	async dashboardPage(input: { cursor?: string; ownerId?: string } = {}): Promise<AgentPriorityPage> {

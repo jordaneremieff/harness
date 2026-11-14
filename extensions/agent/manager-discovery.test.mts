@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { it } from "node:test";
-import { AgentCatalog, hostMetadata } from "./catalog.ts";
+import { AgentCatalog, hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
 import { runHost } from "./host-process.ts";
+import { hostPaths } from "./host-protocol.ts";
+import { ProfiledListOutputSchema } from "./profile-discovery.ts";
+import { matchesSchema } from "./schema-check.ts";
 
 function fixture(t: { after(fn: () => void | Promise<void>): void }, hooks: Partial<AgentManagerOptions> = {}) {
 	const root = mkdtempSync(join(tmpdir(), "manager-discovery-"));
@@ -19,7 +22,33 @@ function fixture(t: { after(fn: () => void | Promise<void>): void }, hooks: Part
 interface ListResult {
 	rows: Array<{ identity: string }>;
 	nextCursor: string | null;
-	coverage: { complete: boolean; storagesVisited: number; unavailable: Array<{ storageId: string; reason: string }> };
+	coverage: { complete: boolean; storagesVisited: number; unavailable: Array<{ storageId: string; reason: string }>; basis: string;
+		next: { tool: string; query?: string; cwd?: string; limit?: number; cursor: string } | null;
+		catalog: { storages: number; pass: "candidates" | "remainder"; pending: number; settled: number } };
+}
+
+/** Publish a complete one-row view and a false recovery marker, as an idle host leaves them. */
+function publish(catalog: AgentCatalog, record: CatalogRecord, name: string, updatedAt = new Date().toISOString()): void {
+	catalog.updateView(record.storageId, { updatedAt, rows: [{ id: record.storageId, storageId: record.storageId, name, cwd: record.cwd, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } });
+	catalog.markRecoveryDue(record.storageId, false);
+}
+
+/** Write the claim record of a writer on this machine; `endedAt` is the end marker of a clean close. */
+function writeClaim(record: CatalogRecord, fields: { pid?: number; endedAt?: string } = {}): void {
+	const paths = hostPaths(record);
+	mkdirSync(dirname(paths.claim), { recursive: true });
+	writeFileSync(paths.claim, JSON.stringify({ token: "writer", pid: fields.pid ?? process.pid, host: hostname(), sessionId: record.storageId, cwd: resolve(record.cwd), createdAt: "2026-01-01T00:00:00.000Z", ...(fields.endedAt === undefined ? {} : { endedAt: fields.endedAt }) }));
+}
+
+/** Follow each exact continuation until discovery reports completion. */
+async function finish(manager: AgentManager, first: ListResult, maxCalls = 64): Promise<ListResult[]> {
+	const pages = [first];
+	for (let next = first.coverage.next; next && pages.length < maxCalls; next = pages.at(-1)?.coverage.next ?? null) {
+		const { tool, ...input } = next;
+		assert.equal(tool, "agent_list");
+		pages.push(await manager.list(input) as ListResult);
+	}
+	return pages;
 }
 
 it("agent_list reports every unreadable catalog record without changing completion", async (t) => {
@@ -208,4 +237,131 @@ it("lists a first page from a live host without undefined wire fields", { timeou
 			await host.close();
 		}
 	}
+});
+
+it("reaches a named agent beyond the first observation budget in the first call", async (t) => {
+	const observed: string[] = [];
+	const names = new Map<string, string>();
+	const f = fixture(t, {
+		connect: async () => { throw new Error("no live fixture host"); },
+		observe: async (record) => { observed.push(record.storageId); return { items: [{ identity: record.storageId, name: names.get(record.storageId) }], next: null }; },
+	});
+	const records = Array.from({ length: 460 }, () => f.create()).sort((left, right) => (left.storageId < right.storageId ? -1 : 1));
+	const target = records[400];
+	const undecided = new Set([records[5].storageId, records[150].storageId, records[450].storageId]);
+	const settled = new Set(records.filter((_, index) => index % 7 === 0 && index !== 400).map((record) => record.storageId).filter((id) => !undecided.has(id)));
+	const endedAt = new Date(Date.now() + 60_000).toISOString();
+	for (const record of records) {
+		if (undecided.has(record.storageId)) continue;
+		names.set(record.storageId, record === target ? "Parser worker" : "other task");
+		publish(f.manager.catalog, record, names.get(record.storageId) ?? "");
+		if (settled.has(record.storageId)) writeClaim(record, { endedAt });
+	}
+	const callsInCatalogOrder = Math.floor(400 / 32) + 1;
+	assert.equal(callsInCatalogOrder, 13, "an identity-ordered scan with 32 observations per call needs 13 calls for this record");
+
+	const first = await f.manager.list({ query: "parser worker" }) as ListResult;
+	assert.deepEqual(first.rows.map((row) => row.identity), [target.storageId]);
+	assert.ok(first.coverage.storagesVisited <= 32);
+	assert.equal(first.coverage.catalog.storages, 460);
+	assert.equal(first.coverage.catalog.settled, settled.size);
+	assert.equal(first.coverage.complete, false);
+	assert.equal(first.coverage.catalog.pass, "remainder");
+	for (const storageId of [target.storageId, ...undecided]) assert.ok(observed.includes(storageId), "the first call observes every candidate");
+
+	const pages = await finish(f.manager, first);
+	assert.equal(pages.at(-1)?.coverage.complete, true);
+	assert.equal(pages.at(-1)?.coverage.catalog.pending, 0);
+	assert.match(pages.at(-1)?.coverage.basis ?? "", /settled storages were not observed/u);
+	assert.equal(pages.flatMap((page) => page.rows).length, 1);
+	for (const record of records) assert.equal(observed.includes(record.storageId), !settled.has(record.storageId), "every storage without proof is observed; no settled storage is");
+	assert.equal(new Set(observed).size, observed.length);
+});
+
+it("observes a storage whose publication cannot prove a non-match", async (t) => {
+	const observed: string[] = [];
+	const f = fixture(t, {
+		connect: async () => { throw new Error("no live fixture host"); },
+		observe: async (record) => { observed.push(record.storageId); return { items: [{ identity: record.storageId, name: "hidden name" }], next: null }; },
+	});
+	const catalog = f.manager.catalog;
+	const published = new Date().toISOString();
+	const later = new Date(Date.now() + 60_000).toISOString();
+	const create = (prepare: (record: CatalogRecord) => void) => { const record = f.create(); prepare(record); return record.storageId; };
+	const candidates = {
+		unpublished: create(() => undefined),
+		unavailable: create((record) => { catalog.updateView(record.storageId, { updatedAt: published, rows: [], coverage: { complete: false, omitted: 0 }, unavailable: "projection failed" }); catalog.markRecoveryDue(record.storageId, false); writeClaim(record, { endedAt: later }); }),
+		partial: create((record) => { publish(catalog, record, "old name"); const view = catalog.read(record.storageId).view; if (view) catalog.updateView(record.storageId, { ...view, coverage: { complete: false, omitted: 1 } }); writeClaim(record, { endedAt: later }); }),
+		recovering: create((record) => { publish(catalog, record, "old name"); catalog.markRecoveryDue(record.storageId, true); writeClaim(record, { endedAt: later }); }),
+	};
+	const remainder = {
+		unclaimed: create((record) => publish(catalog, record, "old name")),
+		emptyClaim: create((record) => { publish(catalog, record, "old name"); const paths = hostPaths(record); mkdirSync(dirname(paths.claim), { recursive: true }); writeFileSync(paths.claim, ""); }),
+		crashedWriter: create((record) => { publish(catalog, record, "old name"); writeClaim(record, { pid: 2 ** 22 - 1 }); }),
+		openWriter: create((record) => { publish(catalog, record, "old name"); writeClaim(record); }),
+		endedBeforePublication: create((record) => { publish(catalog, record, "old name", later); writeClaim(record, { endedAt: published }); }),
+	};
+	const settled = create((record) => { publish(catalog, record, "old name", published); writeClaim(record, { endedAt: later }); });
+
+	const first = await f.manager.list({ query: "hidden", limit: 4 }) as ListResult;
+	assert.deepEqual(first.rows.map((row) => row.identity).sort(), Object.values(candidates).sort(), "undecided publications are observed before any other storage");
+	assert.equal(first.coverage.complete, false);
+	assert.equal(first.coverage.catalog.pass, "remainder");
+	assert.equal(first.coverage.catalog.pending, 5);
+	assert.match(first.coverage.basis, /not absence/u);
+
+	const pages = await finish(f.manager, first);
+	const found = pages.flatMap((page) => page.rows.map((row) => row.identity));
+	assert.deepEqual([...found].sort(), [...Object.values(candidates), ...Object.values(remainder)].sort());
+	assert.equal(observed.includes(settled), false);
+	assert.equal(pages.at(-1)?.coverage.complete, true);
+	assert.equal(pages.at(-1)?.coverage.catalog.settled, 1);
+	assert.equal(pages.at(-1)?.coverage.next, null);
+});
+
+it("returns the exact next call while storages are pending and refuses a changed query", async (t) => {
+	const f = fixture(t, {
+		connect: async () => { throw new Error("no live fixture host"); },
+		observe: async (record) => ({ items: [{ identity: record.storageId, name: "other task" }], next: null }),
+	});
+	for (let index = 0; index < 40; index++) publish(f.manager.catalog, f.create(), "other task");
+	const first = await f.manager.list({ query: "absent name", limit: 5 }) as ListResult;
+	assert.deepEqual(first.rows, []);
+	assert.equal(first.coverage.storagesVisited, 32);
+	assert.equal(first.coverage.catalog.pending, 8);
+	assert.match(first.coverage.basis, /8 storage observations are still open, so a page without rows is not absence\. Call agent_list with the fields of coverage\.next\./u);
+	assert.deepEqual(first.coverage.next, { tool: "agent_list", query: "absent name", limit: 5, cursor: first.nextCursor });
+	assert.ok(matchesSchema(ProfiledListOutputSchema, first), "a pending page matches the tool output schema");
+	await assert.rejects(f.manager.list({ query: "another name", cursor: first.nextCursor ?? "" }), /Repeat the same query and cwd/u);
+	await assert.rejects(f.manager.list({ query: "absent name", cursor: "bm90LWEtY3Vyc29y" }), /restart discovery without a cursor/u);
+	const last = (await finish(f.manager, first))[1];
+	assert.deepEqual(last.rows, []);
+	assert.equal(last.coverage.complete, true);
+	assert.equal(last.coverage.next, null);
+	assert.equal(last.nextCursor, null);
+	assert.match(last.coverage.basis, /Every storage in scope was observed or settled/u);
+});
+
+it("observes a storage that becomes a candidate behind the candidates pass", async (t) => {
+	const names = new Map<string, string>();
+	const f = fixture(t, {
+		connect: async () => { throw new Error("no live fixture host"); },
+		observe: async (record) => ({ items: [{ identity: record.storageId, name: names.get(record.storageId) }], next: null }),
+	});
+	const [late, firstMatch, secondMatch] = Array.from({ length: 3 }, () => f.create()).sort((left, right) => (left.storageId < right.storageId ? -1 : 1));
+	const endedAt = new Date(Date.now() + 60_000).toISOString();
+	for (const [record, name] of [[late, "other task"], [firstMatch, "parser one"], [secondMatch, "parser two"]] as const) {
+		names.set(record.storageId, name);
+		publish(f.manager.catalog, record, name);
+		writeClaim(record, { endedAt });
+	}
+	const first = await f.manager.list({ query: "parser", limit: 1 }) as ListResult;
+	assert.deepEqual(first.rows.map((row) => row.identity), [firstMatch.storageId]);
+	names.set(late.storageId, "parser late");
+	publish(new AgentCatalog(f.root), late, "parser late");
+	const rest = await finish(f.manager, first);
+	const found = rest.flatMap((page) => page.rows.map((row) => row.identity));
+	assert.ok(found.includes(secondMatch.storageId));
+	assert.ok(found.includes(late.storageId), "a record that changed after discovery began is observed in the remainder pass");
+	assert.equal(rest.at(-1)?.coverage.complete, true);
 });
