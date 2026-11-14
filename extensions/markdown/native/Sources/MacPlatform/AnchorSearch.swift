@@ -35,15 +35,49 @@ protocol AccessibilityTree {
 /// A search for the text area whose visible text shows the marker.
 ///
 /// A search runs in rounds over a list of applications and keeps its place between steps: each
-/// step continues the tree walk where the previous step stopped. An application with a large tree
-/// or one that answers slowly therefore delays a round but never keeps the round from reaching the
-/// next application. A round leaves an application after a node budget or after repeated
-/// requests without an answer.
+/// step continues the tree walk where the previous step stopped. A round leaves an application
+/// after a node budget or after repeated requests without an answer. When the node budget ends
+/// the walk of an application before its last window, the next round continues that walk where it
+/// stopped instead of at the first window, so every window of a large application is reached in
+/// turn. An application with a large tree or one that answers slowly therefore delays a round but
+/// never keeps the search from reaching the other applications or its own later windows.
 struct AnchorSearch<Tree: AccessibilityTree> {
     struct Found {
         var element: Tree.Node
         var window: Tree.Node
         var application: pid_t
+    }
+
+    /// The work of one step, in units: reading one application's window list, or visiting one
+    /// element with at most two requests. Once the step's time is over no unit starts, except the
+    /// step's first, so every step moves the search forward and at most two requests run after
+    /// the time is over.
+    struct Step {
+        private(set) var units = 0
+        let expired: () -> Bool
+
+        mutating func begin() -> Bool {
+            if units > 0, expired() { return false }
+            units += 1
+            return true
+        }
+    }
+
+    /// Where the walk of one application stands: its windows, the next window to enter, and the
+    /// elements still to visit in the current window.
+    struct Walk {
+        var windows: [Tree.Node]
+        var windowIndex = 0
+        var queue: [(node: Tree.Node, depth: Int)] = []
+        var queueIndex = 0
+
+        var finished: Bool { queueIndex >= queue.count && windowIndex >= windows.count }
+
+        /// Drops the visited part of the queue.
+        mutating func compact() {
+            queue.removeFirst(queueIndex)
+            queueIndex = 0
+        }
     }
 
     /// Nodes of one application that one round visits.
@@ -54,17 +88,17 @@ struct AnchorSearch<Tree: AccessibilityTree> {
     static var busyLimit: Int { 2 }
     /// Characters of a text area's visible text that a search reads.
     static var textLimit: Int { 512 }
+    /// Applications whose unfinished walk the search keeps for the next round.
+    static var keptWalkLimit: Int { 8 }
     /// Roles whose subtrees hold documents, lists or menus rather than terminals.
     static var skippedRoles: Set<String> { ["AXWebArea", "AXTable", "AXOutline", "AXList", "AXBrowser", "AXMenuBar", "AXMenu"] }
 
     private(set) var applications: [pid_t] = []
     private(set) var index = 0
-    private var windows: [Tree.Node]?
-    private var windowIndex = 0
-    private var queue: [(node: Tree.Node, depth: Int)] = []
-    private var queueIndex = 0
+    private var walk: Walk?
     private var visited = 0
     private var busy = 0
+    private var kept: [(application: pid_t, walk: Walk)] = []
 
     /// Whether the current round has visited every application.
     var roundComplete: Bool { index >= applications.count }
@@ -95,39 +129,49 @@ struct AnchorSearch<Tree: AccessibilityTree> {
     }
 
     /// Continues the round until a text area shows `marker`, the round ends, or `expired` says
-    /// that the step's time is over. After a found element the next call continues behind it.
-    mutating func run(_ tree: Tree, marker: String, expired: () -> Bool) -> Found? {
-        // Each call visits at least one node, so a step whose time went to earlier requests still
-        // moves the round forward.
-        var visitedNow = 0
+    /// that the step's time is over. Every call makes at least one request. After a found
+    /// element the next call continues behind it.
+    mutating func run(_ tree: Tree, marker: String, expired: @escaping () -> Bool) -> Found? {
+        var step = Step(expired: expired)
         while index < applications.count {
-            if visitedNow > 0, expired() { return nil }
             let application = applications[index]
-            guard let windows = loadWindows(tree, application) else { continue }
+            if walk == nil {
+                switch startWalk(tree, application, step: &step) {
+                case .started(let started): walk = started
+                case .paused: return nil
+                case .left: continue
+                }
+            }
             guard visited < Self.nodeBudget else {
-                leaveApplication()
+                leaveApplication(keeping: true)
                 continue
             }
-            if queueIndex >= queue.count {
-                guard windowIndex < windows.count else {
-                    leaveApplication()
+            guard var current = walk else {
+                leaveApplication(keeping: false)
+                continue
+            }
+            if current.queueIndex >= current.queue.count {
+                guard current.windowIndex < current.windows.count else {
+                    leaveApplication(keeping: false)
                     continue
                 }
-                queue = [(windows[windowIndex], 0)]
-                queueIndex = 0
-                windowIndex += 1
+                current.queue = [(current.windows[current.windowIndex], 0)]
+                current.queueIndex = 0
+                current.windowIndex += 1
             }
-            let (node, depth) = queue[queueIndex]
-            queueIndex += 1
+            let (node, depth) = current.queue[current.queueIndex]
+            let window = current.windows[current.windowIndex - 1]
+            current.queueIndex += 1
+            walk = current
             visited += 1
-            switch visit(tree, node: node, depth: depth, window: windows[windowIndex - 1], application: application, marker: marker, expired: { visitedNow > 0 && expired() }) {
+            switch visit(tree, node: node, depth: depth, window: window, application: application, marker: marker, step: &step) {
             case .found(let found): return found
             case .paused:
                 // The step's time ended between two requests for this node: visit it again first.
-                queueIndex -= 1
+                walk?.queueIndex -= 1
                 visited -= 1
                 return nil
-            case .done: visitedNow += 1
+            case .done: break
             }
         }
         return nil
@@ -139,23 +183,35 @@ struct AnchorSearch<Tree: AccessibilityTree> {
         case paused
     }
 
-    /// The application's windows, read once per round; nil while the request goes unanswered.
-    private mutating func loadWindows(_ tree: Tree, _ application: pid_t) -> [Tree.Node]? {
-        if let windows { return windows }
+    private enum Start {
+        case started(Walk)
+        /// The step's time ended before the window list was read.
+        case paused
+        /// The request found no windows or went unanswered; the search moved on or asks again.
+        case left
+    }
+
+    /// The walk where the previous round stopped in this application, or a new walk over its
+    /// windows.
+    private mutating func startWalk(_ tree: Tree, _ application: pid_t, step: inout Step) -> Start {
+        if let position = kept.firstIndex(where: { $0.application == application }) {
+            return .started(kept.remove(at: position).walk)
+        }
+        guard step.begin() else { return .paused }
         switch tree.windows(application) {
         case .value(let list):
-            windows = list
-            return list
+            return .started(Walk(windows: list))
         case .missing:
-            leaveApplication()
-            return nil
+            leaveApplication(keeping: false)
+            return .left
         case .busy:
             noteBusy()
-            return nil
+            return .left
         }
     }
 
-    private mutating func visit(_ tree: Tree, node: Tree.Node, depth: Int, window: Tree.Node, application: pid_t, marker: String, expired: () -> Bool) -> Visit {
+    private mutating func visit(_ tree: Tree, node: Tree.Node, depth: Int, window: Tree.Node, application: pid_t, marker: String, step: inout Step) -> Visit {
+        guard step.begin() else { return .paused }
         let role: String
         switch tree.role(node) {
         case .value(let value): role = value
@@ -166,7 +222,6 @@ struct AnchorSearch<Tree: AccessibilityTree> {
         }
         let textArea = role == kAXTextAreaRole
         guard textArea || (!Self.skippedRoles.contains(role) && depth < Self.depthLimit) else { return .done }
-        if expired() { return .paused }
         if textArea {
             switch tree.visibleText(node, limit: Self.textLimit) {
             case .value(let text) where Self.shows(marker, text):
@@ -178,7 +233,12 @@ struct AnchorSearch<Tree: AccessibilityTree> {
         }
         switch tree.children(node) {
         case .value(let children):
-            for child in children where queue.count < Self.nodeBudget { queue.append((child, depth + 1)) }
+            guard var current = walk else { return .done }
+            for child in children where current.queue.count - current.queueIndex < Self.nodeBudget {
+                current.queue.append((child, depth + 1))
+            }
+            if current.queueIndex > Self.nodeBudget { current.compact() }
+            walk = current
         case .busy: noteBusy()
         case .missing: break
         }
@@ -187,19 +247,24 @@ struct AnchorSearch<Tree: AccessibilityTree> {
 
     private mutating func noteBusy() {
         busy += 1
-        if busy >= Self.busyLimit { leaveApplication() }
+        if busy >= Self.busyLimit { leaveApplication(keeping: true) }
     }
 
-    private mutating func leaveApplication() {
+    /// Moves to the next application. With `keeping`, an unfinished walk of this application is
+    /// kept for the next round.
+    private mutating func leaveApplication(keeping: Bool) {
+        if keeping, var current = walk, !current.finished, index < applications.count {
+            current.compact()
+            kept.removeAll { $0.application == applications[index] }
+            kept.append((applications[index], current))
+            if kept.count > Self.keptWalkLimit { kept.removeFirst(kept.count - Self.keptWalkLimit) }
+        }
         index += 1
         resetApplication()
     }
 
     private mutating func resetApplication() {
-        windows = nil
-        windowIndex = 0
-        queue = []
-        queueIndex = 0
+        walk = nil
         visited = 0
         busy = 0
     }
@@ -208,14 +273,22 @@ struct AnchorSearch<Tree: AccessibilityTree> {
 /// Finds the parts of an element that other content of its own window covers, such as a floating
 /// pane over a tiled one.
 ///
-/// Elements of the window that overlap the element and are not among its ancestors are the
-/// candidates. A candidate covers the bounds of its children, which leaves out a margin that it
-/// keeps around its visible content. Which candidates lie above the element comes from a stacking
-/// report when the terminal offers one: a candidate is above when its bounds, placed in the
-/// report's layout coordinates, match an area that the report lists above the pane. Without a
-/// report the application's own hit test decides: a candidate is above when the frontmost element
-/// at a point of the overlap belongs to it. That hit test can name the wrong one of two
-/// overlapping candidates.
+/// Elements of the window that overlap the element and lie outside the element's own ancestors
+/// are the candidates. A candidate is drawn at the bounds of its children, which leaves out a
+/// margin that it can keep around its visible content.
+///
+/// With a stacking report, the report decides which content lies above the pane and the
+/// accessibility tree decides where that content is drawn. The report's areas reach the screen
+/// through the pane's own container: the highest ancestor of the element, below its window, with
+/// the element's left, right and bottom edges, which takes in a title row that the terminal draws
+/// above the screen. Each area is then paired with at most one candidate, and each candidate with
+/// at most one area, when all four edges agree within a tolerance; the closest pairs win. An area
+/// without a drawn candidate, such as content that is not drawn, makes no hole, and a candidate
+/// that no area explains, such as the content below the pane, makes none either.
+///
+/// Without a report the application's own hit test decides: a candidate is above when the
+/// frontmost element at one of a few points of the overlap belongs to it. That hit test can name
+/// the wrong one of two overlapping candidates.
 enum CoverScan {
     enum Result: Equatable {
         /// The covered parts, in accessibility coordinates and inside the element's frame.
@@ -228,9 +301,12 @@ enum CoverScan {
     /// Requests that one scan makes at most; a larger tree gives no result.
     static let requestLimit = 400
     static let depthLimit = 24
-    /// Smallest overlap, as intersection over union, at which a candidate matches an area of a
-    /// stacking report.
-    static let matchLimit = 0.5
+    /// Tallest title row above a terminal screen that the pane's container can add.
+    static let titleRowLimit: CGFloat = 64
+    /// Smallest tolerance in points for an edge of reported content, and the share of the
+    /// window's layout size that the tolerance grows to on large windows.
+    static let edgeTolerance: CGFloat = 6
+    static let edgeShare: CGFloat = 0.015
 
     /// The requests that one scan may still make: at most `requestLimit`, and none after the
     /// caller's time is over.
@@ -242,6 +318,29 @@ enum CoverScan {
         mutating func spend() -> Bool {
             requests += 1
             return requests <= CoverScan.requestLimit && !expired()
+        }
+    }
+
+    /// Places fractions of a window's layout area on the screen, from the fractions and the
+    /// screen rectangle of one pane.
+    struct LayoutMapping {
+        let origin: CGPoint
+        /// The layout area's size in points.
+        let size: CGSize
+
+        init(pane: CGRect, screen: CGRect) {
+            size = CGSize(width: screen.width / pane.width, height: screen.height / pane.height)
+            origin = CGPoint(x: screen.minX - pane.minX * size.width, y: screen.minY - pane.minY * size.height)
+        }
+
+        func screenRect(_ area: CGRect) -> CGRect {
+            CGRect(x: origin.x + area.minX * size.width, y: origin.y + area.minY * size.height, width: area.width * size.width, height: area.height * size.height)
+        }
+
+        var layoutArea: CGRect { screenRect(CGRect(x: 0, y: 0, width: 1, height: 1)) }
+
+        var tolerance: CGSize {
+            CGSize(width: max(CoverScan.edgeTolerance, CoverScan.edgeShare * size.width), height: max(CoverScan.edgeTolerance, CoverScan.edgeShare * size.height))
         }
     }
 
@@ -267,7 +366,9 @@ enum CoverScan {
                 candidates.append((child, rect))
             }
         }
-        if let stacking { return classify(tree, candidates, frame: frame, stacking: stacking, budget: &budget) }
+        if let stacking {
+            return reported(tree, candidates, element: frame, ancestors: chain.dropLast(), stacking: stacking, budget: &budget)
+        }
         var covers: [CGRect] = []
         for candidate in candidates {
             let overlap = candidate.frame.intersection(frame)
@@ -289,41 +390,66 @@ enum CoverScan {
         return .covers(covers)
     }
 
-    /// Covers by the stacking report. A report that places the pane in no shown layout, or lists an
-    /// area over the whole pane, covers the whole frame.
-    static func classify<Tree: AccessibilityTree>(_ tree: Tree, _ candidates: [(node: Tree.Node, frame: CGRect)], frame: CGRect, stacking: StackingReport, budget: inout Budget) -> Result? {
+    /// Covers by the stacking report. A report that places the pane in no layout, or lists an area
+    /// over the whole pane, covers the whole frame.
+    static func reported<Tree: AccessibilityTree>(_ tree: Tree, _ candidates: [(node: Tree.Node, frame: CGRect)], element frame: CGRect, ancestors: ArraySlice<Tree.Node>, stacking: StackingReport, budget: inout Budget) -> Result? {
         guard let pane = stacking.pane, pane.width > 0, pane.height > 0 else { return .covers([frame]) }
         if stacking.above.contains(where: { $0.insetBy(dx: -0.001, dy: -0.001).contains(pane) }) { return .covers([frame]) }
-        var covers: [CGRect] = []
+        guard !stacking.above.isEmpty, !candidates.isEmpty else { return .covers([]) }
+        guard let container = paneContainer(tree, element: frame, ancestors: ancestors, budget: &budget) else { return nil }
+        let mapping = LayoutMapping(pane: pane, screen: container)
+        var drawn: [CGRect] = []
         for candidate in candidates {
             guard let bounds = contentBounds(tree, candidate.node, frame: candidate.frame, budget: &budget) else { return nil }
-            let placed = layoutRect(bounds, frame: frame, pane: pane)
-            guard stacking.above.contains(where: { match($0, placed) >= matchLimit }) else { continue }
-            let covered = bounds.intersection(frame)
-            if overlaps(covered, frame) { covers.append(covered) }
+            drawn.append(bounds.intersection(mapping.layoutArea))
+        }
+        let areas = stacking.above.map(mapping.screenRect)
+        let covers = pairs(areas: areas, drawn: drawn, tolerance: mapping.tolerance).compactMap { pair -> CGRect? in
+            let covered = drawn[pair.candidate].intersection(frame)
+            return overlaps(covered, frame) ? covered : nil
         }
         return .covers(covers)
     }
 
-    /// A screen rectangle in the report's layout coordinates. The element's frame gives the scale:
-    /// its width and its left and bottom edges are the pane's. A title row that the terminal draws
-    /// above the screen makes the vertical scale slightly smaller than true, which matching by
-    /// overlap tolerates.
-    static func layoutRect(_ rect: CGRect, frame: CGRect, pane: CGRect) -> CGRect {
-        let scaleX = frame.width / pane.width
-        let scaleY = frame.height / pane.height
-        let originX = frame.minX - pane.minX * scaleX
-        let originY = frame.maxY - pane.maxY * scaleY
-        return CGRect(x: (rect.minX - originX) / scaleX, y: (rect.minY - originY) / scaleY, width: rect.width / scaleX, height: rect.height / scaleY)
+    /// The pane's own container: the highest ancestor that keeps the element's left, right and
+    /// bottom edges and adds at most a title row above it; the element's frame when no ancestor
+    /// does. `ancestors` runs from the parent upwards and leaves out the window.
+    static func paneContainer<Tree: AccessibilityTree>(_ tree: Tree, element frame: CGRect, ancestors: ArraySlice<Tree.Node>, budget: inout Budget) -> CGRect? {
+        var container = frame
+        for ancestor in ancestors {
+            guard budget.spend() else { return nil }
+            guard case .value(let rect) = tree.frame(ancestor),
+                  abs(rect.minX - frame.minX) <= 1, abs(rect.maxX - frame.maxX) <= 1, abs(rect.maxY - frame.maxY) <= 1,
+                  rect.minY <= frame.minY + 1, frame.minY - rect.minY <= titleRowLimit
+            else { break }
+            container = rect
+        }
+        return container
     }
 
-    /// Intersection over union of two rectangles.
-    static func match(_ first: CGRect, _ second: CGRect) -> Double {
-        let common = first.intersection(second)
-        guard !common.isNull else { return 0 }
-        let shared = common.width * common.height
-        let union = first.width * first.height + second.width * second.height - shared
-        return union > 0 ? shared / union : 0
+    /// Pairs reported areas with drawn candidates, both in screen coordinates: each area with at
+    /// most one candidate and each candidate with at most one area, when every edge agrees within
+    /// the tolerance. Closer pairs win; ties keep the report's order.
+    static func pairs(areas: [CGRect], drawn: [CGRect], tolerance: CGSize) -> [(area: Int, candidate: Int)] {
+        var options: [(distance: CGFloat, area: Int, candidate: Int)] = []
+        for (areaIndex, area) in areas.enumerated() {
+            for (candidateIndex, bounds) in drawn.enumerated() where !bounds.isNull {
+                let horizontal = [abs(area.minX - bounds.minX), abs(area.maxX - bounds.maxX)]
+                let vertical = [abs(area.minY - bounds.minY), abs(area.maxY - bounds.maxY)]
+                guard horizontal.allSatisfy({ $0 <= tolerance.width }), vertical.allSatisfy({ $0 <= tolerance.height }) else { continue }
+                options.append(((horizontal + vertical).reduce(0, +), areaIndex, candidateIndex))
+            }
+        }
+        options.sort { ($0.distance, $0.area, $0.candidate) < ($1.distance, $1.area, $1.candidate) }
+        var usedAreas = Set<Int>()
+        var usedCandidates = Set<Int>()
+        var result: [(area: Int, candidate: Int)] = []
+        for option in options where !usedAreas.contains(option.area) && !usedCandidates.contains(option.candidate) {
+            usedAreas.insert(option.area)
+            usedCandidates.insert(option.candidate)
+            result.append((option.area, option.candidate))
+        }
+        return result
     }
 
     static func overlaps(_ rect: CGRect, _ frame: CGRect) -> Bool {
@@ -369,6 +495,40 @@ enum CoverScan {
             if case .value(let rect) = tree.frame(child) { bounds = bounds.union(rect.intersection(frame)) }
         }
         return bounds.isNull ? frame : bounds
+    }
+}
+
+/// The part of a rectangle that holes leave visible. The reader window's mask and the decision to
+/// hide a fully covered window both use it, so they never disagree.
+public enum CoverRegion {
+    /// Rectangles that do not overlap and together form `frame` without the holes, which can
+    /// overlap one another.
+    public static func visible(_ frame: CGRect, holes: [CGRect]) -> [CGRect] {
+        let clipped = holes.map { $0.intersection(frame) }.filter { !$0.isNull && $0.width > 0 && $0.height > 0 }
+        guard !clipped.isEmpty else { return frame.isEmpty ? [] : [frame] }
+        let xs = Set([frame.minX, frame.maxX] + clipped.flatMap { [$0.minX, $0.maxX] }).sorted()
+        let ys = Set([frame.minY, frame.maxY] + clipped.flatMap { [$0.minY, $0.maxY] }).sorted()
+        var result: [CGRect] = []
+        for row in 0 ..< ys.count - 1 {
+            let top = ys[row], bottom = ys[row + 1]
+            var start: CGFloat?
+            for column in 0 ..< xs.count - 1 {
+                let centre = CGPoint(x: (xs[column] + xs[column + 1]) / 2, y: (top + bottom) / 2)
+                let covered = clipped.contains { $0.contains(centre) }
+                if !covered, start == nil { start = xs[column] }
+                if covered, let left = start {
+                    result.append(CGRect(x: left, y: top, width: xs[column] - left, height: bottom - top))
+                    start = nil
+                }
+            }
+            if let left = start { result.append(CGRect(x: left, y: top, width: xs[xs.count - 1] - left, height: bottom - top)) }
+        }
+        return result.filter { $0.width > 0 && $0.height > 0 }
+    }
+
+    /// Whether the holes leave nothing of `frame` visible but strips thinner than a point.
+    public static func coversEntirely(_ frame: CGRect, holes: [CGRect]) -> Bool {
+        visible(frame, holes: holes).allSatisfy { $0.width < 1 || $0.height < 1 }
     }
 }
 

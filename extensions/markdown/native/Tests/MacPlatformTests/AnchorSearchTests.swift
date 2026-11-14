@@ -170,6 +170,50 @@ final class ModelTree: AccessibilityTree {
         #expect(tree.requests < 2 * AnchorSearch<ModelTree>.nodeBudget + 10)
     }
 
+    @Test func reachesALaterWindowOverSeveralRounds() {
+        let tree = ModelTree()
+        // The first window holds more elements than one round may visit; the marker is in the
+        // second window.
+        let large = tree.add("AXWindow", .zero, window: 1)
+        for _ in 0 ..< 3000 { tree.add("AXGroup", .zero, parent: large) }
+        let later = tree.add("AXWindow", .zero, window: 1)
+        let pane = tree.add("AXTextArea", .zero, parent: later, text: marker)
+        var search = AnchorSearch<ModelTree>()
+        var found: AnchorSearch<ModelTree>.Found?
+        var rounds = 0
+        while found == nil, rounds < 4 {
+            rounds += 1
+            search.begin([1])
+            found = run(&search, tree, allowance: 100, steps: 1000).found
+        }
+        #expect(found?.element == pane)
+        #expect(rounds == 2)
+    }
+
+    @Test func boundsEveryStepWhileWindowListsGoUnanswered() {
+        let tree = ModelTree()
+        for application in 1 ... 40 { tree.lateApplications.insert(pid_t(application)) }
+        let terminal = tree.add("AXWindow", .zero, window: 41)
+        let pane = tree.add("AXTextArea", .zero, parent: terminal, text: marker)
+        var search = AnchorSearch<ModelTree>()
+        search.begin(Array(1 ... 41))
+        var found: AnchorSearch<ModelTree>.Found?
+        var steps = 0
+        var largest = 0
+        while found == nil, steps < 500 {
+            steps += 1
+            let start = tree.requests
+            // The step's time is over before its search starts, as after slow title reads.
+            found = search.run(tree, marker: marker, expired: { true })
+            largest = max(largest, tree.requests - start)
+        }
+        #expect(found?.element == pane)
+        // Only the one unit of work that keeps the search moving runs after the step's time is
+        // over: one window list or one element visit of at most two requests.
+        #expect(largest <= 2)
+        #expect(steps < 100)
+    }
+
     @Test func prefersAnApplicationOnlyWithinARound() {
         var search = AnchorSearch<ModelTree>()
         search.prefer(9)
@@ -317,8 +361,106 @@ final class ModelTree: AccessibilityTree {
         let screen = TwoFloats()
         let frame = screen.tree.items[screen.frontText]!.frame
         let front = CGRect(x: 0.4, y: 0.4, width: 0.4, height: 0.4)
-        #expect(screen.scan(screen.frontText, StackingReport(pane: front, above: [CGRect(x: 0, y: 0, width: 1, height: 1)])) == .covers([frame]))
         #expect(screen.scan(screen.frontText, StackingReport(pane: nil, above: [])) == .covers([frame]))
+        #expect(screen.scan(screen.frontText, StackingReport(pane: front, above: [CGRect(x: 0, y: 0, width: 1, height: 1)])) == .covers([frame]))
+    }
+}
+
+/// Reported areas paired with the content that the window draws. The window's layout area is 1000
+/// by 1000 points at (0, 0), so a fraction times 1000 is a screen position; every pane has a 36
+/// point title row above its screen.
+@Suite struct TerminalReportedCovers {
+    struct Layout {
+        let tree = ModelTree()
+        var window = 0, layers = 0, text = 0
+        var textFrame = CGRect.zero
+
+        /// A window with a tiled layer whose drawn content is `tiled`, and a floating reader pane
+        /// at `pane` in layout fractions inside a layer group of `layerFrame`, or of the pane's
+        /// own frame.
+        init(pane: CGRect, tiled: CGRect = CGRect(x: 0, y: 36, width: 1000, height: 964), layerFrame: CGRect? = nil) {
+            window = tree.add("AXWindow", CGRect(x: 0, y: 0, width: 1000, height: 1000), window: 1)
+            layers = tree.add("AXGroup", CGRect(x: 0, y: 0, width: 1000, height: 1000), parent: window)
+            let split = tree.add("AXSplitGroup", CGRect(x: 0, y: 0, width: 1000, height: 1000), parent: layers)
+            tree.add("AXGroup", tiled, parent: split)
+            let paneFrame = CGRect(x: pane.minX * 1000, y: pane.minY * 1000, width: pane.width * 1000, height: pane.height * 1000)
+            let layer = tree.add("AXGroup", layerFrame ?? paneFrame, parent: layers)
+            let group = tree.add("AXGroup", paneFrame, parent: layer)
+            textFrame = CGRect(x: paneFrame.minX, y: paneFrame.minY + 36, width: paneFrame.width, height: paneFrame.height - 36)
+            text = tree.add("AXTextArea", textFrame, parent: group)
+        }
+
+        /// A floating layer above the window's other children that draws its pane at `visible`
+        /// inside a margin.
+        func addFloating(_ visible: CGRect) {
+            let layer = tree.add("AXGroup", visible.insetBy(dx: -40, dy: -40), parent: layers)
+            tree.add("AXSplitGroup", visible, parent: layer)
+        }
+
+        func scan(_ pane: CGRect, above: [CGRect]) -> CoverScan.Result? {
+            CoverScan.scan(tree, element: text, frame: textFrame, window: window, application: 1, stacking: StackingReport(pane: pane, above: above))
+        }
+    }
+
+    let reader = CGRect(x: 0.7, y: 0.2, width: 0.3, height: 0.6)
+
+    @Test func coversOnlyThePartThatTheReportedPaneDraws() {
+        let layout = Layout(pane: reader)
+        #expect(layout.textFrame == CGRect(x: 700, y: 236, width: 300, height: 564))
+        layout.addFloating(CGRect(x: 0, y: 0, width: 800, height: 800))
+        // The upper pane lies over the reader's leftmost 100 points only. The tiled content below
+        // the reader also overlaps the reported area, but its edges do not match it.
+        let result = layout.scan(reader, above: [CGRect(x: 0, y: 0, width: 0.8, height: 0.8)])
+        #expect(result == .covers([CGRect(x: 700, y: 236, width: 100, height: 564)]))
+    }
+
+    @Test func aReportedAreaWithoutDrawnContentMakesNoHole() {
+        // The report lists an area that the window does not draw, such as a minimised pane.
+        let layout = Layout(pane: reader)
+        #expect(layout.scan(reader, above: [CGRect(x: 0, y: 0, width: 0.8, height: 0.8)]) == .covers([]))
+        // The tiled content below the reader shares three edges with this area, not the fourth.
+        #expect(layout.scan(reader, above: [CGRect(x: 0, y: 0.036, width: 0.75, height: 0.964)]) == .covers([]))
+    }
+
+    @Test func pairsEachAreaWithOneOfNearlyEqualCandidates() {
+        let pane = CGRect(x: 0.5, y: 0.5, width: 0.4, height: 0.4)
+        let layout = Layout(pane: pane)
+        layout.addFloating(CGRect(x: 300, y: 300, width: 400, height: 400))
+        layout.addFloating(CGRect(x: 305, y: 302, width: 400, height: 400))
+        let one = layout.scan(pane, above: [CGRect(x: 0.3, y: 0.3, width: 0.4, height: 0.4)])
+        #expect(one == .covers([CGRect(x: 500, y: 536, width: 200, height: 164)]))
+        let two = layout.scan(pane, above: [CGRect(x: 0.3, y: 0.3, width: 0.4, height: 0.4), CGRect(x: 0.305, y: 0.302, width: 0.4, height: 0.4)])
+        #expect(two == .covers([CGRect(x: 500, y: 536, width: 200, height: 164), CGRect(x: 500, y: 536, width: 205, height: 166)]))
+    }
+
+    @Test func placesAreasThroughTheTitleRowOfASmallPane() {
+        // A small pane: its title row is almost half its height, so the screen alone would give
+        // a vertical scale far from the layout's.
+        let pane = CGRect(x: 0.9, y: 0.9, width: 0.08, height: 0.08)
+        let layout = Layout(pane: pane)
+        layout.addFloating(CGRect(x: 850, y: 850, width: 100, height: 100))
+        let result = layout.scan(pane, above: [CGRect(x: 0.85, y: 0.85, width: 0.1, height: 0.1)])
+        #expect(result == .covers([CGRect(x: 900, y: 936, width: 50, height: 14)]))
+    }
+
+    @Test func takesTheContainerOnlyUpToATitleRow() {
+        // The reader's layer group shares the pane's left, right and bottom edges but reaches far
+        // above it; it is not the pane's container.
+        let layout = Layout(pane: reader, layerFrame: CGRect(x: 700, y: 0, width: 300, height: 800))
+        layout.addFloating(CGRect(x: 0, y: 0, width: 800, height: 800))
+        let result = layout.scan(reader, above: [CGRect(x: 0, y: 0, width: 0.8, height: 0.8)])
+        #expect(result == .covers([CGRect(x: 700, y: 236, width: 100, height: 564)]))
+    }
+
+    @Test func hidesAFrameThatSeveralCoversHideTogether() {
+        let frame = CGRect(x: 0, y: 0, width: 300, height: 200)
+        let left = CGRect(x: -10, y: -10, width: 160, height: 220)
+        let right = CGRect(x: 140, y: 0, width: 160, height: 200)
+        #expect(CoverRegion.coversEntirely(frame, holes: [left, right]))
+        #expect(!CoverRegion.coversEntirely(frame, holes: [left, CGRect(x: 160, y: 0, width: 140, height: 200)]))
+        #expect(CoverRegion.visible(frame, holes: [left, CGRect(x: 160, y: 0, width: 140, height: 200)]) == [CGRect(x: 150, y: 0, width: 10, height: 200)])
+        let placement = TerminalAnchor.Placement(frame: frame, host: 1, window: nil, coveredBy: nil, covers: [left, right])
+        #expect(placement.coveredEntirely)
     }
 }
 

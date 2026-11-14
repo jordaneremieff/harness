@@ -38,9 +38,9 @@ public final class TerminalAnchor {
         /// pane above a tiled one, in AppKit screen coordinates.
         public var covers: [CGRect]
 
-        /// Whether the covers leave nothing of the frame visible.
+        /// Whether the covers together leave nothing of the frame visible.
         public var coveredEntirely: Bool {
-            covers.contains { $0.insetBy(dx: -1, dy: -1).contains(frame) }
+            CoverRegion.coversEntirely(frame, holes: covers)
         }
     }
 
@@ -165,12 +165,12 @@ public final class TerminalAnchor {
 
     // MARK: - Pure helpers
 
-    /// The visible part of a window with holes: its bounds minus the union of the holes, which can
-    /// overlap. Nil without holes.
+    /// The visible part of a window with holes, as `CoverRegion` computes it. Nil without holes.
     public nonisolated static func maskPath(bounds: CGRect, holes: [CGRect]) -> CGPath? {
-        guard let first = holes.first else { return nil }
-        let covered = holes.dropFirst().reduce(CGPath(rect: first, transform: nil)) { $0.union(CGPath(rect: $1, transform: nil)) }
-        return CGPath(rect: bounds, transform: nil).subtracting(covered)
+        guard !holes.isEmpty else { return nil }
+        let path = CGMutablePath()
+        for rect in CoverRegion.visible(bounds, holes: holes) { path.addRect(rect) }
+        return path
     }
 
     /// Converts an accessibility rectangle (origin at the top left of the primary screen, y
@@ -237,8 +237,10 @@ final class AnchorWorker: @unchecked Sendable {
 
     /// Longest wait for one answer of an application.
     static let messagingTimeout: TimeInterval = 0.25
-    /// Time after which a step starts no new request. One request that is already waiting can
-    /// still take up to the messaging timeout.
+    /// Time after the start of a step after which its search starts no new request. The title
+    /// reads before the search count towards it; the search still makes one request, so every
+    /// step moves it forward. A request that is already waiting can take up to the messaging
+    /// timeout.
     static let stepAllowance: TimeInterval = 0.1
     /// Time a found element has to show the new marker.
     static let confirmTime: TimeInterval = 0.6
@@ -281,7 +283,7 @@ final class AnchorWorker: @unchecked Sendable {
     }
 
     func step(marker: String) -> Result {
-        let deadline = Date().addingTimeInterval(Self.stepAllowance)
+        let deadline = DispatchTime.now() + Self.stepAllowance
         guard AXIsProcessTrusted() else { return Result(state: .untrusted, slow: true) }
         // Nothing is visible behind a locked screen, and applications answer few accessibility
         // requests there; keep the last place and wait.
@@ -326,8 +328,8 @@ final class AnchorWorker: @unchecked Sendable {
         if let window, frame != coversFrame || stacking?.generation != coversGeneration || Date() >= coversAt.addingTimeInterval(Self.coverInterval) {
             // A scan that runs out of time or requests keeps the last covers and runs again on
             // the next step.
-            let scanDeadline = Date().addingTimeInterval(Self.scanAllowance)
-            let result = CoverScan.scan(tree, element: element, frame: frame, window: window, application: host, stacking: stacking?.report, expired: { Date() >= scanDeadline })
+            let scanDeadline = DispatchTime.now() + Self.scanAllowance
+            let result = CoverScan.scan(tree, element: element, frame: frame, window: window, application: host, stacking: stacking?.report, expired: { DispatchTime.now() >= scanDeadline })
             switch result {
             case .covers(let found):
                 covers = found
@@ -420,7 +422,7 @@ final class AnchorWorker: @unchecked Sendable {
     /// Continues the current round, or starts a new one when it is due. A changed title of the
     /// window that last showed the element, or a change of the frontmost window, makes a round
     /// due at once.
-    private func searchStep(marker: String, deadline: Date) -> State {
+    private func searchStep(marker: String, deadline: DispatchTime) -> State {
         let now = Date()
         if let lostWindow {
             let reply = tree.read(lostWindow.element, kAXTitleAttribute)
@@ -440,7 +442,7 @@ final class AnchorWorker: @unchecked Sendable {
             rounds += 1
             search.begin(roundApplications())
         }
-        if let found = search.run(tree, marker: marker, expired: { Date() >= deadline }) {
+        if let found = search.run(tree, marker: marker, expired: { DispatchTime.now() >= deadline }) {
             candidate = (found, marker, Date().addingTimeInterval(Self.confirmTime))
             return .found
         }
