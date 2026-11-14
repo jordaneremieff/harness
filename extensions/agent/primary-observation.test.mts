@@ -574,3 +574,31 @@ it("keeps an exact cursor valid across appends and refuses replaced, forged, and
 	assert.ok(replaced.coverage.reasons.includes("source-changed"));
 	assert.deepEqual(replaced.entries, []);
 });
+it("gives exact content the full line bound whatever presence facts scanned first", async t => {
+	const f = fixture(t, [message(1, null, "assistant", `${"z".repeat(60_000)}TAIL`)]);
+	const primary = { ...f.primary, name: "n".repeat(6000) };
+	const cursor = (await readPrimaryObservation(primary, { view: "history" })).entries[0]?.textCursor;
+	assert.ok(cursor);
+	let text = "";
+	for (let next: unknown = cursor, pages = 0; next !== undefined && pages < 16; pages++) {
+		const page = await readPrimaryObservation(primary, { view: "exact", cursor: next });
+		assert.equal(page.coverage.reasons.includes("text-scan-budget"), false);
+		text += page.entries[0]?.text ?? "";
+		next = page.nextCursor;
+	}
+	assert.equal(text.length, 60_004);
+	assert.ok(text.endsWith("TAIL"));
+});
+it("drops the page range when an exact read is discarded after paging", async t => {
+	const f = fixture(t, [message(1, null, "assistant", "y".repeat(limits.textBytes * 2))]);
+	const cursor = (await readPrimaryObservation(f.primary, { view: "history" })).entries[0]?.textCursor;
+	assert.ok(cursor);
+	let checks = 0;
+	const state = { aborted: false };
+	const signal = { get aborted() { return state.aborted; }, throwIfAborted() { if (++checks >= 4) { state.aborted = true; throw new Error("stop"); } } } as unknown as AbortSignal;
+	const result = await readPrimaryObservation(f.primary, { view: "exact", cursor, signal });
+	assert.ok(result.coverage.reasons.includes("aborted"));
+	assert.deepEqual(result.entries, []);
+	assert.equal(result.page, undefined);
+	assert.doesNotMatch(formatPrimaryObservation(result), /Entry text UTF-16 units/u);
+});

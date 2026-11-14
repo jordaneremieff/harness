@@ -2700,8 +2700,11 @@ Activity and history clip each entry's text to a compact excerpt so that one
 page shows many entries. When an entry's text was clipped, or omitted because it
 exceeded the page's scan budget, the entry carries a `textCursor`. Pass it as
 `cursor` to `agent_inspect` to read that entry's complete allowed text in pages;
-each page returns `page` (`offset`, exclusive `endOffset`, `totalUnits`, in UTF-16
-code units of the projected text) and a `nextCursor` while text remains. A final
+the cursor selects the exact view, so no `view` is needed. Each page returns
+`page` (`offset`, exclusive `endOffset`, `totalUnits`, in UTF-16 code units of the
+projected text) and a `nextCursor` while text remains. Pages concatenate to the
+projected text; a page boundary can fall inside an escaped control such as
+`\u000a`. A final
 report or a long answer of another session is therefore readable in full without
 opening its session file. The cursor locates one record by file identity (device
 and inode), byte offset and entry ID, not by the file's size or modification

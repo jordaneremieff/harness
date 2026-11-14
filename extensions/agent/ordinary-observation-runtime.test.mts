@@ -45,6 +45,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 		{ type: "session", version: 3, id: ordinaryId, timestamp, cwd },
 		{ type: "message", id: "11111111", parentId: null, timestamp, message: { role: "user", content: "Check the parser boundary", timestamp: 0 } },
 		{ type: "message", id: "22222222", parentId: "11111111", timestamp, message: { role: "toolResult", toolName: "bash", toolCallId: "parser-call", content: [{ type: "text", text: "Parser test failed: unexpected token" }], isError: true, timestamp: 1 } },
+		{ type: "message", id: "33333333", parentId: "22222222", timestamp, message: { role: "assistant", content: [{ type: "text", text: `${"Report line.".repeat(400)}FINAL_REPORT_MARKER` }], stopReason: "stop", timestamp: 2 } },
 	].map((value) => JSON.stringify(value)).join("\n")}\n`;
 	writeFileSync(sessionFile, retained);
 	const delivered: PrimaryDelivery[] = [];
@@ -117,6 +118,22 @@ it("native peer tools read ordinary retained work and errors without admitting p
 		assert.ok(observed.entries.some((entry) => entry.text?.includes("Check the parser boundary")));
 		assert.ok(observed.entries.some((entry) => entry.id === "22222222" && entry.isError && entry.text?.includes("Parser test failed")));
 	}
+	const inspectSchema = (tools.find((tool) => tool.name === "agent_inspect") as { structuredOutputSchema?: Schema } | undefined)?.structuredOutputSchema;
+	assert.ok(inspectSchema);
+	const activity = structuredObservation(inspectSchema, (await invoke("agent_inspect", { sessionId: ordinaryId, view: "activity" })).structuredOutput) as OrdinaryPrimaryObservation;
+	const textCursor = activity.entries.find((entry) => entry.id === "33333333")?.textCursor;
+	assert.ok(textCursor, "a clipped entry carries its text cursor through the native route");
+	let full = "";
+	for (let cursor: unknown = textCursor, pages = 0; cursor !== undefined && pages < 8; pages++) {
+		const page = await invoke("agent_inspect", { sessionId: ordinaryId, cursor: cursor as JsonObject });
+		assert.equal(page.isError, false, JSON.stringify(page));
+		const observed = structuredObservation(inspectSchema, page.structuredOutput) as OrdinaryPrimaryObservation;
+		assert.equal(observed.view, "exact");
+		full += observed.entries[0]?.text ?? "";
+		cursor = observed.nextCursor;
+	}
+	assert.ok(full.endsWith("FINAL_REPORT_MARKER"));
+	assert.equal(full.length, "Report line.".length * 400 + "FINAL_REPORT_MARKER".length);
 	const unsupported = await invoke("agent_inspect", { sessionId: ordinaryId, view: "exact", entryId: 1 });
 	assert.equal(unsupported.isError, true);
 	assert.match(JSON.stringify(unsupported.diagnostics), /exact inspection requires the textCursor/u);

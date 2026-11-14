@@ -497,7 +497,7 @@ function visit(next: string, visited: Set<string>, records: Records, result: Ord
 	visited.add(next); result.coverage.parentVisits++;
 	return record;
 }
-function discard(result: OrdinaryPrimaryObservation): void { result.entries = []; result.source.latestKnown = false; delete result.nextCursor; }
+function discard(result: OrdinaryPrimaryObservation): void { result.entries = []; result.source.latestKnown = false; delete result.nextCursor; delete result.page; }
 async function verifySnapshot(file: FileHandle, path: string, sourcePin: Pin, result: OrdinaryPrimaryObservation): Promise<void> {
 	const after = pin(await file.stat({ bigint: true }));
 	const named = await lstat(path, { bigint: true });
@@ -535,7 +535,9 @@ async function exactRecord(file: FileHandle, at: ExactCursor, result: OrdinaryPr
 }
 /** Page the complete allowed text of one record under the same projection and redaction rules. */
 function pageExact(raw: Raw, at: ExactCursor, result: OrdinaryPrimaryObservation): void {
-	const entry = project(raw, at.byteOffset, result, { textBytes: Number.POSITIVE_INFINITY, scanLimit: PRIMARY_OBSERVATION_LIMITS.lineBytes, clip: { clipped: false } });
+	// The record's own content gets the full line bound, whatever presence facts already scanned.
+	const scanLimit = result.coverage.textScanBytes + PRIMARY_OBSERVATION_LIMITS.lineBytes;
+	const entry = project(raw, at.byteOffset, result, { textBytes: Number.POSITIVE_INFINITY, scanLimit, clip: { clipped: false } });
 	const text = entry.text ?? "";
 	if (at.offset > text.length || splitsPair(text, at.offset)) { reason(result, "invalid-cursor"); return; }
 	// JSON escaping can grow a page, so the page shrinks until the whole observation fits.
