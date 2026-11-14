@@ -1723,7 +1723,11 @@ function workLines(details: Record<string, unknown>, theme: Theme, context: Agen
 const STATE_NOTE_LINES = 3;
 
 /** The parts of Pi's tool render context that the state note card reads. */
-type NoteCardContext = AgentCardContext & { readonly outputPad?: number; readonly state?: Record<string, unknown> };
+type NoteCardContext = AgentCardContext & {
+	readonly outputPad?: number;
+	readonly state?: Record<string, unknown>;
+	readonly keyHint?: (keybinding: string, description: string) => string;
+};
 
 type NoteCardFacts = {
 	note: string;
@@ -1736,8 +1740,9 @@ type NoteCardFacts = {
 
 /**
  * One state note as a card in the message background. The turn ended there, so the card is a message to
- * the operator, not a tool outcome. Collapsed, it shows its title, at most three note lines and a hint;
- * expanded, the whole note, the requests that were due, and what starts the next turn. Lines wrap at word
+ * the operator, not a tool outcome, and its title says what happened instead of naming the tool. Collapsed,
+ * it shows the title, at most three note lines and Pi's expansion hint; expanded, the whole note, the agents
+ * whose results were due, and what ended the turn and what starts the next one. Lines wrap at word
  * boundaries and keep the background to the edge.
  */
 class StateNoteCard implements Component {
@@ -1758,14 +1763,16 @@ class StateNoteCard implements Component {
 		const due = waiting.filter((row) => row.state !== "scheduled").length;
 		const scheduled = waiting.length - due;
 		const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
-		const parts = [this.facts.error !== undefined ? "failed" : this.facts.settled ? "turn ended" : "state note"];
-		if (waitingOmitted > 0) parts.push(plural(waiting.length + waitingOmitted, "open request"));
+		const parts: string[] = [];
+		if (waitingOmitted > 0) parts.push(plural(waiting.length + waitingOmitted, "open agent request"));
 		else {
-			if (due > 0) parts.push(`waiting for ${plural(due, "result")}`);
+			if (due > 0) parts.push(`waiting for ${plural(due, "agent result")}`);
 			if (scheduled > 0) parts.push(plural(scheduled, "scheduled input"));
 		}
+		const head = this.facts.error !== undefined ? "Could not end the turn" : this.facts.settled ? "Turn ended" : "Ending turn";
+		const detail = parts.length === 0 ? "" : theme.fg("accent", ` · ${parts.join(" · ")}`);
 		const clock = this.facts.at === undefined ? "" : theme.fg("muted", ` · ${dashboardClock(this.facts.at)}`);
-		return theme.fg("toolTitle", theme.bold("agent_work")) + theme.fg("accent", ` · ${parts.join(" · ")}`) + clock;
+		return theme.fg("toolTitle", theme.bold(head)) + detail + clock;
 	}
 	/** One open request: the agent's name and configuration from the roster, then its state now. */
 	private waitingRow(item: Record<string, unknown>, rows: readonly AgentConversationSummary[]): string {
@@ -1782,29 +1789,34 @@ class StateNoteCard implements Component {
 	private waitingLines(theme: Theme, width: number): string[] {
 		if (this.facts.waiting.length === 0) return [];
 		const rows = this.context?.lookup?.() ?? [];
-		const lines = [theme.fg("muted", "Requests due here when the turn ended:")];
+		const lines = [theme.fg("muted", "Waiting for results from:")];
 		for (const item of this.facts.waiting) lines.push(clipCardLine(`  ${theme.fg("text", this.waitingRow(item, rows))}`, width));
 		if (this.facts.waitingOmitted > 0) lines.push(theme.fg("muted", `  ${this.facts.waitingOmitted} more not listed`));
 		return lines;
 	}
-	/** The due requests and, for a turn that ended, what starts the next one. */
+	/** The agents whose results were due and, for a turn that ended, what ended it and what starts the next one. */
 	private expandedLines(theme: Theme, width: number): string[] {
 		const lines: string[] = [];
 		const waiting = this.waitingLines(theme, width);
 		if (waiting.length > 0) lines.push("", ...waiting);
 		if (this.facts.settled && this.facts.error === undefined)
-			lines.push("", ...wrapTextWithAnsi("The turn ended here and needed nothing from you. A result, a message or your input starts the next turn.", width).map((line) => theme.fg("muted", line)));
+			lines.push("", ...wrapTextWithAnsi("This session ended its turn with its agent_work tool because it needed nothing from you. A result from an agent, a message or your input starts its next turn.", width).map((line) => theme.fg("muted", line)));
 		return lines;
 	}
-	/** Expansion adds the hidden note lines, and for a turn that ended the due requests and what starts the next turn. */
+	/**
+	 * Pi's tool card hint: `... (2 more lines, ctrl+o to expand)`, or `... (ctrl+o to expand)` when only the
+	 * details are hidden. A click anywhere on the card toggles it, as on every tool card.
+	 */
 	private hint(theme: Theme, width: number, hiddenLines: number): string[] {
 		const context = this.context;
 		const expandable = hiddenLines > 0 || this.facts.error === undefined;
 		if (!this.facts.settled || !expandable || context?.hideExpansionHint) return [];
-		const key = context?.keyText("app.tools.expand");
-		const action = key ? `click or ${key} to expand` : "click to expand";
+		const key = context?.keyText("app.tools.expand") ?? "";
+		const action = !key
+			? theme.fg("muted", "expand for full details")
+			: (context?.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"));
 		const more = hiddenLines > 0 ? `${hiddenLines} more line${hiddenLines === 1 ? "" : "s"}, ` : "";
-		return [clipCardLine(theme.fg("muted", `... (${more}${action})`), width)];
+		return [clipCardLine(theme.fg("muted", `... (${more}`) + action + theme.fg("muted", ")"), width)];
 	}
 	private body(theme: Theme, width: number): string[] {
 		const expanded = this.context?.expanded === true;

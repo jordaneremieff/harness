@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { initTheme, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext, type Theme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
+import { createRequire } from "node:module";
 import type { ContinuityFact } from "./continuity-facts.ts";
 import { dashboardClock } from "./dashboard-time.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
@@ -210,7 +212,7 @@ describe("the state note card", () => {
 		const state: Record<string, unknown> = {};
 		const call = f.tool.renderCall?.({ action: "continue", note: "Two workers run;\nnothing needs you." } as never, theme, { ...base, state } as never);
 		const streaming = call?.render(60) ?? [];
-		assert.deepEqual(plain(streaming), ["", " agent_work · state note", " Two workers run; nothing needs you.", ""], "white space collapses, and an unsettled call shows no hint");
+		assert.deepEqual(plain(streaming), ["", " Ending turn", " Two workers run; nothing needs you.", ""], "white space collapses, and an unsettled call shows no hint");
 		assert.ok(streaming.every((line) => line.startsWith("<customMessageBg>")), "the message background, not a tool outcome background");
 		assert.ok(streaming.every((line) => stripVTControlCharacters(line).replace(/<[A-Za-z]+>/gu, "").length === 60), "every line keeps the background to the edge");
 		const again = f.tool.renderCall?.({ action: "continue", note: "later" } as never, theme, { ...base, state, lastComponent: call } as never);
@@ -219,26 +221,30 @@ describe("the state note card", () => {
 		assert.deepEqual(call?.render(60), [], "the result slot draws the settled card");
 	});
 
-	it("says that the turn ended, what it waits for and when, and shows three note lines with an expansion hint", () => {
+	it("says that the turn ended, what it waits for and when, and shows three note lines with Pi's expansion hint", () => {
 		const { result } = row({});
 		const lines = plain(result?.render(100));
-		assert.equal(lines[1], ` agent_work · turn ended · waiting for 2 results · 1 scheduled input · ${dashboardClock(at)}`);
+		assert.equal(lines[1], ` Turn ended · waiting for 2 agent results · 1 scheduled input · ${dashboardClock(at)}`);
 		assert.equal(lines.length, 1 + 1 + 3 + 1 + 1, "padding, title, three note lines, hint, padding");
-		assert.match(lines[5] ?? "", /^ \.\.\. \(\d+ more lines, click or ctrl\+o to expand\)$/u);
+		assert.match(lines[5] ?? "", /^ \.\.\. \(\d+ more lines, ctrl\+o to expand\)$/u, "the hint of Pi's tool cards, without a click instruction");
 		assert.ok(lines.slice(2, 5).every((line) => !line.endsWith("…")), "collapsed note lines end at word boundaries without a clipped tail");
-		assert.doesNotMatch(lines.join("\n"), /Parser review|nothing from you\./u, "details wait for expansion");
+		assert.doesNotMatch(lines.join("\n"), /Parser review|nothing from you\.|agent_work/u, "details wait for expansion, and the title names no tool");
+		const short = plain(row({}, { ...details, note: "Short note." }).result?.render(100));
+		assert.equal(short.at(-2), " ... (ctrl+o to expand)", "a note that fits still points to the details");
+		const hinted = plain(row({ keyHint: (id: string, description: string) => `[${id}] ${description}` }).result?.render(100));
+		assert.match(hinted[5] ?? "", /^ \.\.\. \(\d+ more lines, \[app\.tools\.expand\] to expand\)$/u, "Pi's own key hint formats the key when the context supplies it");
 	});
 
-	it("expands to the whole note, the requests that were due with their current state, and what starts the next turn", () => {
+	it("expands to the whole note, the agents whose results were due with their current state, and what ended the turn", () => {
 		const { result } = row({ expanded: true });
 		const lines = plain(result?.render(100));
 		const text = lines.join("\n");
 		assert.equal(lines.slice(2).join(" ").replace(/\s+/gu, " ").includes(note), true, "the complete note");
-		assert.match(text, /Requests due here when the turn ended:/u);
+		assert.match(text, /Waiting for results from:/u);
 		assert.match(text, /^ {3}Parser review · anthropic\/claude-opus-5-5 · high · now working$/mu);
 		assert.match(text, /^ {3}Lint sweep · now done$/mu);
 		assert.match(text, /^ {3}worker-z · scheduled input$/mu, "an unknown agent keeps its exact identity");
-		assert.match(lines.join(" ").replace(/\s+/gu, " "), /The turn ended here and needed nothing from you\. A result, a message or your input starts the next turn\./u);
+		assert.match(lines.join(" ").replace(/\s+/gu, " "), /This session ended its turn with its agent_work tool because it needed nothing from you\. A result from an agent, a message or your input starts its next turn\./u, "the expanded card says which session ended its turn and with what");
 		assert.doesNotMatch(text, /to expand/u);
 	});
 
@@ -246,7 +252,33 @@ describe("the state note card", () => {
 		const { result } = row({ isError: true }, { note: "Short note." }, "agent_work takes action continue and a note");
 		const drawn = result?.render(60) ?? [];
 		assert.ok(drawn.every((line) => line.startsWith("<toolErrorBg>")));
-		assert.deepEqual(plain(drawn), ["", " agent_work · failed", " Short note.", " agent_work takes action continue and a note", ""], "no expansion hint when nothing is hidden");
+		assert.deepEqual(plain(drawn), ["", " Could not end the turn", " Short note.", " agent_work takes action continue and a note", ""], "no expansion hint when nothing is hidden");
+	});
+
+	it("expands and collapses on a plain click anywhere on the card inside Pi's tool row", async (t) => {
+		initTheme("dark", false);
+		// Pi's renderer context formats the key from the pi-tui copy that the coding agent resolves.
+		const nativeTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
+		const previous = nativeTui.getKeybindings();
+		nativeTui.setKeybindings(new nativeTui.KeybindingsManager({ ...nativeTui.TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" } }));
+		t.after(() => nativeTui.setKeybindings(previous));
+		const f = fixture("tui", {}, () => rows);
+		const component = new ToolExecutionComponent("agent_work", "call-work", { action: "continue", note }, undefined, f.tool, { requestRender() {} } as unknown as TUI, ".");
+		component.updateResult({ content: [{ type: "text", text: ORDINARY_CONTINUE_TEXT }], details, isError: false });
+		const width = 100;
+		const lines = () => component.render(width).map((line) => stripVTControlCharacters(line));
+		const click = (y: number) => component.handleMouse({ type: "click", button: "left", x: 4, y, screenX: 4, screenY: y, width, height: lines().length, shift: false, alt: false, ctrl: false, clickCount: 1 } as never);
+		const collapsed = lines();
+		assert.match(collapsed.join("\n"), /\.\.\. \(\d+ more lines, ctrl\+o to expand\)/u);
+		assert.doesNotMatch(collapsed.join("\n"), /Waiting for results from:|click/u);
+		const noteRow = collapsed.findIndex((line) => line.includes("Two workers run the parser review"));
+		assert.ok(noteRow > 0);
+		assert.equal(click(noteRow)?.handled, true, "a click on the note text expands the card");
+		assert.match(lines().join("\n"), /Waiting for results from:/u);
+		assert.doesNotMatch(lines().join("\n"), /to expand/u);
+		const titleRow = lines().findIndex((line) => line.includes("Turn ended"));
+		assert.equal(click(titleRow)?.handled, true, "a click on the title collapses it again");
+		assert.doesNotMatch(lines().join("\n"), /Waiting for results from:/u);
 	});
 
 	it("keeps narrow widths inside the card", () => {

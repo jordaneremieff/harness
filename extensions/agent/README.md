@@ -1926,15 +1926,18 @@ The card of the call in the transcript is the only display of the note. The
 turn ended there, so the card is a message to the operator, not a tool
 outcome: it registers `renderShell: "self"` and draws Pi's message background
 (`customMessageBg`) instead of the tool success background, and a failed call
-in the error background. Its title says what it is: `agent_work · turn ended`,
-then how many results were due here and how many scheduled inputs, then the
-local time the turn ended. Below it, the note with collapsed white space wraps
-at word boundaries on at most three lines, and a hint names the hidden lines
-and the expand key (`... (2 more lines, click or ctrl+o to expand)`). A click
-on the card or Pi's expand key shows the complete note, each request that was
-due with the agent's name, model and current roster state, and the sentence
-that the turn needed nothing from the operator and that a result, a message or
-the operator's input starts the next turn.
+in the error background. Its title says what happened in plain words instead
+of naming the tool: `Turn ended`, then how many agent results were due here and
+how many scheduled inputs, then the local time the turn ended (`Ending turn`
+while the note arrives, `Could not end the turn` for a failed call). Below it,
+the note with collapsed white space wraps at word boundaries on at most three
+lines, and Pi's tool card hint follows: `... (2 more lines, ctrl+o to expand)`,
+or `... (ctrl+o to expand)` when only the details are hidden. Pi's expand key or
+a click anywhere on the card, as on every tool card, shows the complete note,
+each agent whose result was due with its name, model and current roster state,
+and a sentence that this session ended its turn with its `agent_work` tool
+because it needed nothing from the operator, and that a result from an agent,
+a message or the operator's input starts its next turn.
 
 In a session with an operator view, the call's result details hold the time
 the turn ended (`at`) and the requests that this session routed to itself and
