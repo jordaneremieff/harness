@@ -139,6 +139,20 @@ descriptor (`{ version: 1, entry: "./display.ts", export: "toolDisplay" }`) so
 the standalone Agent terminal renders Rex cards locally. Importing it registers
 nothing, emits nothing, and touches no terminal.
 
+## Caller-anchored terminal panes
+
+The fixed subprocess `node extensions/rex/terminal-pane.ts split` accepts one bounded
+JSON request on stdin under the [terminal-pane contract](../../docs/conventions/terminal-pane.md).
+It accepts an opaque captured origin, literal program arguments and a working directory.
+Rex owns origin validation, exact server identity, anchor membership and same-tab split
+creation. A confirmed result retains the exact placement receipt. An uncertain result
+never permits automatic retry, fallback placement or cleanup of an unconfirmed pane.
+Program acceptance and visibility remain separate from split creation.
+
+Markdown uses this contract for explicit Read actions. It supplies only its configured
+native reader and a pinned open request; document text never supplies a terminal program.
+The helper maintains no pane registry and never reuses or types into existing panes.
+
 ## Select the right work
 
 A target accepts `server`, `session`, `window`, `block`, `client` and `source`.
