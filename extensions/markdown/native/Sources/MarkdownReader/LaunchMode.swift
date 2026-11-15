@@ -14,7 +14,7 @@ enum LaunchMode {
     /// Measures opening, refresh and memory for generated documents of the given sizes.
     case measure(corpus: [String], sizes: [Int], output: String?)
     /// Opens one visible reader window in a prepared state for screen capture, and keeps running.
-    case present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool, review: String?)
+    case present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool, embedded: Bool, textSize: Int?, review: String?)
     /// Opens an open request's document offscreen with the real platform operations and runs
     /// Return to Rex once, printing its result.
     case returnCheck(request: String)
@@ -71,7 +71,7 @@ enum LaunchMode {
             )
         case "--present":
             guard let input = positional.first else {
-                return .usage("--present [--width 960] [--height 900] [--appearance light|dark] [--find text] [--source yes] [--outline no] [--review previous|n] <file.md | open request>")
+                return .usage("--present [--width 960] [--height 900] [--appearance light|dark] [--find text] [--source yes] [--outline no] [--embedded yes] [--text-size n] [--review previous|n] <file.md | open request>")
             }
             return .present(
                 input: input,
@@ -81,6 +81,8 @@ enum LaunchMode {
                 find: options["find"],
                 source: options["source"] == "yes",
                 outline: options["outline"] != "no",
+                embedded: options["embedded"] == "yes",
+                textSize: options["text-size"].flatMap(Int.init),
                 review: options["review"]
             )
         case "--return-check":

@@ -205,6 +205,7 @@ public enum Stylesheet {
     .raw-html pre { margin: 0; color: var(--muted); }
     code.raw-inline { color: var(--muted); }
 
+    .footnotes [id], .footnote-ref [id] { scroll-margin-top: 1rem; }
     .footnotes { font-size: 0.9em; color: var(--muted); border-top: 1px solid var(--border); margin-top: 2.5em; padding-top: 1em; }
     .footnote-ref a, .footnotes a { text-decoration: none; }
     sup { line-height: 0; }

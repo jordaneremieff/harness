@@ -93,7 +93,7 @@ struct AssetSchemeHandler: URLSchemeHandler {
 /// The decision for a navigation the page asked for.
 enum NavigationRequest {
     case documentLoad
-    case sameDocument
+    case sameDocument(anchor: String)
     case copyCode(nonce: String, index: Int)
     case external(URL)
     case blocked(URL?)
@@ -106,10 +106,15 @@ enum NavigationRequest {
             // WebKit sometimes reports an in-page link of the about:blank document with its number
             // sign percent-encoded, as about:blank%23<anchor>.
             let fragment = url.fragment ?? url.absoluteString.removingPercentEncoding.flatMap { URL(string: $0)?.fragment }
-            if fragment != nil, !expectingLoad { return .sameDocument }
+            if let fragment, !expectingLoad { return .sameDocument(anchor: fragment.removingPercentEncoding ?? fragment) }
             return expectingLoad ? .documentLoad : .blocked(url)
         case MarkdownRenderer.actionScheme:
-            let parts = url.absoluteString.dropFirst(scheme.count + 1).split(separator: "/")
+            let action = url.absoluteString.dropFirst(scheme.count + 1)
+            if action.hasPrefix("jump/") {
+                let anchor = String(action.dropFirst(5))
+                return .sameDocument(anchor: anchor.removingPercentEncoding ?? anchor)
+            }
+            let parts = action.split(separator: "/")
             if parts.count == 3, parts[0] == "copy-code", let index = Int(parts[2]) {
                 return .copyCode(nonce: String(parts[1]), index: index)
             }
@@ -134,8 +139,8 @@ final class NavigationRouter {
     weak var handler: (any NavigationHandling)?
 }
 
-/// Decides every navigation: the document load and in-page anchors are allowed; app actions,
-/// web links and everything else are cancelled and handed to the reader.
+/// Allows the document load. Section jumps, app actions, web links and everything else are
+/// cancelled and handed to the reader.
 struct ReaderNavigationDecider: WebPage.NavigationDeciding {
     let router: NavigationRouter
 
@@ -143,7 +148,7 @@ struct ReaderNavigationDecider: WebPage.NavigationDeciding {
         preferences.allowsContentJavaScript = false
         let request = NavigationRequest.classify(action.request.url, expectingLoad: router.handler?.expectingLoad ?? false)
         switch request {
-        case .documentLoad, .sameDocument:
+        case .documentLoad:
             return .allow
         default:
             router.handler?.handle(request)
@@ -206,6 +211,15 @@ enum PageScript {
     if (!element) return false;
     element.scrollIntoView({ block: "start" });
     return true;
+    """
+
+    static let activeSection = """
+    const headings = document.querySelectorAll('h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]');
+    let active = headings.length ? headings[0].id : null;
+    for (const heading of headings) {
+      if (heading.getBoundingClientRect().top <= 32) { active = heading.id; } else { break; }
+    }
+    return active;
     """
 
     static let find = """

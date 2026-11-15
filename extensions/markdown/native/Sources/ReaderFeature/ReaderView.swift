@@ -44,7 +44,11 @@ public struct ReaderView: View {
                 content
             }
         }
-        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { width = $0 })
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: {
+            width = $0
+            model.outlineCompact = $0 < 680
+            if !model.outlineCompact { model.outlinePopoverVisible = false }
+        })
         .overlay(alignment: .bottom) { noticeView }
         .confirmationDialog(
             "Open this address in your browser?",
@@ -56,7 +60,7 @@ public struct ReaderView: View {
         } message: { url in
             Text(url.absoluteString)
         }
-        .toolbar { toolbarContent }
+        .toolbar { if case .window = chrome { toolbarContent } }
         .onChange(of: model.findVisible) { _, visible in findFocused = visible }
     }
 
@@ -189,9 +193,10 @@ public struct ReaderView: View {
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
-            Button { model.outlineVisible.toggle() } label: { Label("Outline", systemImage: "sidebar.left") }
-                .help("Show or hide the outline (⌃⌘S)")
-                .disabled(model.rendered?.outline.isEmpty ?? true)
+            OutlineControl(model: model)
+            Button { Task { await model.goBack() } } label: { Label("Go Back", systemImage: "arrow.left") }
+                .help("Return after a section jump (⌘[)")
+                .disabled(!model.canGoBack)
         }
         ToolbarItemGroup(placement: .primaryAction) {
             RevisionMenu(model: model)
@@ -212,6 +217,7 @@ public struct ReaderView: View {
 
 struct RevisionMenu: View {
     @Bindable var model: ReaderModel
+    var showsReviewActions = true
 
     var body: some View {
         if let snapshot = model.snapshot, snapshot.revisions.count > 1 {
@@ -231,8 +237,10 @@ struct RevisionMenu: View {
                 if snapshot.olderRevisionsUnlisted {
                     Text("Older revisions are not listed")
                 }
-                Button("Go to Revision…") { model.review.entry = .show }
-                Button(model.review.shown == nil ? "Review Changes" : "Close Comparison") { Task { await model.reviewChanges() } }
+                if showsReviewActions {
+                    Button("Go to Revision…") { model.review.entry = .show }
+                    Button(model.review.shown == nil ? "Review Changes" : "Close Comparison") { Task { await model.reviewChanges() } }
+                }
             } label: {
                 Label("Revision \(snapshot.revision ?? 0)", systemImage: "clock.arrow.circlepath")
             }
@@ -263,47 +271,57 @@ struct ViewOptionsMenu: View {
     }
 }
 
-/// The compact header of an embedded reader: the title, one line of provenance and the reader's
-/// controls, which a borderless window has no toolbar for.
+/// The embedded reader keeps identity and primary actions visible, with secondary controls in
+/// a menu and revision/mode status on its own line.
 struct EmbeddedHeader: View {
     @Bindable var model: ReaderModel
     let close: () -> Void
     let release: () -> Void
 
     var body: some View {
-        HStack(spacing: 4) {
-            Button { model.outlineVisible.toggle() } label: { Label("Outline", systemImage: "sidebar.left") }
-                .help("Show or hide the outline (⌃⌘S)")
-                .disabled(model.rendered?.outline.isEmpty ?? true)
-            VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                OutlineControl(model: model)
                 Text(model.snapshot == nil ? "Opening…" : model.displayTitle)
                     .font(.headline)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                if let snapshot = model.snapshot {
-                    Text(Provenance.summary(snapshot, rendered: model.rendered, latestRevision: model.latestRevision))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    .padding(.leading, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button { Task { await model.goBack() } } label: { Label("Go Back", systemImage: "arrow.left") }
+                    .help("Return after a section jump (⌘[)")
+                    .disabled(!model.canGoBack)
+                Button { model.showFind() } label: { Label("Find", systemImage: "magnifyingglass") }
+                    .help("Find (⌘F)")
+                Menu {
+                    RevisionMenu(model: model, showsReviewActions: false)
+                    if (model.snapshot?.revisions.count ?? 0) > 1 {
+                        Button("Go to Revision…") { model.review.entry = .show }
+                        Button(model.review.shown == nil ? "Review Changes" : "Close Comparison") { Task { await model.reviewChanges() } }
+                    }
+                    Button("Show Latest Revision") { Task { await model.refresh() } }
+                    ViewOptionsMenu(model: model)
+                    Divider()
+                    Button("Copy Markdown") { model.copyMarkdown() }
+                        .disabled(model.snapshot == nil)
+                    Button("Document Details") { model.detailsVisible.toggle() }
+                    Divider()
+                    Button("Return to Terminal", action: release)
+                } label: {
+                    Label("More Actions", systemImage: "ellipsis.circle")
                 }
-            }
-            .padding(.leading, 4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            RevisionMenu(model: model)
-            ViewOptionsMenu(model: model)
-            Button { model.showFind() } label: { Label("Find", systemImage: "magnifyingglass") }
-                .help("Find (⌘F)")
-            Button { model.copyMarkdown() } label: { Label("Copy Markdown", systemImage: "doc.on.doc") }
-                .help("Copy the Markdown source (⇧⌘C)")
-                .disabled(model.snapshot == nil)
-            Button { model.detailsVisible.toggle() } label: { Label("Document Details", systemImage: "info.circle") }
-                .help("Show document details (⌘I)")
+                .help("Revision, view and document actions")
                 .popover(isPresented: $model.detailsVisible, arrowEdge: .bottom) { DetailsView(model: model) }
-            Button { release() } label: { Label("Return to Terminal", systemImage: "terminal") }
-                .help("Give the keyboard back to the terminal (Esc)")
-            Button { close() } label: { Label("Close", systemImage: "xmark") }
-                .help("Close the reader (⌘W)")
+                Button { close() } label: { Label("Close", systemImage: "xmark") }
+                    .help("Close the reader (⌘W)")
+            }
+            if model.snapshot != nil {
+                Text(model.readingStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .labelStyle(.iconOnly)
         .buttonStyle(.borderless)
@@ -343,7 +361,7 @@ struct DocumentHeader: View {
     var body: some View {
         if let snapshot = model.snapshot {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(Provenance.summary(snapshot, rendered: model.rendered, latestRevision: model.latestRevision))
+                Text(model.readingStatus + " · " + Provenance.summary(snapshot, rendered: model.rendered, latestRevision: model.latestRevision))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -365,32 +383,61 @@ struct DocumentHeader: View {
     }
 }
 
+struct OutlineControl: View {
+    @Bindable var model: ReaderModel
+
+    var body: some View {
+        Button { model.toggleOutline() } label: { Label("Outline", systemImage: "sidebar.left") }
+            .help("Show or hide the outline (⌃⌘S)")
+            .disabled(model.rendered?.outline.isEmpty ?? true)
+            .popover(isPresented: $model.outlinePopoverVisible, arrowEdge: .bottom) {
+                OutlineList(model: model)
+                    .frame(width: 300, height: 420)
+            }
+    }
+}
+
 struct OutlineList: View {
     @Bindable var model: ReaderModel
 
     var body: some View {
-        let entries = model.rendered?.outline ?? []
-        List(entries) { entry in
-            Button {
-                Task { await model.scrollTo(anchor: entry.id) }
-            } label: {
-                Text(entry.title)
-                    .font(entry.level <= 1 ? .body.weight(.semibold) : entry.level == 2 ? .body : .callout)
-                    .foregroundStyle(entry.level <= 2 ? .primary : .secondary)
-                    .lineLimit(2)
-                    .padding(.leading, CGFloat(max(0, entry.level - minimumLevel(entries))) * 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+        let entries = model.filteredOutline
+        let minimumLevel = model.rendered?.outline.map(\.level).min() ?? 1
+        VStack(spacing: 0) {
+            TextField("Filter headings", text: $model.outlineQuery)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Filter outline headings")
+                .padding(10)
+            if entries.isEmpty {
+                ContentUnavailableView.search(text: model.outlineQuery)
+            } else {
+                List(entries) { entry in
+                    Button {
+                        Task { await model.scrollTo(anchor: entry.id) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "smallcircle.filled.circle")
+                                .foregroundStyle(.tint)
+                                .opacity(model.activeSection == entry.id ? 1 : 0)
+                                .accessibilityHidden(true)
+                            Text(entry.title)
+                                .font(entry.level <= 1 ? .body.weight(.semibold) : entry.level == 2 ? .body : .callout)
+                                .foregroundStyle(entry.level <= 2 ? .primary : .secondary)
+                                .lineLimit(3)
+                        }
+                        .padding(.leading, CGFloat(max(0, entry.level - minimumLevel)) * 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(model.activeSection == entry.id ? Color.accentColor.opacity(0.12) : Color.clear)
+                    .accessibilityLabel("Heading level \(entry.level): \(entry.title)")
+                    .accessibilityValue(model.activeSection == entry.id ? "Current section" : "")
+                }
+                .listStyle(.sidebar)
+                .accessibilityLabel("Outline")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Heading level \(entry.level): \(entry.title)")
         }
-        .listStyle(.sidebar)
-        .accessibilityLabel("Outline")
-    }
-
-    private func minimumLevel(_ entries: [OutlineEntry]) -> Int {
-        entries.map(\.level).min() ?? 1
     }
 }
 

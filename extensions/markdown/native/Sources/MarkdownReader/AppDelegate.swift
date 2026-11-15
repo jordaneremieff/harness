@@ -221,7 +221,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func showFind(_ sender: Any?) { withModel { $0.showFind() } }
     @objc func findNext(_ sender: Any?) { withModel { model in model.findVisible = true; await model.find() } }
     @objc func findPrevious(_ sender: Any?) { withModel { model in model.findVisible = true; await model.find(backwards: true) } }
-    @objc func toggleOutline(_ sender: Any?) { withModel { $0.outlineVisible.toggle() } }
+    @objc func toggleOutline(_ sender: Any?) { withModel { $0.toggleOutline() } }
+    @objc func goBack(_ sender: Any?) { withModel { await $0.goBack() } }
     @objc func toggleSource(_ sender: Any?) { withModel { await $0.toggleSource() } }
     @objc func toggleWrap(_ sender: Any?) { withModel { $0.toggleWrap() } }
     @objc func biggerText(_ sender: Any?) { withModel { $0.changeTextSize(by: 1) } }
@@ -242,8 +243,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         guard let model = windows.keyModel else { return false }
         switch action {
         case #selector(toggleOutline(_:)):
-            item.state = model.outlineVisible ? .on : .off
+            item.state = model.outlineIsPresented ? .on : .off
             return !(model.rendered?.outline.isEmpty ?? true)
+        case #selector(goBack(_:)):
+            return model.canGoBack
         case #selector(toggleSource(_:)):
             item.state = model.showingSource ? .on : .off
             return model.snapshot != nil
@@ -390,6 +393,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     private func documentMenu(returnItem: Bool) -> NSMenuItem {
         var items = [
+            item("Go Back After Jump", #selector(goBack(_:)), "["),
+            .separator(),
             item("Show Latest Revision", #selector(refreshDocument(_:)), "r"),
             item("Older Revision", #selector(olderRevision(_:)), "[", [.command, .option]),
             item("Newer Revision", #selector(newerRevision(_:)), "]", [.command, .option]),

@@ -75,6 +75,34 @@ public final class ReaderModel {
     public private(set) var lastRestore: PositionRestore = .none
     public private(set) var recoveries = 0
     public var outlineVisible = true
+    public var outlineCompact = false
+    public var outlinePopoverVisible = false
+    public var outlineQuery = ""
+    public private(set) var activeSection: String?
+    public private(set) var jumpHistory: [ReadingPosition] = []
+
+    public var outlineIsPresented: Bool { outlineCompact ? outlinePopoverVisible : outlineVisible }
+
+    public func toggleOutline() {
+        if outlineCompact { outlinePopoverVisible.toggle() } else { outlineVisible.toggle() }
+    }
+
+    public var filteredOutline: [OutlineEntry] {
+        let entries = rendered?.outline ?? []
+        let query = outlineQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty ? entries : entries.filter { $0.title.localizedStandardContains(query) }
+    }
+
+    public var readingStatus: String {
+        let mode = showingSource ? "Source" : "Rendered"
+        if let revision = snapshot?.revision {
+            let identity = snapshot?.document.map { "\($0.id) · " } ?? ""
+            if olderChosen, revision < (latestRevision ?? revision) { return "\(identity)Revision \(revision) selected · \(mode)" }
+            if case .revision(let latest) = update { return "\(identity)Revision \(revision) · Update \(latest) deferred · \(mode)" }
+            return "\(identity)Revision \(revision) · \(followsLatest ? "Following latest" : "Manual updates") · \(mode)"
+        }
+        return "File · \(mode)"
+    }
     public var findVisible = false
     public var findQuery = "" {
         didSet { if findQuery != oldValue { findStatus = .idle } }
@@ -117,6 +145,7 @@ public final class ReaderModel {
     /// names another revision.
     @ObservationIgnored private var failedRevision: Int?
     @ObservationIgnored private var interactionGeneration = 0
+    @ObservationIgnored private var navigationGeneration = 0
     /// Suspends a preparation result before installation or failure handling.
     @ObservationIgnored package var preparationGate: (@MainActor (Int?) async -> Void)?
     @ObservationIgnored var expectingLoad = false
@@ -268,7 +297,10 @@ public final class ReaderModel {
         let displayStart = Date()
         assets.replace(prepared.rendered.assets)
         do {
-            try await display(html: PageTemplate.page(body: prepared.rendered.body, title: prepared.snapshot.title, settings: settings))
+            let html = showingSource
+                ? PageTemplate.sourcePage(source: prepared.snapshot.source, title: prepared.snapshot.title, settings: settings)
+                : PageTemplate.page(body: prepared.rendered.body, title: prepared.snapshot.title, settings: settings)
+            try await display(html: html)
         } catch {
             guard token == generation, !closed else { return false }
             assets.replace(rendered?.assets ?? [:])
@@ -289,11 +321,13 @@ public final class ReaderModel {
         } else {
             update = nil
         }
-        showingSource = false
         imageEvidence = []
+        jumpHistory.removeAll()
+        activeSection = nil
         phase = .ready
         lastRestore = position.map { _ in .none } ?? .none
-        if let position { lastRestore = await restorePosition(position) }
+        if !showingSource, let position { lastRestore = await restorePosition(position) }
+        await updateActiveSection()
         timings = ReaderTimings(
             readMilliseconds: prepared.readMilliseconds,
             renderMilliseconds: prepared.renderMilliseconds,
@@ -428,6 +462,7 @@ public final class ReaderModel {
             guard !Task.isCancelled, let self, !self.closed else { return }
             self.scrolling = false
             await self.savePosition()
+            await self.updateActiveSection()
             guard !Task.isCancelled, !self.closed else { return }
             self.positionTask = nil
             if self.followsNow, await !self.interacting() {
@@ -472,9 +507,39 @@ public final class ReaderModel {
 
     // MARK: - Reading actions
 
+    public var canGoBack: Bool { !showingSource && !jumpHistory.isEmpty }
+
     public func scrollTo(anchor: String) async {
-        _ = try? await page.callJavaScript(PageScript.scrollToAnchor, arguments: ["anchor": anchor], contentWorld: PageScript.world)
+        navigationGeneration += 1
+        if showingSource { await toggleSource() }
+        guard !showingSource else { return }
+        let position = await capturePosition()
+        let moved = (try? await page.callJavaScript(PageScript.scrollToAnchor, arguments: ["anchor": anchor], contentWorld: PageScript.world) as? Bool) ?? false
+        guard moved else { return }
+        if let position {
+            jumpHistory.append(position)
+            if jumpHistory.count > 20 { jumpHistory.removeFirst(jumpHistory.count - 20) }
+        }
+        outlinePopoverVisible = false
+        await updateActiveSection()
         scrolled()
+    }
+
+    public func goBack() async {
+        guard canGoBack, let position = jumpHistory.popLast() else { return }
+        navigationGeneration += 1
+        lastRestore = await restorePosition(position)
+        await updateActiveSection()
+        scrolled()
+    }
+
+    func updateActiveSection() async {
+        guard !showingSource else { activeSection = nil; return }
+        let navigation = navigationGeneration
+        let document = generation
+        let section = try? await page.callJavaScript(PageScript.activeSection, contentWorld: PageScript.world) as? String
+        guard navigation == navigationGeneration, document == generation, !showingSource else { return }
+        activeSection = section
     }
 
     public func find(backwards: Bool = false) async {
@@ -492,12 +557,12 @@ public final class ReaderModel {
     }
 
     /// Whether the reader is in the middle of something that a page replacement would undo: a
-    /// text selection, an open find bar, a scroll that has not settled or a comparison of
-    /// revisions on screen.
+    /// text selection, source view, an open find bar, a scroll that has not settled or a
+    /// comparison of revisions on screen.
     func interacting() async -> Bool {
-        if findVisible || scrolling || review.shown != nil { return true }
+        if showingSource || findVisible || scrolling || review.shown != nil { return true }
         let selection = await selectedText()
-        return findVisible || scrolling || !selection.isEmpty
+        return showingSource || findVisible || scrolling || review.shown != nil || !selection.isEmpty
     }
 
     public func showFind() {
@@ -530,6 +595,7 @@ public final class ReaderModel {
         guard snapshot != nil else { return }
         let position = showingSource ? state.position(for: reference) : await capturePosition()
         if !showingSource, let position { state.setPosition(position, for: reference) }
+        interactionGeneration += 1
         showingSource.toggle()
         do {
             try await display(html: pageHTML())
@@ -539,6 +605,8 @@ public final class ReaderModel {
             try? await display(html: pageHTML())
         }
         if !showingSource, let position { lastRestore = await restorePosition(position) }
+        await updateActiveSection()
+        if !showingSource { await checkForUpdate() }
     }
 
     public func copyMarkdown() {
@@ -662,7 +730,9 @@ extension ReaderModel: NavigationHandling {
         case .blocked(let url):
             let scheme = url?.scheme ?? "this"
             post("The reader does not open \(scheme) links.", kind: .info)
-        case .documentLoad, .sameDocument:
+        case .sameDocument(let anchor):
+            Task { await scrollTo(anchor: anchor) }
+        case .documentLoad:
             break
         }
     }

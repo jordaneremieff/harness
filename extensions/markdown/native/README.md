@@ -144,8 +144,18 @@ Foundation directly.
 
 ## Reading
 
-Outline (sidebar, hidden below 680 points width), find with next and previous and a not-found
-state, text size, code wrapping, Copy for each code block (the parsed code without its
+The outline uses a sidebar from 680 points width and a native popover below it. The same
+heading list and filter field serve both presentations. The current section has an indicator;
+a heading or footnote jump records the previous reading position. Go Back After Jump restores
+that position, with a window-local history bounded to 20 entries and cleared on revision loads.
+The embedded header keeps the document title, outline, back, find and close controls visible;
+its More Actions menu holds revision selection, Review Changes, view options, copying, details
+and terminal return.
+A separate status line names the selected revision, whether the reader follows latest or defers
+an update, and source versus rendered view.
+
+Find has next and previous actions and a not-found state. Other controls include text size,
+code wrapping, Copy for each code block (the parsed code without its
 final line break), Copy Markdown (the exact source), Show Source, a revision menu, a compact
 provenance line with details on demand (both name the newest revision the window knows), and
 labels for partial responses (length limit,
@@ -173,9 +183,14 @@ whole. A table that these rules make wider than the page scrolls sideways in its
 every other table shares the page width between its columns. Short cells stay compact, and a
 row copies as one line.
 
-The app watches the open document's pointer (or a plain file's folder) and shows "Revision n is
-available" without rendering by itself, so a selection or the scroll position never changes
-under the reader. Show Latest Revision restores the same block and the offset inside it; when
+A normal window watches the open document's pointer (or a plain file's folder) and shows
+"Revision n is available" without rendering by itself, so a selection or the scroll position never changes
+under the reader. Pane mode follows updates only while rendered reading is idle: scrolling,
+selection, find and source view defer automatic replacement. Show Source remains selected after
+a manual revision change or refresh. A manual refresh explicitly replaces a selection; automatic
+updates do not. Choosing an older revision suspends following in that window only, not on a later
+reopen. No persistent revision pin is implied. Show Latest Revision restores the same block and
+the offset inside it; when
 that block changed it falls back to the start of its section, then to the same relative position,
 and says so. A load takes effect only after its page displayed: when an update fails to read or to
 display, the window keeps the last good revision, its state and its page (shown again when the web
@@ -246,6 +261,7 @@ would not share one function.
 | Find, Find Next, Find Previous | Edit > Find | ⌘F, ⌘G, ⇧⌘G |
 | Show Outline, Show Source, Wrap Code Lines | View | ⌃⌘S, ⌥⌘U, ⌥⌘L |
 | Bigger, Smaller, Actual Size text | View | ⌘=, ⌘-, ⌘0 |
+| Go Back After Jump | Document | ⌘[ |
 | Show Latest, Older, Newer Revision | Document | ⌘R, ⌥⌘[, ⌥⌘] |
 | Go to Revision, Review Changes | Document | ⌥⌘G, ⌘D |
 | Document Details | Document | ⌘I |
@@ -280,7 +296,7 @@ APP="<app>/Contents/MacOS/MarkdownReader"
 "$APP" --export-image --out page.png [--width 900] [--max-height 6000] [--appearance light|dark] [--review previous|n] <file.md | open request>
 "$APP" --verify [--out report.json]
 "$APP" --measure [--sizes 51200,512000,2097152] [--out report.json] <corpus.md>...
-"$APP" --present [--width 960] [--height 900] [--appearance light|dark] [--find text] [--source yes] [--outline no] [--review previous|n] <file.md | open request>
+"$APP" --present [--width 960] [--height 900] [--appearance light|dark] [--find text] [--source yes] [--outline no] [--embedded yes] [--text-size n] [--review previous|n] <file.md | open request>
 "$APP" --return-check <open request>
 ```
 
@@ -305,6 +321,8 @@ APP="<app>/Contents/MacOS/MarkdownReader"
   refresh and find latency, and app plus web content memory.
 - `--present` opens one visible window in a prepared state for screen capture and keeps running.
   A store folder as its input presents the library on private in-memory reading state.
+  `--embedded yes` uses the pane header without terminal placement; `--text-size` selects an index
+  in `PageSettings.textSizes`. At compact widths the requested outline opens as a popover.
 - `--return-check` reads an open request without accepting it, opens its document offscreen with
   the request's origin and runs Return to Rex once with the real platform operations.
 - An open request given to `--export-image` or `--present` is read, not accepted.
@@ -399,9 +417,10 @@ and behind a locked screen. A changed title of the host window or of the frontmo
 the next round at once; otherwise rounds repeat four times a second at first, then every second
 while the host runs and every three seconds while no host is known.
 
-The window shows `ReaderView` with embedded chrome: a compact header with the outline control,
-title, provenance line, revision menu, view options, find, Copy Markdown, details, a control
-that returns the keyboard to the host and a close control. Escape outside a text field also
+The window shows `ReaderView` with embedded chrome: the title, outline, back, find and close
+controls, a separate revision/mode status line, and More Actions for secondary controls.
+The outline opens in a popover in narrow panes. More Actions includes a control that returns
+the keyboard to the host. Escape outside a text field also
 returns the keyboard to the host. Pane mode follows new revisions: the model's `followsLatest`
 loads a revision as soon as the pointer watcher sees it, with the reader's block, heading and
 ratio restoration, and a failed load keeps the shown revision with a warning. The watcher
@@ -412,7 +431,8 @@ automatic load asks for the exact revision it follows, and a failure stops autom
 at that revision only. The reading position
 for the new revision is taken from the page at the moment of replacement, not before the
 revision was prepared. While the page scrolls, replacement waits until scrolling has been still
-for half a second; while text is selected or the find bar is open, the update notice waits for
+for half a second; while text is selected, the find bar is open or source view is selected,
+the update notice waits for
 the reader's choice instead. A revision that the reader chooses in the revision menu stays until
 the reader returns to the latest one, and a revision whose automatic load failed is not tried
 again by itself until the pointer names another revision.
@@ -495,8 +515,9 @@ assume it is the only screen of the app. Each window owns one model and one `Web
   symbolic link and accepts only regular files. These checks bind the checked paths and the
   opened files, not a concurrent replacement of a parent folder: a process of the same user that
   replaces a parent folder between the path check and the open is outside this guarantee.
-- Every navigation is decided: the document load and in-page anchors pass; web links open in
-  the browser only after confirmation; app actions (code copy) carry a per-rendering nonce;
+- Every navigation is decided: the document load passes; in-page anchors use the reader's
+  position-aware jump action; web links open in
+  the browser only after confirmation; code-copy actions carry a per-rendering nonce;
   everything else is cancelled. App DOM helpers run only through `callJavaScript` in the
   `markdown-reader` content world with data arguments. There is no script message handler.
 - Limits: source 2 MiB; store records 256 KiB; image 8 MiB; reading-state file 1 MiB (a larger

@@ -24,7 +24,10 @@ public enum PageTemplate {
         + "font-src \(MarkdownRenderer.assetScheme):; base-uri 'none'; form-action 'none'"
 
     public static func page(body: String, title: String, settings: PageSettings, extraHead: String = "") -> String {
-        """
+        // Fragment navigation can scroll before WebKit's async decision. Route rendered links
+        // through an app action so the reader captures the position before every jump.
+        let navigableBody = body.replacingOccurrences(of: "href=\"#", with: "href=\"\(MarkdownRenderer.actionScheme):jump/")
+        return """
         <!doctype html>
         <html data-ts="\(settings.textSize)" data-wrap="\(settings.wrapCode ? 1 : 0)">
         <head>
@@ -37,7 +40,7 @@ public enum PageTemplate {
         \(extraHead)
         </head>
         <body><main class="doc">
-        \(body)
+        \(navigableBody)
         </main></body>
         </html>
         """

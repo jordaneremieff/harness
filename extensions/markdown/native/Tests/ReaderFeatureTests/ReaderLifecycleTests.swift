@@ -23,12 +23,12 @@ private struct LifecycleStore {
         try JSONSerialization.data(withJSONObject: value).write(to: url, options: .atomic)
     }
 
-    func publish(_ revision: Int) throws {
+    func publish(_ revision: Int, source customSource: String? = nil) throws {
         let document = root.appendingPathComponent("documents/\(id)")
         let location = document.appendingPathComponent("revisions/\(revision)")
         try FileManager.default.createDirectory(at: location, withIntermediateDirectories: true)
         let paragraphs = (0..<250).map { "Paragraph \($0) has enough text for a stable reading position in a long document." }.joined(separator: "\n\n")
-        let source = Data(("# Revision \(revision)\n\n" + paragraphs).utf8)
+        let source = Data((customSource ?? ("# Revision \(revision)\n\n" + paragraphs)).utf8)
         let digest = "sha256:" + SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined()
         try source.write(to: location.appendingPathComponent("source.md"))
         let date = "2026-11-14T00:00:00Z"
@@ -354,10 +354,123 @@ private final class LifecycleGate {
         while model.isLoadingForCheck, ContinuousClock.now < displayedDeadline {
             try await Task.sleep(for: .milliseconds(10))
         }
+        await opening.value
         #expect(model.phase == .ready)
         #expect(model.snapshot?.source == "# First\n")
         #expect(model.update == .fileChanged)
-        opening.cancel()
+        await model.close()
+    }
+
+    @Test func visitingAnOlderRevisionDoesNotPinAReopenedReader() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1)
+        try store.publish(2)
+        let state = ReadingStateStore(directory: nil)
+        let first = model(reference: store.reference, state: state)
+        let window = window(first)
+        defer { window.close() }
+        await first.open(origin: nil)
+        first.followsLatest = true
+        await first.showRevision(1)
+        #expect(first.readingStatus.contains("selected"))
+        await first.close()
+        let reopened = model(reference: store.reference, state: state)
+        await reopened.open(origin: nil)
+        #expect(reopened.snapshot?.revision == 2)
+        await reopened.close()
+    }
+
+    @Test func sourceDefersFollowingAndManualRefreshKeepsSource() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1)
+        let state = ReadingStateStore(directory: nil)
+        let model = model(reference: store.reference, state: state)
+        let window = window(model)
+        defer { window.close() }
+        await model.open(origin: nil)
+        model.followsLatest = true
+        await model.toggleSource()
+        #expect(model.showingSource)
+        #expect(await model.interacting())
+        _ = try await model.page.callJavaScript("getSelection().selectAllChildren(document.querySelector('.source')); return true;", contentWorld: PageScript.world)
+        let selection = await model.selectedText()
+        try store.publish(2)
+        await model.checkForUpdate()
+        #expect(model.snapshot?.revision == 1)
+        #expect(model.update == .revision(2))
+        #expect(await model.selectedText() == selection)
+        #expect(model.readingStatus.contains("deferred"))
+        await model.refresh()
+        #expect(model.snapshot?.revision == 2)
+        #expect(model.showingSource)
+        #expect(try await model.page.callJavaScript("return document.querySelector('.source').textContent;", contentWorld: PageScript.world) as? String == model.snapshot?.source)
+        await model.toggleSource()
+        #expect(!model.showingSource)
+        #expect(model.readingStatus.contains("Following latest"))
+        await model.close()
+    }
+
+    @Test func sourceChoiceDuringAutomaticPreparationDefersInstallation() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1)
+        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
+        let window = window(model)
+        defer { window.close() }
+        await model.open(origin: nil)
+        #expect(await wait { !model.isScrollingForCheck })
+        model.followsLatest = true
+        let gate = LifecycleGate()
+        defer { gate.release() }
+        model.preparationGate = { revision in if revision == 2 { await gate.wait() } }
+        try store.publish(2)
+        #expect(await wait { gate.reached })
+        await model.toggleSource()
+        gate.release()
+        #expect(await wait { !model.isLoadingForCheck })
+        #expect(model.snapshot?.revision == 1)
+        #expect(model.showingSource)
+        #expect(model.update == .revision(2))
+        await model.close()
+    }
+
+    @Test func outlineNavigationTracksSectionsFiltersAndBoundedReturns() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let paragraphs = String(repeating: "A paragraph with enough text for a useful section.\n\n", count: 40)
+        try store.publish(1, source: "# First\n\nA reference[^note].\n\n" + paragraphs + "## Second\n\n" + paragraphs + "## Third\n\n" + paragraphs + "[^note]: A footnote.\n")
+        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
+        let window = window(model)
+        defer { window.close() }
+        await model.open(origin: nil)
+        #expect(model.activeSection == "first")
+        model.outlineQuery = "SECOND"
+        #expect(model.filteredOutline.map(\.id) == ["second"])
+        model.outlineCompact = true
+        model.toggleOutline()
+        #expect(model.outlineIsPresented)
+        let before = await model.capturePosition()
+        await model.scrollTo(anchor: "second")
+        #expect(!model.outlinePopoverVisible)
+        #expect(model.activeSection == "second")
+        #expect(model.canGoBack)
+        await model.goBack()
+        let returned = await model.capturePosition()
+        #expect(returned?.blockKey == before?.blockKey)
+        #expect(model.activeSection == "first")
+        #expect(!model.canGoBack)
+        let footnote = try await model.page.callJavaScript("const link = document.querySelector('.footnote-ref a, a.footnote-ref'); const href = link.getAttribute('href'); link.click(); return href;", contentWorld: PageScript.world) as? String
+        #expect(footnote?.hasPrefix("reader-action:jump/") == true)
+        #expect(await wait { model.canGoBack || model.notice != nil })
+        #expect(model.canGoBack, "Footnote: \(footnote ?? "nil"); notice: \(model.notice?.text ?? "none")")
+        await model.goBack()
+        #expect(model.activeSection == "first")
+        for index in 0..<24 { await model.scrollTo(anchor: index.isMultiple(of: 2) ? "second" : "third") }
+        #expect(model.jumpHistory.count == 20)
+        await model.scrollTo(anchor: "absent")
+        #expect(model.jumpHistory.count == 20)
         await model.close()
     }
 

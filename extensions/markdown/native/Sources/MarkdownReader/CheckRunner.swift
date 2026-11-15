@@ -36,8 +36,8 @@ struct CheckRunner {
             status = await Verification(windows: windows).run(output: output)
         case .measure(let corpus, let sizes, let output):
             status = await Measurement(windows: windows).run(corpus: corpus, sizes: sizes, output: output)
-        case .present(let input, let width, let height, let appearance, let find, let source, let outline, let review):
-            await present(input: input, width: width, height: height, appearance: appearance, find: find, source: source, outline: outline, review: review)
+        case .present(let input, let width, let height, let appearance, let find, let source, let outline, let embedded, let textSize, let review):
+            await present(input: input, width: width, height: height, appearance: appearance, find: find, source: source, outline: outline, embedded: embedded, textSize: textSize, review: review)
             return
         case .returnCheck(let request):
             status = await returnCheck(request: request)
@@ -81,9 +81,9 @@ struct CheckRunner {
         return bitmap.representation(using: .png, properties: [:])
     }
 
-    /// Opens a normal reader window in the requested state and prints its window number, so that
+    /// Opens a reader window in the requested state and prints its window number, so that
     /// a session with screen recording permission can capture the real window.
-    func present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool, review: String?) async {
+    func present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool, embedded: Bool, textSize: Int?, review: String?) async {
         if let appearance { NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua) }
         do {
             var directory = ObjCBool(false)
@@ -104,12 +104,34 @@ struct CheckRunner {
                 return
             }
             let (reference, revision) = try Self.reference(for: input)
-            let model = windows.open(reference, revision: revision, origin: nil)
-            guard let window = NSApp.windows.first(where: { $0.isVisible && $0.title != "" && $0.delegate === windows }) else { return }
+            let model: ReaderModel
+            let window: NSWindow
+            if embedded {
+                model = ReaderModel(reference: reference, platform: windows.platform, state: windows.state)
+                window = PaneWindow(contentRect: NSRect(x: 100, y: 100, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                let host = NSHostingController(rootView: ReaderView(model: model, chrome: .embedded(close: { window.close() }, release: {})))
+                host.sizingOptions = []
+                window.contentViewController = host
+                window.delegate = windows
+                windows.adopt(window, model: model)
+                model.followsLatest = true
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate()
+                await model.open(revision: revision, origin: nil)
+                window.title = model.displayTitle
+            } else {
+                model = windows.open(reference, revision: revision, origin: nil)
+                guard let shown = NSApp.windows.first(where: { $0.isVisible && $0.title != "" && $0.delegate === windows }) else { return }
+                window = shown
+            }
+            if let textSize { model.settings = PageSettings(textSize: textSize, wrapCode: false) }
             window.setContentSize(NSSize(width: width, height: height))
             let deadline = Date().addingTimeInterval(10)
             while model.phase != .ready, Date() < deadline { try? await Task.sleep(for: .milliseconds(50)) }
             model.outlineVisible = outline
+            model.outlineCompact = width < 680
+            model.outlinePopoverVisible = outline && model.outlineCompact
             if source { await model.toggleSource() }
             if let review { await model.reviewChanges(base: Int(review), target: model.snapshot?.revision) }
             if let find {
@@ -117,7 +139,8 @@ struct CheckRunner {
                 model.findQuery = find
                 await model.find()
             }
-            Self.emit(["window": window.windowNumber, "title": window.title, "width": width, "height": height, "pid": Int(getpid())], to: nil)
+            _ = try? await model.page.callJavaScript("await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); return true;", contentWorld: .world(name: "markdown-reader"))
+            Self.emit(["window": window.windowNumber, "title": window.title, "width": width, "height": height, "pid": Int(getpid()), "visibleWindows": NSApp.windows.filter(\.isVisible).map { $0.windowNumber }], to: nil)
         } catch {
             Self.emit(["ok": false, "error": String(describing: error)], to: nil)
             exit(1)
