@@ -48,6 +48,7 @@ struct Verification {
             checks.append(await context.launchOrigins(keep: &keep))
             checks.append(await context.recovery(keep: &keep))
             checks.append(await context.honestLibrary())
+            checks.append(await context.libraryContinuation())
         } catch {
             checks.append(Check(name: "setup", pass: false, detail: String(describing: error)))
         }
@@ -320,6 +321,37 @@ struct Context {
             return .init(name: "asset-scheme-containment", pass: pass, detail: "retained image decoded: \(loaded); symlink escape shown as unavailable: \(linkedShown); traversal, unknown token and other host refused: \(refused); same-size mutation refused: \(mutationRefused), qualified page failure: \(qualified); file swapped for a symlink refused: \(swapRefused)")
         } catch {
             return .init(name: "asset-scheme-containment", pass: false, detail: String(describing: error))
+        }
+    }
+
+    func libraryContinuation() async -> Verification.Check {
+        do {
+            let fixture = try VerifyStore(root: workspace.appendingPathComponent("continuing-library"))
+            let target = VerifyStore.newId()
+            try fixture.write(target, revision: 1, source: "# Content-only-token")
+            for _ in 0..<104 { try fixture.write(VerifyStore.newId(), revision: 1, source: "# Another document") }
+            let stateDirectory = workspace.appendingPathComponent("library-reading-state")
+            let state = ReadingStateStore(directory: stateDirectory)
+            let model = LibraryModel(state: state, extraRoots: [fixture.root.path])
+            await model.reload()
+            let first = model.sections.first { $0.id.hasSuffix("|published") }
+            let bounded = first?.rows.count == 100 && first?.hasMore == true
+            if let id = first?.id { await model.loadMore(id) }
+            let complete = model.sections.first { $0.id.hasSuffix("|published") }
+            let reached = complete?.rows.count == 105 && complete?.hasMore == false
+            model.filter = target
+            model.sourceQuery = "content-only-token"
+            await model.searchNextSources()
+            let contentFound = model.sections.contains { section in model.visibleRows(section).contains { $0.record?.id == target } }
+            let other = ReadingStateStore(directory: stateDirectory)
+            other.noteOpened(fixture.reference(target), title: "Read elsewhere")
+            let save = await other.flush(timeout: 2)
+            await model.reload()
+            let shared = save == .saved && model.sections.first?.rows.contains(where: { $0.title == "Read elsewhere" }) == true
+            return .init(name: "library-continuation-and-shared-recents", pass: bounded && reached && contentFound && shared,
+                         detail: "bounded first page: \(bounded); next page reached remaining documents: \(reached); separate content search: \(contentFound); another reader's saved recent refreshed: \(shared)")
+        } catch {
+            return .init(name: "library-continuation-and-shared-recents", pass: false, detail: String(describing: error))
         }
     }
 

@@ -61,6 +61,11 @@ public struct LoadedRevision: Sendable {
 public struct ListingIssue: Sendable, Equatable {
     public var document: String
     public var reason: String
+
+    public init(document: String, reason: String) {
+        self.document = document
+        self.reason = reason
+    }
 }
 
 public struct DocumentListing: Sendable {
@@ -164,21 +169,28 @@ public struct DirectoryStore: DocumentStore {
         return (numbers, lowest > 1)
     }
 
+    /// Reads metadata only, without reading or searching source content.
+    public func revisionMetadata(_ id: String, revision number: Int) throws -> RevisionRecord {
+        let pointer = try document(id)
+        guard number >= 1, number <= pointer.revision else { throw StoreError.notFound("\(id) revision \(number)") }
+        let directory = try documentDirectory(id).appendingPathComponent("revisions/\(number)")
+        try requireCanonical(directory.path)
+        let data = try FileAccess.readRegularFile(directory.appendingPathComponent("revision.json"), limit: Limits.recordBytes, missing: .notFound("\(id) revision \(number)"))
+        let record: RevisionRecord
+        do { record = try JSONDecoder().decode(RevisionRecord.self, from: data) }
+        catch { throw StoreError.unreadable("revision.json of \(id)/\(number): \(error.localizedDescription)") }
+        guard record.version == StoreFormat.version else { throw StoreError.incompatibleVersion(record.version) }
+        guard record.document == id, record.revision == number else { throw StoreError.unreadable("revision.json of \(id)/\(number) names another revision") }
+        return record
+    }
+
     public func loadRevision(_ id: String, revision: Int? = nil) throws -> LoadedRevision {
         let document = try document(id)
         let number = revision ?? document.revision
         guard number >= 1, number <= document.revision else { throw StoreError.notFound("\(id) revision \(number)") }
         let directory = try documentDirectory(id).appendingPathComponent("revisions").appendingPathComponent(String(number))
         try requireCanonical(directory.path)
-        let recordData = try FileAccess.readRegularFile(directory.appendingPathComponent("revision.json"), limit: Limits.recordBytes, missing: .notFound("\(id) revision \(number)"))
-        let record: RevisionRecord
-        do {
-            record = try JSONDecoder().decode(RevisionRecord.self, from: recordData)
-        } catch {
-            throw StoreError.unreadable("revision.json of \(id)/\(number): \(error.localizedDescription)")
-        }
-        guard record.version == StoreFormat.version else { throw StoreError.incompatibleVersion(record.version) }
-        guard record.document == id, record.revision == number else { throw StoreError.unreadable("revision.json of \(id)/\(number) names another revision") }
+        let record = try revisionMetadata(id, revision: number)
         let sourceData = try FileAccess.readRegularFile(directory.appendingPathComponent("source.md"), limit: Limits.sourceBytes, missing: .notFound("\(id) revision \(number) source"))
         guard Digest.sha256(sourceData) == record.digest, sourceData.count == record.bytes else { throw StoreError.digestMismatch }
         guard let source = String(data: sourceData, encoding: .utf8) else { throw StoreError.notUTF8 }
@@ -200,47 +212,7 @@ public struct DirectoryStore: DocumentStore {
     }
 
     func list(_ collection: StoreCollection, scanLimit: Int) throws -> DocumentListing {
-        var documents: [DocumentRecord] = []
-        var unreadable = 0
-        let path = canonicalRoot + "/" + collection.directory
-        try requireCanonical(path)
-        guard let directory = opendir(path) else {
-            let code = errno
-            guard code == ENOENT else { throw StoreError.unreadable("\(collection.directory): \(String(cString: strerror(code)))") }
-            return DocumentListing(documents: [], truncated: false, unreadable: 0, absent: true)
-        }
-        defer { closedir(directory) }
-        var scanned = 0
-        var truncated = false
-        var issues: [ListingIssue] = []
-        var failure: String?
-        while true {
-            errno = 0
-            guard let entry = readdir(directory) else {
-                if errno != 0 { failure = "\(collection.directory): \(String(cString: strerror(errno)))" }
-                break
-            }
-            let name = withUnsafeBytes(of: entry.pointee.d_name) { bytes in
-                String(decoding: bytes.prefix(Int(entry.pointee.d_namlen)), as: UTF8.self)
-            }
-            if name == "." || name == ".." { continue }
-            if scanned == scanLimit {
-                truncated = true
-                break
-            }
-            scanned += 1
-            guard Identifiers.isDocumentId(name) else { continue }
-            do {
-                let record = try document(name)
-                guard record.kind.collection == collection else { throw StoreError.unreadable("record belongs to another collection") }
-                documents.append(record)
-            } catch {
-                unreadable += 1
-                if issues.count < 8 { issues.append(ListingIssue(document: name, reason: String(describing: error))) }
-            }
-        }
-        documents.sort { $0.updatedAt > $1.updatedAt }
-        return DocumentListing(documents: documents, truncated: truncated, unreadable: unreadable, scanned: scanned, issues: issues, failure: failure)
+        try CollectionScan(store: self, collection: collection).next(limit: scanLimit)
     }
 
     /// Refuses a path below the store root that is reached through a symbolic link.

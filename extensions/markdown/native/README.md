@@ -142,6 +142,24 @@ Foundation directly.
   unless a load is pending. The last explicit open supersedes pending loads, even when it names
   the revision already on screen. A reopen after closing returns to the saved reading position.
 
+## Library retrieval
+
+The library reads a bounded page from each collection and offers **Read Next Documents** while
+entries remain. It keeps one directory cursor per collection until reload. Rows are newest among
+scanned rows, not a promise of the newest documents in the store. Directory changes do not form a
+frozen snapshot; reload starts a new scan. Scans retain usable rows and name record omissions and
+read failures. The library reloads shared recents and known store folders before each scan.
+
+Metadata selection filters scanned title/ID, kind, source path or workspace, and the UTC update
+date. Missing source metadata does not remove an otherwise usable row; those rows report that
+qualification. Date fields accept `YYYY-MM-DD` and reject invalid ranges.
+
+Source-content search is a separate explicit action over loaded rows under the metadata selection.
+Each action checks up to 20 exact retained sources and reads at most 8 MiB. Repeated actions continue
+through unchecked sources. Its checked, matched and unavailable totals do not claim coverage of
+unscanned documents; read more directory entries to reach them. Reload clears source-search
+results. No derived index or document mutation is involved.
+
 ## Reading
 
 The outline uses a sidebar from 680 points width and a native popover below it. The same
