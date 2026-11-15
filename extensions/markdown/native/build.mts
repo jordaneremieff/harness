@@ -32,6 +32,8 @@ import { readSettings } from "../settings.ts";
 
 /** Version of the contract between openers and the app: open requests, store format, tool output. */
 export const BUILD_CONTRACT = 1;
+/** Version of the pinned open-request input accepted by native pane mode. */
+export const PANE_OPEN_REQUEST = 1;
 export const BUNDLE_ID = "local.harness.markdown-reader";
 export const APP_NAME = "Markdown Reader.app";
 
@@ -243,6 +245,7 @@ function main(): void {
 			contract: BUILD_CONTRACT,
 			pane: PANE_MODE,
 			paneOpen: PANE_OPEN,
+			paneOpenRequest: PANE_OPEN_REQUEST,
 			sourceDigest: digest,
 			builtAt: new Date().toISOString(),
 			swift: swiftVersion,

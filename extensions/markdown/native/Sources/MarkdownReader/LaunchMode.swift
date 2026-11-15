@@ -4,7 +4,12 @@ enum LaunchMode {
     case application
     /// Shows one stored document in a reader window over the terminal pane that runs the
     /// program, for as long as the pane and the reader stay open.
-    case pane(store: String, document: String)
+    case pane(PaneTarget)
+
+    enum PaneTarget: Sendable {
+        case document(store: String, document: String)
+        case request(String)
+    }
     /// Renders one document into a PNG image of the page. `review` names the revision to compare
     /// the document's revision with (`previous` for the one before it); the image then shows the
     /// comparison.
@@ -55,10 +60,13 @@ enum LaunchMode {
         }
         switch first {
         case "--pane":
-            guard let store = options["store"], positional.count == 1, let document = positional.first else {
-                return .usage("--pane --store <store directory> <document ID>")
+            if options.count == 1, let store = options["store"], positional.count == 1, let document = positional.first {
+                return .pane(.document(store: store, document: document))
             }
-            return .pane(store: store, document: document)
+            if options.isEmpty, positional.count == 1, let request = positional.first, !request.hasPrefix("--") {
+                return .pane(.request(request))
+            }
+            return .usage("--pane <open request.json> | --pane --store <store directory> <document ID>")
         case "--export-image":
             guard let output = options["out"], let input = positional.first else {
                 return .usage("--export-image --out <image.png> [--width 900] [--max-height 6000] [--appearance light|dark] [--text-size n] [--review previous|n] <file.md | open request>")

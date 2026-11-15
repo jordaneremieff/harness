@@ -47,7 +47,7 @@ if that restoration also fails, the error reports both failures and the previous
 The bundle carries `Contents/Resources/build.json`:
 
 ```json
-{"contract": 1, "pane": 1, "paneOpen": 1, "sourceDigest": "sha256:…", "builtAt": "…", "swift": "…",
+{"contract": 1, "pane": 1, "paneOpen": 1, "paneOpenRequest": 1, "sourceDigest": "sha256:…", "builtAt": "…", "swift": "…",
  "store": "/…/markdown", "terminalOrigin": {"helper": "terminal-origin.ts", "node": "/opt/homebrew/bin/node"}}
 ```
 
@@ -56,7 +56,9 @@ a missing or incompatible build. `contract` covers open requests, the store form
 parser output. `pane` is the version of [pane mode](#pane-mode); the publication tool offers a
 pane command only when it matches, and otherwise names this build command. `paneOpen` is the
 version of the pane's `:open` input; the publication tool names that input only when it
-matches, and an older Pi process that does not know it still offers the pane command. Programs that only
+matches. `paneOpenRequest` is the version of the pane's pinned open-request input. An opener
+must require `paneOpenRequest` 1, `pane` 1 and `contract` 1 before it uses that input; a missing or
+incompatible marker means unavailable, never an unpinned document open. Programs that only
 open documents ignore it, so Pi processes that started before a rebuild keep opening documents
 with the new build. An unknown `--` option ends the app with a usage error, so a caller that
 expects a newer mode never starts the library application instead. `store` is the value of the `markdown.dir` setting at build
@@ -455,6 +457,15 @@ that pane for as long as the reader stays open. Standard input and output must b
 The process checks the store and the document first; a wrong argument ends it with one line on
 standard error and a nonzero status, before the terminal changes.
 
+`Contents/MacOS/MarkdownReader --pane <open request.json>` accepts the same existing request
+envelope as an ordinary open: `<store>/opens/<name>.json`. It validates the store identity,
+document, exact revision and digest through the ordinary intake, then removes only the request
+file that it read. A refused request stays in place. The model checks the pinned digest again
+when it loads the page, and receives the request's launch origin. A request for an older revision
+shows that revision and announces a newer pointer; it does not automatically follow it. An
+explicit `:open <document ID>` selects latest and follows revisions, as with the store/document
+input. Neither input creates or selects a terminal pane or tab; the caller owns that placement.
+
 The process uses accessory activation: no Dock icon and no visible menu bar. Its menu supplies
 the key equivalents of the reader (copy, select all, find, text size, outline, source, code
 wrapping, revisions, details and close) for its one document; it opens no other document, no
@@ -539,7 +550,8 @@ controls, a separate revision/mode status line, and More Actions for secondary c
 The outline opens in a popover in narrow panes. More Actions includes a control that returns
 the keyboard to the host. Escape outside a text field first ends an image inspection or a
 comparison that lies over the document, and otherwise returns the keyboard to the host. Pane
-mode follows new revisions: the model's `followsLatest`
+mode follows new revisions for the store/document input or after an explicit `:open`; a pinned
+request stays at its selected revision. The model's `followsLatest`
 loads a revision as soon as the pointer watcher sees it, with the reader's block, heading and
 ratio restoration, and a failed load keeps the shown revision with a warning. The watcher
 starts before the first read, and after every load that settles, whether it opened, refreshed,

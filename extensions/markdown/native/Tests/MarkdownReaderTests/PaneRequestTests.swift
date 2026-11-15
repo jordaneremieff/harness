@@ -1,0 +1,98 @@
+import Testing
+import CryptoKit
+@testable import MarkdownCore
+@testable import MarkdownReader
+
+struct PaneLaunchInput {
+    @Test func acceptsTheExistingDocumentAndPinnedRequestInputs() {
+        guard case .pane(.document(let store, let document)) = LaunchMode.parse(["--pane", "--store", "/store", "md-0123456789abcdef0123"]) else {
+            Issue.record("The store/document input was not parsed")
+            return
+        }
+        #expect(store == "/store" && document == "md-0123456789abcdef0123")
+        let request = "/store/opens/selected.json"
+        let mode = LaunchMode.parse(["--pane", request])
+        guard case .pane(.request(let path)) = mode else {
+            Issue.record("The pinned request input was not parsed")
+            return
+        }
+        #expect(path == request && mode.isAccessory && !mode.isCheck)
+        for words in [["--pane"], ["--pane", "--store"], ["--pane", "a.json", "b.json"], ["--pane", "--unknown", "a.json"]] {
+            guard case .usage = LaunchMode.parse(words) else {
+                Issue.record("Ambiguous pane input was accepted: \(words)")
+                continue
+            }
+        }
+    }
+}
+
+@Suite(.serialized) struct PanePinnedRequest {
+    private func write(_ value: Any, to url: URL) throws {
+        try JSONSerialization.data(withJSONObject: value).write(to: url, options: .atomic)
+    }
+
+    private func newerPointer(_ run: PaneRun) throws {
+        let store = URL(fileURLWithPath: run.store)
+        let revision = store.appendingPathComponent("documents/\(run.document)/revisions/2")
+        try FileManager.default.createDirectory(at: revision, withIntermediateDirectories: true)
+        let source = Data("# New pointer\n\nThe current revision is newer than the selected revision.\n".utf8)
+        let digest = "sha256:" + SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined()
+        try source.write(to: revision.appendingPathComponent("source.md"))
+        let date = "2026-11-15T00:00:00Z"
+        try write(["version": 1, "document": run.document, "revision": 2, "title": "New pointer", "createdAt": date,
+                   "digest": digest, "bytes": source.count, "completeness": ["state": "complete"]],
+                  to: revision.appendingPathComponent("revision.json"))
+        try write(["version": 1, "id": run.document, "kind": "published", "title": "New pointer", "createdAt": date,
+                   "updatedAt": date, "revision": 2, "digest": digest, "bytes": source.count],
+                  to: store.appendingPathComponent("documents/\(run.document)/document.json"))
+    }
+
+    private func request(_ run: PaneRun, invalid: String? = nil) throws -> URL {
+        let store = try DirectoryStore(root: URL(fileURLWithPath: run.store))
+        let old = try store.loadRevision(run.document, revision: 1)
+        let request = OpenRequest(storeId: invalid == "store" ? String(repeating: "f", count: 32) : store.storeId,
+                                  document: run.document, revision: invalid == "revision" ? 9 : 1,
+                                  digest: invalid == "digest" ? "sha256:" + String(repeating: "0", count: 64) : old.record.digest)
+        let opens = store.root.appendingPathComponent("opens")
+        try FileManager.default.createDirectory(at: opens, withIntermediateDirectories: true)
+        let file = opens.appendingPathComponent("selected.json")
+        try JSONEncoder().encode(request).write(to: file)
+        return file
+    }
+
+    private func type(_ text: String, into process: PaneRun.Process) {
+        _ = text.withCString { Darwin.write(process.primary, $0, strlen($0)) }
+    }
+
+    @Test func aPinnedRequestShowsTheOlderRevisionUntilAnExplicitOpenSelectsLatest() throws {
+        let run = try PaneRun()
+        defer { run.remove() }
+        try newerPointer(run)
+        let file = try request(run)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        let process = try run.start(arguments: ["--pane", file.path])
+        defer { close(process.primary) }
+        #expect(process.read(until: "\(run.document) · revision 1; revision 2 is available", seconds: 15), "placeholder: \(process.text)")
+        #expect(!FileManager.default.fileExists(atPath: file.path), "only a validated request is consumed")
+        #expect(!process.read(until: "revision 2 of 2", seconds: 0.5), "a pinned open does not follow the newer pointer")
+        type(":open \(run.document)\r", into: process)
+        #expect(process.read(until: "\(run.document) · revision 2 of 2", seconds: 10))
+        #expect(process.read(until: "New pointer", seconds: 5))
+        type("q", into: process)
+        #expect(process.exit(within: 5).status == 0)
+    }
+
+    @Test(arguments: ["digest", "store", "revision"])
+    func anInvalidPinnedRequestIsNotConsumed(_ invalid: String) throws {
+        let run = try PaneRun()
+        defer { run.remove() }
+        try newerPointer(run)
+        let file = try request(run, invalid: invalid)
+        let process = try run.start(arguments: ["--pane", file.path])
+        defer { close(process.primary) }
+        #expect(process.exit(within: 10).status == 1)
+        #expect(process.text.contains("cannot be shown"))
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        #expect(!process.text.contains("\u{1B}[?1049h"), "refusal occurs before the terminal changes")
+    }
+}

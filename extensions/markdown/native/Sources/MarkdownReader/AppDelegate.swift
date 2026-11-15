@@ -54,8 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if case .pane(let store, let document) = mode {
-            startPane(store: store, document: document)
+        if case .pane(let target) = mode {
+            startPane(target)
             return
         }
         if mode.isCheck {
@@ -155,27 +155,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     /// Pane mode: checks the store and the document before the terminal changes, so that a wrong
     /// argument ends with one error line and a nonzero status in the pane.
-    private func startPane(store root: String, document: String) {
+    private func startPane(_ target: LaunchMode.PaneTarget) {
         guard let terminal = PaneTerminal() else {
             FileHandle.standardError.write(Data("Markdown Reader: --pane needs a terminal on standard input and output.\n".utf8))
             exit(2)
         }
-        let reference: DocumentReference
-        do {
-            let store = try DirectoryStore(root: URL(fileURLWithPath: root))
-            _ = try store.document(document)
-            reference = .stored(root: FileAccess.canonicalPath(root), storeId: store.storeId, document: document)
-        } catch {
-            // The document identifier and the error text come from the command line and the
-            // store; neither may control the terminal.
-            FileHandle.standardError.write(Data(TerminalText.line("Markdown Reader: \(document) cannot be shown: \(error)").utf8))
-            exit(1)
+        let label: String
+        switch target {
+        case .document(_, let document): label = document
+        case .request(let path): label = URL(fileURLWithPath: path).lastPathComponent
         }
-        let model = ReaderModel(reference: reference, platform: windows.platform, state: windows.state)
-        let host = PaneHost(model: model, platform: windows.platform, state: windows.state, terminal: terminal)
-        host.onModelChange = { [weak self] previous, next in self?.windows.replace(previous, with: next) }
-        paneHost = host
-        windows.adopt(host.start(), model: model)
+        Task {
+            let outcome = await Task.detached { () -> Result<(DocumentReference, Int?, String?, LaunchOrigin?), OpenIntakeError> in
+                do {
+                    switch target {
+                    case .document(let root, let document):
+                        let store = try DirectoryStore(root: URL(fileURLWithPath: root))
+                        _ = try store.document(document)
+                        return .success((.stored(root: FileAccess.canonicalPath(root), storeId: store.storeId, document: document), nil, nil, nil))
+                    case .request(let path):
+                        let target = try OpenIntake.classify(URL(fileURLWithPath: path))
+                        guard case .stored(let store, let request, let file) = target else { throw OpenIntakeError.notAnOpenRequest }
+                        _ = try OpenIntake.accept(store, request, requestFile: file)
+                        return .success((target.reference, request.revision, request.digest, request.launchOrigin))
+                    }
+                } catch let error as OpenIntakeError {
+                    return .failure(error)
+                } catch let error as StoreError {
+                    return .failure(.store(error))
+                } catch {
+                    return .failure(.invalidRequest(error.localizedDescription))
+                }
+            }.value
+            switch outcome {
+            case .success(let (reference, revision, digest, origin)):
+                let model = ReaderModel(reference: reference, platform: windows.platform, state: windows.state)
+                let host = PaneHost(model: model, platform: windows.platform, state: windows.state, terminal: terminal)
+                host.onModelChange = { [weak self] previous, next in self?.windows.replace(previous, with: next) }
+                paneHost = host
+                windows.adopt(host.start(revision: revision, digest: digest, origin: origin), model: model)
+            case .failure(let error):
+                // Command and store text must not control the terminal.
+                FileHandle.standardError.write(Data(TerminalText.line("Markdown Reader: \(label) cannot be shown: \(error)").utf8))
+                exit(1)
+            }
+        }
     }
 
     private func showError(_ message: String, detail: String) {

@@ -47,8 +47,8 @@ final class PaneHost: NSObject, NSWindowDelegate {
         self.terminal = terminal
     }
 
-    func start() -> NSWindow {
-        model.followsLatest = true
+    func start(revision: Int? = nil, digest: String? = nil, origin: LaunchOrigin? = nil) -> NSWindow {
+        model.followsLatest = revision == nil
         window = makeWindow()
         terminal.enter()
         terminal.onInput = { [weak self] events in self?.input(events) }
@@ -68,7 +68,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated { self?.order() }
         })
         observePhase()
-        Task { await model.open(revision: nil, origin: nil) }
+        Task { await model.open(revision: revision, digest: digest, origin: origin) }
         return window
     }
 
@@ -200,6 +200,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
         guard case .stored(let root, let storeId, let shown) = model.reference else { return }
         if document == shown {
             message = nil
+            model.followsLatest = true
             Task { await model.refresh() }
             return
         }
