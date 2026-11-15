@@ -404,6 +404,13 @@ for (const [name, source] of [
 	});
 }
 
+test("syntax analysis does not resolve imports or type-check names", () => {
+	const source = 'import { value } from "./missing.ts"; export const result: Missing = value;';
+	const analysis = analyseSource("/fixture/extensions/example/runtime.ts", source);
+	assert.deepEqual(analysis.syntaxErrors, []);
+	assert.deepEqual(analysis.specifiers, ["./missing.ts"]);
+});
+
 test("syntax failure reaches the CLI gate", () => {
 	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
 	try {

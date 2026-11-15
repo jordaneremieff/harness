@@ -75,11 +75,12 @@ export interface SourceInventory {
 
 /** One source text, syntax result, module specifiers and configuration reads for all audits. */
 export function analyseSource(path: string, text: string): SourceAnalysis {
+	const file = parseSource(text);
 	return {
 		path,
 		text,
-		syntaxErrors: syntaxErrors(text),
-		specifiers: literalSpecifiers(text),
+		syntaxErrors: syntaxErrors(file),
+		specifiers: sourceSpecifiers(file),
 		environmentReads: environmentReads(text),
 	};
 }
@@ -233,18 +234,31 @@ function literalArgument(node: ts.Expression): ts.Expression {
 	return ts.isArrayLiteralExpression(value) && value.elements.length === 1 ? unwrapped(value.elements[0]) : value;
 }
 
-function syntaxErrors(source: string): readonly ts.Diagnostic[] {
-	return (
-		ts.transpileModule(source, {
-			fileName: "source.ts",
-			reportDiagnostics: true,
-			compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.Preserve },
-		}).diagnostics ?? []
-	).filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+function parseSource(source: string): ts.SourceFile {
+	return ts.createSourceFile("source.ts", source, ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
+}
+
+function syntaxErrors(file: ts.SourceFile): readonly ts.Diagnostic[] {
+	const options: ts.CompilerOptions = {
+		target: ts.ScriptTarget.ESNext,
+		module: ts.ModuleKind.Preserve,
+		noLib: true,
+		noResolve: true,
+	};
+	const host = ts.createCompilerHost(options);
+	host.getSourceFile = (name) => (name === file.fileName ? file : undefined);
+	// Syntax checks need neither emitted JavaScript nor imported files or library declarations.
+	return ts
+		.createProgram([file.fileName], options, host)
+		.getSyntacticDiagnostics(file)
+		.filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
 }
 
 export function literalSpecifiers(source: string): string[] {
-	const file = ts.createSourceFile("source.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	return sourceSpecifiers(parseSource(source));
+}
+
+function sourceSpecifiers(file: ts.SourceFile): string[] {
 	const specifiers: string[] = [];
 	const { factories, readers } = requireBindings(file);
 	const add = (node: ts.Node | undefined) => {
