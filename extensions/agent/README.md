@@ -3100,7 +3100,9 @@ state; native conditional persistence does not make those operations transaction
 
 Each OAuth network request has a 15-second deadline. An initiating request's
 abort does not cancel an admitted refresh. Native close awaits in-flight refresh
-persistence, independently of its transport shutdown deadline. A refresh still
+persistence and every credential-file read that started before it, including
+the reread after a refresh, independently of its transport shutdown deadline.
+Close resolves only after those reads release the credential lock. A refresh still
 waiting for ownership, the credential reread or OAuth discovery does not send
 a token request after close.
 

@@ -191,6 +191,26 @@ it("drains a completed remote rotation before close resolves", async (t) => {
 	assert.deepEqual(f.read()[key].tokens, rotated);
 });
 
+it("drains the credential reread after a refresh before close resolves", async (t) => {
+	const entered = deferred(); const release = deferred(); t.after(release.resolve);
+	let operations = 0; let closed = false; const late: number[] = [];
+	const fileLock = new McpCredentialFileLock();
+	const lock: CredentialFileLock = { async withFileLock(path, fn) {
+		const operation = ++operations;
+		if (operation === 3) { entered.resolve(); await release.promise; }
+		try { return await fileLock.withFileLock(path, fn); } finally { if (closed) late.push(operation); }
+	} };
+	const f = fixture(t, grant(), lock);
+	refreshFetch(t, async () => Response.json(rotated));
+	const token = provider(f.owner).token(); await entered.promise;
+	const close = f.owner.close().then(() => { closed = true; });
+	release.resolve(); await close;
+	const completedAtClose = operations;
+	assert.equal(await token, rotated.access_token);
+	assert.deepEqual(late, []); assert.equal(completedAtClose, 4);
+	assert.equal(existsSync(`${f.path}.lock`), false);
+});
+
 it("does not exchange after close while waiting for refresh ownership", async (t) => {
 	const held = deferred(); const release = deferred();
 	const locks = controlledLocks();

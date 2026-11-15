@@ -1120,6 +1120,7 @@ it("awaits refresh persistence on native execution close", { timeout: 30000 }, a
 	let closed = false; const closing = execution.close().then(() => { closed = true; });
 	await Promise.resolve(); assert.equal(closed, false);
 	rmdirSync(`${path}.lock`); await closing;
+	assert.equal(existsSync(`${path}.lock`), false);
 	assert.equal(JSON.parse(readFileSync(path, "utf8"))[key].tokens.refresh_token, "synthetic-rotated");
 });
 

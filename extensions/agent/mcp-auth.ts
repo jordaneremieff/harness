@@ -178,7 +178,7 @@ export interface NativeMcpAuthProvider extends AuthProvider {
 /** One execution's refresh lifetime; the lock owner is shared across executions. */
 export class NativeMcpAuth {
 	private readonly file: CredentialFile;
-	private readonly pending = new Set<Promise<void>>();
+	private readonly pending = new Set<Promise<unknown>>();
 	private closed = false;
 
 	private readonly refreshLock: RefreshLock;
@@ -186,6 +186,14 @@ export class NativeMcpAuth {
 	constructor(agentDir: string, refreshLock: RefreshLock = new McpRefreshLock(agentDir), fileLock: CredentialFileLock = new McpCredentialFileLock()) {
 		this.file = new CredentialFile(resolve(agentDir, "mcp-auth.json"), fileLock);
 		this.refreshLock = refreshLock;
+	}
+
+	/** Close drains every credential operation that started before it, including a token read's reread after refresh. */
+	private track<T>(work: Promise<T>): Promise<T> {
+		this.pending.add(work);
+		const done = () => { this.pending.delete(work); };
+		void work.then(done, done);
+		return work;
 	}
 
 	private assertAdmission(lease?: RefreshLease): void {
@@ -200,7 +208,7 @@ export class NativeMcpAuth {
 		const refresh = (rejected: string | undefined, fetch: McpFetch = globalThis.fetch, challenge?: OAuthChallenge): Promise<void> => {
 			if (this.closed) return Promise.reject(new Error("MCP authentication is closed"));
 			if (refreshing) return refreshing;
-			refreshing = this.refreshLock.withRefreshLock(key, async (lease) => {
+			refreshing = this.track(this.refreshLock.withRefreshLock(key, async (lease) => {
 				this.assertAdmission(lease);
 				const start = await this.file.load(key, url);
 				this.assertAdmission(lease);
@@ -208,20 +216,21 @@ export class NativeMcpAuth {
 				if (start.state.tokens.access_token !== rejected) return;
 				if (!start.state.tokens.refresh_token) throw new McpOAuthAuthorizationRequiredError();
 				await this.exchange(key, url, start, config.oauth ?? {}, resolveSecret, fetch, challenge, lease);
-			}).finally(() => { if (refreshing) this.pending.delete(refreshing); refreshing = undefined; });
-			this.pending.add(refreshing);
+			}).finally(() => { refreshing = undefined; }));
 			return refreshing;
 		};
 		return {
-			token: async () => {
-				if (this.closed) throw new Error("MCP authentication is closed");
-				await refreshing?.catch(() => undefined);
-				const state = (await this.file.load(key, url))?.state;
-				if (state?.tokensExpireAt !== undefined && state.tokensExpireAt <= Date.now() + 30_000) {
-					await refresh(state.tokens?.access_token).catch(() => undefined);
-					return (await this.file.load(key, url))?.state.tokens?.access_token;
-				}
-				return state?.tokens?.access_token;
+			token: () => {
+				if (this.closed) return Promise.reject(new Error("MCP authentication is closed"));
+				return this.track((async () => {
+					await refreshing?.catch(() => undefined);
+					const state = (await this.file.load(key, url))?.state;
+					if (state?.tokensExpireAt !== undefined && state.tokensExpireAt <= Date.now() + 30_000) {
+						await refresh(state.tokens?.access_token).catch(() => undefined);
+						return (await this.file.load(key, url))?.state.tokens?.access_token;
+					}
+					return state?.tokens?.access_token;
+				})());
 			},
 			onUnauthorized: async (context) => {
 				const challenge = parseWwwAuthenticate(context.response.headers.get("www-authenticate"));
