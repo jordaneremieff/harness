@@ -13,6 +13,7 @@ import type { SearchPage } from "./search.ts";
 import { appendEntry, makeEntry } from "./store.ts";
 
 interface ClipboardDetails {
+	sourceId: string;
 	id: string;
 	archived?: boolean;
 	count: number;
@@ -342,6 +343,55 @@ describe("clipboard entrypoint", () => {
 		assert.equal(result.details.nextOffset, 8000);
 		assert.ok(Buffer.byteLength(result.content[0].text, "utf8") <= 50 * 1024);
 		assert.match(result.content[0].text, /offset 8000/);
+	});
+
+	it("binds clipboard continuation to the raw content and recovers with a fresh read", async () => {
+		const paste = registry().tools.get("clipboard_paste");
+		await writeFile(clipboardFile, "AAAA🙂\x1bBBBB");
+		const first = await execute(paste, { max_chars: 4 });
+		const sourceId = first.details.sourceId;
+		assert.match(sourceId, /^[a-f0-9]{64}$/);
+		assert.ok(first.content[0].text.includes(`sourceId "${sourceId}"`));
+		const next = await execute(paste, { offset: first.details.nextOffset, sourceId });
+		assert.equal(next.details.sourceId, sourceId);
+		assert.match(next.content[0].text, /🙂\\x1bBBBB/);
+		assert.equal(next.details.truncated, false);
+		await assert.rejects(execute(paste, { offset: 4 }), /requires sourceId/);
+		await assert.rejects(execute(paste, { sourceId: "invalid" }), /SHA-256/);
+		await writeFile(clipboardFile, "xxxx🙂\x1byyyy");
+		await assert.rejects(execute(paste, { offset: 4, sourceId }), /content changed.*Restart at offset 0/);
+		const fresh = await execute(paste, {});
+		assert.notEqual(fresh.details.sourceId, sourceId);
+		assert.match(fresh.content[0].text, /yyyy/);
+		await writeFile(clipboardFile, "");
+		await assert.rejects(execute(paste, { offset: 4, sourceId }), /content changed/);
+		const empty = await execute(paste, {});
+		assert.match(empty.content[0].text, /Clipboard is empty/);
+		assert.match(empty.details.sourceId, /^[a-f0-9]{64}$/);
+	});
+
+	it("binds archive continuation while preserving initial offset jumps", async () => {
+		const get = registry().tools.get("clipboard_get");
+		const id = "source-bound-pages";
+		const date = "2026-01-02";
+		assert.equal(await appendEntry(archiveDir, makeEntry("🙂\x1bAAAA tail", undefined, new Date(`${date}T12:00:00Z`), id)), null);
+		const first = await execute(get, { id, date, max_chars: 2 });
+		const sourceId = first.details.sourceId;
+		assert.ok(first.content[0].text.includes(`date "${date}", offset 2 and sourceId "${sourceId}"`));
+		const next = await execute(get, { id, date, offset: first.details.nextOffset, sourceId });
+		assert.match(next.content[0].text, /AAAA tail/);
+		assert.equal(next.details.sourceId, sourceId);
+		const jump = await execute(get, { id, date, offset: 7 });
+		assert.match(jump.content[0].text, /tail/);
+		assert.equal(jump.details.sourceId, sourceId);
+		assert.equal(await appendEntry(archiveDir, makeEntry("🙂\x1bxxxx tail", undefined, new Date(`${date}T12:00:00Z`), id)), null);
+		await assert.rejects(execute(get, { id, date, offset: 2, sourceId }), /content changed/);
+		await assert.rejects(execute(get, { id, date, sourceId }), /content changed/);
+		const fresh = await execute(get, { id, date });
+		assert.notEqual(fresh.details.sourceId, sourceId);
+		assert.match(fresh.content[0].text, /xxxx tail/);
+		assert.equal(await appendEntry(archiveDir, makeEntry("", undefined, new Date(`${date}T12:00:00Z`), id)), null);
+		await assert.rejects(execute(get, { id, date, offset: 2, sourceId }), /content changed/);
 	});
 
 	it("keeps query output, stable ids and continuation intact under hostile text and maximum ids", async () => {

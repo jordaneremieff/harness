@@ -1,5 +1,6 @@
 /** Execute the registered tools through an isolated ordinary Pi session and a controlled provider. */
 import assert from "node:assert/strict";
+import { appendFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -99,6 +100,13 @@ test("native clipboard_list discovery flows through get and restore without the 
 			const get = yield { name: "clipboard_get", args: { id: selected.id, date: selected.date, max_chars: 100 } };
 			assert.equal(get.isError, false);
 			assert.ok(JSON.stringify(get.content).includes('date \\"2026-01-02\\"'));
+			const sourceId = JSON.stringify(get.content).match(/sourceId: ([a-f0-9]{64})/)?.[1];
+			assert.ok(sourceId, "the model receives source identity in text, not only display details");
+			const continued = yield {
+				name: "clipboard_get",
+				args: { id: selected.id, date: selected.date, offset: 100, sourceId, max_chars: 100 },
+			};
+			assert.equal(continued.isError, false);
 			const tail = yield {
 				name: "clipboard_get",
 				args: { id: selected.id, date: selected.date, offset: selected.match.offset },
@@ -107,6 +115,17 @@ test("native clipboard_list discovery flows through get and restore without the 
 			assert.match(JSON.stringify(tail.content), /rollback instructions/);
 			const restored = yield { name: "clipboard_restore", args: { id: selected.id, date: selected.date } };
 			assert.equal(restored.isError, false);
+			appendFileSync(join(archive, `${selected.date}.jsonl`), `\n${JSON.stringify(makeEntry("changed archive body", undefined, new Date("2026-01-03T00:00:00Z"), selected.id))}\n`);
+			const stale = yield {
+				name: "clipboard_get",
+				args: { id: selected.id, date: selected.date, offset: 100, sourceId },
+			};
+			assert.equal(stale.isError, true);
+			assert.match(JSON.stringify(stale.content), /content changed/);
+			assert.ok(!JSON.stringify(stale.content).includes("changed archive body"));
+			const fresh = yield { name: "clipboard_get", args: { id: selected.id, date: selected.date } };
+			assert.equal(fresh.isError, false);
+			assert.match(JSON.stringify(fresh.content), /changed archive body/);
 			const badCursor = yield list({ query: "rollback instructions", cursor: "invalid" });
 			assert.equal(badCursor.isError, true);
 			const badQuery = yield list({ query: "" });

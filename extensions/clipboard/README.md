@@ -19,7 +19,7 @@ the payload contains no execution functions. The renderers live in `display.ts`,
 
 Each tool is one operation; there is no action multiplexer, and the model-facing
 API has no transient index addressing — stable ids are the only entry handle.
-`clipboard_paste` and `clipboard_get` return at most 8,000 Unicode characters per page, subject to the stricter 50 KiB and 2000-line output bounds. A `nextOffset` tells the caller how to continue.
+`clipboard_paste` and `clipboard_get` return at most 8,000 Unicode characters per page, subject to the stricter 50 KiB and 2000-line output bounds. A `nextOffset` tells the caller where to continue. Each read returns a SHA-256 `sourceId` for its complete raw content in both text and details.
 
 ## Use
 
@@ -48,8 +48,17 @@ Call `clipboard_paste` only when you need the current clipboard:
 {"max_chars":8000}
 ```
 
-If a read returns `nextOffset`, pass it as `offset` to continue. Use
-`clipboard_list` to find archived text, then `clipboard_get` to inspect it
+If a read returns `nextOffset`, pass it as `offset` with the returned `sourceId`
+to continue. `clipboard_paste` requires `sourceId` for nonzero offsets.
+`clipboard_get` also accepts an initial offset without `sourceId`, so a search hit
+still opens directly at its content match. For later pages, preserve `sourceId`
+as well as the id and date. Either tool rejects a supplied `sourceId` when the
+raw content changes, including a change to empty content. Restart at offset 0
+without `sourceId`, and do not join old and new pages. This check reads current
+content; it does not retain a snapshot or prove when another application changed
+the clipboard. Identical raw content keeps the same `sourceId`.
+
+Use `clipboard_list` to find archived text, then `clipboard_get` to inspect it
 or `clipboard_restore` to write it back. Restore writes the clipboard only and
 adds no archive entry. Archive search alone does not
 access the clipboard.
@@ -128,7 +137,7 @@ Read or restore through the existing tools, preserving the returned date:
 ```
 
 Use `clipboard_get` to inspect the full text in pages. Its continuation advice
-preserves the date. Use `clipboard_restore` when a clipboard write is intended.
+preserves the date and the content's `sourceId`. Use `clipboard_restore` when a clipboard write is intended.
 Search and get do not read or write the system clipboard.
 
 ### Query semantics

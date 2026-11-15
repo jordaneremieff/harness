@@ -53,6 +53,10 @@ function assertNestedResults(message: ToolResultMessage | undefined, expectedCop
 	assert.match(nested.got, /seeded/u);
 	assert.match(nested.got, /offset 6/u);
 	assert.equal(nested.restored, expectedRestore);
+	assert.match(nested.continuedPaste, /body/u);
+	assert.match(nested.continuedGet, /body/u);
+	assert.equal(nested.stalePaste.rejected, true);
+	assert.match(nested.stalePaste.message, /content changed/u);
 	assert.deepEqual(
 		nested.failures.map((failure: { rejected: boolean }) => failure.rejected),
 		[true, true, true],
@@ -189,6 +193,18 @@ const pasted = await tools.clipboard_paste({ max_chars: 6 });
 const recent = await tools.clipboard_list({ limit: 10 });
 const searched = await tools.clipboard_list({ query: "seeded body" });
 const got = await tools.clipboard_get({ id: "seeded-entry", max_chars: 6 });
+const pasteSource = pasted.match(/sourceId: ([a-f0-9]{64})/)[1];
+const getSource = got.match(/sourceId: ([a-f0-9]{64})/)[1];
+const continuedPaste = await tools.clipboard_paste({ offset: 6, sourceId: pasteSource });
+const continuedGet = await tools.clipboard_get({ id: "seeded-entry", offset: 6, sourceId: getSource });
+await tools.clipboard_copy({ content: "newer body", archive: false });
+let stalePaste;
+try {
+  await tools.clipboard_paste({ offset: 6, sourceId: pasteSource });
+  stalePaste = { rejected: false };
+} catch (error) {
+  stalePaste = { rejected: true, message: error.message };
+}
 const restored = await tools.clipboard_restore({ id: "seeded-entry" });
 const failures = [];
 for (const args of [{ id: "absent" }, { id: "seeded-entry", offset: 100 }, {}]) {
@@ -199,7 +215,7 @@ for (const args of [{ id: "absent" }, { id: "seeded-entry", offset: 100 }, {}]) 
     failures.push({ rejected: true, message: error.message });
   }
 }
-text({ copied, pasted, recent, searched, got, restored, failures });
+text({ copied, pasted, recent, searched, got, restored, failures, continuedPaste, continuedGet, stalePaste });
 `,
 					}),
 					{ stopReason: "toolUse" },

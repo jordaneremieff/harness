@@ -1,5 +1,6 @@
 /** Shared clipboard tool contract and operations behind the ordinary and Durable entrypoints. */
 
+import { createHash } from "node:crypto";
 import { bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { pbCopy, pbPaste } from "./pb.ts";
 import { SEARCH_LIMITS, type SearchPage, searchEntries } from "./search.ts";
@@ -18,7 +19,7 @@ export const COPY_GUIDELINES: string[] = [
 	"If the operator asks to recover something previously copied, use clipboard_list then clipboard_restore; if they ask what is currently on the clipboard, use clipboard_paste.",
 ];
 export const PASTE_DESCRIPTION =
-	"Read the current macOS clipboard. Output is paged and capped; use offset from a truncated response to continue. Do not call speculatively.";
+	"Read the current macOS clipboard. Continue with the returned offset and sourceId; changed content requires a fresh read. Nonzero offsets require sourceId. Do not call speculatively.";
 export const PASTE_SNIPPET = "Read the current macOS clipboard contents";
 export const LIST_DESCRIPTION =
 	"List clipboard history, newest first, or find a literal query in full content and labels beyond recent previews. Query pages bound directory visits, files, records, bytes, and output. Repeat query/date with nextCursor even after an empty page; archive changes require restart. Returns stable ids for clipboard_get/clipboard_restore.";
@@ -27,7 +28,7 @@ export const LIST_GUIDELINES: string[] = [
 	"Use clipboard_list to find previously copied content. If only a phrase is known, pass query and follow nextCursor. Use the returned id/date with clipboard_get or clipboard_restore; confirm with get when archive content might have changed.",
 ];
 export const GET_DESCRIPTION =
-	"Read one archived clipboard entry by stable id from clipboard_list. Output is paged and capped; use offset from a truncated response to continue.";
+	"Read one archived clipboard entry by stable id from clipboard_list. Continue with the returned offset and sourceId to reject changed content. An initial search-offset jump needs no sourceId.";
 export const GET_SNIPPET = "Read one archived clipboard entry by stable id";
 export const RESTORE_DESCRIPTION =
 	"Copy one archived entry back to the macOS clipboard by stable id from clipboard_list. This writes the clipboard only; it adds no archive entry.";
@@ -59,7 +60,15 @@ export const CopyParams = obj({
 	),
 }, { open: true });
 
+const sourceIdParam = opt(str({
+	description: "SHA-256 sourceId from the previous read; pass unchanged with its nextOffset to reject changed content",
+	pattern: "^[a-f0-9]{64}$",
+	minLength: 64,
+	maxLength: 64,
+}));
+
 export const PasteParams = obj({
+	sourceId: sourceIdParam,
 	offset: opt(int({ description: "Unicode-character offset (default 0)", minimum: 0, default: 0 })),
 	max_chars: opt(
 		int({
@@ -93,6 +102,7 @@ export const ListParams = obj({
 }, { open: true });
 
 export const GetParams = obj({
+	sourceId: sourceIdParam,
 	id: str({ description: "Stable entry id from clipboard_list", minLength: 1, maxLength: 200 }),
 	date: opt(
 		str({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
@@ -290,38 +300,54 @@ export async function clipboardCopy(
 	};
 }
 
-export async function clipboardPaste(params: { offset?: number; max_chars?: number }, signal?: AbortSignal) {
+function checkSource(content: string, expected: string | undefined, tool: string): string {
+	if (expected !== undefined && !/^[a-f0-9]{64}$/.test(expected)) {
+		throw new Error(`${tool} sourceId must be the SHA-256 value from the previous read`);
+	}
+	const sourceId = createHash("sha256").update(content, "utf8").digest("hex");
+	if (expected !== undefined && expected !== sourceId) {
+		throw new Error(`${tool} content changed. Restart at offset 0 without sourceId; do not join the old and new pages.`);
+	}
+	return sourceId;
+}
+
+export async function clipboardPaste(params: { offset?: number; max_chars?: number; sourceId?: string }, signal?: AbortSignal) {
 	if (signal?.aborted) throw new Error("clipboard_paste cancelled");
+	const offset = params.offset ?? 0;
+	if (offset > 0 && params.sourceId === undefined) {
+		throw new Error("clipboard_paste requires sourceId with a nonzero offset. Restart at offset 0 to read the current clipboard.");
+	}
 	let content: string;
 	try {
 		content = await pbPaste(signal);
 	} catch (error) {
 		throw new Error(`pbpaste failed: ${error instanceof Error ? error.message : String(error)}`);
 	}
+	const sourceId = checkSource(content, params.sourceId, "clipboard_paste");
 	if (content.length === 0) {
 		return {
-			content: [{ type: "text" as const, text: "Clipboard is empty." }],
-			details: { lines: 0, chars: 0 },
+			content: [{ type: "text" as const, text: `Clipboard is empty.\nsourceId: ${sourceId}` }],
+			details: { lines: 0, chars: 0, sourceId },
 		};
 	}
-	const offset = params.offset ?? 0;
 	const totalCharacters = countCharacters(content);
 	if (offset >= totalCharacters)
 		throw new Error(`clipboard offset ${offset} is outside ${totalCharacters} characters`);
 	const lines = content.split("\n").length;
 	const result = pageResult(
-		`Clipboard contents (${lines} lines, ${totalCharacters} characters):`,
+		`Clipboard contents (${lines} lines, ${totalCharacters} characters):\nsourceId: ${sourceId}`,
 		content,
 		offset,
 		params.max_chars ?? PAGE_CHARS,
 		totalCharacters,
-		(next) => `Call clipboard_paste with offset ${next} to continue.`,
+		(next) => `Call clipboard_paste with offset ${next} and sourceId "${sourceId}" to continue.`,
 	);
 	return {
 		content: [{ type: "text" as const, text: result.bounded.text }],
 		details: {
 			lines,
 			chars: totalCharacters,
+			sourceId,
 			offset: result.page.offset,
 			...(result.page.nextOffset === undefined ? {} : { nextOffset: result.page.nextOffset }),
 			truncated: result.page.nextOffset !== undefined || result.bounded.truncated,
@@ -348,11 +374,12 @@ export async function clipboardList(
 
 export async function clipboardGet(
 	dir: string,
-	params: { id: string; date?: string; offset?: number; max_chars?: number },
+	params: { id: string; date?: string; offset?: number; max_chars?: number; sourceId?: string },
 	signal?: AbortSignal,
 ) {
 	if (signal?.aborted) throw new Error("clipboard_get cancelled");
 	const entry = await findEntry(dir, params.id, params.date, "clipboard_get", signal);
+	const sourceId = checkSource(entry.content, params.sourceId, "clipboard_get");
 	const offset = params.offset ?? 0;
 	const totalCharacters = entry.chars;
 	if (offset >= totalCharacters && totalCharacters > 0) {
@@ -360,18 +387,19 @@ export async function clipboardGet(
 	}
 	const label = entry.label ? ` | ${shortField(entry.label)}` : "";
 	const result = pageResult(
-		`Entry ${entry.id}${label} (${entry.lines} lines, ${totalCharacters} characters, ${safeLine(entry.timestamp)}):`,
+		`Entry ${entry.id}${label} (${entry.lines} lines, ${totalCharacters} characters, ${safeLine(entry.timestamp)}):\nsourceId: ${sourceId}`,
 		entry.content,
 		offset,
 		params.max_chars ?? PAGE_CHARS,
 		totalCharacters,
 		(next) =>
-			`Call clipboard_get with id "${entry.id}"${params.date ? `, date "${params.date}"` : ""} and offset ${next} to continue.`,
+			`Call clipboard_get with id "${entry.id}"${params.date ? `, date "${params.date}"` : ""}, offset ${next} and sourceId "${sourceId}" to continue.`,
 	);
 	return {
 		content: [{ type: "text" as const, text: result.bounded.text }],
 		details: {
 			id: entry.id,
+			sourceId,
 			lines: entry.lines,
 			chars: totalCharacters,
 			offset: result.page.offset,
