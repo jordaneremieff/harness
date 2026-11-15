@@ -28,7 +28,7 @@ it("implements the operation identities and schema hashes published in the host 
 	assert.deepEqual(HOST_CONTRACT.operations, documented);
 });
 
-it("keeps roster coverage local without changing the published host status identity", () => {
+it("keeps tool-only overview fields local without changing the published host status identity", () => {
 	const docs = readFileSync(new URL("../../docs/agent-host-contract.md", import.meta.url), "utf8");
 	const published = /^H-status\s+([a-f0-9]{64})$/mu.exec(docs)?.[1];
 	assert.ok(published);
@@ -38,12 +38,18 @@ it("keeps roster coverage local without changing the published host status ident
 	const overview = buildStatusOverview(rosterPage([]), [], []);
 	const inventory = { candidates: 3, inspected: 3, unreadable: 0, unknownClaims: 0, returned: 2, remaining: 1, priorityRemaining: 1,
 		remainingRows: 2, priorityRemainingRows: 2, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 2 };
-	const local = { ...overview, coverage: { ...overview.coverage, inventory, omittedPriorityRows: 2, omittedPriorityRecords: 1 } };
+	const local = { ...overview, coverage: { ...overview.coverage, inventory, omittedPriorityRows: 2, omittedPriorityRecords: 1, omittedOpenWorkRows: 1 } };
 	assert.deepEqual(structuredObservation(StatusToolOutputSchema, local), local);
-	const { inventory: _inventory, omittedPriorityRows: _rows, omittedPriorityRecords: _records, ...wireCoverage } = overview.coverage;
-	const wire = { ...overview, coverage: wireCoverage };
+	const { inventory: _inventory, omittedPriorityRows: _rows, omittedPriorityRecords: _records, omittedOpenWorkRows: _openWork, ...wireCoverage } = overview.coverage;
+	const { unavailable: _unavailable, summarizedUnavailable: _summarizedUnavailable, ...wireSessions } = overview.summary.sessions;
+	// This is a declared host-schema fixture, not output from a host producer.
+	const wire = { ...overview, summary: { ...overview.summary, sessions: wireSessions }, coverage: wireCoverage };
 	assert.deepEqual(structuredObservation(StatusOutputSchema, wire), wire);
-	for (const [field, value] of Object.entries({ inventory, omittedPriorityRows: 2, omittedPriorityRecords: 1 })) {
+	for (const [field, value] of Object.entries({ unavailable: 0, summarizedUnavailable: 0 })) {
+		assert.throws(() => structuredObservation(StatusOutputSchema, { ...wire, summary: { ...wire.summary, sessions: { ...wireSessions, [field]: value } } }), /does not match its schema/u);
+		assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...local, summary: { ...local.summary, sessions: { ...local.summary.sessions, [field]: "invalid" } } }), /does not match its schema/u);
+	}
+	for (const [field, value] of Object.entries({ inventory, omittedPriorityRows: 2, omittedPriorityRecords: 1, omittedOpenWorkRows: 1 })) {
 		assert.throws(() => structuredObservation(StatusOutputSchema, { ...wire, coverage: { ...wireCoverage, [field]: value } }), /does not match its schema/u);
 		assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...local, coverage: { ...local.coverage, [field]: "invalid" } }), /does not match its schema/u);
 	}
