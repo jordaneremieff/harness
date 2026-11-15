@@ -20,7 +20,7 @@ const MAX_REPORT_BYTES = 64 * 1024 * 1024;
 
 function pinnedInstall(): { vitestEntry: string; reporterPath: string } {
 	const versions = [
-		[resolve(REPOSITORY_ROOT, "node_modules/vitest/package.json"), "4.1.11"],
+		[resolve(REPOSITORY_ROOT, "node_modules/vitest/package.json"), "4.1.12"],
 		[resolve(REPOSITORY_ROOT, "node_modules/vitest-evals/package.json"), "0.16.1"],
 	] as const;
 	for (const [path, expected] of versions) {
