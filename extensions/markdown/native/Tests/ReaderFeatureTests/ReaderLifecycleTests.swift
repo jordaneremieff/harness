@@ -94,6 +94,13 @@ private final class LifecycleGate {
         return window
     }
 
+    @Test func appContentWorldStaysAliveBetweenDOMCalls() {
+        weak var observed: WKContentWorld?
+        autoreleasepool { observed = PageScript.world }
+        #expect(observed != nil)
+        #expect(observed === PageScript.world)
+    }
+
     @Test func decodedImageEvidenceSurvivesSeparateDOMCalls() async throws {
         let directory = try ReadingStateIntake.directory()
         defer { try? FileManager.default.removeItem(at: directory) }

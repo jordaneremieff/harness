@@ -609,7 +609,9 @@ assume it is the only screen of the app. Each window owns one model and one `Web
   visible qualified placeholder when serving or decoding fails; the original is never repaired
   from a project file. Image inspection runs separately after the page is ready and its position
   is restored, with a two-second evidence deadline. It never holds installation. Its results and
-  DOM effects belong to that rendering only. Decode results use rendering and asset tokens,
+  DOM effects belong to that rendering only. The app retains its named WebKit content world so
+  decode evidence survives separate DOM calls, including a later Details inspection. Each page
+  keeps its own evidence, and navigation clears it. Decode results use rendering and asset tokens,
   not the lifetime of JavaScript wrappers for DOM elements. A decode that has not settled stays unconfirmed,
   not failed, and opening Details reads the evidence again.
   Details retain capture inspection, partial coverage and per-image states.

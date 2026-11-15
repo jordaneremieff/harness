@@ -168,7 +168,8 @@ struct ReaderNavigationDecider: WebPage.NavigationDeciding {
 /// App-owned DOM helpers. They run only in the reader's own content world and receive data as
 /// arguments; the document's own scripts are disabled.
 enum PageScript {
-    @MainActor static var world: WKContentWorld { .world(name: "markdown-reader") }
+    // WebKit reuses a named world only while its WKContentWorld instance stays alive.
+    @MainActor static let world = WKContentWorld.world(name: "markdown-reader")
 
     static let capturePosition = """
     const blocks = document.querySelectorAll('[data-key]');
