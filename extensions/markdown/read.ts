@@ -8,6 +8,9 @@ import { type AssetRecord, type Completeness, type ContentOrigin, type DocumentK
 /** UTF-8 bytes of source text in one page. */
 export const READ_PAGE_BYTES = 64 * 1024;
 const FIND_ROWS = 20;
+/** A source search reads at most this many current revisions, newest first, and at most this many bytes. */
+export const SEARCH_LIMITS = { documents: 200, bytes: 32 * 1024 * 1024 } as const;
+const EXCERPT_CHARS = 160;
 const LISTED_IMAGES = 32;
 const IMAGE_REFERENCE_CHARS = 160;
 
@@ -16,32 +19,35 @@ export const ReadParameters = obj({
 	revision: opt(int({ minimum: 1, description: "Exact revision to read. Defaults to the current revision." })),
 	offset: opt(int({ minimum: 0, description: "Continue a page from its nextOffset, with the same revision." })),
 	query: opt(str({ minLength: 1, maxLength: 200, description: "Without document: literal, case-insensitive text in document titles and IDs." })),
+	contains: opt(str({ minLength: 1, maxLength: 200, description: "Without document: literal, case-insensitive text in the current revision's source. Searches at most 200 documents, newest first." })),
 	kind: opt(union([lit("published"), lit("response"), lit("file")], { description: "Without document: the collection to search. Defaults to published." })),
 }, { open: false });
 export type ReadInput = Static<typeof ReadParameters>;
 
-export type FoundDocument = { id: string; title: string; kind: DocumentKind; revision: number; bytes: number; digest: string; createdAt: string; updatedAt: string };
+export type FoundDocument = { id: string; title: string; kind: DocumentKind; revision: number; bytes: number; digest: string; createdAt: string; updatedAt: string; excerpt?: { line: number; text: string } };
+/** Coverage of a source search: the documents and bytes read, and whether every candidate was read. */
+export type SourceSearch = { contains: string; candidates: number; searched: number; bytes: number; complete: boolean; unreadable: number };
 export type ListedImage = { reference: string; state: AssetRecord["state"]; reason?: string; mediaType?: string; bytes?: number; digest?: string };
 export type ReadOutcome =
-	| { ok: true; op: "find"; kind: DocumentKind; query?: string; rows: FoundDocument[]; matched: number; scanned: number; unreadable: number; bounded: boolean }
+	| { ok: true; op: "find"; kind: DocumentKind; query?: string; search?: SourceSearch; rows: FoundDocument[]; matched: number; scanned: number; unreadable: number; bounded: boolean }
 	| { ok: true; op: "read"; documentId: string; kind: DocumentKind; title: string; currentRevision: number; revision: number; revisionTitle: string; createdAt: string; digest: string; bytes: number; completeness: Completeness; selfContained?: boolean; references: ReferenceSummary; images?: ListedImage[]; imagesOmitted?: number; provenance: ContentOrigin; offset: number; nextOffset: number | null; chars: number; text: string }
 	| { ok: false; error: { code: "invalid" | "not-found" | "store-failure"; message: string } };
 
 const KindSchema = union([lit("published"), lit("response"), lit("file")]);
 export const ReadOutcomeSchema = union([
-	obj({ ok: lit(true), op: lit("find"), kind: KindSchema, query: opt(str()), rows: arr(obj({ id: str(), title: str(), kind: KindSchema, revision: int(), bytes: int(), digest: str(), createdAt: str(), updatedAt: str() })), matched: int(), scanned: int(), unreadable: int(), bounded: bool() }),
+	obj({ ok: lit(true), op: lit("find"), kind: KindSchema, query: opt(str()), search: opt(obj({ contains: str(), candidates: int(), searched: int(), bytes: int(), complete: bool(), unreadable: int() })), rows: arr(obj({ id: str(), title: str(), kind: KindSchema, revision: int(), bytes: int(), digest: str(), createdAt: str(), updatedAt: str(), excerpt: opt(obj({ line: int(), text: str() })) })), matched: int(), scanned: int(), unreadable: int(), bounded: bool() }),
 	obj({ ok: lit(true), op: lit("read"), documentId: str(), kind: KindSchema, title: str(), currentRevision: int(), revision: int(), revisionTitle: str(), createdAt: str(), digest: str(), bytes: int(), completeness: obj({ state: str() }, { open: true }), selfContained: opt(bool()), references: ReferenceSummarySchema, images: opt(arr(obj({ reference: str(), state: str() }, { open: true }))), imagesOmitted: opt(int()), provenance: obj({ kind: str(), capturedAt: str() }, { open: true }), offset: int(), nextOffset: union([int(), lit(null)]), chars: int(), text: str() }),
 	obj({ ok: lit(false), error: obj({ code: union([lit("invalid"), lit("not-found"), lit("store-failure")]), message: str() }) }),
 ]);
 
-const DESCRIPTION = "Find and read stored Markdown documents exactly, without opening a window. Without document, list the newest documents of one collection, optionally matching query against titles and IDs. With document, read the exact source of its current revision, or of a named revision, in pages of at most 64 KiB; continue with the returned offset and the same revision. The result names the current revision, the source digest and the reference coverage. To correct a published document, read its current revision, then call markdown_publish with document and expectedRevision set to that revision. After a conflict, read the revision that the conflict names before you publish again. Reading starts no work and changes nothing.";
+const DESCRIPTION = "Find and read stored Markdown documents exactly, without opening a window. Without document, list the newest documents of one collection, optionally matching query against titles and IDs and contains against the current source (a bounded search that reports its coverage). With document, read the exact source of its current revision, or of a named revision, in pages of at most 64 KiB; continue with the returned offset and the same revision. The result names the current revision, the source digest and the reference coverage. To correct a published document, read its current revision, then call markdown_publish with document and expectedRevision set to that revision. After a conflict, read the revision that the conflict names before you publish again. Reading starts no work and changes nothing.";
 
 function validate(params: ReadInput): void {
 	if (!params || typeof params !== "object") throw new StoreError("invalid", "Supply a document, or omit it to find documents.");
 	if (params.document === undefined && (params.revision !== undefined || params.offset !== undefined)) throw new StoreError("invalid", "A revision or offset needs a document.");
 	if (params.offset !== undefined && params.offset > 0 && params.revision === undefined) throw new StoreError("invalid", "A continued page needs the revision of its first page.");
-	if (params.document !== undefined && (params.query !== undefined || params.kind !== undefined)) throw new StoreError("invalid", "A query or kind finds documents; omit document to use it.");
-	if (params.query !== undefined && (typeof params.query !== "string" || !params.query.trim() || /[\p{Cc}\ud800-\udfff]/u.test(params.query))) throw new StoreError("invalid", "A query must be nonempty text on one line.");
+	if (params.document !== undefined && (params.query !== undefined || params.kind !== undefined || params.contains !== undefined)) throw new StoreError("invalid", "A query, contains or kind finds documents; omit document to use it.");
+	for (const value of [params.query, params.contains]) if (value !== undefined && (typeof value !== "string" || !value.trim() || /[\p{Cc}\ud800-\udfff]/u.test(value))) throw new StoreError("invalid", "Search text must be nonempty text on one line.");
 }
 function row(record: DocumentRecord): FoundDocument {
 	return { id: record.id, title: record.title, kind: record.kind, revision: record.revision, bytes: record.bytes, digest: record.digest, createdAt: record.createdAt, updatedAt: record.updatedAt };
@@ -49,8 +55,34 @@ function row(record: DocumentRecord): FoundDocument {
 async function find(store: MarkdownStore, params: ReadInput): Promise<ReadOutcome> {
 	const kind = params.kind ?? "published";
 	const needle = params.query?.trim().toLowerCase();
-	const listing = await store.list({ kind, limit: FIND_ROWS, match: needle ? (record) => record.title.toLowerCase().includes(needle) || record.id.includes(needle) : undefined });
-	return { ok: true, op: "find", kind, ...(params.query === undefined ? {} : { query: params.query }), rows: listing.documents.map(row), matched: listing.matched, scanned: listing.scanned, unreadable: listing.unreadable, bounded: listing.bounded };
+	const match = needle ? (record: DocumentRecord) => record.title.toLowerCase().includes(needle) || record.id.includes(needle) : undefined;
+	const listing = await store.list({ kind, limit: params.contains === undefined ? FIND_ROWS : undefined, match });
+	const base = { ok: true as const, op: "find" as const, kind, ...(params.query === undefined ? {} : { query: params.query }), scanned: listing.scanned, unreadable: listing.unreadable, bounded: listing.bounded };
+	if (params.contains === undefined) return { ...base, rows: listing.documents.map(row), matched: listing.matched };
+	const found = await searchSources(store, listing.documents, params.contains);
+	return { ...base, search: found.search, rows: found.rows.slice(0, FIND_ROWS), matched: found.rows.length };
+}
+/**
+ * Reads current revisions newest first until the bounds stop it, and keeps those whose source
+ * contains the text, with the first matching line. Case folding can change a string's length,
+ * so the excerpt is the original line at the line number found in the folded text.
+ */
+async function searchSources(store: MarkdownStore, candidates: DocumentRecord[], contains: string): Promise<{ rows: FoundDocument[]; search: SourceSearch }> {
+	const needle = contains.trim().toLowerCase();
+	const rows: FoundDocument[] = [];
+	let searched = 0; let bytes = 0; let unreadable = 0;
+	for (const candidate of candidates) {
+		if (searched >= SEARCH_LIMITS.documents || bytes + candidate.bytes > SEARCH_LIMITS.bytes) break;
+		searched++; bytes += candidate.bytes;
+		let source: string;
+		try { source = (await store.get(candidate.id)).source; } catch { unreadable++; continue; }
+		const at = source.toLowerCase().indexOf(needle);
+		if (at < 0) continue;
+		const line = source.toLowerCase().slice(0, at).split("\n").length;
+		const text = [...(source.split("\n")[line - 1] ?? "").trim()].slice(0, EXCERPT_CHARS).join("");
+		rows.push({ ...row(candidate), excerpt: { line, text } });
+	}
+	return { rows, search: { contains, candidates: candidates.length, searched, bytes, complete: searched === candidates.length, unreadable } };
 }
 /** A page never ends inside a surrogate pair; offsets count UTF-16 code units. */
 export function sourcePage(source: string, offset: number, maxBytes = READ_PAGE_BYTES): { text: string; nextOffset: number | null } {
@@ -98,12 +130,32 @@ export async function readStored(store: MarkdownStore, params: ReadInput): Promi
 }
 
 const line = (value: string) => [...value.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, " ")].slice(0, 200).join("");
-function findText(outcome: Extract<ReadOutcome, { op: "find" }>): string {
-	const scope = `${outcome.bounded ? `the first ${outcome.scanned} scanned entries` : `${outcome.scanned} scanned entries`}`;
-	const head = `${outcome.matched} ${outcome.kind} document${outcome.matched === 1 ? "" : "s"}${outcome.query === undefined ? "" : ` match ${JSON.stringify(outcome.query)}`} among ${scope}${outcome.matched > outcome.rows.length ? `; the newest ${outcome.rows.length} follow` : ""}${outcome.bounded ? ". The scan stopped before the end of the collection, so newer documents can exist" : ""}.`;
+type Found = Extract<ReadOutcome, { op: "find" }>;
+function findText(outcome: Found): string {
+	const head = `${findSubject(outcome)} ${findScope(outcome)}${findLimits(outcome)}.`;
 	const unreadable = outcome.unreadable ? [`${outcome.unreadable} document director${outcome.unreadable === 1 ? "y is" : "ies are"} unreadable and not listed.`] : [];
-	const rows = outcome.rows.map((document) => `${document.id} · revision ${document.revision} · ${document.updatedAt} · ${line(document.title)}`);
-	return [head, ...unreadable, ...rows, ...(outcome.rows.length ? ['Read one with markdown_read {"document":"<id>"}.'] : [])].join("\n");
+	const failed = outcome.search?.unreadable ?? 0;
+	const unsearched = failed ? [`${failed} document${failed === 1 ? " could not be read and was" : "s could not be read and were"} not searched.`] : [];
+	const rows = outcome.rows.flatMap((document) => [`${document.id} · revision ${document.revision} · ${document.updatedAt} · ${line(document.title)}`, ...(document.excerpt ? [`  line ${document.excerpt.line}: ${line(document.excerpt.text)}`] : [])]);
+	return [head, ...unreadable, ...unsearched, ...rows, ...(outcome.rows.length ? ['Read one with markdown_read {"document":"<id>"}.'] : [])].join("\n");
+}
+function findSubject(outcome: Found): string {
+	const one = outcome.matched === 1;
+	const contains = outcome.search ? ` ${one ? "contains" : "contain"} ${JSON.stringify(outcome.search.contains)}` : "";
+	const query = outcome.query === undefined ? "" : `${outcome.search ? " and" : ""} match ${JSON.stringify(outcome.query)}`;
+	return `${outcome.matched} ${outcome.kind} document${one ? "" : "s"}${contains}${query}`;
+}
+function findScope(outcome: Found): string {
+	const scanned = outcome.bounded ? `the first ${outcome.scanned} scanned entries` : `${outcome.scanned} scanned entries`;
+	return outcome.search ? `among ${outcome.search.searched} searched of ${outcome.search.candidates} candidates in ${scanned}` : `among ${scanned}`;
+}
+function findLimits(outcome: Found): string {
+	const parts = [
+		outcome.matched > outcome.rows.length ? `; the newest ${outcome.rows.length} follow` : "",
+		outcome.bounded ? ". The scan stopped before the end of the collection, so newer documents can exist" : "",
+		outcome.search && !outcome.search.complete ? ". The source search stopped at its bound, so older candidates were not searched" : "",
+	];
+	return parts.join("");
 }
 function readHeader(outcome: Extract<ReadOutcome, { op: "read" }>): string {
 	const end = outcome.offset + outcome.text.length;

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { publish, publicationText, type PublishOutcome } from "./publish.ts";
-import { createReadTool, READ_PAGE_BYTES, readStored, readText, sourcePage, type ReadOutcome } from "./read.ts";
+import { createReadTool, READ_PAGE_BYTES, readStored, readText, SEARCH_LIMITS, sourcePage, type ReadOutcome } from "./read.ts";
 import { MarkdownStore } from "./store.ts";
 
 async function fixture(run: (root: string, store: MarkdownStore) => Promise<void>) {
@@ -35,6 +35,30 @@ test("finding lists the newest matching documents with honest coverage", () => f
 	assert.match(readText(damaged).header, /2 document directories are unreadable and not listed\./u);
 	failed(await readStored(store, { revision: 1 }), "invalid");
 	failed(await readStored(store, { document: notes.documentId, query: "x" }), "invalid");
+}));
+
+test("a source search finds text in current revisions within stated bounds", () => fixture(async (root, store) => {
+	const options = { cwd: root, store };
+	const alpha = saved(await publish({ title: "Alpha", text: "# Alpha\n\nThe migration plan uses ÄRGER as a code word.\n" }, options));
+	saved(await publish({ title: "Beta", text: "# Beta\n\nNothing relevant.\n" }, options));
+	const gamma = saved(await publish({ title: "Gamma report", text: "# Gamma\n\nFirst.\n" }, options));
+	saved(await publish({ title: "Gamma report", text: "# Gamma\n\nNow the migration is done.\n", document: gamma.documentId, expectedRevision: 1 }, options));
+	const hits = found(await readStored(store, { contains: "MIGRATION" }));
+	assert.deepEqual(hits.rows.map((row) => [row.id, row.excerpt]), [[gamma.documentId, { line: 3, text: "Now the migration is done." }], [alpha.documentId, { line: 3, text: "The migration plan uses ÄRGER as a code word." }]]);
+	assert.deepEqual(hits.search, { contains: "MIGRATION", candidates: 3, searched: 3, bytes: hits.search?.bytes ?? -1, complete: true, unreadable: 0 });
+	assert.equal(hits.matched, 2);
+	assert.deepEqual(found(await readStored(store, { contains: "ärger" })).rows.map((row) => row.id), [alpha.documentId]);
+	assert.deepEqual(found(await readStored(store, { contains: "migration", query: "gamma" })).rows.map((row) => row.id), [gamma.documentId]);
+	assert.equal(found(await readStored(store, { contains: "First." })).rows.length, 0, "only the current revision is searched");
+	assert.match(readText(hits).header, /^2 published documents contain "MIGRATION" among 3 searched of 3 candidates in 3 scanned entries\.\n/u);
+	assert.match(readText(hits).header, /\nmd-[a-f0-9]{20} · revision 2 · .* · Gamma report\n {2}line 3: Now the migration is done\.\n/u);
+	await writeFile(join(store.root, "documents", alpha.documentId, "revisions", "1", "source.md"), "changed bytes");
+	const damaged = found(await readStored(store, { contains: "migration" }));
+	assert.equal(damaged.search?.unreadable, 1); assert.deepEqual(damaged.rows.map((row) => row.id), [gamma.documentId]);
+	assert.match(readText(damaged).header, /1 document could not be read and was not searched\./u);
+	failed(await readStored(store, { document: alpha.documentId, contains: "x" }), "invalid");
+	failed(await readStored(store, { contains: " " }), "invalid");
+	assert.equal(SEARCH_LIMITS.documents, 200);
 }));
 
 test("reading returns exact pages of a named revision and the steps to correct it", () => fixture(async (root, store) => {
