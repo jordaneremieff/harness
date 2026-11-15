@@ -366,6 +366,12 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		}
 		return client.request("status", { sessionId });
 	}
+	async function acquiringForeignControl(manager: AgentManager, method: string, params: Record<string, unknown>, sessionId: string, context?: Context): Promise<unknown> {
+		const client = await manager.connectNative(sessionId);
+		if (method === "submit" && typeof params.senderIdentity === "string" && (params.replyTo !== undefined || client.runtimeContract.operations["task-submit"])) return await client.request("task-submit", { ...params, requester: params.senderIdentity }, { signal: context?.abortSignal });
+		if (method !== "attach") return await client.request(method, params, { signal: context?.abortSignal });
+		return attachForeign(client, params, sessionId);
+	}
 	async function foreignControl(method: string, params: Record<string, unknown>, sessionId: string, context?: Context): Promise<unknown> {
 		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
 		try {
@@ -375,10 +381,11 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 				if (!readPrimaryEndpointDescriptor(dirname(dirname(metadata.storagePath)), sessionId).info) throw new Error("The exact native target is not retained and no ordinary primary is registered");
 				return await primaryControl(method, params, sessionId);
 			}
-			const client = await manager.connectNative(sessionId);
-			if (method === "submit" && typeof params.senderIdentity === "string" && (params.replyTo !== undefined || client.runtimeContract.operations["task-submit"])) return await client.request("task-submit", { ...params, requester: params.senderIdentity }, { signal: context?.abortSignal });
-			if (method !== "attach") return await client.request(method, params, { signal: context?.abortSignal });
-			return await attachForeign(client, params, sessionId);
+			if (["inspect", "status", "snapshot", "dashboard", "profile-read"].includes(method)) {
+				const caller = { id: typeof params.senderIdentity === "string" ? params.senderIdentity : metadata.storageId, cwd: metadata.cwd };
+				return await manager.control(method, params, caller, { signal: context?.abortSignal });
+			}
+			return await acquiringForeignControl(manager, method, params, sessionId, context);
 		} finally { await manager.close(); }
 	}
 	async function collaborationObservation(method: string, params: Record<string, unknown>): Promise<unknown> {

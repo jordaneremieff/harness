@@ -3118,6 +3118,12 @@ a token request after close.
   Native documents retain the creating owner as provenance. Each task's results
   return to its own reply recipient as deduplicated follow-ups. A separate root
   gets new storage; a handle always selects an independent root, even at the same cwd.
+- Observations of another storage reuse its reachable host or read a retained
+  snapshot without starting a writer. This applies to inspection, status,
+  profiles, dashboard data, and snapshots from ordinary and Durable callers.
+  A retained storage remains readable after its working directory is removed.
+  Cold status reports `live: false` and does not claim a loaded inventory or
+  a process ID. Attach and mutations keep their separate host-acquisition paths.
 - Each host start uses the caller's running Pi installation, not the installation
   path retained when the catalog record was created. A primary supplies its
   running package directory; a Durable host supplies its own for foreign controls,
