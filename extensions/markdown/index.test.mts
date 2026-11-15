@@ -55,10 +55,11 @@ test("headless commands notify without session messages or stdout and resolve bo
 	process.env.PI_HARNESS_FILE = join(root, "harness.json");
 	try {
 		let handler: ((args: string, ctx: ExtensionContext) => Promise<void>) | undefined;
+		let shortcut: ((ctx: ExtensionContext) => Promise<void>) | undefined;
 		const messages = t.mock.fn();
 		const stdout = t.mock.method(console, "log", () => {});
 		const notify = t.mock.fn();
-		const pi = { events: createEventBus(), on: () => {}, registerShortcut: () => {}, registerTool: () => {}, sendMessage: messages,
+		const pi = { events: createEventBus(), on: () => {}, registerShortcut: (_key: string, definition: { handler: typeof shortcut }) => { shortcut = definition.handler; }, registerTool: () => {}, sendMessage: messages,
 			registerCommand: (_name: string, command: { handler: typeof handler }) => { handler = command.handler; },
 		} as unknown as ExtensionAPI;
 		markdown(pi);
@@ -69,7 +70,7 @@ test("headless commands notify without session messages or stdout and resolve bo
 		const context = (mode: string) => ({ mode, cwd: root, sessionManager: source, ui: { notify } }) as unknown as ExtensionContext;
 		for (const mode of ["print", "json", "rpc"]) {
 			await handler("", context(mode));
-			assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", mode === "print" ? /^Saved md-[a-f0-9]{8} revision 1\. No window was opened\.$/u : /^Selected md-[a-f0-9]{8} revision 1\. No window was opened\.$/u);
+			assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", { print: /^Saved md-[a-f0-9]{8} revision 1\. No window was opened\.$/u, json: /^Selected md-[a-f0-9]{8} revision 1\. No window was opened\.$/u, rpc: /^Selected md-[a-f0-9]{8} revision 1\. No window was opened\.$/u }[mode] as RegExp);
 		}
 		const store = new MarkdownStore(process.env.PI_MARKDOWN_DIR);
 		const snapshot = (await store.list({ kind: "response" })).documents[0];
@@ -81,11 +82,22 @@ test("headless commands notify without session messages or stdout and resolve bo
 				assert.equal(notify.mock.calls.at(-1)?.arguments[0], `Selected ${id.slice(0, 11)} revision 1. No window was opened.`);
 			}
 		}
-		for (const word of ["help", "Recent", "md-xyz"]) {
+		await handler("help file", context("json"));
+		assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", /\/markdown file <path>\nCapture and read/u);
+		assert.equal(notify.mock.calls.at(-1)?.arguments[1], "info");
+		for (const word of ["Recent", "md-xyz"]) {
 			await handler(word, context("json"));
-			assert.deepEqual(notify.mock.calls.at(-1)?.arguments, ["Usage: /markdown recent | published | <id> | file <path>", "error"]);
+			assert.deepEqual(notify.mock.calls.at(-1)?.arguments, ["Usage: /markdown recent | published | <id> | file <path> | window [file <path> | <id>] | help [command]", "error"]);
 		}
-		assert.equal(notify.mock.callCount(), 10);
+		for (const argument of ["window", `window ${published.document.id}`]) {
+			await handler(argument, context("json"));
+			assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", /No window was opened\.$/u);
+			assert.equal(notify.mock.calls.at(-1)?.arguments[1], "info");
+		}
+		assert.ok(shortcut);
+		await shortcut(context("json"));
+		assert.equal(notify.mock.calls.at(-1)?.arguments[0], `Selected ${snapshot.id.slice(0, 11)} revision 1. No window was opened.`);
+		assert.equal(notify.mock.callCount(), 13);
 		assert.equal(messages.mock.callCount(), 0);
 		assert.equal(stdout.mock.callCount(), 0);
 	} finally {

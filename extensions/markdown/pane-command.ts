@@ -9,6 +9,9 @@ export const PANE_MODE = 1;
  */
 export const PANE_OPEN = 1;
 
+/** Version of pinned open-request intake in pane mode. */
+export const PANE_OPEN_REQUEST = 1;
+
 const BUILD_REMEDY = "Build it with node extensions/markdown/native/build.mts.";
 
 /**
@@ -36,4 +39,14 @@ export function paneCommand(app: string | undefined, root: string, documentId: s
 	}
 	const show = [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", root, documentId];
 	return manifest.paneOpen === PANE_OPEN ? { show, paneInput: `:open ${documentId}\r` } : { show };
+}
+
+/** A selected revision uses only the native app's validated, pinned request intake. */
+export function paneRequestCommand(app: string, request: string): PaneCommand {
+	let build: unknown;
+	try { build = JSON.parse(readFileSync(join(app, "Contents", "Resources", "build.json"), "utf8")); }
+	catch { return { showUnavailable: `The reader app is not installed. ${BUILD_REMEDY}` }; }
+	const manifest = typeof build === "object" && build !== null ? build as Record<string, unknown> : {};
+	if (manifest.contract !== 1 || manifest.pane !== PANE_MODE || manifest.paneOpenRequest !== PANE_OPEN_REQUEST) return { showUnavailable: `The reader app cannot accept a pinned request in a pane. ${BUILD_REMEDY}` };
+	return { show: [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", request] };
 }

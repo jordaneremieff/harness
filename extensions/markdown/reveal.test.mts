@@ -3,10 +3,12 @@ import { mkdtemp, mkdir, readFile, readdir, rm, utimes, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { materializeAndReveal, openStored, readLaunchOrigin, revealNotice, revealSaved, saveResponse, selectStored, waitForAcceptance, type RevealRuntime } from "./reveal.ts";
+import { materializeAndReveal, openStored, readLaunchOrigin, revealNotice, revealSaved as reveal, saveResponse, selectStored, waitForAcceptance, type RevealRuntime } from "./reveal.ts";
 import { MarkdownStore } from "./store.ts";
 import { responseSnapshot } from "./responses.ts";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
+
+const revealSaved = (saved: Parameters<typeof reveal>[0], signal: AbortSignal, runtime: RevealRuntime) => reveal(saved, signal, runtime, "window");
 
 async function fixture(build: unknown = { contract: 1 }) {
 	const root = await mkdtemp(join(tmpdir(), "markdown-reveal-"));
@@ -47,6 +49,89 @@ test("reveal opens the client app for a host-store document with pinned identity
 		await assert.rejects(selectStored(join(f.root, "remote-store"), f.saved.documentId, f.saved.storeId), /not readable/u);
 	} finally { await f.cleanup(); }
 });
+const paneReceipt = { placement: "opaque receipt from the terminal-pane contract" };
+const paneOrigin = { version: 1, terminal: "Rex", application: { bundleId: "com.superlogical.rex" }, exact: { opaque: "captured locally" } };
+
+test("default reveal dispatches one literal pinned request through the terminal-pane contract", async () => {
+	const f = await fixture({ contract: 1, pane: 1, paneOpenRequest: 1 });
+	try {
+		await f.store.update(f.saved.documentId, 1, { title: "Saved", source: "Newer source", contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() } });
+		let requestPath = "";
+		const calls: string[][] = [];
+		const runtime: RevealRuntime = { ...f.runtime, run: async (exe, args, options) => {
+			calls.push([exe, ...args]);
+			assert.equal(exe, process.execPath);
+			if (args[1] === "capture") return { stdout: JSON.stringify(paneOrigin) };
+			assert.match(args[0], /extensions\/rex\/terminal-pane\.ts$/u);
+			assert.equal(args[1], "split");
+			assert.ok(options.timeout > 5000);
+			const payload = JSON.parse(options.input ?? "null");
+			assert.deepEqual(payload.origin, paneOrigin);
+			assert.equal(payload.version, 1);
+			requestPath = payload.argv[2];
+			assert.deepEqual(payload.argv, [join(f.app, "Contents", "MacOS", "MarkdownReader"), "--pane", requestPath]);
+			const envelope = JSON.parse(await readFile(requestPath, "utf8"));
+			assert.equal(envelope.revision, 1);
+			assert.equal(envelope.digest, f.saved.digest);
+			assert.equal(envelope.storeId, f.saved.storeId);
+			assert.deepEqual(envelope.launchOrigin, paneOrigin);
+			await rm(requestPath);
+			return { stdout: JSON.stringify({ version: 1, outcome: "created", detail: "Created.", receipt: paneReceipt }) };
+		} };
+		const outcome = await reveal(f.saved, new AbortController().signal, runtime);
+		assert.equal(outcome.state, "accepted");
+		if (outcome.state === "accepted") assert.deepEqual(outcome.pane?.receipt, paneReceipt);
+		assert.equal(calls.length, 2);
+		assert.ok(requestPath);
+	} finally { await f.cleanup(); }
+});
+
+for (const mode of ["missing-origin", "stale", "uncertain", "timeout", "malformed", "abort"] as const) test(`pane ${mode} never retries or falls back to a Mac window`, async () => {
+	const f = await fixture({ contract: 1, pane: 1, paneOpenRequest: 1 });
+	try {
+		const controller = new AbortController();
+		let dispatches = 0;
+		const captured = mode === "missing-origin" ? null : paneOrigin;
+		const output = { version: 1, outcome: mode === "missing-origin" ? "unavailable" : mode, detail: "No confirmed placement.", receipt: paneReceipt };
+		const runtime: RevealRuntime = { ...f.runtime, run: async (exe, args, options) => {
+			assert.equal(exe, process.execPath);
+			if (args[1] === "capture") return { stdout: JSON.stringify(captured) };
+			dispatches++;
+			if (mode === "missing-origin") assert.equal(JSON.parse(options.input ?? "null").origin, null);
+			if (mode === "abort") controller.abort();
+			if (["timeout", "abort"].includes(mode)) throw new Error("dispatch interrupted");
+			if (mode === "malformed") return { stdout: "not JSON" };
+			return { stdout: JSON.stringify(output) };
+		} };
+		const outcome = await reveal(f.saved, controller.signal, runtime);
+		assert.equal(outcome.state, ["missing-origin", "stale"].includes(mode) ? "pane-unavailable" : "pane-uncertain");
+		assert.equal(dispatches, 1);
+		if (outcome.state === "pane-uncertain" && mode === "uncertain") assert.deepEqual(outcome.pane.receipt, paneReceipt);
+		assert.equal((await f.store.get(f.saved.documentId)).source, "Exact saved Markdown");
+		assert.equal((await readdir(join(f.store.root, "opens"))).length, 1);
+	} finally { await f.cleanup(); }
+});
+
+test("pane creation without native request consumption remains unconfirmed", async () => {
+	const f = await fixture({ contract: 1, pane: 1, paneOpenRequest: 1 });
+	try {
+		const outcome = await reveal(f.saved, new AbortController().signal, { ...f.runtime, run: async (_exe, args) => ({ stdout: JSON.stringify(args[1] === "capture" ? paneOrigin : { version: 1, outcome: "created", detail: "Created.", receipt: paneReceipt }) }) });
+		assert.equal(outcome.state, "not-confirmed");
+		assert.match(revealNotice(outcome), /pane creation, but the reader did not confirm acceptance/u);
+	} finally { await f.cleanup(); }
+});
+
+test("missing pinned native capability refuses pane launch without an unpinned substitute", async () => {
+	const f = await fixture({ contract: 1, pane: 1, paneOpen: 1 });
+	try {
+		const outcome = await reveal(f.saved, new AbortController().signal, f.runtime);
+		assert.equal(outcome.state, "reveal-failed");
+		if (outcome.state === "reveal-failed") assert.equal(outcome.reason, "app-incompatible");
+		assert.equal(f.calls.length, 1);
+		assert.deepEqual(await readdir(join(f.store.root, "opens")), []);
+	} finally { await f.cleanup(); }
+});
+
 test("a missing published directory under the expected store is not locally available", async () => {
 	const f = await fixture();
 	try {
@@ -134,7 +219,7 @@ test("origin capture starts alongside saving and both finish before the request"
 		const pending = materializeAndReveal(() => {
 			assert.equal(captureStarted, true);
 			return new Promise((resolve) => { finishSave = resolve; });
-		}, new AbortController().signal, { gui: true, runtime });
+		}, new AbortController().signal, { gui: true, runtime, presentation: "window" });
 		finishSave(f.saved);
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.deepEqual(await readdir(join(f.store.root, "opens")), []);

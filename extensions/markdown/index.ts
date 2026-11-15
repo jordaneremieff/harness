@@ -10,15 +10,14 @@ import { coverageText, createPublishTool, fileSnapshotInput, referenceSummary } 
 import { createReadTool } from "./read.ts";
 import { toolDisplay } from "./display.ts";
 import { readOrdinary, recentOrdinary, type ResponseSnapshot } from "./responses.ts";
+import type { Presentation } from "./reveal.ts";
 import type { MarkdownOperations, MarkdownScope, MarkdownViewState } from "./operator-view.ts";
+import { MARKDOWN_USAGE, markdownHelp, markdownCompletions } from "./commands.ts";
+export { markdownCompletions } from "./commands.ts";
 
 const OWNER = fileURLToPath(import.meta.url);
 const localSettings = () => readSettings({ agentDir: getAgentDir() }).values;
-const USAGE = "Usage: /markdown recent | published | <id> | file <path>";
 const clean = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 500);
-export function markdownCompletions(prefix: string) {
-	return ["recent", "published", "file"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
-}
 function latest(ctx: ExtensionContext): ResponseSnapshot {
 	const recent = recentOrdinary(ctx.sessionManager, { results: 1 });
 	const row = recent.rows[0];
@@ -35,7 +34,7 @@ export function ordinaryLifecycle(pi: Pick<ExtensionAPI, "on">): () => AbortSign
 	return () => controller.signal;
 }
 /** Every ordinary entry point uses the same action functions as the view. */
-export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => AbortSignal): MarkdownOperations {
+export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => AbortSignal, presentation: Presentation = "pane"): MarkdownOperations {
 	const source = ctx.sessionManager;
 	const sessionId = source.getSessionId();
 	const root = localSettings().dir;
@@ -62,7 +61,7 @@ export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => Abort
 			const id = row.kind === "document" ? row.document.id : undefined;
 			const reveal = await import("./reveal.ts");
 			check(signal);
-			const result = await (response ? reveal.openResponse(response, signal, ctx.mode === "tui") : reveal.openStored(root, id ?? "", signal, { gui: ctx.mode === "tui" }));
+			const result = await (response ? reveal.openResponse(response, signal, ctx.mode === "tui", presentation) : reveal.openStored(root, id ?? "", signal, { gui: ctx.mode === "tui", presentation, ...(row.kind === "document" ? { pin: { revision: row.document.revision, digest: row.document.digest } } : {}) }));
 			check(signal);
 			return result;
 		},
@@ -72,7 +71,7 @@ export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => Abort
 			const response = latest(ctx);
 			const reveal = await import("./reveal.ts");
 			check(signal);
-			const result = await reveal.openResponse(response, signal, ctx.mode === "tui");
+			const result = await reveal.openResponse(response, signal, ctx.mode === "tui", presentation);
 			check(signal);
 			return result;
 		},
@@ -83,8 +82,8 @@ function notice(ctx: ExtensionContext, text: string, error = false): void {
 }
 /** A leading `~` names the home directory, as in a shell path. */
 const expandHome = (path: string) => path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
-async function openFile(ctx: ExtensionContext, path: string, signal: AbortSignal): Promise<string> {
-	if (!path) throw new Error("Use /markdown file <path>.");
+async function openFile(ctx: ExtensionContext, path: string, signal: AbortSignal, presentation: Presentation): Promise<string> {
+	if (!path) throw new Error(markdownHelp("file"));
 	const settings = localSettings();
 	const input = await fileSnapshotInput(expandHome(path), { cwd: ctx.cwd, app: settings.app });
 	signal.throwIfAborted();
@@ -99,8 +98,20 @@ async function openFile(ctx: ExtensionContext, path: string, signal: AbortSignal
 		const identity = await store.initialise();
 		signal.throwIfAborted();
 		return { root: settings.dir, storeId: identity.storeId, documentId: result.document.id, revision: result.revision.revision, digest: result.revision.digest, newlySaved: !result.replayed };
-	}, signal, { gui: ctx.mode === "tui" }));
+	}, signal, { gui: ctx.mode === "tui", presentation }));
 	return coverage ? `${notice} ${coverage}` : notice;
+}
+async function readSelection(value: string, ctx: ExtensionContext, signal: AbortSignal, operations: MarkdownOperations, presentation: Presentation): Promise<string> {
+	if (!value) return operations.latest(signal);
+	if (value === "file" || value.startsWith("file ")) return openFile(ctx, value.slice(4).trim().replace(/^"(.*)"$/u, "$1"), signal, presentation);
+	if (!/^md-[0-9a-f]{1,20}$/u.test(value)) throw new Error(MARKDOWN_USAGE);
+	const reveal = await import("./reveal.ts");
+	signal.throwIfAborted();
+	return reveal.openStored(localSettings().dir, value, signal, { gui: ctx.mode === "tui", presentation });
+}
+function readPresentation(value: string): { value: string; presentation: Presentation } {
+	if (value === "window" || value.startsWith("window ")) return { value: value.slice(6).trim(), presentation: "window" };
+	return { value, presentation: "pane" };
 }
 export default function markdown(pi: ExtensionAPI): void {
 	const states = new Map<string, MarkdownViewState>();
@@ -120,34 +131,30 @@ export default function markdown(pi: ExtensionAPI): void {
 			return module.markdownView(host, ordinaryOperations(ctx, lifecycle), stateFor(ctx));
 		}),
 	}] });
+	const browse = async (scope: MarkdownScope, ctx: ExtensionContext, operations: MarkdownOperations, signal: AbortSignal) => {
+		stateFor(ctx).scope = scope;
+		if (ctx.mode === "tui") await openOperatorFrame(pi, ctx, { owner: OWNER, id: "markdown" });
+		else {
+			const list = await operations.load(scope, signal);
+			notice(ctx, [list.coverage, ...list.rows.map((row) => row.kind === "response" ? `${row.response.entryId}: ${clean(row.response.preview)}` : `${row.document.id}: ${clean(row.document.title)}`)].join("\n"));
+		}
+	};
 	const action = async (args: string, ctx: ExtensionContext) => {
 		const signal = lifecycle();
 		try {
-			const value = args.trim();
-			const operations = ordinaryOperations(ctx, lifecycle);
-			if (["recent", "published"].includes(value)) {
-				const scope = value as MarkdownScope;
-				stateFor(ctx).scope = scope;
-				if (ctx.mode === "tui") await openOperatorFrame(pi, ctx, { owner: OWNER, id: "markdown" });
-				else {
-					const list = await operations.load(scope, signal);
-					notice(ctx, [list.coverage, ...list.rows.map((row) => row.kind === "response" ? `${row.response.entryId}: ${clean(row.response.preview)}` : `${row.document.id}: ${clean(row.document.title)}`)].join("\n"));
-				}
+			const input = args.trim();
+			if (input === "help" || input.startsWith("help ")) { notice(ctx, markdownHelp(input.slice(4).trim())); return; }
+			const { value, presentation } = readPresentation(input);
+			const operations = ordinaryOperations(ctx, lifecycle, presentation);
+			if (presentation === "pane" && ["recent", "published"].includes(value)) {
+				await browse(value as MarkdownScope, ctx, operations, signal);
 				return;
 			}
-			let result: string;
-			if (!value) result = await operations.latest(signal);
-			else if (value === "file" || value.startsWith("file ")) result = await openFile(ctx, value.slice(4).trim().replace(/^"(.*)"$/u, "$1"), signal);
-			else if (!/^md-[0-9a-f]{1,20}$/u.test(value)) throw new Error(USAGE);
-			else {
-				const reveal = await import("./reveal.ts");
-				signal.throwIfAborted();
-				result = await reveal.openStored(localSettings().dir, value, signal, { gui: ctx.mode === "tui" });
-			}
+			const result = await readSelection(value, ctx, signal, operations, presentation);
 			if (!signal.aborted) notice(ctx, result);
 		} catch (error) { if (!signal.aborted) notice(ctx, clean(error), true); }
 	};
-	pi.registerCommand("markdown", { description: "Read the latest response; browse recent responses or published documents; open an ID or file", getArgumentCompletions: markdownCompletions, handler: action });
+	pi.registerCommand("markdown", { description: "Read beside this conversation; browse responses or documents; use help for ID, file and separate window forms", getArgumentCompletions: markdownCompletions, handler: action });
 	pi.registerShortcut("ctrl+alt+r", { description: "Read the latest assistant response in Markdown", handler: (ctx) => action("", ctx) });
 	pi.registerTool(createPublishTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app }));
 	pi.registerTool(createReadTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app }));

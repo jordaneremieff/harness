@@ -3,13 +3,11 @@ import { watch } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readSettings } from "./settings.ts";
 import { MarkdownStore, type StoredDocument } from "./store.ts";
 import { responseSnapshotWrite, type ResponseSnapshot } from "./responses.ts";
-
-const execute = promisify(execFile);
+import { paneRequestCommand } from "./pane-command.ts";
 const PACKAGE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const BUILD_REMEDY = "Run node extensions/markdown/native/build.mts with this client's Markdown app setting.";
 /** `newlySaved` is true only when this action wrote the revision; otherwise the document already existed. */
@@ -17,14 +15,21 @@ export interface SavedDocument { root: string; storeId: string; documentId: stri
 /** The revision and digest of a listed row; the adapter opens that revision or nothing. */
 export interface PinnedRevision { revision: number; digest: string }
 export type LaunchOrigin = { version: 1; terminal: "Rex"; application: { bundleId: "com.superlogical.rex" }; exact?: Record<string, unknown> };
-export type RevealOutcome = SavedDocument & ({ state: "saved" } | { state: "accepted" | "not-confirmed"; request: string } | { state: "reveal-failed"; reason: "app-missing" | "app-incompatible" | "unsupported-platform" | "launch-failed"; remedy: string });
+export type Presentation = "pane" | "window";
+/** The placement receipt is opaque here; the terminal-pane contract owns its fields. */
+export type PaneDispatch = { version: 1; outcome: "created" | "stale" | "unavailable" | "uncertain"; detail: string; receipt?: unknown };
+export type RevealOutcome = SavedDocument & ({ state: "saved" } | { state: "accepted" | "not-confirmed"; request: string; pane?: PaneDispatch } | { state: "pane-unavailable" | "pane-uncertain"; request: string; pane: PaneDispatch } | { state: "reveal-failed"; reason: "app-missing" | "app-incompatible" | "unsupported-platform" | "launch-failed"; remedy: string });
 /** Only tests replace the process runner; callers never supply an executable. */
 export interface RevealRuntime {
 	platform: string;
 	acceptanceMs?: number;
-	run(executable: string, args: string[], options: { timeout: number; maxBuffer: number; signal?: AbortSignal }): Promise<{ stdout: string }>;
+	run(executable: string, args: string[], options: { timeout: number; maxBuffer: number; signal?: AbortSignal; input?: string }): Promise<{ stdout: string }>;
 }
-const runtime: RevealRuntime = { platform: process.platform, run: async (executable, args, options) => execute(executable, args, { ...options, encoding: "utf8" }) };
+const runtime: RevealRuntime = { platform: process.platform, run: (executable, args, { input, ...options }) => new Promise((resolve, reject) => {
+	const child = execFile(executable, args, { ...options, encoding: "utf8", killSignal: "SIGKILL" }, (error, stdout) => { if (error) reject(error); else resolve({ stdout }); });
+	child.stdin?.on("error", () => {});
+	child.stdin?.end(input);
+}) };
 export function readLaunchOrigin(value: unknown): LaunchOrigin | null {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
 	const origin = value as Record<string, unknown>;
@@ -91,34 +96,64 @@ export async function saveResponse(response: ResponseSnapshot, root: string): Pr
 	return savedDocument(root, await storeIdentity(root), result, !result.replayed);
 }
 /** Saving and origin capture overlap; only their completed results reach the open request. */
-export async function materializeAndReveal(save: () => Promise<SavedDocument>, signal: AbortSignal, options: { gui: boolean; runtime?: RevealRuntime }): Promise<RevealOutcome> {
+export async function materializeAndReveal(save: () => Promise<SavedDocument>, signal: AbortSignal, options: { gui: boolean; runtime?: RevealRuntime; presentation?: Presentation }): Promise<RevealOutcome> {
 	signal.throwIfAborted();
 	const processRuntime = options.runtime ?? runtime;
 	const origin = options.gui ? captureOrigin(signal, processRuntime) : Promise.resolve(null);
 	const [saved, launchOrigin] = await Promise.all([save(), origin]);
 	signal.throwIfAborted();
 	if (!options.gui) return { ...saved, state: "saved" };
-	return revealWithOrigin(saved, signal, processRuntime, launchOrigin);
+	return revealWithOrigin(saved, signal, processRuntime, launchOrigin, options.presentation ?? "pane");
 }
-async function appStatus(app: string): Promise<"app-missing" | "app-incompatible" | undefined> {
+async function appStatus(app: string, presentation: Presentation): Promise<"app-missing" | "app-incompatible" | undefined> {
 	try {
 		const manifest = join(app, "Contents", "Resources", "build.json");
 		const stat = await lstat(manifest);
 		if (!stat.isFile() || stat.size > 8192) return "app-incompatible";
 		const build: unknown = JSON.parse(await readFile(manifest, "utf8"));
-		return typeof build === "object" && build !== null && "contract" in build && build.contract === 1 ? undefined : "app-incompatible";
+		if (typeof build !== "object" || build === null || !("contract" in build) || build.contract !== 1) return "app-incompatible";
+		if (presentation === "pane" && (!("pane" in build) || build.pane !== 1 || !("paneOpenRequest" in build) || build.paneOpenRequest !== 1)) return "app-incompatible";
+		return undefined;
 	} catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "app-missing" : "app-incompatible"; }
 }
-export async function revealSaved(saved: SavedDocument, signal: AbortSignal, processRuntime: RevealRuntime = runtime): Promise<RevealOutcome> {
+export async function revealSaved(saved: SavedDocument, signal: AbortSignal, processRuntime: RevealRuntime = runtime, presentation: Presentation = "pane"): Promise<RevealOutcome> {
 	signal.throwIfAborted();
-	return revealWithOrigin(saved, signal, processRuntime, await captureOrigin(signal, processRuntime));
+	return revealWithOrigin(saved, signal, processRuntime, await captureOrigin(signal, processRuntime), presentation);
 }
-async function revealWithOrigin(saved: SavedDocument, signal: AbortSignal, processRuntime: RevealRuntime, launchOrigin: LaunchOrigin | null): Promise<RevealOutcome> {
+async function dispatchPane(app: string, request: string, origin: LaunchOrigin | null, signal: AbortSignal, processRuntime: RevealRuntime): Promise<PaneDispatch> {
+	const command = paneRequestCommand(app, request);
+	if ("showUnavailable" in command) return { version: 1, outcome: "unavailable", detail: command.showUnavailable };
+	signal.throwIfAborted();
+	try {
+		const output = await processRuntime.run(process.execPath, [join(PACKAGE_ROOT, "extensions", "rex", "terminal-pane.ts"), "split"], { timeout: 7000, maxBuffer: 32768, signal, input: JSON.stringify({ version: 1, origin, argv: command.show, cwd: process.cwd() }) });
+		const value = JSON.parse(output.stdout) as PaneDispatch;
+		if (value?.version !== 1 || !["created", "stale", "unavailable", "uncertain"].includes(value.outcome) || typeof value.detail !== "string" || value.detail.length > 256 || /[\p{Cc}\p{Cf}]/u.test(value.detail) || (value.outcome === "created" && !value.receipt)) throw new Error("Invalid pane result.");
+		return value;
+	} catch { return { version: 1, outcome: "uncertain", detail: "Pane creation is unconfirmed. Do not retry automatically." }; }
+}
+async function launchWindow(app: string, request: string, signal: AbortSignal, processRuntime: RevealRuntime): Promise<boolean> {
+	try {
+		signal.throwIfAborted();
+		await processRuntime.run("/usr/bin/open", ["-a", app, request], { timeout: 5000, maxBuffer: 8192, signal });
+		return true;
+	} catch (error) { if (signal.aborted) throw error; return false; }
+}
+async function acceptanceOutcome(saved: SavedDocument, request: string, signal: AbortSignal, processRuntime: RevealRuntime, pane?: PaneDispatch): Promise<RevealOutcome> {
+	try {
+		const accepted = await waitForAcceptance(request, signal, processRuntime.acceptanceMs ?? 5000);
+		signal.throwIfAborted();
+		return { ...saved, state: accepted ? "accepted" : "not-confirmed", request, pane };
+	} catch (error) {
+		if (signal.aborted && !pane) throw error;
+		return { ...saved, state: "not-confirmed", request, pane };
+	}
+}
+async function revealWithOrigin(saved: SavedDocument, signal: AbortSignal, processRuntime: RevealRuntime, launchOrigin: LaunchOrigin | null, presentation: Presentation): Promise<RevealOutcome> {
 	signal.throwIfAborted();
 	const failed = (reason: "app-missing" | "app-incompatible" | "unsupported-platform" | "launch-failed", remedy: string): RevealOutcome => ({ ...saved, state: "reveal-failed", reason, remedy });
 	if (processRuntime.platform !== "darwin") return failed("unsupported-platform", "Open the saved document on macOS 26 or later.");
 	const app = readSettings({ agentDir: getAgentDir() }).values.app;
-	const status = await appStatus(app);
+	const status = await appStatus(app, presentation);
 	signal.throwIfAborted();
 	if (status) return failed(status, BUILD_REMEDY);
 	const identity = await storeIdentity(saved.root);
@@ -129,27 +164,19 @@ async function revealWithOrigin(saved: SavedDocument, signal: AbortSignal, proce
 	signal.throwIfAborted();
 	if (exact.revision.digest !== saved.digest) throw new Error("The saved revision digest changed. No document was opened.");
 	const request = await store.writeOpenRequest(saved.documentId, saved.revision, launchOrigin);
-	try {
-		signal.throwIfAborted();
-		await processRuntime.run("/usr/bin/open", ["-a", app, request], { timeout: 5000, maxBuffer: 8192, signal });
-	} catch (error) {
-		if (signal.aborted) throw error;
-		return failed("launch-failed", `Retry /markdown ${saved.documentId}; if the app is unavailable, run node extensions/markdown/native/build.mts.`);
-	}
-	try {
-		const accepted = await waitForAcceptance(request, signal, processRuntime.acceptanceMs ?? 5000);
-		signal.throwIfAborted();
-		return { ...saved, state: accepted ? "accepted" : "not-confirmed", request };
-	} catch (error) {
-		if (signal.aborted) throw error;
-		return { ...saved, state: "not-confirmed", request };
-	}
+	let pane: PaneDispatch | undefined;
+	if (presentation === "pane") {
+		pane = await dispatchPane(app, request, launchOrigin, signal, processRuntime);
+		if (pane.outcome !== "created") return { ...saved, state: pane.outcome === "uncertain" ? "pane-uncertain" : "pane-unavailable", request, pane };
+		if (signal.aborted) return { ...saved, state: "pane-uncertain", request, pane };
+	} else if (!await launchWindow(app, request, signal, processRuntime)) return failed("launch-failed", `Use /markdown window ${saved.documentId}; if the app is unavailable, run node extensions/markdown/native/build.mts.`);
+	return acceptanceOutcome(saved, request, signal, processRuntime, pane);
 }
-export async function openResponse(response: ResponseSnapshot, signal: AbortSignal, gui = true): Promise<string> {
+export async function openResponse(response: ResponseSnapshot, signal: AbortSignal, gui = true, presentation: Presentation = "pane"): Promise<string> {
 	const root = readSettings({ agentDir: getAgentDir() }).values.dir;
-	return revealNotice(await materializeAndReveal(() => saveResponse(response, root), signal, { gui }));
+	return revealNotice(await materializeAndReveal(() => saveResponse(response, root), signal, { gui, presentation }));
 }
-export async function openStored(root: string, id: string, signal: AbortSignal, options: { gui: boolean; storeId?: string; pin?: PinnedRevision }): Promise<string> {
+export async function openStored(root: string, id: string, signal: AbortSignal, options: { gui: boolean; storeId?: string; pin?: PinnedRevision; presentation?: Presentation }): Promise<string> {
 	return revealNotice(await materializeAndReveal(() => selectStored(root, id, options.storeId, options.pin), signal, options));
 }
 export function revealNotice(outcome: RevealOutcome): string {
@@ -160,6 +187,8 @@ export function revealNotice(outcome: RevealOutcome): string {
 		const reason = { "app-missing": "The reader app is missing", "app-incompatible": "The reader app has an incompatible build", "unsupported-platform": "The reader requires macOS 26 or later", "launch-failed": "The reader launch failed" }[outcome.reason];
 		return `${saved} ${reason}. ${outcome.remedy}`;
 	}
+	if (outcome.state === "pane-unavailable") return `${saved} ${outcome.pane.detail} For a separate Mac window, use /markdown window ${outcome.documentId}.`;
+	if (outcome.state === "pane-uncertain") return `${saved} Pane creation is unconfirmed. Do not retry automatically or close an unconfirmed pane.`;
 	if (outcome.state === "accepted") return `Markdown Reader accepted ${identity}.`;
-	return `${saved} The reader did not confirm within 5 seconds. If no window appeared, run node extensions/markdown/native/build.mts.`;
+	return outcome.pane ? `${saved} Rex confirmed pane creation, but the reader did not confirm acceptance within 5 seconds. Do not retry automatically.` : `${saved} The reader did not confirm within 5 seconds. If no window appeared, run node extensions/markdown/native/build.mts.`;
 }
