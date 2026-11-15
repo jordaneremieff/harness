@@ -5,12 +5,19 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { AgentCatalog } from "./catalog.ts";
 import { resolveAgentControlDispatch } from "./durable-agents.ts";
 import { DurableHost } from "./durable-host.ts";
+import { DurableObservation } from "./durable-observation.ts";
 import { fixtureRegistry, fixtureRuntime, hostOptions } from "./durable-host-fixture.mts";
 import { createDurableRuntime } from "./durable-runtime.ts";
 import { runtimeFixture } from "./durable-runtime-fixture.mts";
 import { hostPaths } from "./host-protocol.ts";
 import { AgentManager } from "./manager.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
+
+function gate(): { promise: Promise<void>; resolve: () => void } {
+	let resolve!: () => void;
+	const promise = new Promise<void>(done => { resolve = done; });
+	return { promise, resolve };
+}
 
 it("native foreign observation reads a settled storage without its cwd or a writer launch", { timeout: 60000 }, async (t) => {
 	let runtime: Awaited<ReturnType<typeof createDurableRuntime>> | undefined;
@@ -57,10 +64,47 @@ it("native foreign observation reads a settled storage without its cwd or a writ
 	assert.equal(profile.identity, target.storageId);
 	const controller = new AbortController();
 	controller.abort(new Error("observation cancelled"));
+	const controlsBeforeAbort = observed.length;
 	await assert.rejects(dispatch("inspect", { ...params, view: "history" }, withAbortSignal(controller.signal, BACKGROUND_CONTEXT)), /observation cancelled/u);
 	assert.ok(observed.every(item => item.caller === senderIdentity));
-	assert.equal(observed.at(-1)?.signal, controller.signal);
+	assert.equal(observed.length, controlsBeforeAbort, "an already cancelled observation starts no manager control");
 	assert.equal(acquire.mock.callCount(), 0);
+
+	const entered = gate();
+	const release = gate();
+	const disposed = gate();
+	const controlAborted = gate();
+	const coldAbort = new AbortController();
+	const open = DurableObservation.open;
+	t.mock.method(DurableObservation, "open", async (...args: Parameters<typeof open>) => {
+		const snapshot = await open(...args);
+		const close = snapshot.close.bind(snapshot);
+		snapshot.close = async () => { try { await close(); } finally { disposed.resolve(); } };
+		entered.resolve();
+		await release.promise;
+		return snapshot;
+	});
+	const controlDuringRead = AgentManager.prototype.control;
+	t.mock.method(AgentManager.prototype, "control", async function (this: AgentManager, ...args: Parameters<typeof control>) {
+		try { return await controlDuringRead.apply(this, args); }
+		finally { if (args[3]?.signal === coldAbort.signal) controlAborted.resolve(); }
+	});
+	let settled = false;
+	const cancelled = dispatch("inspect", { ...params, view: "history" }, withAbortSignal(coldAbort.signal, BACKGROUND_CONTEXT))
+		.then(value => { settled = true; return value; }, (error: unknown) => { settled = true; return error; });
+	try {
+		await entered.promise;
+		coldAbort.abort(new Error("cold read cancelled"));
+		await controlAborted.promise;
+		assert.equal(observed.at(-1)?.signal, coldAbort.signal);
+		await new Promise<void>(resolve => setImmediate(resolve));
+		assert.equal(settled, true, "the caller ends its wait before the cold snapshot opens");
+		assert.equal(runtime.isIdle(), false, "the runtime retains cleanup ownership until the cold read ends");
+	} finally { release.resolve(); }
+	assert.match(String(await cancelled), /cold read cancelled/u);
+	await disposed.promise;
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(runtime.isIdle(), true, "the completed cleanup releases runtime activity");
 	assert.equal(existsSync(paths.claim), false);
 	assert.equal(existsSync(paths.socket), false);
 	const after = statSync(target.storagePath, { bigint: true });

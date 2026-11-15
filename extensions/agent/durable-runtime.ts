@@ -10,7 +10,7 @@ function controlRequestId(params: Readonly<Record<string, unknown>>): string { r
 import type { Context } from "@earendil-works/chord/context";
 import { collaborationStorage } from "./collaboration-contract.ts";
 import { projectCollaboration } from "./collaboration.ts";
-import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import { awaitWithContext, BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -55,6 +55,7 @@ import { withProfileHints, withIntentClaims } from "./catalog-view.ts";
 import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
 
 const ADMITTING_METHODS: ReadonlySet<string> = new Set(["task-submit", "profile-update", "resolve-agent", "submit", "report", "rewind", "command", "compact", "spawn", "place", "reset", "timer-schedule", "collaboration-mutate", "passive-submit"]);
+const FOREIGN_OBSERVATION_METHODS: ReadonlySet<string> = new Set(["inspect", "status", "snapshot", "dashboard", "profile-read"]);
 /** Coalesce a burst of native commits into one catalog view publication. */
 const PUBLISH_COALESCE_MS = 250;
 /** A release decision waits this long for the delivery driver's scheduled pass before it refuses on a stale summary. */
@@ -381,7 +382,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 				if (!readPrimaryEndpointDescriptor(dirname(dirname(metadata.storagePath)), sessionId).info) throw new Error("The exact native target is not retained and no ordinary primary is registered");
 				return await primaryControl(method, params, sessionId);
 			}
-			if (["inspect", "status", "snapshot", "dashboard", "profile-read"].includes(method)) {
+			if (FOREIGN_OBSERVATION_METHODS.has(method)) {
 				const caller = { id: typeof params.senderIdentity === "string" ? params.senderIdentity : metadata.storageId, cwd: metadata.cwd };
 				return await manager.control(method, params, caller, { signal: context?.abortSignal });
 			}
@@ -406,11 +407,17 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	}
 	async function dispatchForeign(method: string, params: Record<string, unknown>, sessionId: string, context?: Context): Promise<unknown> {
 		if (runtimeUnavailable() || reloading) throw new Error("Durable host is closed or reloading");
+		const observation = FOREIGN_OBSERVATION_METHODS.has(method);
+		if (observation) context?.abortSignal?.throwIfAborted();
 		activeRequests++;
 		activityGeneration++;
 		if (ADMITTING_METHODS.has(method)) { activeAdmissions++; cancelRequestedRelease(); }
-		try { return await foreignControl(method, params, sessionId, context); }
-		finally { if (ADMITTING_METHODS.has(method)) activeAdmissions--; activeRequests--; scheduleRecoveryMarker(); notifyActivity(); }
+		// Activity owns the full read and manager disposal, even after its caller stops waiting.
+		const work = Promise.resolve().then(() => foreignControl(method, params, sessionId, context)).finally(() => {
+			if (ADMITTING_METHODS.has(method)) activeAdmissions--;
+			activeRequests--; scheduleRecoveryMarker(); notifyActivity();
+		});
+		return observation ? awaitWithContext(work, context ?? BACKGROUND_CONTEXT) : work;
 	}
 	const readStoragePage = async (params: Record<string, unknown>, context: Context): Promise<unknown> => {
 		const input = storageStatusPageInput(params);

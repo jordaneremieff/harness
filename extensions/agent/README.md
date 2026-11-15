@@ -3123,7 +3123,9 @@ a token request after close.
   profiles, dashboard data, and snapshots from ordinary and Durable callers.
   A retained storage remains readable after its working directory is removed.
   Cold status reports `live: false` and does not claim a loaded inventory or
-  a process ID. Attach and mutations keep their separate host-acquisition paths.
+  a process ID. A supplied cancellation ends the observation caller's wait;
+  the runtime retains activity until the read and manager cleanup finish.
+  Attach and mutations keep their separate host-acquisition paths.
 - Each host start uses the caller's running Pi installation, not the installation
   path retained when the catalog record was created. A primary supplies its
   running package directory; a Durable host supplies its own for foreign controls,
