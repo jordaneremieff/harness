@@ -28,6 +28,10 @@ final class WindowManager: NSObject, NSWindowDelegate {
 
     var readerWindowCount: Int { readers.count }
 
+    func selectStore(_ root: String) async {
+        await libraryModel?.selectStore(root)
+    }
+
     func closeReaders() async {
         let models = readers.values.map(\.model)
         for model in models { await model.close() }
@@ -134,7 +138,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
         }
     }
 
-    func showLibrary(openFile: @escaping () -> Void) {
+    func showLibrary(openFile: @escaping () -> Void, openStore: @escaping () -> Void) {
         if let libraryWindow {
             libraryWindow.makeKeyAndOrderFront(nil)
             Task { await libraryModel?.reload() }
@@ -144,7 +148,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
         let model = LibraryModel(state: state, extraRoots: defaultRoots)
         let view = LibraryView(model: model, open: { [weak self] reference in
             self?.open(reference, revision: nil, origin: nil)
-        }, openFile: openFile)
+        }, openFile: openFile, openStore: openStore)
         let host = NSHostingController(rootView: view)
         host.sizingOptions = []
         host.sceneBridgingOptions = [.toolbars]

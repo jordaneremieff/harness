@@ -36,6 +36,7 @@ struct ReadingStateFile: Codable, Sendable {
     var positions: [String: ReadingPosition] = [:]
     var recents: [RecentDocument] = []
     var knownRoots: [String] = []
+    var selectedStoreRoot: String?
     var settings = PageSettings()
 }
 
@@ -140,7 +141,7 @@ public final class ReadingStateStore {
     public private(set) var lastRecovery: URL?
 
     private enum ChangeKey: Hashable {
-        case position(String), recent(String), forgotten(String), root(String), settings
+        case position(String), recent(String), forgotten(String), root(String), settings, selectedStore
     }
 
     private struct FlushWaiter {
@@ -158,6 +159,7 @@ public final class ReadingStateStore {
             case .forgotten(let key): result.forgotten.insert(key)
             case .root(let root): result.roots.insert(root)
             case .settings: result.settings = true
+            case .selectedStore: result.selectedStore = true
             }
         }
         return result
@@ -178,8 +180,10 @@ public final class ReadingStateStore {
         var forgotten: Set<String> = []
         var roots: Set<String> = []
         var settings = false
+        var selectedStore = false
     }
 
+    public var selectedStoreRoot: String? { state.selectedStoreRoot }
     public var recents: [RecentDocument] { state.recents }
     public var knownRoots: [String] { state.knownRoots }
     public var settings: PageSettings {
@@ -255,6 +259,7 @@ public final class ReadingStateStore {
         let added = ours.knownRoots.filter { changes.roots.contains($0) }
         result.knownRoots = added + theirs.knownRoots.filter { !added.contains($0) }
         if changes.settings { result.settings = ours.settings }
+        if changes.selectedStore { result.selectedStoreRoot = ours.selectedStoreRoot }
         return bounded(result)
     }
 
@@ -282,6 +287,17 @@ public final class ReadingStateStore {
             let excess = state.positions.sorted { $0.value.savedAt < $1.value.savedAt }.prefix(state.positions.count - Self.positionLimit)
             for (key, _) in excess { state.positions.removeValue(forKey: key) }
         }
+        scheduleSave()
+    }
+
+    /// Remembers an explicitly selected, validated store without creating a document recent.
+    public func selectStore(root: String) {
+        state.selectedStoreRoot = root
+        mark(.selectedStore)
+        state.knownRoots.removeAll { $0 == root }
+        state.knownRoots.insert(root, at: 0)
+        state.knownRoots = Array(state.knownRoots.prefix(Self.rootLimit))
+        mark(.root(root))
         scheduleSave()
     }
 

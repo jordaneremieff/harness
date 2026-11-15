@@ -38,6 +38,15 @@ public final class LibraryModel {
 
     public private(set) var sections: [Section] = []
     public private(set) var loading = false
+    public private(set) var availableRoots: [String] = []
+    public private(set) var selectionFailure: String?
+    public var selectedRoot: String? { state.selectedStoreRoot ?? extraRoots.first ?? state.knownRoots.first }
+    public var persistenceNote: String? {
+        if state.isSaving { return "Reading state: save in progress." }
+        if state.hasPendingChanges { return "Reading state: changes are not saved yet." }
+        if state.lastRecovery != nil { return "Reading state: the reader kept an unreadable state file during recovery." }
+        return nil
+    }
     public var filter = ""
     public var kind = "all"
     public var sourceFilter = ""
@@ -49,6 +58,7 @@ public final class LibraryModel {
     private var examined: Set<String> = []
     private var matches: Set<String> = []
     private var sourceFailures = 0
+    private var pendingRoot: String?
     @ObservationIgnored private var scans: [String: ScanContext] = [:]
     @ObservationIgnored let state: ReadingStateStore
     @ObservationIgnored let extraRoots: [String]
@@ -75,13 +85,15 @@ public final class LibraryModel {
         loading = true
         state.reload()
         var roots: [String] = []
-        for root in state.knownRoots + extraRoots where !roots.contains(root) { roots.append(root) }
+        for root in [selectedRoot].compactMap({ $0 }) + state.knownRoots + extraRoots where !roots.contains(root) { roots.append(root) }
+        availableRoots = roots
+        let selected = selectedRoot.map { [$0] } ?? []
         let recents = state.recents
         let loaded = await Task.detached { () -> ([Section], [String: ScanContext]) in
             let recentRows = recents.map { Row(reference: $0.reference, title: $0.title, detail: Self.recentDetail($0)) }
             var sections = [Section(id: "recent", title: "Recently Read", rows: recentRows, note: recentRows.isEmpty ? "Documents you open appear here." : nil)]
             var scans: [String: ScanContext] = [:]
-            for root in roots {
+            for root in selected {
                 do {
                     let store = try DirectoryStore(root: URL(fileURLWithPath: root))
                     for collection in StoreCollection.allCases {
@@ -105,6 +117,34 @@ public final class LibraryModel {
         scans = loaded.1
         clearSourceSearch()
         loading = false
+        await applyPendingSelection()
+    }
+
+    private func applyPendingSelection() async {
+        guard let root = pendingRoot else { return }
+        pendingRoot = nil
+        await selectStore(root)
+    }
+
+    public func selectStore(_ root: String) async {
+        guard !loading else { pendingRoot = root; return }
+        loading = true
+        let result = await Task.detached { () -> Result<String, any Error> in
+            Result {
+                let store = try DirectoryStore(root: URL(fileURLWithPath: root))
+                return FileAccess.canonicalPath(store.root.path)
+            }
+        }.value
+        loading = false
+        switch result {
+        case .success(let root):
+            state.selectStore(root: root)
+            selectionFailure = nil
+            await reload()
+        case .failure(let error):
+            selectionFailure = "Store not selected: \(error). The previous store remains selected."
+            await applyPendingSelection()
+        }
     }
 
     public func loadMore(_ id: String) async {
@@ -113,6 +153,7 @@ public final class LibraryModel {
         let section = await Task.detached { Self.page(context, previous: previous) }.value
         if let index = sections.firstIndex(where: { $0.id == id }) { sections[index] = section }
         loading = false
+        await applyPendingSelection()
     }
 
     private nonisolated static func page(_ context: ScanContext, previous: Section) -> Section {
@@ -204,6 +245,7 @@ public final class LibraryModel {
         sourceFailures += result.2
         sourceSearchNote = "Source search: \(examined.count) sources checked, \(matches.count) matched, \(sourceFailures) unavailable. Only checked sources under the metadata selection are covered. Read more directory entries to reach other documents."
         loading = false
+        await applyPendingSelection()
     }
 
     nonisolated static func title(_ root: String, _ collection: StoreCollection) -> String {
@@ -232,20 +274,32 @@ public struct LibraryView: View {
     @Bindable var model: LibraryModel
     let open: (DocumentReference) -> Void
     let openFile: () -> Void
+    let openStore: (() -> Void)?
     @State private var selection: String?
 
-    public init(model: LibraryModel, open: @escaping (DocumentReference) -> Void, openFile: @escaping () -> Void) {
+    public init(model: LibraryModel, open: @escaping (DocumentReference) -> Void, openFile: @escaping () -> Void, openStore: (() -> Void)? = nil) {
         self.model = model
         self.open = open
         self.openFile = openFile
+        self.openStore = openStore
     }
 
     public var body: some View {
         VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                if !model.availableRoots.isEmpty {
+                    Picker("Store", selection: Binding(get: { model.selectedRoot ?? "" }, set: { root in Task { await model.selectStore(root) } })) {
+                        ForEach(model.availableRoots, id: \.self) { root in Text(LibraryModel.abbreviated(root)).tag(root) }
+                    }.disabled(model.loading)
+                }
+                if let failure = model.selectionFailure { Text(failure).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+                if let note = model.persistenceNote { Text(note).font(.caption).foregroundStyle(.secondary) }
+            }.padding(.horizontal, 10).padding(.top, 8)
             metadataControls
             List(selection: $selection) {
                 ForEach(model.sections) { section in
                     Section(section.title) {
+                        if let note = section.note { Text(note).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
                         ForEach(model.visibleRows(section)) { row in
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(row.title).lineLimit(1)
@@ -256,7 +310,6 @@ public struct LibraryView: View {
                             .accessibilityElement(children: .combine)
                             .accessibilityAction(named: "Open") { open(row.reference) }
                         }
-                        if let note = section.note { Text(note).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
                         if section.hasMore {
                             Button("Read Next Documents") { Task { await model.loadMore(section.id) } }.disabled(model.loading)
                         }
@@ -279,7 +332,8 @@ public struct LibraryView: View {
         .toolbar {
             ToolbarItemGroup {
                 Button { Task { await model.reload() } } label: { Label("Reload", systemImage: "arrow.clockwise") }.disabled(model.loading)
-                Button { openFile() } label: { Label("Open File…", systemImage: "folder") }
+                Button { openFile() } label: { Label("Open File…", systemImage: "doc") }
+                if let openStore { Button { openStore() } label: { Label("Open Store Folder…", systemImage: "folder") } }
             }
         }
         .overlay { if model.loading && model.sections.isEmpty { ProgressView() } }

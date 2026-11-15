@@ -49,6 +49,7 @@ struct Verification {
             checks.append(await context.recovery(keep: &keep))
             checks.append(await context.honestLibrary())
             checks.append(await context.libraryContinuation())
+            checks.append(await context.storeSelection())
         } catch {
             checks.append(Check(name: "setup", pass: false, detail: String(describing: error)))
         }
@@ -322,6 +323,33 @@ struct Context {
         } catch {
             return .init(name: "asset-scheme-containment", pass: false, detail: String(describing: error))
         }
+    }
+
+    func storeSelection() async -> Verification.Check {
+        do {
+            let seed = try VerifyStore(root: workspace.appendingPathComponent("selection-seed"))
+            let chosen = try VerifyStore(root: workspace.appendingPathComponent("selection-chosen"))
+            let id = VerifyStore.newId()
+            try seed.write(VerifyStore.newId(), revision: 1, source: "# Seed")
+            try chosen.write(id, revision: 1, source: "# Chosen")
+            let directory = workspace.appendingPathComponent("selection-state")
+            let state = ReadingStateStore(directory: directory)
+            let model = LibraryModel(state: state, extraRoots: [seed.root.path])
+            let scan = Task { await model.reload() }
+            await Task.yield()
+            await model.selectStore(chosen.root.path)
+            await scan.value
+            let selected = state.selectedStoreRoot == chosen.root.path && model.sections.contains { $0.rows.contains { $0.record?.id == id } }
+            let separate = !model.sections.contains { $0.id.hasPrefix(seed.root.path + "|") } && state.recents.isEmpty
+            _ = await state.flush(timeout: 2)
+            let reopened = LibraryModel(state: ReadingStateStore(directory: directory), extraRoots: [seed.root.path])
+            await reopened.reload()
+            let remembered = reopened.selectedRoot == chosen.root.path && reopened.availableRoots.contains(chosen.root.path)
+            await reopened.selectStore(workspace.appendingPathComponent("not-a-store").path)
+            let refused = reopened.selectionFailure != nil && reopened.selectedRoot == chosen.root.path
+            return .init(name: "explicit-store-selection", pass: selected && separate && remembered && refused,
+                         detail: "selected folder shown: \(selected); no merged collections or fake recent: \(separate); choice survives another reader: \(remembered); invalid folder leaves prior choice: \(refused)")
+        } catch { return .init(name: "explicit-store-selection", pass: false, detail: String(describing: error)) }
     }
 
     func libraryContinuation() async -> Verification.Check {

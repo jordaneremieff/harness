@@ -14,6 +14,38 @@ import Testing
         .file(path: "/notes/\(index).md")
     }
 
+    @Test func selectionSurvivesAnotherReadersPositionSave() async throws {
+        let directory = try Self.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = ReadingStateStore(directory: directory)
+        let second = ReadingStateStore(directory: directory)
+        first.selectStore(root: "/stores/selected")
+        #expect(first.recents.isEmpty)
+        #expect(await first.flush(timeout: 2) == .saved)
+        second.setPosition(Self.position("elsewhere", at: 2), for: Self.reference(1))
+        #expect(await second.flush(timeout: 2) == .saved)
+        let later = ReadingStateStore(directory: directory)
+        #expect(later.selectedStoreRoot == "/stores/selected")
+        #expect(later.knownRoots.first == "/stores/selected")
+        #expect(later.position(for: Self.reference(1))?.blockKey == "elsewhere")
+        second.reload()
+        #expect(second.selectedStoreRoot == "/stores/selected")
+    }
+
+    @Test func anUnsavedExplicitSelectionSurvivesReload() async throws {
+        let directory = try Self.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = ReadingStateStore(directory: directory)
+        let second = ReadingStateStore(directory: directory)
+        first.selectStore(root: "/stores/first")
+        second.selectStore(root: "/stores/second")
+        #expect(await second.flush(timeout: 2) == .saved)
+        first.reload()
+        #expect(first.selectedStoreRoot == "/stores/first")
+        #expect(await first.flush(timeout: 2) == .saved)
+        #expect(ReadingStateStore(directory: directory).selectedStoreRoot == "/stores/first")
+    }
+
     @Test func enforcesEveryCollectionLimitWhenDecoding() throws {
         let directory = try Self.directory()
         defer { try? FileManager.default.removeItem(at: directory) }

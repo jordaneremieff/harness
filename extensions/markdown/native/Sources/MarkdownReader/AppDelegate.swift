@@ -28,14 +28,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         return base.appendingPathComponent("Markdown Reader")
     }
 
-    /// The store folder the library shows besides those seen in open requests: the `store` path
-    /// that the build recorded in the bundle's `build.json`, when it holds a store.
+    /// The installation seed used only until the operator selects a store in reading state.
     static func defaultRoots(_ bundle: Bundle = .main) -> [String] {
         guard let resources = bundle.resourceURL,
               let data = try? FileAccess.readRegularFile(resources.appendingPathComponent("build.json"), limit: Limits.recordBytes, missing: .notFound("build.json")),
               let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let store = manifest["store"] as? String, store.hasPrefix("/"),
-              FileManager.default.fileExists(atPath: store + "/" + StoreFormat.manifestName)
+              let store = manifest["store"] as? String, store.hasPrefix("/")
         else { return [] }
         return [FileAccess.canonicalPath(store)]
     }
@@ -192,7 +190,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     // MARK: - Menu actions
 
     @objc func showLibrary(_ sender: Any?) {
-        windows.showLibrary { [weak self] in self?.openDocument(nil) }
+        windows.showLibrary(openFile: { [weak self] in self?.openDocument(nil) },
+                            openStore: { [weak self] in self?.openStore(nil) })
+    }
+
+    @objc func openStore(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.title = "Open Document Store"
+        panel.prompt = "Select Store"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.begin { [weak self] response in
+            guard response == .OK, let root = panel.url?.path, let self else { return }
+            self.showLibrary(nil)
+            Task { await self.windows.selectStore(root) }
+        }
     }
 
     @objc func openDocument(_ sender: Any?) {
@@ -239,7 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let action = item.action else { return true }
-        if [#selector(showLibrary(_:)), #selector(openDocument(_:)), #selector(openRecent(_:))].contains(action) { return true }
+        if [#selector(showLibrary(_:)), #selector(openDocument(_:)), #selector(openStore(_:)), #selector(openRecent(_:))].contains(action) { return true }
         guard let model = windows.keyModel else { return false }
         switch action {
         case #selector(toggleOutline(_:)):
@@ -340,6 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         recentHolder.submenu = recentMenu
         main.addItem(submenu("File", [
             item("Open…", #selector(openDocument(_:)), "o"),
+            item("Open Store Folder…", #selector(openStore(_:)), "o", [.command, .option]),
             recentHolder,
             item("Library", #selector(showLibrary(_:)), "l", [.command, .shift]),
             .separator(),

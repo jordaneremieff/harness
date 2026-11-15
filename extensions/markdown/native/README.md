@@ -61,7 +61,9 @@ open documents ignore it, so Pi processes that started before a rebuild keep ope
 with the new build. An unknown `--` option ends the app with a usage error, so a caller that
 expects a newer mode never starts the library application instead. `store` is the value of the `markdown.dir` setting at build
 time (`PI_MARKDOWN_DIR`, else `markdown.dir` in `harness.json`, else `<agent dir>/markdown`): the
-store folder that the library shows by default. Rebuild after you change that setting.
+installation seed for the library, not a locked default. **File > Open Store Folder…** selects
+another validated store without a rebuild. The library remembers the explicit selection in its
+separate reading state; that selection takes precedence over the build seed.
 `sourceDigest` covers the manifest, lockfile, sources, licence
 notices and the embedded helper. A running instance keeps its old code until you quit it; the
 script says so when one runs. `terminalOrigin` is present when the checkout has
@@ -133,10 +135,10 @@ Foundation directly.
 - Plain Markdown file: `/usr/bin/open -a "<app>" notes.md`. It opens in place, unsaved, without
   a terminal origin. A symbolic link opens the file that it names.
 - Library (File > Library, shown when the app starts without a document): recently read
-  documents, the published documents of each known store folder, and a bounded listing of saved
-  responses and file snapshots that says when its scan stopped. The known store folders are the
-  `store` folder recorded in `build.json` and the stores of accepted open requests, which the app
-  remembers. Everything stays openable after every producer exited. An absent collection is
+  documents and bounded collections from one selected store. The store picker offers known
+  folders from reading state and the build seed; **Open Store Folder…** validates another folder.
+  Selection does not merge stores, alter a store, or create a document recent. Opening a document
+  from another store adds its folder to the choices but does not change an explicit selection. Everything stays openable after every producer exited. An absent collection is
   separate from an unavailable collection. Permission, I/O and malformed-record failures appear
   in the library; usable rows remain visible with bounded omission details, never a claim that
   an unavailable collection has no documents. Bounded results are newest among scanned rows.
@@ -150,7 +152,10 @@ The library reads a bounded page from each collection and offers **Read Next Doc
 entries remain. It keeps one directory cursor per collection until reload. Rows are newest among
 scanned rows, not a promise of the newest documents in the store. Directory changes do not form a
 frozen snapshot; reload starts a new scan. Scans retain usable rows and name record omissions and
-read failures. The library reloads shared recents and known store folders before each scan.
+read failures before the rows. The library reloads shared recents, known store folders and the
+selected store before each scan. It reports pending reading-state saves and state-file recovery.
+An unavailable selected store remains selected with its error; it never falls back silently to
+the build seed. Invalid folder selections leave the previous choice intact.
 
 Metadata selection filters scanned title/ID, kind, source path or workspace, and the UTC update
 date. Missing source metadata does not remove an otherwise usable row; those rows report that
