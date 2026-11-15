@@ -13,14 +13,15 @@ public struct ImageEvidence: Equatable, Sendable {
 
 extension PageScript {
     static let waitForImages = """
-    const states = globalThis.readerImageDecodeStates ||= new WeakMap();
+    const states = globalThis.readerImageDecodeStates ||= new Map();
     const pending = [...document.querySelectorAll('img[data-asset]')].filter(i => i.dataset.imageRendering === rendering).map(i => {
-      if (!states.has(i)) {
+      const key = rendering + ':' + i.dataset.asset;
+      if (!states.has(key)) {
         const state = { result: 'pending' };
         state.promise = i.decode().then(() => { state.result = 'decoded'; }, () => { state.result = 'failed'; });
-        states.set(i, state);
+        states.set(key, state);
       }
-      return states.get(i).promise;
+      return states.get(key).promise;
     });
     let timer;
     const settled = await Promise.race([
@@ -35,7 +36,7 @@ extension PageScript {
     const images = [...document.querySelectorAll('img[data-asset]')].filter(i => i.dataset.imageRendering === rendering);
     return images.map(i => {
       const token = i.dataset.asset;
-      const decoded = globalThis.readerImageDecodeStates?.get(i)?.result;
+      const decoded = globalThis.readerImageDecodeStates?.get(rendering + ':' + token)?.result;
       const reason = failures[token] || (decoded === 'failed' ? 'Image decode failed.' : null);
       if (reason) {
         let placeholder = i.nextElementSibling;

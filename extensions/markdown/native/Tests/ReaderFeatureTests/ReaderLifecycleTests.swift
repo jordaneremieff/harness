@@ -94,6 +94,26 @@ private final class LifecycleGate {
         return window
     }
 
+    @Test func decodedImageEvidenceSurvivesSeparateDOMCalls() async throws {
+        let directory = try ReadingStateIntake.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let svg = Data("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"30\"><rect width=\"40\" height=\"30\" fill=\"green\"/></svg>".utf8)
+        try svg.write(to: directory.appendingPathComponent("diagram.svg"))
+        let source = directory.appendingPathComponent("document.md")
+        try Data("![Diagram](diagram.svg)".utf8).write(to: source)
+        let model = model(reference: .file(path: source.path), state: ReadingStateStore(directory: nil))
+        let window = window(model)
+        defer { window.close() }
+        await model.open(revision: nil, origin: nil)
+        let first = await model.inspectImages()
+        _ = try? await model.page.callJavaScript("return [...document.images].map(i => i.complete && i.naturalWidth > 0);", contentWorld: PageScript.world)
+        let second = await model.inspectImages()
+        #expect(first.count == 1 && first.first?.displayed == true)
+        #expect(second.count == 1 && second.first?.displayed == true)
+        #expect(second.first?.served == true && second.first?.failure == nil)
+        await model.close()
+    }
+
     @Test func supersedingOpenDoesNotWaitForImageInspection() async throws {
         let store = try LifecycleStore()
         defer { try? FileManager.default.removeItem(at: store.root) }

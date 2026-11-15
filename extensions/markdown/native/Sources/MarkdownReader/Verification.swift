@@ -291,6 +291,7 @@ struct Context {
             let loaded = await wait(seconds: 3) {
                 (await js(model, "const i = document.querySelector('img'); return !!i && i.complete && i.naturalWidth > 0") as? Bool) ?? false
             }
+            let displayedEvidence = await model.inspectImages().contains { $0.reference == "good.png" && $0.served && $0.displayed && $0.failure == nil }
             let linkedShown = model.rendered?.unavailableImages.first?.reason == "outside-root"
             let refusedBefore = model.refusedAssetRequests
             // Requests the renderer never produces: traversal, unknown token, other host.
@@ -318,8 +319,8 @@ struct Context {
             let beforeSwap = model.refusedAssetRequests
             _ = await js(model, "const img = document.createElement('img'); img.src = 'reader-asset://doc/a0?again'; document.body.appendChild(img); return true;")
             let swapRefused = await wait(seconds: 3) { model.refusedAssetRequests > beforeSwap }
-            let pass = loaded && linkedShown && refused && swapRefused && mutationRefused && qualified
-            return .init(name: "asset-scheme-containment", pass: pass, detail: "retained image decoded: \(loaded); symlink escape shown as unavailable: \(linkedShown); traversal, unknown token and other host refused: \(refused); same-size mutation refused: \(mutationRefused), qualified page failure: \(qualified); file swapped for a symlink refused: \(swapRefused)")
+            let pass = loaded && displayedEvidence && linkedShown && refused && swapRefused && mutationRefused && qualified
+            return .init(name: "asset-scheme-containment", pass: pass, detail: "retained image decoded: \(loaded), displayed evidence: \(displayedEvidence); symlink escape shown as unavailable: \(linkedShown); traversal, unknown token and other host refused: \(refused); same-size mutation refused: \(mutationRefused), qualified page failure: \(qualified); file swapped for a symlink refused: \(swapRefused)")
         } catch {
             return .init(name: "asset-scheme-containment", pass: false, detail: String(describing: error))
         }
