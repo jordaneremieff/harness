@@ -40,7 +40,7 @@ extension ReaderModel {
     /// Reads decode evidence through the app's content world. Failed serving gets a visible
     /// qualified placeholder; no project-file fallback or document script is involved.
     public func inspectImages() async -> [ImageEvidence] {
-        guard let rendered, !showingSource else { return [] }
+        guard let rendered, !rendered.assets.isEmpty, !showingSource else { return [] }
         _ = try? await page.callJavaScript(PageScript.waitForImages, contentWorld: PageScript.world)
         var failures: [String: String] = [:]
         for token in rendered.assets.keys {

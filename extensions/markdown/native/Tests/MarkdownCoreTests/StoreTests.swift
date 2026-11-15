@@ -373,7 +373,7 @@ let docC = "md-00000000001111111111"
         ]]
         let dir = try store.addRevision(docA, revision: 1, source: "![a](a.png)", references: references, assets: ["\(Self.hash).png": Self.png])
         let loaded = try DirectoryStore(root: store.root).loadRevision(docA)
-        let resolver = StoredAssetResolver(revisionDirectory: dir, references: loaded.record.references, kind: .published)
+        let resolver = StoredAssetResolver(revisionDirectory: loaded.directory, references: loaded.record.references, kind: .published)
         guard case .local(let asset) = resolver.resolve("a.png") else { Issue.record("expected retained image"); return }
         #expect(try asset.readData() == Self.png)
         #expect(try asset.readData() == Self.png)
