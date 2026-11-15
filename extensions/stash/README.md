@@ -103,6 +103,31 @@ Terminal controls are escaped and long values are clipped.
 All cards tolerate partial arguments and malformed details, and escape terminal
 controls before display.
 
+### Transcript messages
+
+The ordinary extension registers a renderer for each message it shows in the
+transcript. The first line is the bold label `[stash]` in Pi's custom message
+label colour, then what happened in bold text. A muted second line holds the
+known facts; an unknown fact is left out, and a card without known facts has no
+second line:
+
+| Message type | First line | Second line |
+| --- | --- | --- |
+| `stash-redaction` | `[stash] Credentials redacted` | `3 values · JWT 2, Bearer 1` |
+| `stash-budget` | `[stash] Budget notice`, or `Budget reached` at or above a budget | `context 60% of 200k`, and the cost share when Pi records a cost |
+| `stash-budget-status` | `[stash] Budget notices on`, `Budget selected`, or `Budget off` | `200k tokens · USD 5` |
+| `stash-capacity-request` | `[stash] Capacity checkpoint requested`, or `Continuity decision requested` | `context 85%` when Pi estimates context use |
+
+A blank line follows the header. Collapsed, a card shows at most three visual
+lines of the message text, wrapped at word boundaries and without the redaction
+summary or the capacity notice header, then Pi's `... (N more lines, ctrl+o to
+expand)` hint when text is hidden. Expanded, it shows the whole message text as
+Markdown and no hint; a budget notice omits its model-facing `[stash-budget]`
+tag line, which stays in the message text. The facts come from the message's
+own details (redaction report, capacity state) or its own text (budget
+notices). A header line that does not fit ends in `…`. The renderers escape
+terminal controls and change neither the content nor the details.
+
 ## Recover a checkpoint
 
 Use `stash_list({ collection: "checkpoints", query: "topic" })` to find provisional

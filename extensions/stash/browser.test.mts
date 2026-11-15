@@ -48,6 +48,7 @@ function extension(copied: string[] = []) {
 		registerTool: () => {},
 		registerCommand: (name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, command),
 		registerShortcut: (key: string, shortcut: { handler(ctx: ExtensionContext): Promise<void> }) => shortcuts.set(key, shortcut),
+		registerMessageRenderer: () => {},
 		exec: async () => ({ code: 0, stdout: "main\n", stderr: "", killed: false }),
 		sendUserMessage: (content: string, options?: unknown) => sent.push({ content, options }),
 		sendMessage: () => {},

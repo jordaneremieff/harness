@@ -47,6 +47,7 @@ it("publishes only its registered display fields at load and on current requests
 		on() {},
 		registerCommand() {},
 		registerShortcut() {},
+		registerMessageRenderer() {},
 		registerEntryRenderer() {},
 		registerFlag() {},
 		getFlag() {},

@@ -62,6 +62,25 @@ export function budgetNotice(budget: SessionBudget, context: BudgetContext, cost
 	].join("\n");
 }
 
+/** Facts of a retained `budgetNotice` text: each observed share of its budget, or undefined when unavailable. */
+export function budgetNoticeFacts(text: string): { context?: { tokens: number; budget: number }; cost?: { usd: number; budget: number } } | undefined {
+	if (!text.startsWith(BUDGET_NOTICE)) return undefined;
+	const context = /: (\d+) tokens \/ (\d+)-token budget \(/u.exec(text);
+	const cost = /recorded cost: USD (\d+(?:\.\d+)?) \/ USD (\d+(?:\.\d+)?) budget \(/u.exec(text);
+	return {
+		...(context ? { context: { tokens: Number(context[1]), budget: Number(context[2]) } } : {}),
+		...(cost ? { cost: { usd: Number(cost[1]), budget: Number(cost[2]) } } : {}),
+	};
+}
+
+/** Facts of a retained `budgetStatus` text: the selection state and, when selected, both budgets. */
+export function budgetStatusFacts(text: string): { state: "disabled" | "enabled" | "selected"; budget?: SessionBudget } | undefined {
+	const state = text.startsWith("Stash budget: disabled") ? "disabled" : text.startsWith("Stash budget notices: enabled") ? "enabled" : text.startsWith("Stash budget: selected") ? "selected" : undefined;
+	if (!state) return undefined;
+	const budget = /\nContext budget: (\d+) tokens; cost budget: USD (\d+(?:\.\d+)?)\./u.exec(text);
+	return { state, ...(budget ? { budget: { contextTokens: Number(budget[1]), costUsd: Number(budget[2]) } } : {}) };
+}
+
 export function budgetStatus(budget: SessionBudget | undefined, delivery: "turn" | "command" = "turn"): string {
 	if (!budget) return "Stash budget: disabled for this conversation. Select budgets with /stash budget <context-tokens> <cost-usd>.";
 	return [

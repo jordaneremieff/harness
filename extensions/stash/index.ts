@@ -66,6 +66,7 @@ import {
 	renderWriteResult,
 } from "./presentation.ts";
 import { readStashResult } from "./read-result.ts";
+import { renderBudgetMessage, renderBudgetStatusMessage, renderCapacityMessage, renderRedactionMessage, STASH_MESSAGES } from "./message-cards.ts";
 import { mergeRedactionReports, type RedactionReport, redactionNotice, redactSecretsWithReport } from "./redact.ts";
 import { searchStashes } from "./search.ts";
 import {
@@ -90,6 +91,7 @@ type StashExtensionApi = Pick<
 	| "getCommands"
 	| "exec"
 	| "registerCommand"
+	| "registerMessageRenderer"
 	| "registerShortcut"
 	| "registerTool"
 	| "sendUserMessage"
@@ -128,7 +130,7 @@ function notifyCommandRedactions(
 	if (!redactions.count) return;
 	const notice = redactionNotice(redactions);
 	pi.sendMessage(
-		{ customType: "stash-redaction", content: notice, display: true, details: { redactions } },
+		{ customType: STASH_MESSAGES.redaction, content: notice, display: true, details: { redactions } },
 		{ triggerTurn: false },
 	);
 	// Text print ignores custom messages; stderr is its direct notice transport.
@@ -477,6 +479,10 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	const creationStatus = new CreationStatus();
 	const gates = new Map<string, GateState>();
 	const budgets = new Map<string, SessionBudget>();
+	pi.registerMessageRenderer(STASH_MESSAGES.redaction, renderRedactionMessage);
+	pi.registerMessageRenderer(STASH_MESSAGES.budget, renderBudgetMessage);
+	pi.registerMessageRenderer(STASH_MESSAGES.budgetStatus, renderBudgetStatusMessage);
+	pi.registerMessageRenderer(STASH_MESSAGES.capacity, renderCapacityMessage);
 	pi.on("session_shutdown", () => {
 		gates.clear();
 		budgets.clear();
@@ -533,10 +539,10 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	});
 	pi.on("turn_end", (event, ctx) => {
 		const budget = budgets.get(ctx.sessionManager.getSessionId());
-		if (!budget || event.entries.some((entry) => entry.type === "custom_message" && entry.customType === "stash-budget")) return;
+		if (!budget || event.entries.some((entry) => entry.type === "custom_message" && entry.customType === STASH_MESSAGES.budget)) return;
 		const observation = event.entries.some((entry) => entry.type === "compaction")
 			? { kind: "unavailable" as const } : budgetContext(() => ctx.getContextUsage());
-		return { entries: [...event.entries, { type: "custom_message", customType: "stash-budget", content: budgetNotice(budget, observation, ORDINARY_COST), display: true, details: { turnEntryId: event.messageEntryId } }] };
+		return { entries: [...event.entries, { type: "custom_message", customType: STASH_MESSAGES.budget, content: budgetNotice(budget, observation, ORDINARY_COST), display: true, details: { turnEntryId: event.messageEntryId } }] };
 	});
 	registerTool<typeof WriteParams, Record<string, unknown>>({
 		name: "stash_write",
@@ -859,7 +865,7 @@ function budgetCommand(
 	if (action.kind === "set") budgets.set(id, action.budget);
 	else if (action.kind === "off") budgets.delete(id);
 	const message = budgetStatus(budgets.get(id));
-	pi.sendMessage({ customType: "stash-budget-status", content: message, display: true }, { triggerTurn: false });
+	pi.sendMessage({ customType: STASH_MESSAGES.budgetStatus, content: message, display: true }, { triggerTurn: false });
 	if (!ctx.hasUI) console.error(message);
 }
 

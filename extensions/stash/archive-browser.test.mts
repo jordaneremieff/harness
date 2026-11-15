@@ -55,6 +55,7 @@ function command() {
 			if (name === "stash") handler = definition.handler;
 		},
 		registerShortcut: () => {},
+		registerMessageRenderer: () => {},
 		exec: async () => ({ code: 0, stdout: "", stderr: "", killed: false, truncated: false }),
 		sendUserMessage: (content: string) => {
 			sent.push(content);

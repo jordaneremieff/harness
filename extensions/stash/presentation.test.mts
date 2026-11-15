@@ -36,6 +36,7 @@ function registeredTools(): Map<string, ToolDefinition> {
 		on: () => {},
 		registerCommand: () => {},
 		registerShortcut: () => {},
+		registerMessageRenderer: () => {},
 		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
 		sendUserMessage: () => {},
 		exec: async () => ({ code: 0, stdout: "", stderr: "", killed: false, truncated: false }),

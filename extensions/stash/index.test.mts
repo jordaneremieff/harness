@@ -38,6 +38,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 	const tools = new RequiredMap<string, ReturnType<typeof captureTool>>();
 	const commands = new RequiredMap<string, ReturnType<typeof captureCommand>>();
 	const shortcuts = new RequiredMap<string, ReturnType<typeof captureShortcut>>();
+	const renderers = new Map<string, unknown>();
 	const sent: Array<{ content: string; options?: unknown }> = [];
 	const safety: Array<{ message: unknown; options?: unknown }> = [];
 	const events = new RequiredMap<
@@ -54,6 +55,9 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 		},
 		registerShortcut: (key, shortcut) => {
 			shortcuts.set(key, captureShortcut(shortcut));
+		},
+		registerMessageRenderer: (customType, renderer) => {
+			renderers.set(customType, renderer);
 		},
 		exec: async () => ({ code: 0, stdout: "main\n", stderr: "", killed: false, truncated: false }),
 		sendUserMessage: (content, options) => {
@@ -87,7 +91,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 		},
 	};
 	registerStash(pi, overrides);
-	return { tools, commands, shortcuts, sent, safety, events, pi, launches };
+	return { tools, commands, shortcuts, renderers, sent, safety, events, pi, launches };
 }
 
 it("exposes safe reports for write, checkpoint, edit, and completion tools", async () => {
@@ -181,11 +185,12 @@ after(async () => {
 
 describe("stash entrypoint", () => {
 	it("registers lifecycle-aware tools, the /stash command, and the browser shortcut", () => {
-		const { tools, commands, shortcuts } = registry();
+		const { tools, commands, shortcuts, renderers } = registry();
 		assert.deepEqual(
 			[...tools.keys()],
 			["stash_write", "stash_list", "stash_read", "stash_edit", "stash_complete", "stash_rotate"],
 		);
+		assert.deepEqual([...renderers.keys()], ["stash-redaction", "stash-budget", "stash-budget-status", "stash-capacity-request"]);
 		assert.ok(commands.has("stash"));
 		assert.deepEqual([...shortcuts.keys()], ["ctrl+alt+s"]);
 		assert.equal(shortcuts.get("ctrl+alt+s").description, "Open the stash browser");
