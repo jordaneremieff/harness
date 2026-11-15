@@ -322,7 +322,8 @@ APP="<app>/Contents/MacOS/MarkdownReader"
 - `--present` opens one visible window in a prepared state for screen capture and keeps running.
   A store folder as its input presents the library on private in-memory reading state.
   `--embedded yes` uses the pane header without terminal placement; `--text-size` selects an index
-  in `PageSettings.textSizes`. At compact widths the requested outline opens as a popover.
+  in `PageSettings.textSizes`. At compact widths the requested outline opens as a popover;
+  presentation waits for its native did-show event before it prints the capture window numbers.
 - `--return-check` reads an open request without accepting it, opens its document offscreen with
   the request's origin and runs Return to Rex once with the real platform operations.
 - An open request given to `--export-image` or `--present` is read, not accepted.

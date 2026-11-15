@@ -131,6 +131,11 @@ struct CheckRunner {
             while model.phase != .ready, Date() < deadline { try? await Task.sleep(for: .milliseconds(50)) }
             model.outlineVisible = outline
             model.outlineCompact = width < 680
+            let expectsPopover = outline && model.outlineCompact && !(model.rendered?.outline.isEmpty ?? true)
+            let popoverPresented: Task<Void, Never>? = expectsPopover ? Task {
+                for await _ in NotificationCenter.default.notifications(named: NSPopover.didShowNotification).map({ _ in true }) { return }
+            } : nil
+            if popoverPresented != nil { await Task.yield() }
             model.outlinePopoverVisible = outline && model.outlineCompact
             if source { await model.toggleSource() }
             if let review { await model.reviewChanges(base: Int(review), target: model.snapshot?.revision) }
@@ -139,6 +144,7 @@ struct CheckRunner {
                 model.findQuery = find
                 await model.find()
             }
+            await popoverPresented?.value
             await Task.yield()
             window.contentView?.layoutSubtreeIfNeeded()
             window.displayIfNeeded()
