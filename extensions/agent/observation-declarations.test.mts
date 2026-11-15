@@ -30,7 +30,12 @@ it("renders the status product as typed alternatives rather than unknown", () =>
 });
 
 it("keeps the host status declaration separate from the tool status declaration", () => {
-	assert.doesNotMatch(rendered(StatusOutputSchema), /attention\??: "provider-blocked"/u);
+	const host = rendered(StatusOutputSchema);
+	assert.doesNotMatch(host, /attention\??: "provider-blocked"/u);
+	for (const field of ["summarizedUnavailable", "omittedOpenWorkRows"]) {
+		assert.match(rendered(StatusToolOutputSchema), new RegExp(`\\b${field}:`, "u"));
+		assert.doesNotMatch(host, new RegExp(`\\b${field}:`, "u"));
+	}
 	assert.ok(rendered(InspectToolOutputSchema).length < 25_000);
 	assert.ok(rendered(ProfiledListOutputSchema).length < 5_000);
 });

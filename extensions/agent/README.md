@@ -1195,29 +1195,41 @@ renderer. Missing arguments stay absent. For nonpartial results, remaining
 snapshots are never mutated.
 The primary's no-target `agent_status` is a compact fleet overview. Live hosts
 and records created by the caller come first, including idle conversations.
-Other records follow catalog metadata recency. Independent host, recovery, or availability faults make
-any state an attention row; a deliberate stop alone does not. Summary counts
-are semantic groups, not state totals: `working` counts working or starting rows
-without an attention reason, `attention` counts every attention row, and `quiet`
-counts the remaining rows. Summary groups remain independent of roster priority.
+Other records follow catalog metadata recency. Summary counts form disjoint groups,
+not state totals. Explicit catalogue intervention hints, host or recovery faults,
+and failed turns with errors count as `attention`, even when observation is also
+unavailable. Without independent fault evidence, an unavailable owner or state
+counts as `unavailable`. These observations are unknown, not healthy. `working`
+counts working or starting rows without either condition; `quiet` counts the
+remaining retained states, not a current health assertion. A deliberate stop alone
+does not establish an attention reason. Summary groups remain independent of roster priority.
 Each overview row keeps the catalogue's optional `attention` hint
 (`provider-blocked`, `task-blocked`, or `failed-turn`). Excerpts have visible shortening markers. Working and attention rows retain
 identity, cwd, ownership, model, update time, state, cost, partial-cost flag,
 current tool, tool count, duration, latest reply, errors, and recovery health
-when those fields exist. Live or caller-owned quiet rows are not restricted to
-the quiet-history sample, but all rows remain subject to the overview byte limit.
-Other quiet history, connected primaries, and failures have bounded samples and
-explicit `summary` totals rather than silent row drops.
+when those fields exist. Live or caller-owned rows and rows with declared open
+work are not restricted to unavailable or quiet samples. Other unavailable and
+quiet rows have separate bounded samples; connected primaries and failures also
+have bounded samples. `summary.sessions.summarizedUnavailable` and
+`summarizedQuiet` count each group's rows absent from the response, including byte
+exclusions. All rows remain subject to the overview byte limit. Byte reduction
+removes unprotected unavailable and quiet samples before work or fault rows,
+then preserves declared-open-work and source-priority rows ahead of ordinary rows.
+The collapsed card reports supplied-page totals, not sampled-row totals or costs.
 
 `coverage` states source inspections, skipped views, excluded rows, byte omissions,
 and the exact serialized byte size. Its `inventory` reports the priority scan
 and source output limit. `omittedPriorityRows` counts live or caller-owned rows
 excluded by the overview byte limit. `omittedPriorityRecords` counts distinct
 records with at least one such excluded row, even when another row from that
-record remains visible. Counts cover the supplied catalog page,
-not unseen inventory. `complete` remains true for an intentional quiet summary
-only when source coverage is complete; source gaps or byte exclusions make it
-false. `coverage.reasons` names recovery paths and boundaries. The overview
+record remains visible. `omittedOpenWorkRows` counts declared-open-work rows
+excluded by the byte limit. `omitted` counts source-view exclusions plus every
+byte-excluded session row; intentional unavailable and quiet samples do not add
+to it. This is a separate measure from the group summary counts: a byte-excluded
+unavailable or quiet row also contributes to its group's summarised count.
+Counts cover the supplied catalog page, not unseen inventory. `complete` remains
+true for intentional unavailable or quiet summaries only when source coverage is
+complete; source gaps or byte exclusions make it false. `coverage.reasons` names recovery paths and boundaries. The overview
 returns `coverage.nextCursor: null` because `agent_status` accepts no cursor;
 it never exposes the dashboard's catalog cursor. Call `agent_list` without a
 cursor, then call it again with the fields of its returned `coverage.next` to find

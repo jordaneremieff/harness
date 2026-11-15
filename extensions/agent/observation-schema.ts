@@ -362,6 +362,10 @@ const catalogPriorityCoverage = obj({ candidates: count, inspected: count, unrea
 	remainingRows: count, priorityRemainingRows: count, recordByteLimit: count, claimByteLimit: count, outputLimit: count });
 
 const statusOverviewCoverage = { complete: boolean, storagesVisited: count, skipped: count, omitted: count, omittedPrimaries: count, omittedFailures: count, bytes: count, byteLimitReached: boolean, nextCursor: nul(), reasons: arr(string) };
+const overviewSampleSummaryProperties = {
+	primaries: obj({ observed: count, summarized: count }),
+	failures: obj({ observed: count, summarized: count }),
+};
 const overviewProperties = {
 	sessions: arr(AgentConversationSummarySchema),
 	primaries: arr(
@@ -376,8 +380,7 @@ const overviewProperties = {
 	failures: arr(obj({ storageId: string, error: string })),
 	summary: obj({
 		sessions: obj({ observed: count, working: count, attention: count, quiet: count, summarizedQuiet: count }),
-		primaries: obj({ observed: count, summarized: count }),
-		failures: obj({ observed: count, summarized: count }),
+		...overviewSampleSummaryProperties,
 	}),
 	coverage: obj(statusOverviewCoverage),
 	observedAt: string,
@@ -437,8 +440,14 @@ function onlyKeys(keys: readonly string[]): Schema {
 /** A property that must be absent. */
 const absent = opt(false as unknown as Schema<never>);
 
-const toolCoverageProperties = { ...statusOverviewCoverage, inventory: catalogPriorityCoverage, omittedPriorityRows: count, omittedPriorityRecords: count };
-const toolOverviewProperties = { ...overviewProperties, sessions: arr(ToolOverviewRowSchema), coverage: obj(toolCoverageProperties) };
+const toolCoverageProperties = { ...statusOverviewCoverage, inventory: catalogPriorityCoverage, omittedPriorityRows: count, omittedPriorityRecords: count, omittedOpenWorkRows: count };
+const toolOverviewProperties = {
+	...overviewProperties, sessions: arr(ToolOverviewRowSchema), coverage: obj(toolCoverageProperties),
+	summary: obj({
+		sessions: obj({ observed: count, working: count, attention: count, unavailable: count, quiet: count, summarizedUnavailable: count, summarizedQuiet: count }),
+		...overviewSampleSummaryProperties,
+	}),
+};
 const awarenessProperties = { awareness: opt(EffortAwarenessSchema) };
 const singleProperties = { ...singlePayload, conversations: absent, createdAgents: absent, coverage: absent };
 const pluralProperties = { ...pluralPayload, storageId: string, conversation: absent, createdAgents: opt(CreatedAgentsSchema) };

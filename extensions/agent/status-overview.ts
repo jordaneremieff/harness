@@ -29,8 +29,10 @@ export interface StatusOverviewCoverage {
 	readonly omittedPriorityRows: number;
 	/** Distinct records with at least one priority row excluded by the overview byte limit. */
 	readonly omittedPriorityRecords: number;
+	/** Declared-open-work rows excluded by the overview byte limit. */
+	readonly omittedOpenWorkRows: number;
 	readonly skipped: number;
-	/** Host-view omissions plus working or attention byte omissions; inventory counts source-output exclusions. */
+	/** Host-view omissions plus every byte-excluded session row; intentional samples are counted in summary. */
 	readonly omitted: number;
 	readonly omittedPrimaries: number;
 	readonly omittedFailures: number;
@@ -53,7 +55,9 @@ export interface StatusOverview {
 			readonly observed: number;
 			readonly working: number;
 			readonly attention: number;
+			readonly unavailable: number;
 			readonly quiet: number;
+			readonly summarizedUnavailable: number;
 			readonly summarizedQuiet: number;
 		};
 		readonly primaries: { readonly observed: number; readonly summarized: number };
@@ -66,9 +70,10 @@ export interface StatusOverview {
 
 export const STATUS_OVERVIEW_BYTE_LIMIT = 16 * 1024;
 export const STATUS_OVERVIEW_DISCOVERY =
-	"Counts cover the supplied page, not unseen storage. Quiet sessions, primaries, and failures include bounded samples. Call agent_list without a cursor, then repeat its nextCursor to see more. Use agent_status with sessionId and detail:true for full status; agent_inspect retains full text.";
+	"Counts cover the supplied page, not unseen storage. Unavailable and quiet sessions, primaries, and failures include bounded samples. Unavailable observations are unknown, not healthy. Call agent_list without a cursor, then repeat its nextCursor to see more. Use agent_status with sessionId and detail:true for full status; agent_inspect retains full text.";
 const EXCERPT_CHARACTERS = 160;
 const QUIET_SAMPLE = 5;
+const UNAVAILABLE_SAMPLE = 5;
 const PRIMARY_SAMPLE = 3;
 const FAILURE_SAMPLE = 5;
 
@@ -124,18 +129,20 @@ function compact(row: AgentConversationSummary): ToolOverviewRow {
 	return result;
 }
 
-function priority(row: AgentConversationSummary): number {
-	if (
-		row.owner === "unavailable" ||
-		row.state === "unavailable" ||
-		row.health?.lastError ||
-		row.health?.compactionFailure ||
+type OverviewGroup = "working" | "attention" | "unavailable" | "quiet";
+
+/** Independent fault evidence takes precedence over unavailable observation and activity. */
+function group(row: AgentConversationSummary): OverviewGroup {
+	if (row.attention || row.health?.lastError || row.health?.compactionFailure ||
 		(row.health?.autoRetry && row.health.autoRetry.attempt >= row.health.autoRetry.maxAttempts) ||
-		(row.state === "failed" && Boolean(row.error))
-	)
-		return 1;
-	if (row.state === "working" || row.state === "starting") return 0;
-	return 2;
+		(row.state === "failed" && Boolean(row.error))) return "attention";
+	if (row.owner === "unavailable" || row.state === "unavailable") return "unavailable";
+	if (row.state === "working" || row.state === "starting") return "working";
+	return "quiet";
+}
+
+function hasOpenWork(row: AgentConversationSummary): boolean {
+	return (row.openWorkCount ?? 0) > 0;
 }
 
 function byIdentity(a: string, b: string): number {
@@ -152,13 +159,13 @@ function initialOverview(
 		(a, b) => Number(b.rosterOrder.priority) - Number(a.rosterOrder.priority) ||
 			b.rosterOrder.modifiedAt - a.rosterOrder.modifiedAt || byIdentity(a.id, b.id),
 	);
-	const working = ordered.filter((row) => priority(row) === 0).length;
-	const attention = ordered.filter((row) => priority(row) === 1).length;
-	const quiet = ordered.length - working - attention;
-	let sampledQuiet = 0;
+	const totals = { working: 0, attention: 0, unavailable: 0, quiet: 0 };
+	const sampled = { unavailable: 0, quiet: 0 };
 	const selected = ordered.filter((row) => {
-		if (row.rosterOrder.priority || priority(row) < 2 || (count(record(row).openWorkCount) ?? 0) > 0) return true;
-		return sampledQuiet++ < QUIET_SAMPLE;
+		const category = group(row);
+		totals[category]++;
+		if (row.rosterOrder.priority || hasOpenWork(row) || category === "working" || category === "attention") return true;
+		return sampled[category]++ < (category === "quiet" ? QUIET_SAMPLE : UNAVAILABLE_SAMPLE);
 	});
 	const sessions = selected.map(compact);
 	const value = {
@@ -175,10 +182,9 @@ function initialOverview(
 		summary: {
 			sessions: {
 				observed: ordered.length,
-				working,
-				attention,
-				quiet,
-				summarizedQuiet: quiet - selected.filter((row) => priority(row) === 2).length,
+				...totals,
+				summarizedUnavailable: totals.unavailable - selected.filter((row) => group(row) === "unavailable").length,
+				summarizedQuiet: totals.quiet - selected.filter((row) => group(row) === "quiet").length,
 			},
 			primaries: { observed: primaries.length, summarized: Math.max(0, primaries.length - PRIMARY_SAMPLE) },
 			failures: { observed: failures.length, summarized: Math.max(0, failures.length - FAILURE_SAMPLE) },
@@ -186,7 +192,7 @@ function initialOverview(
 		coverage: {
 			complete: false,
 			storagesVisited: page.coverage.storagesVisited,
-			inventory: page.coverage.inventory, omittedPriorityRows: 0, omittedPriorityRecords: 0,
+			inventory: page.coverage.inventory, omittedPriorityRows: 0, omittedPriorityRecords: 0, omittedOpenWorkRows: 0,
 			skipped: page.coverage.skipped,
 			omitted: page.coverage.omitted,
 			omittedPrimaries: 0,
@@ -203,7 +209,7 @@ function initialOverview(
 }
 
 type MutableOverview = ReturnType<typeof initialOverview>;
-type ByteOmissions = { sessions: number; quiet: number; rows: number; priority: number };
+type ByteOmissions = Record<OverviewGroup, number> & { rows: number; priority: number; openWork: number };
 
 function sourceReasons(page: AgentPriorityPage): string[] {
 	const reasons: string[] = [];
@@ -253,20 +259,23 @@ function excludeAwareness(awareness: EffortAwareness | undefined): boolean {
 	return true;
 }
 
+function excludeSession(value: MutableOverview, index: number, dropped: ByteOmissions, priorityIds: ReadonlySet<string>): void {
+	const [row] = value.sessions.splice(index, 1);
+	const category = group(row);
+	dropped[category]++;
+	dropped.priority += Number(priorityIds.has(row.id));
+	dropped.openWork += Number(hasOpenWork(row));
+	if (category === "quiet") value.summary.sessions.summarizedQuiet++;
+	if (category === "unavailable") value.summary.sessions.summarizedUnavailable++;
+	value.coverage.omitted++;
+}
+
 function excludeRow(value: MutableOverview, dropped: ByteOmissions, priorityIds: ReadonlySet<string>): void {
 	const rowBudget = STATUS_OVERVIEW_BYTE_LIMIT - measure({ ...value, sessions: [], primaries: [], failures: [], awareness: undefined });
 	const oversized = value.sessions.findIndex((row) => measure(row) > rowBudget);
-	const last = value.sessions.at(-1);
-	if (oversized >= 0 || (last !== undefined && priority(last) === 2)) {
-		const [row] = value.sessions.splice(oversized >= 0 ? oversized : value.sessions.length - 1, 1);
-		dropped.priority += Number(priorityIds.has(row.id));
-		if (priority(row) === 2) {
-			value.summary.sessions.summarizedQuiet++;
-			dropped.quiet++;
-		} else {
-			dropped.sessions++;
-			value.coverage.omitted++;
-		}
+	const sample = value.sessions.findLastIndex((row) => !priorityIds.has(row.id) && !hasOpenWork(row) && ["quiet", "unavailable"].includes(group(row)));
+	if (oversized >= 0 || sample >= 0) {
+		excludeSession(value, oversized >= 0 ? oversized : sample, dropped, priorityIds);
 	} else if (value.primaries.length > 0) {
 		value.primaries.pop();
 		value.summary.primaries.summarized++;
@@ -279,17 +288,16 @@ function excludeRow(value: MutableOverview, dropped: ByteOmissions, priorityIds:
 		dropped.rows++;
 		return;
 	} else if (value.sessions.length > 0) {
-		const row = value.sessions.pop() as ToolOverviewRow;
-		dropped.priority += Number(priorityIds.has(row.id));
-		dropped.sessions++;
-		value.coverage.omitted++;
+		const ordinary = value.sessions.findLastIndex((row) => !priorityIds.has(row.id) && !hasOpenWork(row));
+		const open = value.sessions.findLastIndex((row) => !priorityIds.has(row.id));
+		excludeSession(value, ordinary >= 0 ? ordinary : open >= 0 ? open : value.sessions.length - 1, dropped, priorityIds);
 	} else {
 		throw new Error("Status overview metadata exceeds the byte limit after every row was summarized or omitted.");
 	}
 	dropped.rows++;
 }
 
-/** Keep coordinator fields on working and attention rows; sample quiet history after those rows. */
+/** Keep priority, declared-work and fault evidence; separately sample unavailable and quiet history. */
 export function buildStatusOverview(
 	page: AgentPriorityPage,
 	primaries: readonly StatusOverviewPrimary[],
@@ -298,17 +306,19 @@ export function buildStatusOverview(
 ): StatusOverview {
 	const value = initialOverview(page, primaries, failures, awareness);
 	const reasons = sourceReasons(page);
-	const dropped: ByteOmissions = { sessions: 0, quiet: 0, rows: 0, priority: 0 };
+	const dropped: ByteOmissions = { working: 0, attention: 0, unavailable: 0, quiet: 0, rows: 0, priority: 0, openWork: 0 };
 	const priorityIds = new Set(page.rows.filter((row) => row.rosterOrder.priority).map((row) => row.id));
 	for (;;) {
 		value.coverage.reasons = [...reasons];
 		value.coverage.omittedPriorityRows = dropped.priority;
+		value.coverage.omittedOpenWorkRows = dropped.openWork;
 		const retained = new Set(value.sessions.map((row) => row.id));
 		value.coverage.omittedPriorityRecords = new Set(page.rows.filter((row) => priorityIds.has(row.id) && !retained.has(row.id)).map((row) => row.storageId)).size;
 		if (dropped.priority) value.coverage.reasons.push(`Status byte limit excluded ${dropped.priority} live or caller-owned rows from ${value.coverage.omittedPriorityRecords} records; a record counts once when any of its priority rows was excluded.`);
+		if (dropped.openWork) value.coverage.reasons.push(`Status byte limit excluded ${dropped.openWork} declared-open-work rows; use targeted agent_status or fresh agent_list discovery.`);
 		if (dropped.rows > 0)
 			value.coverage.reasons.push(
-				`Status byte limit excluded ${dropped.sessions} working or attention rows, ${dropped.quiet} quiet sample rows, ${value.coverage.omittedPrimaries} primary sample rows, and ${value.coverage.omittedFailures} failure sample rows; use fresh agent_list discovery or targeted agent_status. agent_status has no continuation parameter; call agent_list without a cursor to rediscover these rows.`,
+				`Status byte limit excluded ${dropped.working} working rows, ${dropped.attention} attention rows, ${dropped.unavailable} unavailable rows, ${dropped.quiet} quiet rows, ${value.coverage.omittedPrimaries} primary sample rows, and ${value.coverage.omittedFailures} failure sample rows; use fresh agent_list discovery or targeted agent_status. agent_status has no continuation parameter; call agent_list without a cursor to rediscover these rows.`,
 			);
 		if (value.awareness && (!value.awareness.presence.coverage.complete || !value.awareness.threads.coverage.complete || value.awareness.self.omitted)) value.coverage.reasons.push("Effort awareness is partial; its presence, thread, and self coverage identifies omitted observations.");
 		value.coverage.complete = value.coverage.reasons.length === 0 && dropped.rows === 0;

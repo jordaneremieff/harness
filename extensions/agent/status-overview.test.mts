@@ -51,6 +51,10 @@ function check(result: ReturnType<typeof buildStatusOverview>): void {
 	assert.equal(measure(result), result.coverage.bytes);
 	assert.ok(result.coverage.bytes <= STATUS_OVERVIEW_BYTE_LIMIT);
 	structuredObservation(StatusToolOutputSchema, result);
+	const groups = result.summary.sessions;
+	assert.equal(groups.observed, groups.working + groups.attention + groups.unavailable + groups.quiet);
+	assert.ok(groups.summarizedUnavailable >= 0 && groups.summarizedUnavailable <= groups.unavailable);
+	assert.ok(groups.summarizedQuiet >= 0 && groups.summarizedQuiet <= groups.quiet);
 }
 
 it("keeps a small overview complete with an exact strict output schema", () => {
@@ -111,7 +115,7 @@ it("uses catalog recency and identity independently of working and attention sum
 		result.sessions.map((row) => row.id),
 		["agent-90", "agent-4", "agent-3", "agent-2", "agent-2-b", "agent-1"],
 	);
-	assert.deepEqual(result.summary.sessions, { observed: 6, working: 3, attention: 2, quiet: 1, summarizedQuiet: 0 });
+	assert.deepEqual(result.summary.sessions, { observed: 6, working: 3, attention: 1, unavailable: 1, quiet: 1, summarizedUnavailable: 0, summarizedQuiet: 0 });
 	assert.deepEqual(
 		rows.map((row) => row.id),
 		["agent-90", "agent-3", "agent-2", "agent-1", "agent-4", "agent-2-b"],
@@ -248,6 +252,87 @@ it("summarizes rarely needed rows instead of silently dropping them", () => {
 	check(result);
 });
 
+it("classifies independent faults before availability and activity without treating unknown ownership as health", () => {
+	const rows = [
+		summary(1, { state: "working" }),
+		summary(2, { state: "starting" }),
+		summary(3, { state: "unavailable", error: "host metadata unavailable", owner: "unknown" }),
+		summary(4, { state: "working", owner: "unavailable" }),
+		summary(5, { state: "unavailable", health: { lastError: "host fault" } }),
+		summary(6, { state: "unavailable", attention: "task-blocked" }),
+		summary(7, { state: "working", attention: "provider-blocked" }),
+		summary(8, { state: "failed", attention: "failed-turn" }),
+		summary(9, { state: "failed", error: "turn failed" }),
+		summary(10, { state: "stopped", error: "aborted", owner: "unknown" }),
+		summary(11, { state: "idle", owner: "unknown" }),
+	];
+	const result = buildStatusOverview(page(rows), [], []);
+	assert.deepEqual(result.summary.sessions, { observed: 11, working: 2, attention: 5, unavailable: 2, quiet: 2, summarizedUnavailable: 0, summarizedQuiet: 0 });
+	assert.equal(result.sessions.find((row) => row.id === "agent-3")?.error, "host metadata unavailable");
+	assert.equal(result.sessions.find((row) => row.id === "agent-11")?.owner, "unknown");
+	check(result);
+});
+
+it("samples unavailable rows separately while retaining priority, declared work and actual faults", () => {
+	const unavailable = Array.from({ length: 70 }, (_, index) => summary(index, { state: "unavailable", error: "host metadata unavailable" }));
+	const protectedRows = [
+		summary(-1, { state: "unavailable", rosterOrder: { priority: true, modifiedAt: 0 } }),
+		summary(-2, { state: "unavailable", openWorkCount: 2 }),
+	];
+	const faults = Array.from({ length: 8 }, (_, index) => summary(index + 200, { state: "unavailable", attention: "failed-turn" }));
+	const quiet = Array.from({ length: 10 }, (_, index) => summary(index + 100));
+	const result = buildStatusOverview(page([...unavailable, ...protectedRows, ...faults, ...quiet]), [], []);
+	assert.equal(result.summary.sessions.unavailable, 72);
+	assert.equal(result.summary.sessions.attention, 8);
+	assert.equal(result.summary.sessions.summarizedUnavailable, 65);
+	assert.equal(result.summary.sessions.summarizedQuiet, 5);
+	assert.equal(result.sessions.length, 20);
+	for (const row of [...protectedRows, ...faults]) assert.ok(result.sessions.some((item) => item.id === row.id));
+	assert.equal(result.coverage.complete, true, "intentional samples preserve complete source coverage");
+	assert.equal(result.coverage.omitted, 0);
+	check(result);
+});
+
+it("removes newer unavailable samples before older work under byte pressure", () => {
+	const work = Array.from({ length: 10 }, (_, index) => summary(index, { state: "working", cwd: "x".repeat(800) }));
+	const unavailable = Array.from({ length: 70 }, (_, index) => summary(index + 100, { state: "unavailable", cwd: "x".repeat(2000) }));
+	const result = buildStatusOverview(page([...unavailable, ...work]), [], []);
+	assert.equal(result.coverage.byteLimitReached, true);
+	for (const row of work) assert.ok(result.sessions.some((item) => item.id === row.id));
+	const shownUnavailable = result.sessions.filter((row) => row.state === "unavailable").length;
+	assert.equal(result.summary.sessions.summarizedUnavailable, 70 - shownUnavailable);
+	assert.equal(result.coverage.omitted, 5 - shownUnavailable);
+	assert.equal(result.coverage.omittedPriorityRows, 0);
+	check(result);
+});
+
+it("retains old priority and declared-work rows ahead of ordinary work at the byte bound", () => {
+	const priority = summary(-2, { state: "unavailable", rosterOrder: { priority: true, modifiedAt: 0 } });
+	const open = summary(-1, { openWorkCount: 3 });
+	const ordinary = Array.from({ length: 100 }, (_, index) => summary(index + 1, { state: "working", cwd: "x".repeat(600) }));
+	const result = buildStatusOverview(page([priority, open, ...ordinary]), [], []);
+	assert.equal(result.coverage.byteLimitReached, true);
+	for (const row of [priority, open]) assert.ok(result.sessions.some((item) => item.id === row.id));
+	assert.equal(result.coverage.omittedPriorityRows, 0);
+	assert.equal(result.coverage.omittedOpenWorkRows, 0);
+	assert.equal(result.sessions.length + result.coverage.omitted, 102);
+	check(result);
+});
+
+it("reports an irreducible declared-work identity as omitted without truncating its target", () => {
+	const row = summary(1, { id: "x".repeat(100000), openWorkCount: 1, rosterOrder: { priority: true, modifiedAt: 1 }, state: "unavailable" });
+	const result = buildStatusOverview(page([row]), [], []);
+	assert.deepEqual(result.sessions, []);
+	assert.equal(result.summary.sessions.unavailable, 1);
+	assert.equal(result.summary.sessions.summarizedUnavailable, 1);
+	assert.equal(result.coverage.omitted, 1);
+	assert.equal(result.coverage.omittedOpenWorkRows, 1);
+	assert.equal(result.coverage.omittedPriorityRows, 1);
+	assert.equal(result.coverage.omittedPriorityRecords, 1);
+	assert.match(result.coverage.reasons.join(" "), /declared-open-work rows/);
+	check(result);
+});
+
 it("recognizes recovery failures and exhausted retries without treating stopped work as attention", () => {
 	const result = buildStatusOverview(
 		page([
@@ -284,7 +369,7 @@ it("keeps the stopped aborted unknown-owner reproduction quiet without dropping 
 		[],
 		[],
 	);
-	assert.deepEqual(result.summary.sessions, { observed: 5, working: 1, attention: 1, quiet: 3, summarizedQuiet: 0 });
+	assert.deepEqual(result.summary.sessions, { observed: 5, working: 1, attention: 1, unavailable: 0, quiet: 3, summarizedUnavailable: 0, summarizedQuiet: 0 });
 	assert.deepEqual(
 		result.sessions.map((row) => row.id),
 		["agent-10", "agent-9", "agent-8", "agent-2", "agent-1"],
@@ -330,7 +415,7 @@ it("preserves every dashboard health and ownership attention reason on stopped r
 		[],
 		[],
 	);
-	assert.deepEqual(result.summary.sessions, { observed: 5, working: 0, attention: 4, quiet: 1, summarizedQuiet: 0 });
+	assert.deepEqual(result.summary.sessions, { observed: 5, working: 0, attention: 4, unavailable: 0, quiet: 1, summarizedUnavailable: 0, summarizedQuiet: 0 });
 	assert.deepEqual(
 		result.sessions.map((row) => row.id),
 		["agent-20", "agent-19", "agent-18", "agent-17", "agent-16"],
@@ -353,7 +438,7 @@ it("keeps genuine health attention on working and starting rows without overridi
 		[],
 		[],
 	);
-	assert.deepEqual(result.summary.sessions, { observed: 5, working: 2, attention: 2, quiet: 1, summarizedQuiet: 0 });
+	assert.deepEqual(result.summary.sessions, { observed: 5, working: 2, attention: 2, unavailable: 0, quiet: 1, summarizedUnavailable: 0, summarizedQuiet: 0 });
 	assert.deepEqual(
 		result.sessions.map((row) => row.id),
 		["agent-5", "agent-4", "agent-3", "agent-2", "agent-1"],
@@ -361,7 +446,7 @@ it("keeps genuine health attention on working and starting rows without overridi
 	check(result);
 });
 
-it("matches dashboard attention semantics for terminal states and retained error text", () => {
+it("separates unavailable observations from terminal faults and retained error text", () => {
 	const rows = [
 		summary(8, { state: "unavailable" }),
 		summary(7, { state: "failed", error: "failure" }),
@@ -372,7 +457,7 @@ it("matches dashboard attention semantics for terminal states and retained error
 		summary(2, { state: "stopped", error: "aborted", owner: "unknown" }),
 	];
 	const result = buildStatusOverview(page(rows), [], []);
-	assert.deepEqual(result.summary.sessions, { observed: 7, working: 0, attention: 2, quiet: 5, summarizedQuiet: 0 });
+	assert.deepEqual(result.summary.sessions, { observed: 7, working: 0, attention: 1, unavailable: 1, quiet: 5, summarizedUnavailable: 0, summarizedQuiet: 0 });
 	assert.deepEqual(
 		result.sessions.map((row) => row.id),
 		rows.map((row) => row.id),
@@ -450,7 +535,7 @@ it("retains live priority rows ahead of unowned quiet samples under byte pressur
 	assert.equal(result.coverage.complete, false);
 	assert.equal(result.summary.sessions.summarizedQuiet, 1);
 	assert.ok(result.sessions.every((row) => row.state === "working"));
-	assert.equal(result.sessions.length + result.coverage.omitted - 3, 200);
+	assert.equal(result.sessions.length + result.coverage.omitted - 3, 201);
 	assert.equal(result.coverage.nextCursor, null);
 	assert.ok(!JSON.stringify(result).includes("source-cursor"));
 	assert.ok(result.coverage.reasons.some((reason) => reason.includes("byte limit") && reason.includes("agent_list")));

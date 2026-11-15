@@ -51,7 +51,13 @@ it("returns a partial dashboard page with a cursor at the storage bound instead 
 	assert.equal(continuation.coverage.skipped, 1, "the remaining record has no published view");
 	assert.equal(continuation.rows.some((row) => page.rows.some((previous) => previous.id === row.id)), false);
 	assert.equal(observes, 0);
-	const byteBoundPage = { ...page, rows: page.rows.map((row) => ({ ...row, name: "😀".repeat(160) })) };
+	const sampled = structuredObservation(StatusToolOutputSchema, buildStatusOverview(page, [], [])) as StatusOverview;
+	assert.equal(sampled.summary.sessions.unavailable, 320);
+	assert.equal(sampled.summary.sessions.attention, 0);
+	assert.equal(sampled.sessions.length, 5);
+	assert.equal(sampled.summary.sessions.summarizedUnavailable, 315);
+	assert.equal(sampled.coverage.byteLimitReached, false, "unavailable observations have an intentional bounded sample");
+	const byteBoundPage = { ...page, rows: page.rows.map((row) => ({ ...row, name: "😀".repeat(160), health: { lastError: "independent host fault" } })) };
 	const overview = structuredObservation(StatusToolOutputSchema, buildStatusOverview(byteBoundPage, [], [])) as StatusOverview;
 	assert.equal(overview.coverage.byteLimitReached, true, "bounded multibyte names force the status byte limit");
 	assert.equal(overview.coverage.complete, false);

@@ -8,6 +8,9 @@ import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { OpenWorkDependencyView, OpenWorkDetails, OpenWorkView } from "./open-work.ts";
 import { projectReportReceipt } from "./control-result.ts";
+import { buildStatusOverview } from "./status-overview.ts";
+import { coverage as rosterCoverage } from "./dashboard-test-fixture.mts";
+import type { AgentConversationSummary, AgentPrioritySummary } from "./dashboard-types.ts";
 import { CustomMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, TUI_KEYBINDINGS, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import {
@@ -251,16 +254,34 @@ describe("agent result cards", () => {
 				{ id: "e", state: "new", cost: 0, partial: false },
 			],
 			failures: [{ storageId: "broken", error: "unreadable" }],
+			summary: { sessions: { observed: 5, working: 1, attention: 1, unavailable: 0, quiet: 3, summarizedUnavailable: 0, summarizedQuiet: 0 } },
 		};
 		const text = screen(renderAgentResult(result(details), { ...cardKeys, expanded: false, isPartial: false }, theme, context()), 180);
-		assert.match(text, /5 conversations · 1 working · \$0\.75\+\n/);
+		assert.match(text, /5 conversations on supplied page\n1 working · 1 attention\n0 unavailable · 3 quiet/);
 		assert.match(text, /Parser review · working/);
 		assert.match(text, /1 more conversation records/);
 		assert.doesNotMatch(text, /≥|\+\?/);
-		const complete = { ...details, sessions: details.sessions.map((row) => ({ ...row, partial: false })) };
-		assert.match(screen(renderAgentResult(result(complete), { ...cardKeys, expanded: false, isPartial: false }, theme, context()), 180), /\$0\.75\n/);
+		assert.doesNotMatch(text, /\$/, "sampled costs are not fleet totals");
 		assert.match(text, /1 storage unavailable \(unknown, not absent\)/);
 		assert.doesNotMatch(text, /· new/);
+	});
+
+	it("shows disjoint supplied-page totals rather than sampled overview counts at narrow widths", () => {
+		const row = (index: number, state: AgentConversationSummary["state"]): AgentPrioritySummary => ({ id: `agent-${index}`, storageId: `agent-${index}`, cwd: "/work", modifiedAt: index,
+			owner: "unknown", state, cost: 0, partial: false, rosterOrder: { priority: false, modifiedAt: index } });
+		const rows = [...Array.from({ length: 100 }, (_, index) => row(index, "unavailable")), ...Array.from({ length: 20 }, (_, index) => row(index + 100, "idle")), row(200, "working"), { ...row(201, "failed"), error: "turn failed" }];
+		const value = buildStatusOverview({ rows, coverage: rosterCoverage(rows), observedAt: "now" }, [], []);
+		for (const width of [48, 80, 180]) {
+			const card = renderAgentResult(result(value), { ...cardKeys, expanded: false, isPartial: false }, theme, context());
+			const text = screen(card, width);
+			assert.match(text, /122 conversations on supplied page/);
+			assert.match(text, /1 working · 1 attention/);
+			assert.match(text, /100 unavailable · 20 quiet/);
+			assert.match(text, /12 rows shown/);
+			assert.match(text, /95 unavailable · 15 quiet summarised/);
+			assert.match(text, /Unavailable does not mean healthy/);
+			assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
+		}
 	});
 
 	it("summarizes a discovery page with coverage and the next page", () => {

@@ -714,11 +714,14 @@ function commandLines(details: Record<string, unknown>, theme: Theme, context: A
 	return lines;
 }
 
-function sessionSummaryLines(sessions: Record<string, unknown>[], theme: Theme): string[] {
-	const working = sessions.filter((row) => row.state === "working").length;
-	const cost = sessions.reduce((sum, row) => sum + (count(row.cost) ?? 0), 0);
-	const partial = sessions.some((row) => row.partial === true);
-	const lines = [theme.fg("toolOutput", `${sessions.length} conversation${sessions.length === 1 ? "" : "s"} · ${working} working · $${cost.toFixed(2)}${partial ? "+" : ""}`)];
+function sessionSummaryLines(sessions: Record<string, unknown>[], summary: Record<string, unknown>, theme: Theme): string[] {
+	const total = (key: string) => count(summary[key]) ?? "?";
+	const lines = [theme.fg("toolOutput", `${total("observed")} conversations on supplied page`),
+		theme.fg("toolOutput", `${total("working")} working · ${total("attention")} attention`),
+		theme.fg("toolOutput", `${total("unavailable")} unavailable · ${total("quiet")} quiet`),
+		muted(theme, `${sessions.length} rows shown`),
+		muted(theme, `${total("summarizedUnavailable")} unavailable · ${total("summarizedQuiet")} quiet summarised`)];
+	if ((count(summary.unavailable) ?? 0) > 0) lines.push(muted(theme, "Unavailable does not mean healthy"));
 	for (const row of sessions.slice(0, 4)) lines.push(muted(theme, `${text(row.name) ? displayPreview(text(row.name), 120) : displayIdentity(text(row.id)) || "conversation"} · ${text(row.state) || "unknown state"}`));
 	if (sessions.length > 4) lines.push(muted(theme, `${sessions.length - 4} more conversation records`));
 	return lines;
@@ -749,7 +752,8 @@ function storageStatusLines(conversations: readonly unknown[], value: unknown, t
 
 function statusOverviewLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
 	if (Array.isArray(details.sessions)) {
-		const lines = sessionSummaryLines(details.sessions.map(record), theme);
+		const lines = sessionSummaryLines(details.sessions.map(record), record(record(details.summary).sessions), theme);
+		if (record(details.coverage).complete === false) lines.push(theme.fg("warning", "Coverage incomplete; use agent_list"));
 		const failures = array(details.failures).length;
 		if (failures) lines.push(theme.fg("warning", `${failures} storage${failures === 1 ? "" : "s"} unavailable (unknown, not absent)`));
 		lines.push(muted(theme, "agent_list discovers stored conversations"));
