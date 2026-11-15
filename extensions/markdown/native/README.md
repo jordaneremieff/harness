@@ -83,8 +83,8 @@ This runs the swift-testing suites: `MarkdownCoreTests` (GFM rendering and headi
 HTML and unsafe links, images and asset containment, store reading against a fixture in the store
 format including symbolic links and scan bounds, open requests and their removal, the pinned
 digest, the reference inventory, the blocks and line ranges of a source, the bounded comparison
-of two revisions' blocks, lines, words and recorded images, and stepping to revisions outside
-the listed choices), `MacPlatformTests` (the pane helper runner against fake helper
+of two revisions' blocks, lines, words and recorded images, stepping to revisions outside the
+listed choices, and the source lines of a selected passage with their basis), `MacPlatformTests` (the pane helper runner against fake helper
 scripts: each outcome, a timeout, malformed output, refusal, an oversized origin and a helper that
 closes its input; the pane reader's coordinate conversion, window matching, printable
 placeholder text and bounded error lines; search rounds against a model screen with a slow
@@ -102,7 +102,8 @@ and flush receipts before, during and after the write; revision following with a
 preparation: a publication during the first load and during a manual refresh, a newer revision
 during a failing attempt, scrolling during preparation and a text selection; the comparison
 page of two revisions, an image-only revision, a comparison that prepares or fails over the
-document, and revisions older than the listed choices) and
+document, revisions older than the listed choices, and a passage copied with its source from
+the rendering and from the source view) and
 `MarkdownReaderTests` (the built binary in pane mode on a pseudo-terminal, with its own store and
 home folder: `q`, termination, interruption, hang-up and a closed terminal; a held state lock;
 standard error and a terminal that stop reading; store text with terminal controls; the key
@@ -151,6 +152,17 @@ labels for partial responses (length limit,
 stopped, error) and for text written before tool calls. A response's title comes from its
 content (the heading that opens it, else the first text line of its first block); its stored
 title is a provenance label and appears in the provenance line.
+
+**Copy Passage with Source** copies the selected text followed by a reference for a correction
+request: the document ID (the path for a plain file), the shown revision and whether a newer
+one is known, the source digest, the headings above the passage, the numbers of its top-level
+blocks and its source lines. Source lines are stated only on a basis that the source
+establishes. A passage selected in the source view names its own lines, after the reader found
+the text on them. A passage selected in the rendering names exact lines when its text occurs
+verbatim, exactly once, in the Markdown of its enclosing blocks; otherwise the copy labels it
+rendered text and names the lines of the enclosing blocks, which come from the parser's block
+positions. When the page's blocks do not correspond one to one to the source's blocks, the copy
+names no lines. The copy goes to the pasteboard only; the reader sends it nowhere.
 
 Code copy keeps CRLF between lines when every line ending in the document source is CRLF.
 Sources with mixed line endings copy with LF. Markdown container indentation is not part of the
@@ -230,7 +242,7 @@ would not share one function.
 | --- | --- | --- |
 | Open file, Library | File | ⌘O, ⇧⌘L |
 | Show in Finder | File | ⌥⌘R |
-| Copy, Copy Markdown, Select All | Edit | ⌘C, ⇧⌘C, ⌘A |
+| Copy, Copy Passage with Source, Copy Markdown, Select All | Edit | ⌘C, ⌥⌘C, ⇧⌘C, ⌘A |
 | Find, Find Next, Find Previous | Edit > Find | ⌘F, ⌘G, ⇧⌘G |
 | Show Outline, Show Source, Wrap Code Lines | View | ⌃⌘S, ⌥⌘U, ⌥⌘L |
 | Bigger, Smaller, Actual Size text | View | ⌘=, ⌘-, ⌘0 |

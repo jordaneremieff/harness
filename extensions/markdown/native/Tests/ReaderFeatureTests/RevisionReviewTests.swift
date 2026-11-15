@@ -282,3 +282,152 @@ private let imageTwo = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 2, 
         await model.close()
     }
 }
+
+@MainActor
+private final class Pasteboard {
+    var copies: [String] = []
+}
+
+private let notesSource = """
+# Notes
+
+Text with *emphasis* here.
+
+Second paragraph, plain.
+
+"""
+
+@MainActor @Suite(.serialized) struct PassageCitations {
+    private func reader(_ store: ReviewStore, _ pasteboard: Pasteboard) async -> (ReaderModel, NSWindow) {
+        let model = ReaderModel(reference: store.reference, platform: ReaderPlatform(
+            copyText: { pasteboard.copies.append($0) }, openExternal: { _ in false }, reveal: { _ in },
+            returnToTerminal: { _ in TerminalReturnResult(pane: .unavailable("test"), application: .failed("test")) }
+        ), state: ReadingStateStore(directory: nil))
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 420, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: ReaderView(model: model, chrome: .embedded(close: {}, release: {})))
+        window.orderFrontRegardless()
+        await model.open(origin: nil)
+        return (model, window)
+    }
+
+    /// Selects the contents of the keyed blocks `first` through `last` of the rendering.
+    private func select(_ model: ReaderModel, _ first: Int, _ last: Int) async throws {
+        _ = try await model.page.callJavaScript("""
+        const blocks = document.querySelectorAll('.blk[data-key]');
+        const range = document.createRange();
+        range.setStart(blocks[first], 0);
+        range.setEnd(blocks[last], blocks[last].childNodes.length);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return true;
+        """, arguments: ["first": first, "last": last], contentWorld: PageScript.world)
+    }
+
+    @Test func aRenderedPassageCarriesItsDocumentRevisionDigestAndLocator() async throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1, notesSource)
+        let digest = try store.publish(2, notesSource + "\nThird paragraph.\n")
+        let pasteboard = Pasteboard()
+        let (model, window) = await reader(store, pasteboard)
+        defer { window.close() }
+
+        await model.copyPassageWithSource()
+        #expect(pasteboard.copies.isEmpty)
+        #expect(model.notice?.text == "Select a passage first.")
+
+        try await select(model, 2, 2)
+        await model.copyPassageWithSource()
+        #expect(pasteboard.copies.last == """
+        Passage from "Design report" (exact Markdown source text):
+
+        Second paragraph, plain.
+
+        Reference:
+        Document: \(store.id)
+        Revision: 2 (the newest known revision)
+        Source digest: \(digest)
+        Section: Notes
+        Block: 3 of 4
+        Source lines: 5 (exact: the passage occurs once in the Markdown of its block, on these lines)
+
+        """)
+
+        try await select(model, 1, 1)
+        await model.copyPassageWithSource()
+        let rendered = try #require(pasteboard.copies.last)
+        #expect(rendered.hasPrefix("Passage from \"Design report\" (rendered text):\n\nText with emphasis here.\n\nReference:\n"))
+        #expect(rendered.contains("Block: 2 of 4\n"))
+        #expect(rendered.hasSuffix("Source lines: 3 (the enclosing block; the passage is rendered text and its Markdown can differ)\n"))
+        #expect(model.notice?.text == "Copied the passage with its reference: rendered text within source line 3.")
+
+        // A selection that ends at the start of the next block, as a triple click makes it.
+        _ = try await model.page.callJavaScript("""
+        const blocks = document.querySelectorAll('.blk[data-key]');
+        const range = document.createRange();
+        range.setStart(blocks[1], 0);
+        range.setEnd(blocks[2], 0);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return true;
+        """, contentWorld: PageScript.world)
+        await model.copyPassageWithSource()
+        #expect(pasteboard.copies.last?.contains("Block: 2 of 4\n") == true)
+
+        try await select(model, 1, 2)
+        await model.copyPassageWithSource()
+        let across = try #require(pasteboard.copies.last)
+        #expect(across.contains("Block: 2–3 of 4\n"))
+        #expect(across.hasSuffix("Source lines: 3–5 (the enclosing blocks; the passage is rendered text and its Markdown can differ)\n"))
+        await model.close()
+    }
+
+    @Test func aSourceViewPassageAndAnOlderRevisionAreLabelled() async throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let digest = try store.publish(1, notesSource)
+        try store.publish(2, notesSource + "\nThird paragraph.\n")
+        let pasteboard = Pasteboard()
+        let (model, window) = await reader(store, pasteboard)
+        defer { window.close() }
+        await model.goToRevision(1)
+        await model.toggleSource()
+        #expect(model.showingSource)
+        _ = try await model.page.callJavaScript("""
+        const code = document.querySelector('pre.source > code');
+        const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+        const node = walker.nextNode();
+        const from = node.data.indexOf('Text with');
+        const to = node.data.indexOf('Second paragraph') + 'Second paragraph'.length;
+        const range = document.createRange();
+        range.setStart(node, from);
+        range.setEnd(node, to);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return true;
+        """, contentWorld: PageScript.world)
+        await model.copyPassageWithSource()
+        #expect(pasteboard.copies.last == """
+        Passage from "Design report" (exact Markdown source text):
+
+        Text with *emphasis* here.
+
+        Second paragraph
+
+        Reference:
+        Document: \(store.id)
+        Revision: 1 (the newest known revision is 2)
+        Source digest: \(digest)
+        Section: Notes
+        Block: 2–3 of 3
+        Source lines: 3–5 (exact: the passage is the source text on these lines)
+
+        """)
+        await model.close()
+    }
+}

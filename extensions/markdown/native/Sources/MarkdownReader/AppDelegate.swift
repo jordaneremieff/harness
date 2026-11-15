@@ -217,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc func copyMarkdown(_ sender: Any?) { withModel { $0.copyMarkdown() } }
+    @objc func copyPassage(_ sender: Any?) { withModel { await $0.copyPassageWithSource() } }
     @objc func showFind(_ sender: Any?) { withModel { $0.showFind() } }
     @objc func findNext(_ sender: Any?) { withModel { model in model.findVisible = true; await model.find() } }
     @objc func findPrevious(_ sender: Any?) { withModel { model in model.findVisible = true; await model.find(backwards: true) } }
@@ -359,6 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private func editMenu() -> NSMenuItem {
         submenu("Edit", [
             standard("Copy", #selector(NSText.copy(_:)), "c"),
+            item("Copy Passage with Source", #selector(copyPassage(_:)), "c", [.command, .option]),
             item("Copy Markdown", #selector(copyMarkdown(_:)), "c", [.command, .shift]),
             standard("Select All", #selector(NSText.selectAll(_:)), "a"),
             .separator(),

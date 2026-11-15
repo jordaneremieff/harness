@@ -98,6 +98,7 @@ public struct ReaderView: View {
                 if !text.isEmpty { model.platform.copyText(text) }
             }
         }
+        Button("Copy Passage with Source") { Task { await model.copyPassageWithSource() } }
         Button("Copy Markdown") { model.copyMarkdown() }
         Divider()
         Button(model.showingSource ? "Show Document" : "Show Source") { Task { await model.toggleSource() } }
