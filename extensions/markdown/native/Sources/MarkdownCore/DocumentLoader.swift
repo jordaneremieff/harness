@@ -81,20 +81,6 @@ public enum DocumentLoader {
             )
         }
     }
-
-    /// The current revision number of a stored document, or the digest of a plain file, used to
-    /// tell whether an update is available without loading the document.
-    public static func currentMarker(_ reference: DocumentReference) -> String? {
-        switch reference {
-        case .stored(let root, _, let id):
-            guard let store = try? DirectoryStore(root: URL(fileURLWithPath: root)),
-                  let record = try? store.document(id) else { return nil }
-            return String(record.revision)
-        case .file(let path):
-            guard let data = try? FileAccess.readRegularFile(URL(fileURLWithPath: path), limit: Limits.sourceBytes, missing: .notFound(path)) else { return nil }
-            return Digest.sha256(data)
-        }
-    }
 }
 
 extension OpenTarget {

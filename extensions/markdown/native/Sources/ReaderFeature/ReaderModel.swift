@@ -122,7 +122,8 @@ public final class ReaderModel {
     @ObservationIgnored private let router = NavigationRouter()
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var loadPending = false
-    @ObservationIgnored private var watcher: DirectoryWatcher?
+    /// Whether this window can tell that a newer revision exists.
+    public let updates = UpdateObserver()
     @ObservationIgnored let preparations = PreparationQueue<PreparationRequest, Result<PreparedDocument, any Error>>(work: PreparationRequest.prepare)
     @ObservationIgnored private var positionTask: Task<Void, Never>?
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
@@ -392,26 +393,15 @@ public final class ReaderModel {
     // MARK: - Watching the pointer
 
     private func startWatching() {
-        guard watcher == nil, !closed else { return }
-        let directory: URL
-        switch reference {
-        case .stored(let root, _, let id):
-            guard let location = try? DirectoryStore(root: URL(fileURLWithPath: root)).pointerLocation(id) else { return }
-            directory = location
-        case .file(let path):
-            directory = URL(fileURLWithPath: path).deletingLastPathComponent()
-        }
-        watcher = DirectoryWatcher(directory: directory) { [weak self] in
-            Task { @MainActor in await self?.checkForUpdate() }
-        }
+        guard !closed else { return }
+        updates.start(reference) { [weak self] in await self?.checkForUpdate() }
     }
 
     /// Notes a newer revision or a changed file without touching the page.
     public func checkForUpdate() async {
         guard let snapshot, !closed else { return }
         let token = generation
-        let reference = self.reference
-        let marker = await Task.detached { DocumentLoader.currentMarker(reference) }.value
+        let marker = await updates.readMarker(reference)
         guard let marker, token == generation, !closed else { return }
         switch reference {
         case .stored:
@@ -671,7 +661,7 @@ public final class ReaderModel {
         guard !closed else { return }
         closed = true
         generation += 1
-        watcher = nil
+        updates.stop()
         preparations.discardWaiting()
         positionTask?.cancel()
         monitorTask?.cancel()
@@ -717,27 +707,5 @@ extension ReaderModel: NavigationHandling {
         case .documentLoad:
             break
         }
-    }
-}
-
-/// Calls back on the main queue when a directory's entries change.
-final class DirectoryWatcher {
-    private let source: DispatchSourceFileSystemObject?
-
-    init(directory: URL, onChange: @escaping @Sendable () -> Void) {
-        let descriptor = open(directory.path, O_EVTONLY)
-        guard descriptor >= 0 else {
-            source = nil
-            return
-        }
-        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: [.write, .rename, .delete, .extend, .attrib], queue: .main)
-        source.setEventHandler(handler: onChange)
-        source.setCancelHandler { close(descriptor) }
-        source.resume()
-        self.source = source
-    }
-
-    deinit {
-        source?.cancel()
     }
 }

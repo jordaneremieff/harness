@@ -132,6 +132,7 @@ public struct ReaderView: View {
                 Button("Try Again") { Task { await model.refresh() } }
             }
         }
+        if model.snapshot != nil { UpdateObservationBanner(model: model) }
         if let snapshot = model.snapshot, snapshot.completeness.state == .partial {
             Banner(systemImage: "exclamationmark.circle", tint: .orange) {
                 Text(Provenance.completenessText(snapshot.completeness))

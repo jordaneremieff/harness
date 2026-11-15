@@ -104,7 +104,8 @@ during a failing attempt, scrolling during preparation and a text selection; the
 page of two revisions, an image-only revision, a comparison that prepares or fails over the
 document, revisions older than the listed choices, and a passage copied with its source from
 the rendering and from the source view; a burst of refreshes; the preparation queue's bound of
-one running and one waiting request) and
+one running and one waiting request; update observation with an unreadable pointer, a removed
+and restored document folder and a removed plain file) and
 `MarkdownReaderTests` (the built binary in pane mode on a pseudo-terminal, with its own store and
 home folder: `q`, termination, interruption, hang-up and a closed terminal; a held state lock;
 standard error and a terminal that stop reading; store text with terminal controls; the key
@@ -215,6 +216,14 @@ and says so. A load takes effect only after its page displayed: when an update f
 display, the window keeps the last good revision, its state and its page (shown again when the web
 view lost it) and says that the update failed; a window whose first load fails says why. When the
 page's web content process ends, the app reloads the shown revision at the saved position.
+
+When the window cannot tell whether a newer revision exists, it says so: "Updates not observed:
+<reason>. Refresh to check." with a Refresh button, while the shown revision stays readable.
+This happens when the watcher cannot start (for example, the document's folder is gone) or the
+current pointer or plain file cannot be read. A removed or renamed folder starts the watcher
+again on its path. A refresh (Show Latest Revision, ⌘R) starts a missing watcher and reads the
+pointer again; the message goes away once both work. The app logs each such failure once per
+change of reason.
 
 A window prepares one revision at a time. Reading and rendering run to completion once started,
 so a load that starts while another prepares waits, and a newer load replaces the waiting one
