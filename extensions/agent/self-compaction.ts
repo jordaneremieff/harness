@@ -2,6 +2,8 @@ import type { ExtensionContext, TurnEndEvent, TurnEndEventResult } from "@earend
 import { CONTINUITY_SEED } from "./control-guidance.ts";
 
 export const MAX_CONTINUITY_SUMMARY = 32_000;
+/** Displayed notice for a self-compaction request that another boundary handler preempted. */
+export const SELF_COMPACTION_NOTICE = "agent.compaction";
 type BoundaryHandler = (event: TurnEndEvent, ctx: Pick<ExtensionContext, "sessionManager" | "signal">) => TurnEndEventResult | undefined;
 
 /** One explicit request belongs to one tool batch in one native session. */
@@ -40,7 +42,7 @@ export class SelfCompaction {
 		const result = event.toolResults.find((item) => item.toolCallId === request.toolCallId);
 		if (!result || result.isError) return;
 		if (event.entries.some((entry) => entry.type === "compaction")) {
-			return { entries: [...event.entries, { type: "custom_message", customType: "agent.compaction", display: true,
+			return { entries: [...event.entries, { type: "custom_message", customType: SELF_COMPACTION_NOTICE, display: true,
 				content: "Self-compaction was not applied because an earlier boundary handler already proposed compaction. Inspect the current context before another request." }] };
 		}
 		return {

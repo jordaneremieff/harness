@@ -1,7 +1,8 @@
 /**
  * Agent cards render tool call arguments and retained results from native
  * Durable observation values, plus the `agent.peer` message notices the
- * manager returns to the primary. Target labels use roster facts already
+ * manager returns to the primary and the ordinary session's own
+ * `agent.compaction` and `agent.planning-budget` notices. Target labels use roster facts already
  * observed by the primary footer. Rendering opens no storage and changes
  * no execution behavior.
  */
@@ -15,6 +16,7 @@ import { Box, Markdown, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWit
 import { dashboardClock, dashboardTime } from "./dashboard-time.ts";
 import type { Communication } from "./communication.ts";
 import { receiptContinuationLine, resultContinuationLines } from "./control-result.ts";
+import { planningBudgetSelfFacts } from "./continuity-budget.ts";
 
 /**
  * Observed display facts for cards: the roster rows, and in the dashboard also known thread titles and
@@ -101,6 +103,8 @@ class CardText extends Text {
 }
 
 interface CardSections {
+	/** The bracket label of a transcript message, drawn before the title in Pi's custom message label colour. */
+	readonly tag?: string;
 	readonly title?: string;
 	readonly label?: string;
 	readonly metadata?: readonly string[];
@@ -166,7 +170,8 @@ function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOpt
 	const header: string[] = [];
 	const peer = options.peerPadding !== undefined;
 	const labelColor = peer ? "text" : "accent";
-	if (sections.title) header.push(theme.fg(peer ? "text" : "toolTitle", theme.bold(sections.title)) + (sections.label ? theme.fg(labelColor, ` · ${displayText(sections.label).replace(/\s+/gu, " ").trim()}`) : ""));
+	const tag = sections.tag ? `${theme.fg("customMessageLabel", theme.bold(sections.tag))} ` : "";
+	if (sections.title) header.push(tag + theme.fg(peer ? "text" : "toolTitle", theme.bold(sections.title)) + (sections.label ? theme.fg(labelColor, ` · ${displayText(sections.label).replace(/\s+/gu, " ").trim()}`) : ""));
 	const metadata = sections.metadata?.filter(Boolean).map((value) => displayText(value).replace(/\s+/gu, " ").trim()).join(" · ");
 	if (metadata) header.push(theme.fg("muted", metadata));
 	const content = sections.body ?? [];
@@ -217,7 +222,7 @@ class PeerCardBody implements Component {
 	}
 	private hint(hidden: number): string {
 		if (this.sections.hint) return this.sections.hint;
-		return !this.expanded && (hidden > 0 || this.sections.details !== undefined) ? expansionHint(this.options.keys, true) : "";
+		return !this.expanded && (hidden > 0 || this.sections.details !== undefined) ? peerHint(this.options.keys, hidden) : "";
 	}
 	render(width: number): string[] {
 		const lines = PeerCardBody.lines(this.content, width);
@@ -247,10 +252,19 @@ class PeerCardBody implements Component {
 	}
 }
 
-function expansionHint(keys: Pick<KeybindingHints, "keyText"> | undefined, pointer = false): string {
+function expansionHint(keys: Pick<KeybindingHints, "keyText"> | undefined): string {
 	const key = keys?.keyText("app.tools.expand");
-	if (pointer) return key ? `... (click or ${key} to expand)` : "... (click to expand)";
 	return key ? `... (${key} to expand)` : "... (expand for full details)";
+}
+
+/**
+ * Pi's tool-card hint for a message card: `... (2 more lines, ctrl+o to expand)`, or `... (ctrl+o to expand)`
+ * when only source details are hidden. Without a configured key, the click on the card is the way to expand.
+ */
+function peerHint(keys: Pick<KeybindingHints, "keyText"> | undefined, hidden: number): string {
+	const key = keys?.keyText("app.tools.expand");
+	const more = hidden > 0 ? `${hidden} more line${hidden === 1 ? "" : "s"}, ` : "";
+	return `... (${more}${key ? `${key} to expand` : "click to expand"})`;
 }
 
 
@@ -1446,7 +1460,26 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 		theme.fg("dim", "/agent opens the dashboard"),
 	];
 	const subject = details.threadId !== undefined ? text(details.threadTitle) || text(details.threadId) : peerLabel(details);
-	return cardLayout({ title: `[agent] ${label}`, label: subject, metadata: peerMetadata(details), body, details: sourceDetails, previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad, keys: options, message });
+	return cardLayout({ tag: "[agent]", title: label, label: subject, metadata: peerMetadata(details), body, details: sourceDetails, previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad, keys: options, message });
+};
+
+function messageText(content: Parameters<MessageRenderer>[0]["content"]): string {
+	return typeof content === "string" ? content : content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
+}
+
+/** The self-compaction notice: a requested compaction that another boundary handler preempted. */
+export const renderAgentCompactionMessage: MessageRenderer = (message, options, theme) =>
+	cardLayout({ tag: "[agent]", title: "Compaction not applied", body: [noticeBody(messageText(message.content), theme)], previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad, keys: options, message });
+
+/** The planning-budget notice: context use of this session crossed the planning budget of its model. */
+export const renderAgentPlanningBudgetMessage: MessageRenderer = (message, options, theme) => {
+	const content = messageText(message.content);
+	const facts = planningBudgetSelfFacts(content);
+	return cardLayout({
+		tag: "[agent]", title: "Planning budget reached",
+		metadata: facts ? [`${facts.tokens} of ${facts.budget} tokens`, facts.model] : [],
+		body: [noticeBody(content, theme)], previewLines: NOTICE_PREVIEW_LINES,
+	}, theme, { expanded: options.expanded, peerPadding: options.outputPad, keys: options, message });
 };
 
 /** Retained communication kinds in operator words. */
@@ -1523,7 +1556,7 @@ export function renderCommunicationCard(value: Communication, theme: Theme, opti
 	body.push(noticeBody(value.body.text, theme));
 	const sender = value.sender.name ? displayPreview(value.sender.name, 80) : displayIdentity(value.sender.identity);
 	return cardLayout(
-		{ title: `[agent] ${communicationKind(value)}`, label: communicationSubject(value), metadata: [`from ${sender}`, dashboardTime(value.recordedAt, true)], body, details: communicationDetails(value, theme), previewLines: NOTICE_PREVIEW_LINES },
+		{ tag: "[agent]", title: communicationKind(value), label: communicationSubject(value), metadata: [`from ${sender}`, dashboardTime(value.recordedAt, true)], body, details: communicationDetails(value, theme), previewLines: NOTICE_PREVIEW_LINES },
 		theme,
 		{ expanded: options.expanded, peerPadding: options.outputPad ?? 0, keys: options, message: options.message },
 	);

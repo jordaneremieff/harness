@@ -18,3 +18,8 @@ export function planningBudgetSelfId(headId: number, runId: number): string { re
 export function planningBudgetSelfBody(tokens: number, budget: number, model: string, observedAt: number): string {
 	return `Context use reached ${tokens} tokens at ${new Date(observedAt).toISOString()}, at or above the planning budget of ${budget} for ${model}. The budget is a planning preference, not a limit.`;
 }
+/** The facts of a retained `planningBudgetSelfBody` text, or undefined for any other text. */
+export function planningBudgetSelfFacts(text: string): { tokens: number; budget: number; model: string } | undefined {
+	const match = /^Context use reached (\d+) tokens at \S+, at or above the planning budget of (\d+) for (\S+)\. /u.exec(text);
+	return match ? { tokens: Number(match[1]), budget: Number(match[2]), model: match[3] ?? "" } : undefined;
+}

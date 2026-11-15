@@ -69,17 +69,17 @@ import {
 } from "./observation-schema.ts";
 import type { PrimaryIntentClaim } from "./primary-channel.ts";
 import { ORDINARY_CONTINUITY_ENTRY } from "./continuity-facts.ts";
-import { OrdinaryContinuity, deliveredResults } from "./ordinary-continuity.ts";
+import { OrdinaryContinuity, PLANNING_BUDGET_NOTICE, deliveredResults } from "./ordinary-continuity.ts";
 import { formatPrimaryObservation } from "./primary-observation.ts";
 import { PrimaryRetention } from "./primary-retention.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { HandleSchema, ProfileOutputSchema, ProfileParams } from "./profile-schema.ts";
 import { createRestartCommand, type RestartHosts } from "./restart.ts";
 import { DispatchOutputSchema } from "./result-schema.ts";
-import { MAX_CONTINUITY_SUMMARY, SelfCompaction } from "./self-compaction.ts";
+import { MAX_CONTINUITY_SUMMARY, SELF_COMPACTION_NOTICE, SelfCompaction } from "./self-compaction.ts";
 import { retainedSentWork, SENT_WORK_ENTRY } from "./session-work.ts";
 import { publishSettings } from "./settings.ts";
-import { createAgentToolCards, ordinaryWorkCard, renderAgentPeerMessage, type AgentToolCard } from "./tool-cards.ts";
+import { createAgentToolCards, ordinaryWorkCard, renderAgentCompactionMessage, renderAgentPeerMessage, renderAgentPlanningBudgetMessage, type AgentToolCard } from "./tool-cards.ts";
 import { ORDINARY_YIELD_TOOL, registerOrdinaryWork } from "./ordinary-work.ts";
 import { collectToolDisplay, publishToolDisplay } from "./tool-display.ts";
 import { promptProjectTrust } from "./trust-support.ts";
@@ -952,6 +952,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	pi.registerCommand("restart", createRestartCommand({ hosts: agentRestartHosts, managedChild: () => false }));
 	pi.registerMessageRenderer("agent.peer", renderAgentPeerMessage);
+	pi.registerMessageRenderer(SELF_COMPACTION_NOTICE, renderAgentCompactionMessage);
+	pi.registerMessageRenderer(PLANNING_BUDGET_NOTICE, renderAgentPlanningBudgetMessage);
 	pi.on("session_start", async (_event, ctx) => {
 		resetThreadNotices();
 		selfCompaction.clear();

@@ -245,7 +245,7 @@ it("native peer notices keep three visual body lines and one hint only when text
 			const preview = collapsed.slice(first + 3, -1);
 			assert.equal(preview.length, 4, JSON.stringify({ facts, width, preview }));
 			assert.match(preview[0] ?? "", /Opening finding/u);
-			assert.equal(preview.filter((line) => /\(click/u.test(line)).length, 1);
+			assert.equal(preview.filter((line) => /\.\.\. \(/u.test(line)).length, 1);
 			assert.doesNotMatch(preview.slice(0, 3).join("\n"), /FINAL_BODY/u);
 			assert.ok(component.render(width).every((line) => visibleWidth(line) <= width));
 			component.setExpanded(true);
@@ -259,10 +259,10 @@ it("native peer notices keep three visual body lines and one hint only when text
 	for (const content of ["Only one body line", "First line\nSecond line\nThird line"]) {
 		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content, details: { kind: "report", senderIdentity: identity } };
 		const component = new CustomMessageComponent(message, renderAgentPeerMessage);
-		assert.equal((text(component, 160).match(/\(click or ctrl\+o to expand\)/gu) ?? []).length, 1, "hidden source details keep a disclosure hint even when the whole body is visible");
+		assert.equal((text(component, 160).match(/\((?:\d+ more lines?, )?ctrl\+o to expand\)/gu) ?? []).length, 1, "hidden source details keep a disclosure hint even when the whole body is visible");
 		assert.match(text(component, 160), new RegExp(content.split("\n").at(-1) ?? ""));
 		component.setExpanded(true);
-		assert.doesNotMatch(text(component, 160), /\(click/u);
+		assert.doesNotMatch(text(component, 160), /to expand\)/u);
 		assert.match(text(component, 160), /Source details/u);
 	}
 });
@@ -275,7 +275,7 @@ it("a plain click on the header or hint discloses one peer card locally and glob
 	const width = 80;
 	const lines = () => clean(component, width);
 	const click = (y: number, patch: Record<string, unknown> = {}) => component.handleMouse({ type: "click", button: "left", x: 2, y, screenX: 2, screenY: y, width, height: lines().length, shift: false, alt: false, ctrl: false, clickCount: 1, ...patch } as never);
-	const hintRow = () => lines().findIndex((line) => /\(click or ctrl\+o to expand\)/u.test(line));
+	const hintRow = () => lines().findIndex((line) => /\((?:\d+ more lines?, )?ctrl\+o to expand\)/u.test(line));
 	assert.ok(hintRow() > 0);
 	assert.doesNotMatch(lines().join("\n"), /FINAL_BODY|Source details/u);
 	const bodyRow = lines().findIndex((line) => /Opening finding/u.test(line));
@@ -285,7 +285,7 @@ it("a plain click on the header or hint discloses one peer card locally and glob
 	assert.equal(click(hintRow())?.handled, true);
 	assert.match(lines().join("\n"), /FINAL_BODY/u);
 	assert.match(lines().join("\n"), /Source details/u);
-	assert.doesNotMatch(lines().join("\n"), /\(click/u);
+	assert.doesNotMatch(lines().join("\n"), /to expand\)/u);
 	const headerRow = lines().findIndex((line) => /\[agent\]/u.test(line));
 	assert.equal(click(headerRow)?.handled, true, "the header collapses the card again");
 	assert.doesNotMatch(lines().join("\n"), /FINAL_BODY|Source details/u);
@@ -320,7 +320,7 @@ it("peer Markdown and wrapped reasons share the total visual preview bound", (t)
 			const preview = lines.slice(first + 2, -1);
 			assert.equal(preview.length, 4);
 			assert.deepEqual(preview.slice(0, 3), clean(expanded, width).slice(first + 2, first + 5));
-			assert.match(preview.at(-1) ?? "", /\(click/u);
+			assert.match(preview.at(-1) ?? "", /\.\.\. \(/u);
 			assert.doesNotMatch(preview.slice(0, 3).join("\n"), /FINAL_BODY/u);
 		}
 		assert.match(text(expanded), /FINAL_BODY/u);
@@ -351,7 +351,7 @@ it("thread notice headers show the subject before known sender and secondary fac
 	}
 });
 
-it("peer kind, subject and normal body use text while metadata and hints remain muted", (t) => {
+it("peer label uses Pi's custom message label colour, kind, subject and body use text, and metadata and hints remain muted", (t) => {
 	noticeKeys(t);
 	const colors: Array<{ color: string; value: string }> = [];
 	const bold: string[] = [];
@@ -359,12 +359,13 @@ it("peer kind, subject and normal body use text while metadata and hints remain 
 	const card = renderPeerNoticeCard({ content: "First body line\nSecond body line\nThird body line\nFinal body line", details: { threadId: "source/thread", threadTitle: "Parser contract", name: "Parser review", ...model } }, spy, false, cardKeys);
 	assert.ok(card);
 	card.render(160);
-	assert.deepEqual(bold, ["[agent] thread notice"]);
-	for (const value of ["[agent] thread notice", " · Parser contract"]) assert.ok(colors.some((entry) => entry.color === "text" && entry.value === value), value);
+	assert.deepEqual(bold, ["[agent]", "thread notice"]);
+	assert.deepEqual(colors.filter(({ color }) => color === "customMessageLabel").map(({ value }) => value), ["[agent]"]);
+	for (const value of ["thread notice", " · Parser contract"]) assert.ok(colors.some((entry) => entry.color === "text" && entry.value === value), value);
 	assert.ok(colors.some(({ color, value }) => color === "text" && value.includes("First body line")));
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "from Parser review · provider/model · xhigh"));
-	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "... (click or ctrl+o to expand)"));
-	assert.equal(colors.some(({ color }) => ["accent", "customMessageLabel", "customMessageText", "dim"].includes(color)), false);
+	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "... (1 more line, ctrl+o to expand)"));
+	assert.equal(colors.some(({ color }) => ["accent", "customMessageText", "dim"].includes(color)), false);
 	colors.length = 0;
 	const failure = renderPeerNoticeCard({ content: "Failure body", details: { status: "failed", reason: "Diagnostic reason" } }, spy, false, cardKeys);
 	assert.ok(failure); failure.render(160);
@@ -383,12 +384,12 @@ it("peer width clips use one ellipsis while wide headers and expanded details re
 	assert.ok(wide.includes(threadId));
 	assert.ok(wide.includes(`from ${identity}`));
 	assert.ok(wide.includes(`provider/${details.modelId}`));
-	assert.equal((wide.match(/\.\.\. \(click or ctrl\+o to expand\)/gu) ?? []).length, 1);
+	assert.equal((wide.match(/\.\.\. \((?:\d+ more lines?, )?ctrl\+o to expand\)/gu) ?? []).length, 1);
 	assert.doesNotMatch(wide, /…/u);
 	const narrow = clean(card, 20);
 	assert.match(narrow[1] ?? "", /…$/u);
 	assert.match(narrow[2] ?? "", /…$/u);
-	assert.match(narrow.at(-2) ?? "", /^\.\.\. \(click.*…$/u);
+	assert.match(narrow.at(-2) ?? "", /^\.\.\. \(.*…$/u);
 	assert.doesNotMatch(narrow.slice(1, 3).join("\n"), /\.\.\./u);
 	assert.ok(card.render(20).every((line) => visibleWidth(line) <= 20));
 	assert.ok(text(expanded, 400).includes(`threadId: ${threadId}`));

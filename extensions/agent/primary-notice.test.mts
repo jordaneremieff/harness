@@ -264,7 +264,7 @@ it("appends a full wake-false notice and its source details without a primary mo
 	const first = collapsed.findIndex((line) => line.startsWith("[agent]"));
 	assert.equal(collapsed[first + 2], "");
 	assert.deepEqual(collapsed.slice(first + 3, first + 6), ["operator notice body", "Retained result line.", "Retained result line."]);
-	assert.equal(collapsed.filter((line) => line === "... (click to expand)").length, 1);
+	assert.equal(collapsed.filter((line) => /^\.\.\. \(\d+ more lines?, click to expand\)$/u.test(line)).length, 1);
 	assert.equal(collapsed.filter(Boolean).length, 6);
 	assert.equal(collapsed.includes("FINAL_RESULT"), false);
 	component.setExpanded(true);

@@ -351,9 +351,11 @@ owns it. The native-style `... (ctrl+o to expand)` hint applies to the whole
 card, not just its result. All card expansion hints use theme `muted`. Expanded
 cards show no expansion hint. Expanded messages use the plain `Message:` label.
 
-Peer notices in ordinary chat show `... (click or ctrl+o to expand)` whenever
-the preview hides body text or the card holds source details, so a short notice
-never hides its details silently. A plain left click on the card's header or on
+Peer notices in ordinary chat show Pi's tool-card hint whenever the preview
+hides body text or the card holds source details, so a short notice never hides
+its details silently: `... (2 more lines, ctrl+o to expand)` names the hidden
+body lines, and `... (ctrl+o to expand)` stands alone when only source details
+are hidden. Without a configured key the action reads `click to expand`. A plain left click on the card's header or on
 that hint discloses that one card, and a click on the header collapses it again;
 this is local reading state that sends nothing, starts no turn and changes no
 retained content. Clicks on the body text, modified clicks and multi-clicks pass
@@ -481,6 +483,24 @@ marks a correction. The
 status card labels its newest text by role and state: `Latest reply` or
 `Latest input` when idle, and `Replying` or `Working on input` while active.
 Text without a retained author role uses `Latest message` or `Working on the task`.
+
+### Transcript messages
+
+The ordinary entry registers a message renderer for each custom message it
+shows in the transcript. Every card title starts with the bold label `[agent]`
+in Pi's custom message label colour (`customMessageLabel`), then what happened. A muted second line holds the known facts; an unknown fact
+is left out:
+
+| Message type | First line | Second line |
+| --- | --- | --- |
+| `agent.peer` | `[agent] result · Parser review`, `[agent] report · …`, `[agent] thread notice · …` | `provider/model · high` and other known facts |
+| `agent.compaction` | `[agent] Compaction not applied` | none |
+| `agent.planning-budget` | `[agent] Planning budget reached` | `210000 of 200000 tokens · openai-codex/gpt-6.1-sol` |
+
+The compaction and planning-budget cards use the peer card layout: a blank
+line, a preview of at most three visual lines in the text colour, the expansion
+hint only when text is hidden, and the whole notice text when expanded. The planning-budget facts come from the notice's own
+text. The renderers change neither the content nor the details of a message.
 
 ### Continuity tool declarations
 
@@ -3945,7 +3965,8 @@ The first header line uses plain kinds: result, still working, report, thread
 notice, or message from another session. Other kinds keep the sender label on
 that line. The muted second line contains known provider/model, thinking level,
 check-in elapsed time, and cost. A blank line separates the header from the body.
-Peer kinds use bold theme text; their subjects and normal body use theme text.
+The `[agent]` label uses bold text in Pi's custom message label colour; peer
+kinds use bold theme text; their subjects and normal body use theme text.
 Metadata and expansion hints stay muted. Warning colors and native Markdown
 styles retain their meaning. Missing optional facts produce no unknown or
 unavailable header fields. Expected reports and direct messages omit the unsaved

@@ -516,7 +516,7 @@ describe("agent result notice card", () => {
 		assert.ok(collapsed);
 		const text = screen(collapsed);
 		assert.match(text, /\[agent\] result · storage-a/);
-		assert.match(text, /\.\.\. \(click or ctrl\+o to expand\)/u);
+		assert.match(text, /\.\.\. \((?:\d+ more lines?, )?ctrl\+o to expand\)/u);
 		assert.doesNotMatch(text, /Source details:|submissionId:|\/agent opens/u);
 		assert.match(text, /Review: fix the token\./);
 		assert.match(text, /Keep the identifier\./);
@@ -618,7 +618,7 @@ describe("agent result notice card", () => {
 		const text = screen(card);
 		assert.match(text, /\[agent\] result · reader/);
 		assert.match(text, /SECOND READY/);
-		assert.match(text, /\.\.\. \(click or ctrl\+o to expand\)/u);
+		assert.match(text, /\.\.\. \((?:\d+ more lines?, )?ctrl\+o to expand\)/u);
 		assert.doesNotMatch(text, /Source details:|\/agent opens/u);
 		assert.doesNotMatch(text, /Results do not establish/);
 		assert.doesNotMatch(text, /agent_inspect/);
@@ -647,7 +647,7 @@ describe("agent result notice card", () => {
 			assert.equal(lines[2]?.trim(), "provider/model · high");
 			assert.equal(lines[3]?.trim(), "");
 			assert.equal(lines[4]?.trim(), "A short answer.");
-			assert.equal(lines[5]?.trim(), "... (click or ctrl+o to expand)");
+			assert.equal(lines[5]?.trim(), "... (ctrl+o to expand)");
 			assert.equal(lines[6]?.trim(), "");
 			assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 			assert.doesNotMatch(lines.join("\n"), /Open:|Source details|opens the dashboard/);
@@ -668,7 +668,7 @@ describe("agent result notice card", () => {
 			const preview: string[] = collapsed.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
 			assert.equal(preview.length, 9, "two padded lines, a two-tier header, one separator, three body lines and one hint");
 			const full: string[] = expanded.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
-			assert.match(preview[7] ?? "", /\.\.\. \(click or ctrl\+o to expand\)/u);
+			assert.match(preview[7] ?? "", /\.\.\. \((?:\d+ more lines?, )?ctrl\+o to expand\)/u);
 			assert.equal(preview[3]?.trim(), "");
 			assert.deepEqual(preview.slice(4, 7), full.slice(4, 7));
 			assert.equal(preview.filter((line) => /to expand/u.test(line)).length, 1);
@@ -693,7 +693,7 @@ describe("agent result notice card", () => {
 			const lines = components.flatMap((component) => component.render(width)).map((line) => stripVTControlCharacters(line).trimEnd());
 			assert.equal(lines.length, 32, "four native separators and four padded two-tier cards with header separators and hints");
 			assert.equal(lines.filter((line) => line.trim() === "").length, 16);
-			assert.equal(lines.filter((line) => line.trim()).at(-1)?.trim(), "... (click or ctrl+o to expand)");
+			assert.equal(lines.filter((line) => line.trim()).at(-1)?.trim(), "... (ctrl+o to expand)");
 			const first = components[0];
 			assert.ok(first);
 			first.setExpanded(true);
