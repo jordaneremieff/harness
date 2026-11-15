@@ -50,6 +50,7 @@ struct Verification {
             checks.append(await context.honestLibrary())
             checks.append(await context.libraryContinuation())
             checks.append(await context.storeSelection())
+            checks.append(await context.revisionExports(keep: &keep))
         } catch {
             checks.append(Check(name: "setup", pass: false, detail: String(describing: error)))
         }
@@ -324,6 +325,47 @@ struct Context {
         } catch {
             return .init(name: "asset-scheme-containment", pass: false, detail: String(describing: error))
         }
+    }
+
+    func revisionExports(keep: inout [NSWindow]) async -> Verification.Check {
+        do {
+            let png = Self.png()
+            let name = String(VerifyStore.digest(png).dropFirst(7)) + ".png"
+            let id = VerifyStore.newId()
+            let references: [String: Any] = ["state": "inspected", "items": [
+                ["kind": "image", "reference": "diagram.png", "state": "retained", "file": "assets/\(name)", "mediaType": "image/png", "bytes": png.count, "digest": VerifyStore.digest(png)]
+            ]]
+            let directory = try store.write(id, revision: 1, source: "# Selected export\n\n![Diagram](diagram.png)\n", references: references, assets: [name: png])
+            try store.write(id, revision: 2, source: "# Later revision")
+            let archive = workspace.appendingPathComponent("selected-archive")
+            let sharing = workspace.appendingPathComponent("selected-sharing")
+            let pdf = workspace.appendingPathComponent("selected-page.pdf")
+            var platform = CheckRunner.platform()
+            platform.exportRevision = { snapshot, form in
+                let target = form == .archive ? archive : sharing
+                try await Task.detached { try RevisionExporter.export(snapshot, to: target, form: form) }.value
+                return target
+            }
+            platform.savePDF = { data, _ in try data.write(to: pdf); return pdf }
+            let model = ReaderModel(reference: store.reference(id), platform: platform, state: windows.state)
+            keep.append(CheckRunner.offscreenWindow(page: model.page, width: 620, height: 700))
+            await model.open(revision: 1, origin: nil)
+            await model.exportRevision(.archive)
+            await model.exportRevision(.sharing)
+            await model.exportCurrentPagePDF()
+            let source = try Data(contentsOf: directory.appendingPathComponent("source.md"))
+            let exact = try Data(contentsOf: archive.appendingPathComponent("source.md")) == source
+                && Data(contentsOf: archive.appendingPathComponent("revision.json")) == Data(contentsOf: directory.appendingPathComponent("revision.json"))
+            let shared = await open(.file(path: sharing.appendingPathComponent("document.md").path), revision: nil, keep: &keep)
+            let evidence = await shared.inspectImages()
+            let portable = evidence.contains { $0.served && $0.displayed && $0.failure == nil }
+                && !FileManager.default.fileExists(atPath: sharing.appendingPathComponent("revision.json").path)
+            let pdfBytes = try Data(contentsOf: pdf)
+            let rendered = pdfBytes.starts(with: Data("%PDF".utf8))
+            let unchanged = try Data(contentsOf: directory.appendingPathComponent("source.md")) == source
+            return .init(name: "selected-revision-exports", pass: exact && portable && rendered && unchanged,
+                         detail: "selected archival bytes exact: \(exact); derived sharing image displayed without original records: \(portable); current page PDF produced: \(rendered); original source unchanged: \(unchanged)")
+        } catch { return .init(name: "selected-revision-exports", pass: false, detail: String(describing: error)) }
     }
 
     func storeSelection() async -> Verification.Check {

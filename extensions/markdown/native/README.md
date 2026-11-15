@@ -171,6 +171,32 @@ through unchecked sources. Its checked, matched and unavailable totals do not cl
 unscanned documents; read more directory entries to reach them. Reload clears source-search
 results. No derived index or document mutation is involved.
 
+## Export
+
+**Document > Export Revision Archive…** and **Export Sharing Copy…** export the selected retained
+revision, not an implicit refresh to the latest revision. The same actions appear in the Details
+**Export** menu. Each action creates a new folder outside the document store, never overwrites an
+existing destination, and publishes the folder only after every required copy succeeds.
+
+- **Archive** copies exact `source.md`, original `revision.json` and the document pointer's
+  `document.json`, plus recorded retained assets. Unknown record members remain intact. Original
+  records include private provenance. The pointer is the exact pointer at export time and can
+  name a later revision; this selected-revision archive is not a complete store.
+- **Sharing copy** uses the existing cmark parser to write derived `document.md`. It rewrites
+  retained Markdown image destinations to relative asset paths and copies those assets. Markdown
+  formatting is normalised; YAML front matter stays byte-exact. Store records and their private
+  provenance are excluded. Raw HTML, links, non-retained images and source content stay unsanitised.
+  The source itself can contain private information. `EXPORT.md` states these transformations and
+  the limits of copied references; it never claims a fully self-contained or sanitised document.
+- **Current Page PDF** uses WebKit's PDF export for the document page, including source view when
+  selected. It is unavailable over a comparison or image-inspection view. A page change during
+  PDF preparation cancels that result. PDF is a rendering, not exact source or archival identity.
+
+Retained assets must still match their recorded byte count and digest. A mismatch, read failure
+or export bound stops the copy and removes its staging folder; no project-file repair occurs.
+Exports retain the reader's source and image limits, bound copied assets and derived output,
+and never modify the original document, records, reading position or history.
+
 ## Reading
 
 The outline uses a sidebar from 680 points width and a native popover below it. The same

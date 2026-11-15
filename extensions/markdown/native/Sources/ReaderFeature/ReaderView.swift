@@ -471,6 +471,11 @@ struct DetailsView: View {
                     model.platform.copyText(rows.map { "\($0.0): \($0.1)" }.joined(separator: "\n"))
                 }
                 Button("Show in Finder") { model.revealInFinder() }
+                Menu("Export") {
+                    Button("Revision Archive…") { Task { await model.exportRevision(.archive) } }.disabled(model.snapshot?.record == nil)
+                    Button("Sharing Copy…") { Task { await model.exportRevision(.sharing) } }.disabled(model.snapshot?.record == nil)
+                    Button("Current Page PDF…") { Task { await model.exportCurrentPagePDF() } }.disabled(!model.canExportPDF)
+                }
                 Spacer()
             }
         }

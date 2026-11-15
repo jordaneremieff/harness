@@ -40,7 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         let state = ReadingStateStore(directory: mode.isCheck ? nil : Self.stateDirectory())
-        let platform = mode.isCheck ? CheckRunner.platform() : MacPlatform.operations()
+        var platform = mode.isCheck ? CheckRunner.platform() : MacPlatform.operations()
+        if !mode.isCheck {
+            platform.exportRevision = { try await ExportPanel.revision($0, form: $1) }
+            platform.savePDF = { try await ExportPanel.pdf($0, name: $1) }
+        }
         windows = WindowManager(state: state, platform: platform, defaultRoots: mode.isCheck ? [] : Self.defaultRoots())
         if case .pane = mode {
             NSApp.mainMenu = buildMenu(pane: true)
@@ -252,6 +256,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func showDetails(_ sender: Any?) { withModel { $0.detailsVisible.toggle() } }
     @objc func revealDocument(_ sender: Any?) { withModel { $0.revealInFinder() } }
     @objc func returnToTerminal(_ sender: Any?) { withModel { await $0.returnToTerminal() } }
+    @objc func exportArchive(_ sender: Any?) { withModel { await $0.exportRevision(.archive) } }
+    @objc func exportSharing(_ sender: Any?) { withModel { await $0.exportRevision(.sharing) } }
+    @objc func exportPDF(_ sender: Any?) { withModel { await $0.exportCurrentPagePDF() } }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let action = item.action else { return true }
@@ -261,6 +268,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(toggleOutline(_:)):
             item.state = model.outlineIsPresented ? .on : .off
             return !(model.rendered?.outline.isEmpty ?? true)
+        case #selector(exportArchive(_:)), #selector(exportSharing(_:)):
+            return model.snapshot?.record != nil
+        case #selector(exportPDF(_:)):
+            return model.canExportPDF
         case #selector(goBack(_:)):
             return model.canGoBack
         case #selector(toggleSource(_:)):
@@ -433,6 +444,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             item("Review Changes", #selector(reviewChanges(_:)), "d"),
             .separator(),
             item("Document Details", #selector(showDetails(_:)), "i"),
+            .separator(),
+            item("Export Revision Archive…", #selector(exportArchive(_:)), "e", [.command, .shift]),
+            item("Export Sharing Copy…", #selector(exportSharing(_:)), "e", [.command, .option]),
+            item("Export Current Page PDF…", #selector(exportPDF(_:)), ""),
         ]
         if returnItem {
             items += [.separator(), item("Return to Terminal", #selector(returnToTerminal(_:)), "r", [.command, .shift])]
