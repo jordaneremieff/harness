@@ -79,8 +79,8 @@ it("every registered agent tool has shared factory coverage and both renderer re
 	assert.equal(typeof cards.agent_work.renderResult, "function");
 	const ordinary = new Set(Object.keys(cards));
 	ordinary.delete("agent_work");
-	ordinary.add("agent_wait");
-	assert.deepEqual([...tools.keys()].sort(), [...ordinary].sort(), "an ordinary session registers agent_wait, with its own state note card, in place of the native agent_work");
+	ordinary.add("agent_yield");
+	assert.deepEqual([...tools.keys()].sort(), [...ordinary].sort(), "an ordinary session registers agent_yield, with its own state note card, in place of the native agent_work, whose card stays the native one");
 	for (const [name, tool] of tools) {
 		assert.equal(typeof tool.renderCall, "function", name);
 		assert.equal(typeof tool.renderResult, "function", name);

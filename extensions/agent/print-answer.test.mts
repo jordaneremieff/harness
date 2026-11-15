@@ -1,6 +1,6 @@
 /**
  * The answer of real `pi -p` and `pi --mode json` runs with the agent extension loaded, against a scripted
- * provider. Text print mode prints only a final assistant message, so `agent_wait` there never ends the
+ * provider. Text print mode prints only a final assistant message, so `agent_yield` there never ends the
  * turn: it asks for a text answer, and a run that keeps calling it stops with an error instead of an empty
  * success.
  */
@@ -8,9 +8,9 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { TranscriptContext } from "@earendil-works/pi-ai";
-import { ORDINARY_COMPLETE_ANSWER, ORDINARY_TEXT_ANSWER, ORDINARY_TEXT_REFUSED } from "./ordinary-work.ts";
+import { ORDINARY_COMPLETE_ANSWER, ORDINARY_COMPLETE_ANSWER_TYPE, ORDINARY_TEXT_ANSWER, ORDINARY_TEXT_REFUSED } from "./ordinary-work.ts";
 import { call, lastWorkResult, printRun, text, work } from "./print-run-fixture.mts";
-import { FOLLOW_UP_TEXT } from "./testdata/print-run/follow-up.ts";
+import { FOLLOW_UP_TEXT, PEER_TEXT } from "./testdata/print-run/follow-up.ts";
 
 const followUpExtension = fileURLToPath(new URL("./testdata/print-run/follow-up.ts", import.meta.url));
 const timeout = 90000;
@@ -37,7 +37,7 @@ it("prints a standalone final text answer", { timeout }, async () => {
 	assert.deepEqual({ stdout: run.stdout, stderr: run.stderr, code: run.code, requests: run.requests.length }, { stdout: "Findings: none.\n", stderr: "", code: 0, requests: 1 });
 });
 
-it("asks for a text answer when agent_wait follows text in one message, and prints that answer", { timeout }, async () => {
+it("asks for a text answer when agent_yield follows text in one message, and prints that answer", { timeout }, async () => {
 	const run = await printRun({
 		mode: "text", prompt: "Review it.",
 		script: (context, index) => {
@@ -49,7 +49,7 @@ it("asks for a text answer when agent_wait follows text in one message, and prin
 	assert.deepEqual({ stdout: run.stdout, stderr: run.stderr, code: run.code, requests: run.requests.length }, { stdout: "Findings: none. Nothing else remains.\n", stderr: "", code: 0, requests: 2 });
 });
 
-it("stops a run that keeps calling agent_wait after two reminders, with an error and no answer", { timeout }, async () => {
+it("stops a run that keeps calling agent_yield after two reminders, with an error and no answer", { timeout }, async () => {
 	const run = await printRun({ mode: "text", prompt: "Review it.", script: (_context, index) => index < 10 ? work() : text("unreachable") });
 	assert.equal(run.stdout, "", "no answer is printed");
 	assert.equal(run.code, 1);
@@ -57,7 +57,7 @@ it("stops a run that keeps calling agent_wait after two reminders, with an error
 	assert.equal(run.requests.length, 3, "two reminders, then the third call stops the run without another request");
 	assert.equal(lastWorkResult(run.requests[2]), ORDINARY_TEXT_ANSWER);
 	const [refusal, stop] = run.entries.slice(-2).map((entry) => entry.message);
-	assert.deepEqual({ role: refusal?.role, toolName: refusal?.toolName, isError: refusal?.isError, content: refusal?.content }, { role: "toolResult", toolName: "agent_wait", isError: true, content: [{ type: "text", text: ORDINARY_TEXT_REFUSED }] }, "the retained session says why the run stopped");
+	assert.deepEqual({ role: refusal?.role, toolName: refusal?.toolName, isError: refusal?.isError, content: refusal?.content }, { role: "toolResult", toolName: "agent_yield", isError: true, content: [{ type: "text", text: ORDINARY_TEXT_REFUSED }] }, "the retained session says why the run stopped");
 	assert.equal(stop?.role, "assistant");
 	assert.equal(stop?.stopReason, "aborted");
 	assert.ok(stop?.errorMessage && run.stderr.includes(stop.errorMessage), "stderr carries the message of the aborted turn");
@@ -80,17 +80,17 @@ it("prints the answer to a follow-up that arrives after an earlier text report",
 	assert.deepEqual({ stdout: run.stdout, stderr: run.stderr, code: run.code, requests: run.requests.length }, { stdout: "The check passed: 42 files.\n", stderr: "", code: 0, requests: 4 });
 });
 
-it("asks for the complete answer again when a follow-up after the report gets a short reply, and prints it", { timeout }, async () => {
-	const complete = "Report: three findings. The check passed: 42 files.";
+it("asks for the complete answer again when a message from another session after the report gets a short reply, and prints it", { timeout }, async () => {
+	const complete = "Report: three findings. The reviewer agrees.";
 	for (const mode of ["text", "json"] as const) {
 		const run = await printRun({
-			mode, prompt: "Run the check and report.", extensions: [followUpExtension],
+			mode, prompt: "Ask the reviewer and report.", extensions: [followUpExtension],
 			script: (context, index) => {
-				if (index === 0) return call("fixture_background", {});
+				if (index === 0) return call("fixture_peer", {});
 				if (index === 1) return text("Report: three findings.");
 				if (index === 2) {
-					assert.equal(inputTexts(context).at(-1), FOLLOW_UP_TEXT, "the follow-up starts the next turn");
-					return text("The check passed.");
+					assert.equal(inputTexts(context).at(-1), PEER_TEXT, "the message starts the next turn");
+					return text("The reviewer agrees.");
 				}
 				assert.equal(inputTexts(context).at(-1), ORDINARY_COMPLETE_ANSWER, "the run asks for its complete answer before it settles");
 				return index === 3 ? text(complete) : undefined;
@@ -108,7 +108,24 @@ it("asks for the complete answer again when a follow-up after the report gets a 
 	}
 });
 
-it("ends a JSON stream with the final text message when agent_wait follows text", { timeout }, async () => {
+it("leaves a follow-up of another extension after the report to that extension", { timeout }, async () => {
+	const run = await printRun({
+		mode: "text", prompt: "Run the check and report.", extensions: [followUpExtension],
+		script: (context, index) => {
+			if (index === 0) return call("fixture_background", {});
+			if (index === 1) return text("Report: three findings.");
+			if (index === 2) {
+				assert.equal(inputTexts(context).at(-1), FOLLOW_UP_TEXT);
+				return text("The check passed.");
+			}
+			return undefined;
+		},
+	});
+	assert.deepEqual({ stdout: run.stdout, stderr: run.stderr, code: run.code, requests: run.requests.length }, { stdout: "The check passed.\n", stderr: "", code: 0, requests: 3 });
+	assert.equal(run.entries.some((entry) => entry.type === "custom_message" && entry.customType === ORDINARY_COMPLETE_ANSWER_TYPE), false, "no request for the complete answer");
+});
+
+it("ends a JSON stream with the final text message when agent_yield follows text", { timeout }, async () => {
 	const run = await printRun({ mode: "json", prompt: "Review it.", script: (_context, index) => index === 0 ? work("Findings: none.") : index === 1 ? text("Findings: none. Nothing else remains.") : undefined });
 	assert.equal(run.code, 0);
 	assert.equal(run.stderr, "");
@@ -116,7 +133,7 @@ it("ends a JSON stream with the final text message when agent_wait follows text"
 	assert.deepEqual({ role: message?.role, stopReason: message?.stopReason, content: message?.content }, { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Findings: none. Nothing else remains." }] });
 });
 
-it("ends a JSON stream with the aborted message when a run keeps calling agent_wait; JSON mode exits 0", { timeout }, async () => {
+it("ends a JSON stream with the aborted message when a run keeps calling agent_yield; JSON mode exits 0", { timeout }, async () => {
 	const run = await printRun({ mode: "json", prompt: "Review it.", script: (_context, index) => index < 10 ? work() : text("unreachable") });
 	assert.equal(run.code, 0, "JSON mode never sets the exit code from the last message");
 	assert.equal(run.requests.length, 3);

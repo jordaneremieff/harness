@@ -565,7 +565,7 @@ test("the delivery workflow routes detailed mechanisms to reachable owners", () 
 		["result owner", /\[result contract\]\(\.\.\/extensions\/agent\/README\.md#read-peer-results\)/],
 		["supervision owner", /\[supervision guidance\]\(\.\.\/skills\/delegate\/SKILL\.md#6-supervise-without-polling\)/],
 		["native work declaration", /calls `agent_work` with `action: "continue"`.*ends with a state note/],
-		["ordinary event delivery", /An ordinary session has no `agent_work`. Its `agent_wait` ends a turn that needs nothing from the operator without a chat line, and the session waits for its next event.*calls `agent_wait` with a short note for the operator in `note` as the only call of its last tool batch and writes no chat text.*It carries no session, submission or request identifier.*Results arrive as events at its next tool boundary or start its next turn; it never polls/],
+		["ordinary event delivery", /An ordinary session has no `agent_work`. Its `agent_yield` ends a turn without a chat line while work that the session sent to agents is still open.*calls `agent_yield` with a short note for the operator in `note` in its last tool batch, alone or with other calls that also end the turn, and writes no chat text.*It carries no session, submission or request identifier.*Results arrive as events at its next tool boundary or start its next turn; it never polls/],
 		["recovery owner", /\[Agent recovery and delivery\]\(\.\.\/extensions\/agent\/README\.md#recovery-and-delivery\)/],
 		["host refresh owner", /\[storage host retirement\]\(pi-durable-harness\.md#storage-host-retirement\)/],
 		["current owner contract", /Read the Agent \[result contract\].*for immediate result reads, answer continuations and receipt-reference pages/],

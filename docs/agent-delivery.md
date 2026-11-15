@@ -314,15 +314,18 @@ completion returns the close while that close remains retained; it does not
 create another final report. The work document keeps the newest 16 closed items.
 Use this retained declaration, not an informal promise of a later manual report.
 
-An ordinary session has no `agent_work`. Its `agent_wait` ends a turn that
-needs nothing from the operator without a chat line, and the session waits for
-its next event. When only
-delegated work remains, or after an event that needs nothing from the
-operator, it calls `agent_wait` with a short note
-for the operator in `note` as the only call of its last tool batch and writes
-no chat text: the note shows as the card of that call in the transcript and
-the turn ends there. The note says in plain words what is open and what
-happens next. It carries no session, submission or request identifier: the
+An ordinary session has no `agent_work`. Its `agent_yield` ends a turn without
+a chat line while work that the session sent to agents is still open, and an
+agent result, a message or the operator's input starts its next turn. When
+that work is open and no other work of the session is ready, it calls
+`agent_yield` with a short note for the operator in `note` in its last tool
+batch, alone or with other calls that also end the turn, and writes no chat
+text: the note shows as the card of that call in the transcript and the turn
+ends there. The note and the card cover only the agents' work: when other
+open work of the session has its own tool that ends the turn, the session
+calls that tool in the same batch, so that each kind of open work has its own
+card. The note says in plain words what still runs and what happens
+next. It carries no session, submission or request identifier: the
 receipts of the session's spawn and send calls keep the result references,
 and after a compaction its continuity note lists the requests that have no
 delivered result.

@@ -1,11 +1,12 @@
 /**
- * The state note of an ordinary session: `agent_wait` for a session that a person types into.
+ * The state note of an ordinary session: `agent_yield` for a session that a person types into.
  *
- * The call ends the turn, so a turn that needs nothing from the operator leaves no chat line, and the session
- * waits for its next event. Its note is text for the operator, and the card of the call in the transcript is
- * its only display. The note is true when the session writes it and is history when the session works again,
- * so nothing outside the transcript keeps or shows it. An ordinary session has no routed request: the note
- * names no reply route and no dependency, and nothing here calls a host. A native agent's `agent_work`, which
+ * The call ends the turn while work that the session sent to agents is still open, so the turn leaves no chat
+ * line; an agent result, a message or the operator's input starts the next turn. Its note is text for the
+ * operator, and the card of the call in the transcript is its only display. The note is true when the session
+ * writes it and is history when the session works again, so nothing outside the transcript keeps or shows it.
+ * An ordinary session has no routed request: the note names no reply route and no dependency, and nothing here
+ * calls a host. A native agent's `agent_work`, which
  * declares and closes background work, is a different tool.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -14,17 +15,17 @@ import type { ContinuityFact } from "./continuity-facts.ts";
 import { matchesSchema } from "./schema-check.ts";
 import type { AgentToolCard } from "./tool-cards.ts";
 
-/** The name of the ordinary session's tool. Its calls from before this name are named `agent_work`. */
-export const ORDINARY_WAIT_TOOL = "agent_wait";
+/** The name of the ordinary session's tool. */
+export const ORDINARY_YIELD_TOOL = "agent_yield";
 
 export const ORDINARY_NOTE_CHARS = 1200;
 
-export const ORDINARY_WORK_DESCRIPTION = "End a turn that needs nothing from the operator, with one state note for the operator, and wait for the next event. The call shows the note as one card in the transcript and ends the turn: no model request follows when it is the only call of its tool batch, so write no chat text with it. It returns no result of an agent: results, messages and operator input arrive as events and start the next turn. Use it when only delegated or background work remains, or after an agent event that needs no decision or act of the operator, no blocker report and no result. Write the note for the operator in plain words, in one or two short sentences: what is open and what happens next. Describe each agent and each piece of work by what it does. Put no internal identifier in the note (no session, submission or request ID): the receipts of your spawn and send calls keep the result references of the open requests. The note is not stored as session state: when the session works again, the card is history, and a later turn that needs nothing from the operator ends with a new agent_wait call. The note has no reply route and no dependency.";
+export const ORDINARY_WORK_DESCRIPTION = "End the turn while work that this session sent to agents is still open and no other work of yours is ready, with one state note for the operator. The call shows the note as one card in the transcript. It returns no result of an agent: agent results, messages and operator input arrive as events and start the next turn. Write the note for the operator in plain words, in one or two short sentences: what still runs and what happens next. The card shows that the turn ended, so the note does not say that the operator has nothing to do. Describe each agent and each piece of work by what it does. Put no internal identifier in the note (no session, submission or request ID): the receipts of your spawn and send calls keep the result references of the open requests. Pi ends the turn only when every call in the last tool batch ends the turn: make this call in the last batch, alone or with other calls that also end the turn, and write no chat text with it. The note and the card cover only work sent to agents: when other work of this session also runs and has its own tool that ends the turn, call that tool in the same batch, so that each kind of open work has its own card. The note is not stored as session state: when the session works again, the card is history, and a later turn that ends the same way makes a new agent_yield call. The note has no reply route and no dependency.";
 
 const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
 
 export const OrdinaryWorkParams = obj({
-	note: str({ minLength: 1, maxLength: ORDINARY_NOTE_CHARS, description: "The state for the operator in plain words: what is open and what happens next. One or two short sentences, no session, submission or request ID." }),
+	note: str({ minLength: 1, maxLength: ORDINARY_NOTE_CHARS, description: "The state for the operator in plain words: what still runs and what happens next. One or two short sentences, no session, submission or request ID." }),
 });
 
 /** Open requests that a card lists, at most; the count of the rest stays in `waitingOmitted`. */
@@ -67,15 +68,18 @@ export const ORDINARY_CONTINUE_TEXT = "The state note is shown to the operator. 
  * when the message that holds the call carries text. In those modes the call never ends the turn: its
  * result asks for the answer as one text message instead.
  */
-export const ORDINARY_TEXT_ANSWER = "This run has no operator view and prints only its last text message. Do not call agent_wait: end the turn with one text message, with no tool call, that states your complete final answer, including results that you already wrote earlier in this run.";
+export const ORDINARY_TEXT_ANSWER = "This run has no operator view and prints only its last text message. Do not call agent_yield: end the turn with one text message, with no tool call, that states your complete final answer, including results that you already wrote earlier in this run.";
 
 /** Requests for a text answer that one input admits before a further call stops the run. */
 export const ORDINARY_TEXT_REQUESTS = 2;
 
-export const ORDINARY_TEXT_REFUSED = `agent_wait was called again after ${ORDINARY_TEXT_REQUESTS} requests for a text answer, so this run stops without an answer.`;
+export const ORDINARY_TEXT_REFUSED = `agent_yield was called again after ${ORDINARY_TEXT_REQUESTS} requests for a text answer, so this run stops without an answer.`;
 
-/** Custom message type of the request to state the complete answer again after a later input. */
-export const ORDINARY_COMPLETE_ANSWER_TYPE = "agent-work-complete-answer";
+/** Custom message type of the request to state the complete answer again after a later message from an agent. */
+export const ORDINARY_COMPLETE_ANSWER_TYPE = "agent-yield-complete-answer";
+
+/** Custom message type of the messages that this extension delivers from other sessions. */
+const AGENT_PEER_MESSAGE = "agent.peer";
 
 export const ORDINARY_COMPLETE_ANSWER = "This run prints only its last text message, and a message arrived after your answer. End the run with one text message, with no tool call, that states your complete final answer, including the results that you wrote before that message.";
 
@@ -87,8 +91,9 @@ function hasText(content: unknown): boolean {
 
 /**
  * The answer state of a print or JSON run, kept from the messages that the agent loop delivers. A user message
- * or a delivered custom message, such as a background job's completion, is an input. Pi appends context-only
- * messages, such as notes that tools leave for the model, without the loop, so they are not inputs.
+ * or a delivered custom message is an input and starts a new reminder count. Pi appends context-only messages,
+ * such as notes that tools leave for the model, without the loop, so they are not inputs. Only a message that
+ * this extension delivers from another session asks for the complete answer again after the run answered.
  */
 export class PrintAnswer {
 	private reminders = 0;
@@ -102,7 +107,7 @@ export class PrintAnswer {
 			this.laterInput = false;
 		} else if (message.role === "custom" && message.customType !== ORDINARY_COMPLETE_ANSWER_TYPE) {
 			this.reminders = 0;
-			if (this.answered) this.laterInput = true;
+			if (this.answered && message.customType === AGENT_PEER_MESSAGE) this.laterInput = true;
 		} else if (message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted" && hasText(message.content)) {
 			this.answered = true;
 		}
@@ -117,7 +122,7 @@ export class PrintAnswer {
 		return true;
 	}
 
-	/** True once after an input that arrived when the run had already answered, so the printed answer can be partial. */
+	/** True once after a message from another session that arrived when the run had already answered, so the printed answer can be partial. */
 	restate(): boolean {
 		const due = this.laterInput;
 		this.laterInput = false;
@@ -127,28 +132,28 @@ export class PrintAnswer {
 
 const machineMode = (mode: unknown) => mode === "print" || mode === "json";
 
-/** Register the ordinary `agent_wait`. The caller owns `card`, so the registered renderers are the same references that it publishes for display. */
+/** Register the ordinary `agent_yield`. The caller owns `card`, so the registered renderers are the same references that it publishes for display. */
 export function registerOrdinaryWork(pi: Pick<ExtensionAPI, "registerTool" | "on">, card: AgentToolCard, options: OrdinaryWorkOptions = {}): void {
 	let answer = new PrintAnswer();
 	pi.on("session_start", () => { answer = new PrintAnswer(); });
 	// The answer state belongs to one run. An input that starts a later run follows no answer of that run.
 	pi.on("agent_settled", () => { answer = new PrintAnswer(); });
 	pi.on("message_end", (event, ctx) => { if (machineMode(ctx.mode)) answer.delivered(event.message as Delivered); });
-	// An input after the answer, such as a job completion, gets a reply that print mode would print alone; the run
+	// A message from another session after the answer gets a reply that print mode would print alone; the run
 	// states its complete answer once more before it settles.
 	pi.on("agent_before_settle", (event, ctx) => {
 		if (!machineMode(ctx.mode) || !answer.restate()) return undefined;
 		return { entries: [...event.entries, { type: "custom_message", customType: ORDINARY_COMPLETE_ANSWER_TYPE, content: ORDINARY_COMPLETE_ANSWER, display: false }], continue: true };
 	});
 	pi.registerTool({
-		name: ORDINARY_WAIT_TOOL,
-		label: "Agent wait",
+		name: ORDINARY_YIELD_TOOL,
+		label: "Agent yield",
 		description: ORDINARY_WORK_DESCRIPTION,
-		promptSnippet: "End a turn that needs nothing from the operator with one state note and no chat text",
+		promptSnippet: "End the turn while work sent to agents is still open, with one state note and no chat text",
 		parameters: OrdinaryWorkParams,
 		outputSchema: OrdinaryWorkOutputSchema,
 		async execute(_callId, input: Static<typeof OrdinaryWorkParams>, _signal, _update, ctx) {
-			if (!matchesSchema(OrdinaryWorkParams, input)) throw new Error(`${ORDINARY_WAIT_TOOL} takes a note`);
+			if (!matchesSchema(OrdinaryWorkParams, input)) throw new Error(`${ORDINARY_YIELD_TOOL} takes a note`);
 			const details: OrdinaryWorkDetails = { note: input.note };
 			if (machineMode(ctx.mode)) {
 				if (!answer.remind()) {

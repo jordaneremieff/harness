@@ -268,21 +268,22 @@ inspections as a wait. After you send work:
   starts its next run. A record without a dependency gets no later run by
   itself; it stays open in the status until the native agent calls
   `agent_work` `complete`, which alone closes an item.
-  In an ordinary session, when only delegated work remains, or after you
-  handled an event that needs no operator message under "Operator status
-  reports", call `agent_wait` with a short note for the operator: what is
-  open and what happens next. An ordinary session has no `agent_work`.
-  Make it the only call in the last tool batch and write no chat text.
-  `agent_wait` shows the note as one card in the transcript and ends the turn
-  without a further model call. The operator reads the note, so "Operator
+  In an ordinary session, when work that you sent to agents is still open
+  and no other work of yours is ready, call `agent_yield` with a short note
+  for the operator: what still runs and what happens next. An ordinary
+  session has no `agent_work`. The turn ends only when every call in the
+  last tool batch ends the turn: put the call in the last batch, alone or
+  with other calls that also end the turn, and write no chat text.
+  `agent_yield` shows the note as one card in the transcript and ends the
+  turn without a further model call. The operator reads the note, so "Operator
   status reports" governs its wording: plain words, each agent and each
   piece of work described by what it does, and no session, submission or
   request identifier. The result references of your open requests stay in
   the receipts of your spawn and send calls, and after a compaction a
   continuity note lists the requests that have no delivered result, so the
   note carries none. The note is not stored as session state. When the session works
-  again, the card is history; a later turn that needs nothing from the
-  operator ends with a new `agent_wait` call.
+  again, the card is history; a later turn that ends the same way makes a
+  new `agent_yield` call.
 - **Stay reachable.** An input reaches a running agent at its next tool
   boundary, the end of its current round of tool calls. With parallel calls
   nothing is placed between two tool completions of one round. The reach of

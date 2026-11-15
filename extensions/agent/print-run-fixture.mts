@@ -24,7 +24,7 @@ export const call = (name: string, args: JsonObject, before?: string): Reply => 
 	content: [...(before === undefined ? [] : [{ type: "text" as const, text: before }]), { type: "toolCall", id: randomUUID(), name, arguments: args }],
 	stopReason: "toolUse",
 });
-export const work = (before?: string): Reply => call("agent_wait", { note: "Nothing needs you now." }, before);
+export const work = (before?: string): Reply => call("agent_yield", { note: "Two workers review the parser; their results follow." }, before);
 
 export interface PrintRun {
 	stdout: string;
@@ -114,8 +114,8 @@ export async function printRun(options: {
 	}
 }
 
-/** The text of the latest `agent_wait` tool result in a provider request. */
+/** The text of the latest `agent_yield` tool result in a provider request. */
 export function lastWorkResult(context: TranscriptContext): string | undefined {
-	const message = context.messages.findLast((item) => item.role === "toolResult" && item.toolName === "agent_wait");
+	const message = context.messages.findLast((item) => item.role === "toolResult" && item.toolName === "agent_yield");
 	return message?.role === "toolResult" ? message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n") : undefined;
 }

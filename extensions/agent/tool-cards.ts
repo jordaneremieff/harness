@@ -1741,7 +1741,7 @@ type NoteCardFacts = {
 /**
  * One state note as a card in the message background. The turn ended there, so the card is a message to
  * the operator, not a tool outcome. Its title names the tool and then what happened, as in
- * `agent_wait · turn ended · waiting for 2 agent results`. Collapsed, it shows the title, at most three
+ * `agent_yield · turn ended · 2 agent results due`. Collapsed, it shows the title, at most three
  * note lines and Pi's expansion hint; expanded, the whole note, the agents whose results were due, and what
  * starts the next turn. Lines wrap at word boundaries and keep the background to the edge.
  */
@@ -1770,7 +1770,7 @@ class StateNoteCard implements Component {
 		const parts: string[] = [];
 		if (waitingOmitted > 0) parts.push(plural(waiting.length + waitingOmitted, "open agent request"));
 		else {
-			if (due > 0) parts.push(`waiting for ${plural(due, "agent result")}`);
+			if (due > 0) parts.push(`${plural(due, "agent result")} due`);
 			if (scheduled > 0) parts.push(plural(scheduled, "scheduled input"));
 		}
 		const head = this.facts.error !== undefined ? "could not end the turn" : this.facts.settled ? "turn ended" : "ending turn";
@@ -1792,7 +1792,7 @@ class StateNoteCard implements Component {
 	private waitingLines(theme: Theme, width: number): string[] {
 		if (this.facts.waiting.length === 0) return [];
 		const rows = this.context?.lookup?.() ?? [];
-		const lines = [theme.fg("muted", "Waiting for results from:")];
+		const lines = [theme.fg("muted", "Results due from:")];
 		for (const item of this.facts.waiting) lines.push(clipCardLine(`  ${theme.fg("text", this.waitingRow(item, rows))}`, width));
 		if (this.facts.waitingOmitted > 0) lines.push(theme.fg("muted", `  ${this.facts.waitingOmitted} more not listed`));
 		return lines;
@@ -1803,7 +1803,7 @@ class StateNoteCard implements Component {
 		const waiting = this.waitingLines(theme, width);
 		if (waiting.length > 0) lines.push("", ...waiting);
 		if (this.facts.settled && this.facts.error === undefined)
-			lines.push("", ...wrapTextWithAnsi("This session ended its turn here because it needed nothing from you. A result from an agent, a message or your input starts its next turn.", width).map((line) => theme.fg("muted", line)));
+			lines.push("", ...wrapTextWithAnsi("A result or message from an agent, or your input, starts the next turn.", width).map((line) => theme.fg("muted", line)));
 		return lines;
 	}
 	/**
@@ -1850,8 +1850,8 @@ function noteText(args: unknown): string {
 }
 
 /**
- * The card of an ordinary session's `agent_wait`, and of that tool's earlier calls named `agent_work`: the
- * state note, which this card alone shows to the operator. The title names the call's tool. Pi draws the
+ * The card of an ordinary session's `agent_yield`: the state note, which this card alone shows to the
+ * operator. The title names the call's tool. Pi draws the
  * row without its tool outcome background; the card draws the message background itself. The call slot shows the note while it arrives. Once the result exists, the result slot draws
  * the whole card with the time the turn ended and the requests that were due, and the call slot draws
  * nothing. A failed call shows its error in the error background.
