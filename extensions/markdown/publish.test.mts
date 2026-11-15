@@ -13,7 +13,7 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { captureReferences, inspectReferences, fileSnapshotInput, createNativePublishTool, createPublishTool, invocationDigest, publish, publicationText, type InspectionResult, type PublishOutcome, type PublishInput } from "./publish.ts";
 import { LIMITS, MarkdownStore, type PublicationPlan, type WriteResult } from "./store.ts";
-import { paneCommand, PANE_MODE } from "./pane-command.ts";
+import { paneCommand, PANE_MODE, PANE_OPEN } from "./pane-command.ts";
 const scratch = tmpdir();
 async function fixture(run: (root: string, store: MarkdownStore) => Promise<void>) { const root = await mkdtemp(join(scratch, "markdown-publish-")); try { await run(root, new MarkdownStore(join(root, "store"))); } finally { await rm(root, { recursive: true, force: true }); } }
 async function inspection(root: string, images: string[] = [], links: string[] = [], truncated = false) {
@@ -337,15 +337,19 @@ test("the show command runs the installed reader's pane mode only when the build
 	await writeFile(join(app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1 }));
 	assert.match((paneCommand(app, store.root, "md-0123456789abcdef0123") as { showUnavailable: string }).showUnavailable, /cannot show documents in a pane/u);
 	await writeFile(join(app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1, pane: PANE_MODE }));
-	assert.deepEqual(paneCommand(app, store.root, "md-0123456789abcdef0123"), { show: [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", store.root, "md-0123456789abcdef0123"] });
+	const show = [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", store.root, "md-0123456789abcdef0123"];
+	assert.deepEqual(paneCommand(app, store.root, "md-0123456789abcdef0123"), { show }, "a reader without :open still shows documents in a new pane");
+	await writeFile(join(app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1, pane: PANE_MODE, paneOpen: PANE_OPEN }));
+	assert.deepEqual(paneCommand(app, store.root, "md-0123456789abcdef0123"), { show, paneInput: ":open md-0123456789abcdef0123\r" });
 	const tool = createPublishTool({ store, cwd: root, app });
 	const context = { cwd: root, sessionManager: { getSessionId: () => "s" } } as never;
 	const result = await tool.execute("call", { title: "Shown", text: "# exact" }, undefined, undefined, context);
 	const outcome = success(result.details);
 	assert.deepEqual(outcome.show, [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", store.root, outcome.documentId]);
-	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(`\nTo show it now, run ${JSON.stringify(outcome.show)} as the program of a new pane.`));
+	assert.equal(outcome.paneInput, `:open ${outcome.documentId}\r`);
+	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(`\nTo show it now, type ":open ${outcome.documentId}" and Enter into a reader pane that you opened, or run ${JSON.stringify(outcome.show)} as the program of a new pane.`));
 	const update = await tool.execute("update", { title: "Shown", text: "# changed", document: outcome.documentId, expectedRevision: 1 }, undefined, undefined, context);
-	assert.ok((update.content[0]?.type === "text" ? update.content[0].text : "").endsWith(`\nA reader pane that shows ${outcome.documentId} follows this revision by itself. To show it in a new pane, run ${JSON.stringify(outcome.show)} as the pane's program.`));
+	assert.ok((update.content[0]?.type === "text" ? update.content[0].text : "").endsWith(`\nA reader pane that shows ${outcome.documentId} follows this revision by itself. To show it elsewhere, type ":open ${outcome.documentId}" and Enter into a reader pane that you opened, or run ${JSON.stringify(outcome.show)} as the program of a new pane.`));
 	const replay = await tool.execute("replay", { title: "Keyed", text: "# keyed", reuseKey: "shown" }, undefined, undefined, context);
 	const again = await tool.execute("again", { title: "Keyed", text: "# keyed", reuseKey: "shown" }, undefined, undefined, context);
 	assert.match(replay.content[0]?.type === "text" ? replay.content[0].text : "", /^Saved new document /u);

@@ -170,7 +170,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             exit(1)
         }
         let model = ReaderModel(reference: reference, platform: windows.platform, state: windows.state)
-        let host = PaneHost(model: model, state: windows.state, terminal: terminal)
+        let host = PaneHost(model: model, platform: windows.platform, state: windows.state, terminal: terminal)
+        host.onModelChange = { [weak self] previous, next in self?.windows.replace(previous, with: next) }
         paneHost = host
         windows.adopt(host.start(), model: model)
     }

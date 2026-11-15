@@ -27,7 +27,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PANE_MODE } from "../pane-command.ts";
+import { PANE_MODE, PANE_OPEN } from "../pane-command.ts";
 import { readSettings } from "../settings.ts";
 
 /** Version of the contract between openers and the app: open requests, store format, tool output. */
@@ -242,6 +242,7 @@ function main(): void {
 		const build = {
 			contract: BUILD_CONTRACT,
 			pane: PANE_MODE,
+			paneOpen: PANE_OPEN,
 			sourceDigest: digest,
 			builtAt: new Date().toISOString(),
 			swift: swiftVersion,

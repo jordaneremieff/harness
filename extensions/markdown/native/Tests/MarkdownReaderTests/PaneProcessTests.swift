@@ -302,3 +302,68 @@ let notSaved = "Markdown Reader: the reading position was not saved."
         #expect(process.text.contains("cannot be shown"))
     }
 }
+
+extension PaneRun {
+    /// Adds a second published document with one revision to the run's store.
+    func addDocument(_ id: String, title: String) throws {
+        let store = root.appendingPathComponent("store")
+        let revision = store.appendingPathComponent("documents/\(id)/revisions/1")
+        try FileManager.default.createDirectory(at: revision, withIntermediateDirectories: true)
+        let source = Data("# \(title)\n\nAnother document of the same store.\n".utf8)
+        let digest = "sha256:" + SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined()
+        try source.write(to: revision.appendingPathComponent("source.md"))
+        let date = "2026-11-15T00:00:00Z"
+        try Self.write(["version": 1, "document": id, "revision": 1, "title": title, "createdAt": date,
+                        "digest": digest, "bytes": source.count, "completeness": ["state": "complete"]],
+                       to: revision.appendingPathComponent("revision.json"))
+        try Self.write(["version": 1, "id": id, "kind": "published", "title": title, "createdAt": date,
+                        "updatedAt": date, "revision": 1, "digest": digest, "bytes": source.count],
+                       to: store.appendingPathComponent("documents/\(id)/document.json"))
+    }
+}
+
+@Suite(.serialized) struct PaneProcessOpen {
+    func type(_ text: String, into process: PaneRun.Process) {
+        _ = text.withCString { Darwin.write(process.primary, $0, strlen($0)) }
+    }
+
+    @Test func openShowsAnotherDocumentOfTheStoreInTheSamePane() throws {
+        #expect(FileManager.default.isExecutableFile(atPath: PaneRun.binary.path), "build the package before its tests")
+        let run = try PaneRun()
+        defer { run.remove() }
+        let second = "md-1111111111111111111a"
+        try run.addDocument(second, title: "Second document")
+        let process = try run.start()
+        defer { close(process.primary) }
+        #expect(process.read(until: "\(run.document) · revision 1 of 1", seconds: 15), "the placeholder names the shown document and revision")
+        type(":open md-ffffffffffffffffffff\r", into: process)
+        #expect(process.read(until: "md-ffffffffffffffffffff cannot be shown", seconds: 5))
+        type(":open not-an-id\r", into: process)
+        #expect(process.read(until: "not-an-id is not a document ID", seconds: 5))
+        type(":rm -rf\r", into: process)
+        #expect(process.read(until: "Unknown command", seconds: 5))
+        type(":open \(second)", into: process)
+        type("\r", into: process)
+        #expect(process.read(until: "\(second) · revision 1 of 1", seconds: 15), "the pane shows the other document")
+        #expect(process.read(until: "Second document", seconds: 5))
+        type("q", into: process)
+        let ended = process.exit(within: 5)
+        #expect(ended.status == 0)
+        #expect(process.text.contains(restore))
+    }
+
+    @Test func escapeCancelsACommandLineAndQuitStillEnds() throws {
+        #expect(FileManager.default.isExecutableFile(atPath: PaneRun.binary.path), "build the package before its tests")
+        let run = try PaneRun()
+        defer { run.remove() }
+        let process = try run.start()
+        defer { close(process.primary) }
+        #expect(process.read(until: "Pane run", seconds: 15))
+        type(":open q", into: process)
+        #expect(process.read(until: ":open q", seconds: 5), "a q inside a command line is text")
+        type("\u{1B}", into: process)
+        type("\u{03}", into: process)
+        let ended = process.exit(within: 5)
+        #expect(ended.status == 0)
+    }
+}

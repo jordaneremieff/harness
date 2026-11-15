@@ -3,11 +3,19 @@ import { join } from "node:path";
 
 /** Version of the native reader's `--pane` mode that this slice runs. */
 export const PANE_MODE = 1;
+/**
+ * Version of the pane's `:open <document ID>` input. A separate marker, so that Pi processes that
+ * check only the pane mode keep offering the pane command after the app gains this input.
+ */
+export const PANE_OPEN = 1;
 
 const BUILD_REMEDY = "Build it with node extensions/markdown/native/build.mts.";
 
-/** A command that shows a stored document in the reader over its terminal pane, or why there is none. */
-export type PaneCommand = { show: string[] } | { showUnavailable: string };
+/**
+ * A command that shows a stored document in the reader over its terminal pane, with the input
+ * that shows it in a reader pane that already runs, or why there is none.
+ */
+export type PaneCommand = { show: string[]; paneInput?: string } | { showUnavailable: string };
 
 /**
  * The command that shows a stored document in the native reader over the terminal pane that
@@ -26,5 +34,6 @@ export function paneCommand(app: string | undefined, root: string, documentId: s
 	if (manifest.contract !== 1 || manifest.pane !== PANE_MODE) {
 		return { showUnavailable: `The installed reader app cannot show documents in a pane. ${BUILD_REMEDY}` };
 	}
-	return { show: [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", root, documentId] };
+	const show = [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", root, documentId];
+	return manifest.paneOpen === PANE_OPEN ? { show, paneInput: `:open ${documentId}\r` } : { show };
 }

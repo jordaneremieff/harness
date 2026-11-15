@@ -47,14 +47,16 @@ if that restoration also fails, the error reports both failures and the previous
 The bundle carries `Contents/Resources/build.json`:
 
 ```json
-{"contract": 1, "pane": 1, "sourceDigest": "sha256:…", "builtAt": "…", "swift": "…",
+{"contract": 1, "pane": 1, "paneOpen": 1, "sourceDigest": "sha256:…", "builtAt": "…", "swift": "…",
  "store": "/…/markdown", "terminalOrigin": {"helper": "terminal-origin.ts", "node": "/opt/homebrew/bin/node"}}
 ```
 
 Openers compare `contract` with the version they expect and name this command as the remedy for
 a missing or incompatible build. `contract` covers open requests, the store format and the
 parser output. `pane` is the version of [pane mode](#pane-mode); the publication tool offers a
-pane command only when it matches, and otherwise names this build command. Programs that only
+pane command only when it matches, and otherwise names this build command. `paneOpen` is the
+version of the pane's `:open` input; the publication tool names that input only when it
+matches, and an older Pi process that does not know it still offers the pane command. Programs that only
 open documents ignore it, so Pi processes that started before a rebuild keep opening documents
 with the new build. An unknown `--` option ends the app with a usage error, so a caller that
 expects a newer mode never starts the library application instead. `store` is the value of the `markdown.dir` setting at build
@@ -103,7 +105,9 @@ page of two revisions, an image-only revision, a comparison that prepares or fai
 document, and revisions older than the listed choices) and
 `MarkdownReaderTests` (the built binary in pane mode on a pseudo-terminal, with its own store and
 home folder: `q`, termination, interruption, hang-up and a closed terminal; a held state lock;
-standard error and a terminal that stop reading; store text with terminal controls). Under the
+standard error and a terminal that stop reading; store text with terminal controls; the key
+parser of the pane's command line and `:open` of another document of the store, including
+refused identities and an unknown command). Under the
 Command Line Tools
 the Testing framework is outside the default search path, so the script passes its directory.
 The tools also ship the `_Testing_Foundation` overlay without a module, so a test file imports
@@ -309,8 +313,10 @@ the key equivalents of the reader (copy, select all, find, text size, outline, s
 wrapping, revisions, details and close) for its one document; it opens no other document, no
 library and no other window, and it ignores open events.
 
-The terminal shows a placeholder on the alternate screen with the hidden cursor: the title, the
-reader's state and the keys. Document text and error lines reach the terminal only through
+The terminal shows a placeholder on the alternate screen with the hidden cursor: the title, a
+line with the shown document ID, its revision (and a newer revision when one is available) and
+the first twelve digits of the bundle's `sourceDigest`, the reader's state, the keys and an open
+command line. Document text and error lines reach the terminal only through
 `TerminalText`, which removes control, format and separator characters and bounds an error line.
 The first row holds a random marker in concealed text; the placeholder replaces its rows in
 place, so the first row shows a marker at every moment. `TerminalAnchor` searches the
@@ -399,8 +405,16 @@ the reader's choice instead. A revision that the reader chooses in the revision 
 the reader returns to the latest one, and a revision whose automatic load failed is not tried
 again by itself until the pointer names another revision.
 
-Keys typed into the pane's terminal: `q`, Ctrl-C or Ctrl-D close the reader; any other key
-gives the reader window the keyboard. Closing the reader by key, close control, Command-W,
+Keys typed into the pane's terminal: `q`, Ctrl-C or Ctrl-D close the reader; `:` starts a
+command line; any other key gives the reader window the keyboard. A command line takes
+printable ASCII only, at most 64 characters; Backspace edits it, Escape cancels it, and Enter
+(carriage return or line feed) runs it. Ctrl-C and Ctrl-D still close the reader inside it.
+`:open <document ID>` names a full document ID of the pane's store: the reader captures the
+shown document's position and queues its save, then opens the other document in the same
+window at its saved position and follows its revisions. A malformed ID, a document that cannot
+be read and an unknown command leave the shown document in place with a line that says why.
+`:open` with the shown document's ID shows its latest revision. `build.json` declares this
+input as `paneOpen` 1. Closing the reader by key, close control, Command-W,
 Command-Q, a quit request, a termination signal or an interruption signal captures the reading
 position, saves the pending reading state, restores the terminal and ends. A hang-up signal or
 the end of input ends it the same way without writing to the terminal. Each wait has a bound on

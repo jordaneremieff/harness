@@ -49,6 +49,13 @@ final class WindowManager: NSObject, NSWindowDelegate {
         readers[model.reference.key] = Reader(window: window, model: model)
     }
 
+    /// Moves an adopted window to another model, as when a pane reader shows another document.
+    func replace(_ previous: ReaderModel, with next: ReaderModel) {
+        guard let reader = readers[previous.reference.key], reader.model === previous else { return }
+        readers[previous.reference.key] = nil
+        readers[next.reference.key] = Reader(window: reader.window, model: next)
+    }
+
     /// `digest` is the digest of an accepted open request, which the open's load must find.
     @discardableResult
     func open(_ reference: DocumentReference, revision: Int?, digest: String? = nil, origin: LaunchOrigin?) -> ReaderModel {

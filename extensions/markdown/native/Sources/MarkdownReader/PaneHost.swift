@@ -15,11 +15,23 @@ let paneLog = Logger(subsystem: "local.harness.markdown-reader", category: "pane
 /// The process belongs to its pane. Closing the pane ends the reader; closing the reader ends the
 /// program with status zero, so a pane that closes on success closes with it. The document, its
 /// revisions and the reading position live outside the process and survive it.
+///
+/// `:open <document ID>` typed into the pane shows another document of the same store in the same
+/// window: the reader saves the shown document's position, then opens the other one at its saved
+/// position. The pane, its placement and its ownership stay as they are.
 @MainActor
 final class PaneHost: NSObject, NSWindowDelegate {
-    let model: ReaderModel
+    private(set) var model: ReaderModel
     let state: ReadingStateStore
+    private let platform: ReaderPlatform
     private let terminal: PaneTerminal
+    /// Runs after the pane shows another document, so that menu actions reach its model.
+    var onModelChange: ((_ previous: ReaderModel, _ next: ReaderModel) -> Void)?
+    private var commandLine: String?
+    private var message: String?
+    private var opening = false
+    private var observation = 0
+    private let build = PaneHost.buildIdentity()
     private let anchor = TerminalAnchor()
     private var window: PaneWindow!
     private var content: PaneContentView!
@@ -28,8 +40,9 @@ final class PaneHost: NSObject, NSWindowDelegate {
     private var ending = false
     private var observers: [NSObjectProtocol] = []
 
-    init(model: ReaderModel, state: ReadingStateStore, terminal: PaneTerminal) {
+    init(model: ReaderModel, platform: ReaderPlatform, state: ReadingStateStore, terminal: PaneTerminal) {
         self.model = model
+        self.platform = platform
         self.state = state
         self.terminal = terminal
     }
@@ -38,7 +51,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
         model.followsLatest = true
         window = makeWindow()
         terminal.enter()
-        terminal.onKey = { [weak self] key in self?.key(key) }
+        terminal.onInput = { [weak self] events in self?.input(events) }
         terminal.onResize = { [weak self] in
             self?.draw()
             self?.anchor.refresh()
@@ -61,9 +74,12 @@ final class PaneHost: NSObject, NSWindowDelegate {
 
     // MARK: - Window
 
+    private func view(_ model: ReaderModel) -> ReaderView {
+        ReaderView(model: model, chrome: .embedded(close: { [weak self] in self?.end(status: 0) }, release: { [weak self] in self?.releaseFocus() }))
+    }
+
     private func makeWindow() -> PaneWindow {
-        let view = ReaderView(model: model, chrome: .embedded(close: { [weak self] in self?.end(status: 0) }, release: { [weak self] in self?.releaseFocus() }))
-        let host = NSHostingController(rootView: view)
+        let host = NSHostingController(rootView: view(model))
         host.sizingOptions = []
         hosting = host
         let bounds = NSRect(x: 0, y: 0, width: 640, height: 480)
@@ -139,24 +155,100 @@ final class PaneHost: NSObject, NSWindowDelegate {
 
     // MARK: - Terminal
 
-    private func key(_ key: PaneTerminal.Key) {
-        switch key {
-        case .quit:
-            end(status: 0)
-        case .other:
-            guard window.isVisible else { return }
-            window.makeKeyAndOrderFront(nil)
+    private func input(_ events: [PaneInput.Event]) {
+        for event in events {
+            switch event {
+            case .quit:
+                end(status: 0)
+                return
+            case .focus:
+                message = nil
+                if window.isVisible { window.makeKeyAndOrderFront(nil) }
+            case .line(let line):
+                commandLine = line
+                if line != nil { message = nil }
+            case .command(let text):
+                run(PaneCommand(text))
+            }
+        }
+        draw()
+    }
+
+    private func run(_ command: PaneCommand) {
+        switch command {
+        case .open(let document):
+            open(document)
+        case .unknown(let text):
+            message = "Unknown command \"\(text)\". Use :open <document ID>."
         }
     }
 
+    /// Shows another document of this store in the pane. The shown document's position is saved
+    /// before the other one opens at its saved position; a document that cannot be read leaves the
+    /// shown one in place. Opening the shown document again shows its latest revision.
+    private func open(_ document: String) {
+        guard !ending, !opening else { return }
+        guard PaneCommand.isDocumentIdentity(document) else {
+            message = "\(document) is not a document ID (md- and 20 hexadecimal digits)."
+            return
+        }
+        guard case .stored(let root, let storeId, let shown) = model.reference else { return }
+        if document == shown {
+            message = nil
+            Task { await model.refresh() }
+            return
+        }
+        opening = true
+        message = "Opening \(document)…"
+        Task { @MainActor in
+            let checked = await Task.detached { () -> String? in
+                do {
+                    let store = try DirectoryStore(root: URL(fileURLWithPath: root))
+                    guard store.storeId == storeId else { return "the store changed its identity" }
+                    _ = try store.document(document)
+                    return nil
+                } catch {
+                    return "\(error)"
+                }
+            }.value
+            defer {
+                opening = false
+                draw()
+            }
+            guard !ending else { return }
+            if let checked {
+                message = "\(document) cannot be shown: \(checked)"
+                return
+            }
+            let previous = model
+            await previous.close()
+            guard !ending else { return }
+            let next = ReaderModel(reference: .stored(root: root, storeId: storeId, document: document), platform: platform, state: state)
+            next.followsLatest = true
+            model = next
+            hosting?.rootView = view(next)
+            onModelChange?(previous, next)
+            message = nil
+            observePhase()
+            paneLog.notice("pane opened \(document, privacy: .public) after \(shown, privacy: .public)")
+            await next.open(revision: nil, origin: nil)
+        }
+    }
+
+    /// Redraws the placeholder whenever the shown model's phase or revision changes. A model that
+    /// the pane no longer shows ends its observation.
     private func observePhase() {
+        observation += 1
+        let current = observation
         withObservationTracking {
             _ = model.phase
             _ = model.snapshot?.revision
+            _ = model.latestRevision
         } onChange: { [weak self] in
             Task { @MainActor in
-                self?.draw()
-                self?.observePhase()
+                guard let self, self.observation == current else { return }
+                self.draw()
+                self.observePhase()
             }
         }
     }
@@ -170,8 +262,31 @@ final class PaneHost: NSObject, NSWindowDelegate {
         case .searching: status = "Looking for this pane on screen."
         case .untrusted: status = "This terminal cannot place the reader over its pane: the program has no accessibility access."
         }
-        if case .failed(let message) = model.phase { status = "The document could not be opened: \(message)" }
-        terminal.draw(title: title, status: status, keys: "q closes the reader. Another key moves the keyboard to the reader.", marker: anchor.marker)
+        if case .failed(let reason) = model.phase { status = "The document could not be opened: \(reason)" }
+        if let message { status = message + " " + status }
+        terminal.draw(title: title, identity: identity(), status: status, keys: "q closes the reader. :open <document ID> shows another document here. Another key moves the keyboard to the reader.", command: commandLine, marker: anchor.marker)
+    }
+
+    /// The shown document, revision and reader build, so that an inspection of the pane names
+    /// what it shows.
+    private func identity() -> String {
+        var parts: [String] = []
+        if case .stored(_, _, let document) = model.reference { parts.append(document) }
+        if let revision = model.snapshot?.revision {
+            let latest = model.latestRevision ?? revision
+            parts.append(latest > revision ? "revision \(revision); revision \(latest) is available" : "revision \(revision) of \(latest)")
+        }
+        if let build { parts.append("reader build \(build)") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The first twelve hexadecimal digits of the bundle's source digest, when the bundle has one.
+    private static func buildIdentity() -> String? {
+        guard let url = Bundle.main.url(forResource: "build", withExtension: "json"),
+              let data = try? Data(contentsOf: url), data.count <= 16384,
+              let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let digest = record["sourceDigest"] as? String, digest.hasPrefix("sha256:") else { return nil }
+        return String(digest.dropFirst(7).prefix(12))
     }
 
     // MARK: - Ending
@@ -357,14 +472,13 @@ final class PaneWindow: NSPanel {
 /// terminal.
 @MainActor
 final class PaneTerminal {
-    enum Key { case quit, other }
-
-    var onKey: ((Key) -> Void)?
+    var onInput: (([PaneInput.Event]) -> Void)?
     var onResize: (() -> Void)?
     /// The terminal is gone: a hang-up signal or the end of input.
     var onHangUp: (() -> Void)?
     /// Termination or interruption signals while the terminal stays.
     var onTerminate: (() -> Void)?
+    private var keys = PaneInput()
     private var saved = termios()
     private var raw = false
     private var left = false
@@ -436,8 +550,8 @@ final class PaneTerminal {
             onHangUp?()
             return
         }
-        let bytes = buffer.prefix(count)
-        onKey?(bytes.contains(where: { $0 == UInt8(ascii: "q") || $0 == UInt8(ascii: "Q") || $0 == 3 || $0 == 4 }) ? .quit : .other)
+        let events = keys.feed(buffer.prefix(count))
+        if !events.isEmpty { onInput?(events) }
     }
 
     /// Columns and rows of the terminal.
@@ -451,15 +565,17 @@ final class PaneTerminal {
     /// Draws the placeholder. The marker sits in concealed text on the first line, where a
     /// narrow pane still shows it whole. Each line is placed by row and the placeholder stops at
     /// the last row, so a short pane never scrolls the marker away.
-    func draw(title: String, status: String, keys: String, marker: String) {
+    func draw(title: String, identity: String, status: String, keys: String, command: String?, marker: String) {
         guard !left else { return }
         let (columns, rows) = size()
         let width = max(10, columns - 4)
         var lines = ["\u{1B}[8m\(marker)\u{1B}[28m", ""]
         lines.append("  \u{1B}[1m\(TerminalText.fit(TerminalText.printable(title), width))\u{1B}[22m")
+        lines.append("  \(TerminalText.fit(TerminalText.printable(identity), width))")
         lines += TerminalText.wrap(TerminalText.printable(status), width).map { "  \($0)" }
         lines.append("")
         lines += TerminalText.wrap(keys, width).map { "  \u{1B}[2m\($0)\u{1B}[22m" }
+        if let command { lines += ["", "  :\(TerminalText.fit(TerminalText.printable(command), width - 1))"] }
         // Each row is replaced in place, without clearing the screen first, so the first row
         // shows a marker at every moment.
         var text = "\u{1B}[0m"
