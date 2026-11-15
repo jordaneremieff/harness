@@ -73,6 +73,28 @@ dimensions such as clarity, scope, overlap, and consistency. It does not invent 
 or assume a rewrite is necessary. Any proposed corpus change follows live
 governance and remains subject to operator approval.
 
+### Transcript message
+
+The task message has type `pillars-request`, and the ordinary extension
+registers its renderer. The first line is the bold label `[pillars]` in Pi's
+custom message label colour, then what was requested in bold text: `Alignment
+check requested`, `Candidate derivation requested` or `Guidance review
+requested`. A muted second line names the command (`/pillars check`), and a
+blank line follows. Collapsed, the card shows at most three visual lines of the
+operator hint, or of the task sentence that says how the subject is found, then
+Pi's `... (N more lines, ctrl+o to expand)` hint. Expanded, it shows the whole
+task text as Markdown and no hint. The renderer reads the action and hint from
+the message's own text, removes terminal control sequences from every displayed
+string, and changes neither the message nor the model context.
+
+Command output that `/pillars` shows without model context (help, a source
+read, access evidence, an export result or a failed command) is a
+`pillars-view` entry. Its card uses the same header: `[pillars]` and what the
+command showed, such as `[pillars] Commands`, `[pillars] Source · governance`
+or `[pillars] Access evidence`, then a blank line and the whole Markdown body.
+The entry data carries the body text and the header facts; an entry without a
+title shows `[pillars] Command output`.
+
 ## Read the corpus
 
 Agents use `pillars` with no arguments to read the inventory and discover

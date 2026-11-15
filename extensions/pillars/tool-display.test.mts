@@ -32,7 +32,7 @@ it("publishes the display module's records at load and on current requests, and 
 		on(name: string, handler: (event: unknown, ctx: unknown) => unknown) { handlers.set(name, handler); return () => handlers.delete(name); },
 		registerCommand() {},
 		registerShortcut() {},
-		registerEntryRenderer() {},
+		registerEntryRenderer() {}, registerMessageRenderer() {},
 		registerFlag() {},
 		getFlag() {},
 	} as unknown as ExtensionAPI;

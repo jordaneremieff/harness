@@ -56,7 +56,7 @@ it("declares explicit parameter types and matching field hints, ordinary and nat
 	process.env.PI_AGENT_DIR = agentDir;
 	const bus = { emit() {}, on: () => () => {} };
 	const ordinary: DeclaredTool[] = [];
-	pillarsExtension({ registerTool(tool: DeclaredTool) { ordinary.push(tool); }, registerCommand() {}, registerEntryRenderer() {}, events: bus, on: () => () => {}, getAllTools: () => [] } as unknown as ExtensionAPI, { agentDir });
+	pillarsExtension({ registerTool(tool: DeclaredTool) { ordinary.push(tool); }, registerCommand() {}, registerEntryRenderer() {}, registerMessageRenderer() {}, events: bus, on: () => () => {}, getAllTools: () => [] } as unknown as ExtensionAPI, { agentDir });
 	const contribution = pillarsDurableContribution("/abs/extensions/pillars/index.ts", { bus, stopFactory: () => {} });
 	const extension = await contribution.create({
 		durable: Durable,

@@ -15,7 +15,7 @@ type Emit = (name: string, event: unknown) => Promise<void>;
 
 function observationHost(ctx: ContextFields): Emit {
 	const handlers = new Map<string, unknown>();
-	const api: Pick<ExtensionAPI, "on" | "registerTool" | "registerCommand" | "registerEntryRenderer" | "getAllTools" | "events"> = {
+	const api: Pick<ExtensionAPI, "on" | "registerTool" | "registerCommand" | "registerEntryRenderer" | "registerMessageRenderer" | "getAllTools" | "events"> = {
 		events: { emit() {}, on: () => () => {} },
 		on(name, handler) {
 			handlers.set(name, handler);
@@ -23,7 +23,7 @@ function observationHost(ctx: ContextFields): Emit {
 		},
 		registerTool() {},
 		registerCommand() {},
-		registerEntryRenderer() {},
+		registerEntryRenderer() {}, registerMessageRenderer() {},
 		getAllTools: () => [{
 			name: "pillars",
 			exposure: "direct",

@@ -80,6 +80,16 @@ export const CORRECTION_TASK =
 export const JUDGMENT_AUTHORITY =
 	"This invocation does not authorize corpus edits or approve corpus proposals, and it grants no authority for new surfaces, destructive acts, publication, or credential use.";
 
+const HINT_HEADING = "Operator hint (free text):";
+
+/** The request a `judgmentPrompt` text carries, or undefined for any other text. */
+export function judgmentRequestOf(text: string): JudgmentRequest | undefined {
+	const match = /^The operator invoked \/pillars (check|derive|review)\. /u.exec(text);
+	if (!match) return undefined;
+	const marker = text.indexOf(`\n\n${HINT_HEADING}\n\n`);
+	return { action: match[1] as JudgmentRequest["action"], hint: marker < 0 ? "" : text.slice(marker + HINT_HEADING.length + 4).trim() };
+}
+
 export function judgmentPrompt({ action, hint }: JudgmentRequest): string {
 	return [
 		`The operator invoked /pillars ${action}. This message contains extension-provided task scaffolding, not new doctrine.`,
@@ -92,6 +102,6 @@ export function judgmentPrompt({ action, hint }: JudgmentRequest): string {
 			: action === "review"
 				? 'Review whether the existing Pillars guidance expresses the intended behavior and supports its use. For an observed-behavior concern, compare expected and observed behavior with the actual source and delivery evidence; test applicability, valid exceptions, and competing constraints. Consider delivery, recognition, interpretation, application, and the doctrine itself as possible causes for that concern, not a mandatory checklist. Do not infer recurrence or a cause beyond the available examples. Repeated misses do not by themselves justify stronger wording or a corpus rewrite. Missing examples limit causal claims, not all source review. For maintenance, examine useful dimensions such as clarity, scope, overlap, and consistency without inventing failures or imposing a fixed checklist. Distinguish established findings from hypotheses and name the evidence needed for unresolved conclusions. Recommend the correction at the layer that owns the problem, or explain why no change is warranted. Follow governance for evidence attribution and corpus proposals, including its "Mutation Rules". Use "Contradiction Handling" when the concern is an apparent violation or falsifying application. Keep proposals in chat; this invocation does not authorize edits or corpus changes.'
 				: 'Explore whether the subject contains a transferable candidate for the corpus. Use governance\'s "Document Types" and "Mutation Rules" to choose its type and treatment. Let the evidence guide the reasoning; no fixed derivation procedure or quota is required. Offer useful candidate wording, why it matters, where it applies or does not, and its relationship to the nearest existing entries. An adjustment to an existing entry or no candidate is a valid result. Keep the proposal provisional in chat; this invocation does not authorize corpus changes.',
-		...(hint ? ["Operator hint (free text):", hint] : []),
+		...(hint ? [HINT_HEADING, hint] : []),
 	].join("\n\n");
 }

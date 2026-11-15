@@ -7,10 +7,8 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
-	getMarkdownTheme,
 	VERSION,
 } from "@earendil-works/pi-coding-agent";
-import { Markdown } from "@earendil-works/pi-tui";
 import { int, obj, opt, str, type Schema, type Static } from "@earendil-works/pi-schema";
 import { ACCESS_DESCRIPTION, access, parseAccess } from "./access.ts";
 import { LoadingView, openOperatorFrame, publishOperatorViews, type OperatorView, type ViewHost } from "../../operator-ui/registration.ts";
@@ -23,6 +21,7 @@ import { COMMAND_HELP, commandCompletions, judgmentPrompt, parseJudgmentRequest 
 import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, DraftSchema, splitDraft } from "./draft.ts";
 import { toolDisplay } from "./display.ts";
 import { pillarsDurableContribution } from "./durable.ts";
+import { JUDGMENT_REQUEST_MESSAGE, renderJudgmentRequestMessage, renderViewEntry, VIEW_ENTRY, type ViewEntryData } from "./request-card.ts";
 import { exportLocal, parseCommand } from "./export.ts";
 import { accessEvidence, Deduplicator, type DeliveryExtent, extract, readEvidence, type ResultEvidence } from "./observation.ts";
 import { usageMarkdown } from "./presentation.ts";
@@ -256,10 +255,8 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result, isError: result.kind === "error" };
 		},
 	});
-	pi.registerEntryRenderer<{ text: string }>(
-		"pillars-view",
-		(entry) => new Markdown(entry.data?.text ?? "Pillars view unavailable.", 0, 0, getMarkdownTheme()),
-	);
+	pi.registerEntryRenderer<ViewEntryData>(VIEW_ENTRY, renderViewEntry);
+	pi.registerMessageRenderer(JUDGMENT_REQUEST_MESSAGE, renderJudgmentRequestMessage);
 	// Print mode takes over process.stdout.write and redirects it to stderr so that
 	// model and extension output cannot corrupt the text or JSON stream. The real
 	// stdout file descriptor is still the destination for command output, so write
@@ -273,9 +270,10 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			written += count;
 		}
 	}
-	function display(content: string, ctx: ExtensionContext): void {
+	/** Shows command output: plain text in print mode, otherwise a transcript entry titled by what it shows. */
+	function display(content: string, view: Omit<ViewEntryData, "text">, ctx: ExtensionContext): void {
 		if (ctx.mode === "print") writePrintOutput(`${content}\n`);
-		else pi.appendEntry("pillars-view", { text: content });
+		else pi.appendEntry(VIEW_ENTRY, { text: content, ...view } satisfies ViewEntryData);
 	}
 	const READ_PATTERN = /^read ([a-z0-9][a-z0-9-]{0,63})(?: ([0-9]{1,7}) ([a-f0-9]{64}))?$/;
 	async function readSource(input: string, ctx: ExtensionContext): Promise<void> {
@@ -287,27 +285,27 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			ctx.signal,
 		);
 		if (result.schema === "pillars-source-error") {
-			display(`Pillars source: ${result.code}. ${result.message ?? ""}`.trimEnd(), ctx);
+			display(`Pillars source: ${result.code}. ${result.message ?? ""}`.trimEnd(), { title: "Source unavailable", facts: [result.code] }, ctx);
 			return;
 		}
 		const continuation =
 			result.nextOffset !== undefined
 				? `Continue: /pillars read ${result.resource} ${result.nextOffset} ${result.referenceBodyDigest}`
 				: "Read an entry: /pillars read <resource>. Read consultation rules: /pillars read governance. View access evidence: /pillars usage.";
-		display(`${result.text}\n\nSource: ${result.resource}; SHA-256: ${result.referenceBodyDigest}.\n${continuation}`, ctx);
+		display(`${result.text}\n\nSource: ${result.resource}; SHA-256: ${result.referenceBodyDigest}.\n${continuation}`, { title: "Source", subject: result.resource }, ctx);
 	}
 	async function usageOrExport(input: string, ctx: ExtensionContext): Promise<void> {
 		const parsed = parseCommand(input === "usage" ? "" : input.startsWith("usage ") ? input.slice(6) : input);
 		if (parsed.kind === "export") {
 			const document = await reader.exportCapture(parsed.windowDays, ctx.signal);
 			if (document.schema !== "pillars-export") {
-				display(usageMarkdown(document), ctx);
+				display(usageMarkdown(document), { title: "Access evidence" }, ctx);
 				return;
 			}
-			display(JSON.stringify(await exportLocal(parsed.path, document, { signal: ctx.signal })), ctx);
+			display(JSON.stringify(await exportLocal(parsed.path, document, { signal: ctx.signal })), { title: "Access evidence export" }, ctx);
 			return;
 		}
-		display(usageMarkdown(await reader.read({ view: parsed.kind, windowDays: parsed.windowDays }, ctx.signal)), ctx);
+		display(usageMarkdown(await reader.read({ view: parsed.kind, windowDays: parsed.windowDays }, ctx.signal)), { title: "Access evidence" }, ctx);
 	}
 	/** Corpus reads behind the browser; the catalogue is discovered on first use. */
 	const browserOperations = {
@@ -349,7 +347,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			return;
 		}
 		if (input.startsWith("next ")) {
-			display(usageMarkdown(await reader.read({ cursor: input.slice(5) }, ctx.signal)), ctx);
+			display(usageMarkdown(await reader.read({ cursor: input.slice(5) }, ctx.signal)), { title: "Access evidence" }, ctx);
 			return;
 		}
 		await usageOrExport(input, ctx);
@@ -369,14 +367,14 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			if (request) {
 				await refreshJudgment(ctx);
 				pi.sendMessage(
-					{ customType: "pillars-request", content: judgmentPrompt(request), display: true },
+					{ customType: JUDGMENT_REQUEST_MESSAGE, content: judgmentPrompt(request), display: true },
 					{ triggerTurn: true, deliverAs: "steer" },
 				);
 				return;
 			}
 			const input = args.trim();
 			if (!input || input === "help") {
-				display(COMMAND_HELP, ctx);
+				display(COMMAND_HELP, { title: "Commands" }, ctx);
 				if (input === "help") return;
 			}
 			await discover(ctx.signal);
@@ -385,6 +383,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			} catch {
 				display(
 					`The Pillars command did not complete. Check the command syntax and source or export availability.\n\n${COMMAND_HELP}`,
+					{ title: "Command did not complete" },
 					ctx,
 				);
 			}

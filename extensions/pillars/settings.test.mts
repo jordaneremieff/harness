@@ -59,7 +59,7 @@ function host(bus: SettingsBus) {
 			tools.set(tool.name, tool);
 		},
 		registerCommand() {},
-		registerEntryRenderer() {},
+		registerEntryRenderer() {}, registerMessageRenderer() {},
 	} as unknown as ExtensionAPI;
 	return { pi, handlers, tools };
 }
