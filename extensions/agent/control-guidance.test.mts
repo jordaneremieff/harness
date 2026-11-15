@@ -18,7 +18,8 @@ it("ordinary delegation guidance names only registered controls and native guida
 		registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, registerCommand() {},
 		getThinkingLevel: () => "off",
 	} as unknown as ExtensionAPI);
-	assert.equal(tools.has("agent_work"), true, "an ordinary session has its own agent_work");
+	assert.equal(tools.has("agent_wait"), true, "an ordinary session has its own agent_wait");
+	assert.equal(tools.has("agent_work"), false, "the native agent_work, which declares background work, is not an ordinary session's tool");
 	for (const [name, tool] of tools) {
 		const text = [tool.description, ...(tool.promptGuidelines ?? [])].join("\n");
 		for (const mentioned of text.matchAll(/\bagent_[a-z]+\b/gu)) assert.ok(tools.has(mentioned[0]), `${name} names unavailable ${mentioned[0]}`);
@@ -27,7 +28,7 @@ it("ordinary delegation guidance names only registered controls and native guida
 		const actual = tools.get(name)?.promptGuidelines;
 		assert.deepEqual(actual, agentControlGuidance(name, "ordinary").guidelines);
 		const ordinary = actual?.join("\n") ?? "";
-		assert.match(ordinary, /call agent_work continue with a short note for the operator/u);
+		assert.match(ordinary, /call agent_wait with a short note for the operator/u);
 		assert.doesNotMatch(ordinary, /agent_work complete|widget|exact result references|Preserve known request IDs/u, "the note is operator text: it is no stored state and carries no result reference");
 		assert.match(ordinary, /the only call in the last tool batch and write no chat text\./u);
 		assert.match(ordinary, /A chat message is only for a decision or act of the operator, a blocker, or a result, and it stands alone/u);

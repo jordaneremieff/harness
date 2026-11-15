@@ -1,7 +1,7 @@
 /**
  * A real `pi -p` run with the Agent and Jobs extensions loaded, against a scripted provider: a background job
  * settles after the run already wrote a text report, its completion message starts another turn, and the
- * printed answer is the text that answers that completion, not an empty output after `agent_work`.
+ * printed answer is the text that answers that completion, not an empty output after `agent_wait`.
  *
  * The scripted model reads `jobs` status until the job has settled. Jobs sends the completion in the same
  * tick in which the job settles, so the completion is queued before the report ends the turn.

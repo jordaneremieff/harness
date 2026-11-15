@@ -71,7 +71,7 @@ export function declareContinuityTools(pi: ExtensionAPI, runtime: "native" | "or
 		declare({ name: "agent_abort", act: "worker-resolution", accepts: acceptsAbort });
 		declare({ name: "agent_steer", act: "worker-resolution", accepts: acceptsSteer });
 		declare({ name: "agent_send", act: "worker-resolution", accepts: acceptsReport });
-		// An ordinary session declares no work: its `agent_work` only ends a turn with a state note.
+		// An ordinary session declares no work: its `agent_wait` only ends a turn with a state note.
 		if (runtime === "native") declare({ name: "agent_work", act: "work-completion", accepts: acceptsNativeCompletion });
 	});
 }

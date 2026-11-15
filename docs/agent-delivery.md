@@ -314,10 +314,11 @@ completion returns the close while that close remains retained; it does not
 create another final report. The work document keeps the newest 16 closed items.
 Use this retained declaration, not an informal promise of a later manual report.
 
-An ordinary session has its own `agent_work`, which ends a turn that needs
-nothing from the operator without a chat line. When only
+An ordinary session has no `agent_work`. Its `agent_wait` ends a turn that
+needs nothing from the operator without a chat line, and the session waits for
+its next event. When only
 delegated work remains, or after an event that needs nothing from the
-operator, it calls `agent_work` with `action: "continue"` and a short note
+operator, it calls `agent_wait` with a short note
 for the operator in `note` as the only call of its last tool batch and writes
 no chat text: the note shows as the card of that call in the transcript and
 the turn ends there. The note says in plain words what is open and what

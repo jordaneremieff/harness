@@ -38,7 +38,7 @@ function fixture() {
 }
 
 const DECLARED = ["agent_compact", "agent_abort", "agent_steer", "agent_send", "agent_work"];
-/** An ordinary session declares no work, so its `agent_work` completes none. */
+/** An ordinary session declares no work: its `agent_wait` completes none, and it has no `agent_work`. */
 const ORDINARY_DECLARED = DECLARED.filter((name) => name !== "agent_work");
 
 it("declares whole-tool compaction, the owned worker-resolution tools and work completion synchronously", () => {

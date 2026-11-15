@@ -1740,12 +1740,16 @@ type NoteCardFacts = {
 
 /**
  * One state note as a card in the message background. The turn ended there, so the card is a message to
- * the operator, not a tool outcome, and its title says what happened instead of naming the tool. Collapsed,
- * it shows the title, at most three note lines and Pi's expansion hint; expanded, the whole note, the agents
- * whose results were due, and what ended the turn and what starts the next one. Lines wrap at word
- * boundaries and keep the background to the edge.
+ * the operator, not a tool outcome. Its title names the tool and then what happened, as in
+ * `agent_wait · turn ended · waiting for 2 agent results`. Collapsed, it shows the title, at most three
+ * note lines and Pi's expansion hint; expanded, the whole note, the agents whose results were due, and what
+ * starts the next turn. Lines wrap at word boundaries and keep the background to the edge.
  */
 class StateNoteCard implements Component {
+	private readonly name: string;
+	constructor(name: string) {
+		this.name = name;
+	}
 	private facts: NoteCardFacts = { note: "", waiting: [], waitingOmitted: 0, settled: false };
 	private theme: Theme | undefined;
 	private context: NoteCardContext | undefined;
@@ -1769,10 +1773,9 @@ class StateNoteCard implements Component {
 			if (due > 0) parts.push(`waiting for ${plural(due, "agent result")}`);
 			if (scheduled > 0) parts.push(plural(scheduled, "scheduled input"));
 		}
-		const head = this.facts.error !== undefined ? "Could not end the turn" : this.facts.settled ? "Turn ended" : "Ending turn";
-		const detail = parts.length === 0 ? "" : theme.fg("accent", ` · ${parts.join(" · ")}`);
+		const head = this.facts.error !== undefined ? "could not end the turn" : this.facts.settled ? "turn ended" : "ending turn";
 		const clock = this.facts.at === undefined ? "" : theme.fg("muted", ` · ${dashboardClock(this.facts.at)}`);
-		return theme.fg("toolTitle", theme.bold(head)) + detail + clock;
+		return theme.fg("toolTitle", theme.bold(this.name)) + theme.fg("accent", ` · ${[head, ...parts].join(" · ")}`) + clock;
 	}
 	/** One open request: the agent's name and configuration from the roster, then its state now. */
 	private waitingRow(item: Record<string, unknown>, rows: readonly AgentConversationSummary[]): string {
@@ -1794,13 +1797,13 @@ class StateNoteCard implements Component {
 		if (this.facts.waitingOmitted > 0) lines.push(theme.fg("muted", `  ${this.facts.waitingOmitted} more not listed`));
 		return lines;
 	}
-	/** The agents whose results were due and, for a turn that ended, what ended it and what starts the next one. */
+	/** The agents whose results were due and, for a turn that ended, what starts the next one. */
 	private expandedLines(theme: Theme, width: number): string[] {
 		const lines: string[] = [];
 		const waiting = this.waitingLines(theme, width);
 		if (waiting.length > 0) lines.push("", ...waiting);
 		if (this.facts.settled && this.facts.error === undefined)
-			lines.push("", ...wrapTextWithAnsi("This session ended its turn with its agent_work tool because it needed nothing from you. A result from an agent, a message or your input starts its next turn.", width).map((line) => theme.fg("muted", line)));
+			lines.push("", ...wrapTextWithAnsi("This session ended its turn here because it needed nothing from you. A result from an agent, a message or your input starts its next turn.", width).map((line) => theme.fg("muted", line)));
 		return lines;
 	}
 	/**
@@ -1847,17 +1850,17 @@ function noteText(args: unknown): string {
 }
 
 /**
- * The card of `agent_work` in an ordinary session: the state note, which this card alone shows to the
- * operator. Pi draws the row without its tool outcome background; the card draws the message background
- * itself. The call slot shows the note while it arrives. Once the result exists, the result slot draws
+ * The card of an ordinary session's `agent_wait`, and of that tool's earlier calls named `agent_work`: the
+ * state note, which this card alone shows to the operator. The title names the call's tool. Pi draws the
+ * row without its tool outcome background; the card draws the message background itself. The call slot shows the note while it arrives. Once the result exists, the result slot draws
  * the whole card with the time the turn ended and the requests that were due, and the call slot draws
  * nothing. A failed call shows its error in the error background.
  */
-export function ordinaryWorkCard(lookup: AgentCardLookup = () => []): AgentToolCard {
+export function ordinaryWorkCard(name: string, lookup: AgentCardLookup = () => []): AgentToolCard {
 	return {
 		renderShell: "self",
 		renderCall: (value, theme, context) => {
-			const component = context.lastComponent instanceof StateNoteCard ? context.lastComponent : new StateNoteCard();
+			const component = context.lastComponent instanceof StateNoteCard ? context.lastComponent : new StateNoteCard(name);
 			const state = (context as NoteCardContext).state;
 			component.set({ note: noteText(value), waiting: [], waitingOmitted: 0, settled: false }, theme, { ...context, lookup }, () => state?.workNoteResult === true);
 			return component;
@@ -1867,7 +1870,7 @@ export function ordinaryWorkCard(lookup: AgentCardLookup = () => []): AgentToolC
 			if (state) state.workNoteResult = true;
 			const details = record(result.details);
 			const at = details.at;
-			const component = context.lastComponent instanceof StateNoteCard ? context.lastComponent : new StateNoteCard();
+			const component = context.lastComponent instanceof StateNoteCard ? context.lastComponent : new StateNoteCard(name);
 			component.set({
 				note: noteText(context.args ?? details),
 				waiting: array(details.waiting).map(record).filter((row) => text(row.sessionId) !== ""),
