@@ -81,17 +81,28 @@ custom message label colour, then what was requested in bold text: `Alignment
 check requested`, `Candidate derivation requested` or `Guidance review
 requested`. A muted second line names the command (`/pillars check`), and a
 blank line follows. Collapsed, the card shows at most three visual lines of the
-operator hint, or of the task sentence that says how the subject is found, then
-Pi's `... (N more lines, ctrl+o to expand)` hint. Expanded, it shows the whole
-task text as Markdown and no hint. The renderer reads the action and hint from
-the message's own text, removes terminal control sequences from every displayed
-string, and changes neither the message nor the model context.
+operator hint, or of the task sentence that says how the subject is found. A
+blank line between paragraphs counts as a line, and a blank line at the end of
+the preview is dropped. When text is hidden, Pi's `... (N more lines, ctrl+o to
+expand)` hint follows: the key comes from Pi's `keyHint`, the rest is muted,
+and without a configured key the hint reads `click to expand`. A left click anywhere on the card's content rows toggles that card, as Pi's
+compaction and tool cards toggle on a left click; a modified click and each
+click of a multi-click toggle too, and a drag still selects text. Pi's global
+expansion resets that local choice.
+Expanded, the card shows the whole task text as Markdown and no hint. The
+renderer reads the action and hint from the message's own text, removes
+terminal control and escape sequences and other control or format characters
+from every displayed string, keeps newlines and tabs, and changes neither the
+message nor the model context.
 
 Command output that `/pillars` shows without model context (help, a source
 read, access evidence, an export result or a failed command) is a
 `pillars-view` entry. Its card uses the same header: `[pillars]` and what the
 command showed, such as `[pillars] Commands`, `[pillars] Source · governance`
-or `[pillars] Access evidence`, then a blank line and the whole Markdown body.
+or `[pillars] Access evidence`, then a blank line and the whole Markdown body,
+which the operator asked to read. Pi gives an entry renderer no `outputPad`, so
+the entry card uses Pi's default horizontal padding of one column. The entry
+has no collapsed form, so a click on it has nothing to toggle.
 The entry data carries the body text and the header facts; an entry without a
 title shows `[pillars] Command output`.
 

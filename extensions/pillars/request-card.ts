@@ -1,5 +1,5 @@
 import { getMarkdownTheme, type EntryRenderer, type MessageRenderer, type MessageRenderOptions, type Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { Box, Markdown, MouseRegion, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { judgmentRequestOf, type JudgmentRequest } from "./commands.ts";
 
@@ -24,15 +24,9 @@ const TITLES: Record<JudgmentRequest["action"], string> = {
 	review: "Guidance review requested",
 };
 
-/** One styled run of a card line; `text` is plain display text. */
-interface Run {
-	text: string;
-	style: (text: string) => string;
-}
-
-/** Displayed text keeps newlines and drops terminal controls and other control or format characters. */
+/** Displayed text keeps newlines and tabs and drops terminal controls and other control or format characters. */
 function displayText(text: string): string {
-	return stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, (character) => (character === "\n" ? character : character === "\t" ? " " : ""));
+	return stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, (character) => (character === "\n" || character === "\t" ? character : ""));
 }
 
 const oneLine = (text: string) => displayText(text).replace(/\s+/gu, " ").trim();
@@ -52,33 +46,21 @@ export function requestSummary(text: string): { label: string; facts: string[]; 
 	};
 }
 
-/** Runs on one row; a clipped row ends in `…` in the style of the run it cuts. */
-function fitRow(runs: readonly Run[], width: number): string {
-	if (runs.reduce((total, run) => total + visibleWidth(run.text), 0) <= width) return runs.map((run) => run.style(run.text)).join("");
-	let used = 0;
-	let line = "";
-	for (const run of runs) {
-		const size = visibleWidth(run.text);
-		if (used + size < width) {
-			line += run.style(run.text);
-			used += size;
-			continue;
-		}
-		const kept = stripVTControlCharacters(truncateToWidth(run.text, Math.max(0, width - used - 1), ""));
-		return width > used ? line + run.style(`${kept}…`) : line;
-	}
-	return line;
+/** One row at most `width` wide; a clipped row ends in `…` in the colour of the text it cuts and keeps the row background. */
+function clipRow(line: string, width: number): string {
+	return truncateToWidth(line, Math.max(0, width), "…").replace(/\x1b\[0m…\x1b\[0m$/u, "…\x1b[22;23;24;25;27;28;29;39m");
 }
 
-/** Pi's tool-card hint: `... (2 more lines, ctrl+o to expand)`, or `... (ctrl+o to expand)` when no line count applies. */
-function hintRuns(theme: Theme, options: MessageRenderOptions, hidden: number): Run[] {
-	const muted = (text: string) => theme.fg("muted", text);
+/** Pi's tool-card hint, `... (2 more lines, ctrl+o to expand)`, with the key from Pi's `keyHint` and the rest muted. */
+function expansionHint(theme: Theme, options: MessageRenderOptions, hidden: number): string {
 	const key = typeof options.keyText === "function" ? options.keyText("app.tools.expand") : "";
-	const more = hidden > 0 ? `${hidden} more line${hidden === 1 ? "" : "s"}, ` : "";
-	if (!key) return [{ text: `... (${more}expand for full details)`, style: muted }];
-	return [{ text: `... (${more}`, style: muted }, { text: key, style: (text) => theme.fg("dim", text) }, { text: " to expand)", style: muted }];
+	const action = !key
+		? theme.fg("muted", "click to expand")
+		: typeof options.keyHint === "function" ? options.keyHint("app.tools.expand", "to expand") : theme.fg("dim", key) + theme.fg("muted", " to expand");
+	return theme.fg("muted", `... (${hidden} more line${hidden === 1 ? "" : "s"}, `) + action + theme.fg("muted", ")");
 }
 
+/** Blank lines at the start and the end of a run of lines are dropped; blank lines inside it stay. */
 function trimBlank(lines: string[]): string[] {
 	let start = 0;
 	let end = lines.length;
@@ -97,13 +79,34 @@ interface Header {
 
 /** The `[pillars]` line, the muted facts line when facts are known, and a blank line. */
 function headerLines(header: Header, theme: Theme, width: number): string[] {
-	const title = fitRow([
-		{ text: "[pillars]", style: (text) => theme.fg("customMessageLabel", theme.bold(text)) },
-		{ text: ` ${oneLine(header.label)}`, style: (text) => theme.fg("text", theme.bold(text)) },
-		...(header.subject ? [{ text: ` · ${oneLine(header.subject)}`, style: (text: string) => theme.fg("text", text) }] : []),
-	], width);
+	const subject = header.subject ? theme.fg("text", ` · ${oneLine(header.subject)}`) : "";
+	const title = clipRow(`${theme.fg("customMessageLabel", theme.bold("[pillars]"))} ${theme.fg("text", theme.bold(oneLine(header.label)))}${subject}`, width);
 	const facts = header.facts.map(oneLine).filter(Boolean);
-	return [title, ...(facts.length ? [fitRow([{ text: facts.join(" · "), style: (text) => theme.fg("muted", text) }], width)] : []), ""];
+	return [title, ...(facts.length ? [clipRow(theme.fg("muted", facts.join(" · ")), width)] : []), ""];
+}
+
+/**
+ * A card's own disclosure, kept with the stored message object that Pi hands to every rebuild of the card. A
+ * choice holds only under the global expansion it was made under; a change of Pi's global expansion discards it.
+ */
+const disclosures = new WeakMap<object, { expanded: boolean; under: boolean }>();
+
+function disclosedExpansion(message: object, global: boolean): boolean {
+	const choice = disclosures.get(message);
+	if (choice && choice.under !== global) disclosures.delete(message);
+	return disclosures.get(message)?.expanded ?? global;
+}
+
+/**
+ * A left click on the card's content toggles it, as Pi's compaction and tool cards do with `MouseRegion`: Pi checks
+ * only the click type and the left button. A drag still selects text, because Pi sends no click for it.
+ */
+function clickToggle(body: Component & { toggle(): void }): MouseRegion {
+	return new MouseRegion(body, (event) => {
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		body.toggle();
+		return { handled: true };
+	});
 }
 
 /** The header, then at most three body lines with Pi's expansion hint, or the whole task text when expanded. */
@@ -114,23 +117,33 @@ class RequestBody implements Component {
 	private readonly header: Header;
 	private readonly theme: Theme;
 	private readonly options: MessageRenderOptions;
-	constructor(header: Header, preview: string, content: string, theme: Theme, options: MessageRenderOptions) {
+	private readonly message: object;
+	private expanded: boolean;
+	constructor(message: object, header: Header, preview: string, content: string, theme: Theme, options: MessageRenderOptions) {
+		this.message = message;
 		this.header = header;
 		this.theme = theme;
 		this.options = options;
+		this.expanded = disclosedExpansion(message, options.expanded);
 		this.full = markdown(content, theme);
 		this.preview = markdown(preview, theme);
+	}
+	/** Shows the other form of this card and keeps the choice under the current global expansion. */
+	toggle(): void {
+		this.expanded = !this.expanded;
+		disclosures.set(this.message, { expanded: this.expanded, under: this.options.expanded });
+		this.cache = undefined;
 	}
 	render(width: number): string[] {
 		if (this.cache?.width === width) return this.cache.lines;
 		const head = headerLines(this.header, this.theme, width);
 		const full = trimBlank(this.full.render(width));
 		let lines: string[];
-		if (this.options.expanded) lines = [...head, ...full];
+		if (this.expanded) lines = [...head, ...full];
 		else {
 			const preview = trimBlank(trimBlank(this.preview.render(width)).slice(0, REQUEST_PREVIEW_LINES));
 			const hidden = Math.max(0, full.length - preview.length);
-			lines = [...head, ...preview, ...(hidden > 0 ? [fitRow(hintRuns(this.theme, this.options, hidden), width)] : [])];
+			lines = [...head, ...preview, ...(hidden > 0 ? [clipRow(expansionHint(this.theme, this.options, hidden), width)] : [])];
 		}
 		this.cache = { width, lines };
 		return lines;
@@ -171,7 +184,7 @@ function messageBox(theme: Theme, padding: number, child: Component): Box {
 export const renderJudgmentRequestMessage: MessageRenderer = (message, options, theme) => {
 	const content = contentText(message.content);
 	const { label, facts, preview } = requestSummary(content);
-	return messageBox(theme, options.outputPad, new RequestBody({ label, facts }, preview, content, theme, options));
+	return messageBox(theme, options.outputPad, clickToggle(new RequestBody(message, { label, facts }, preview, content, theme, options)));
 };
 
 /** A `pillars-view` entry: `[pillars] Source · governance`, then the command's Markdown output. */
