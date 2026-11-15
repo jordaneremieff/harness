@@ -103,7 +103,8 @@ preparation: a publication during the first load and during a manual refresh, a 
 during a failing attempt, scrolling during preparation and a text selection; the comparison
 page of two revisions, an image-only revision, a comparison that prepares or fails over the
 document, revisions older than the listed choices, and a passage copied with its source from
-the rendering and from the source view) and
+the rendering and from the source view; a burst of refreshes; the preparation queue's bound of
+one running and one waiting request) and
 `MarkdownReaderTests` (the built binary in pane mode on a pseudo-terminal, with its own store and
 home folder: `q`, termination, interruption, hang-up and a closed terminal; a held state lock;
 standard error and a terminal that stop reading; store text with terminal controls; the key
@@ -214,6 +215,11 @@ and says so. A load takes effect only after its page displayed: when an update f
 display, the window keeps the last good revision, its state and its page (shown again when the web
 view lost it) and says that the update failed; a window whose first load fails says why. When the
 page's web content process ends, the app reloads the shown revision at the saved position.
+
+A window prepares one revision at a time. Reading and rendering run to completion once started,
+so a load that starts while another prepares waits, and a newer load replaces the waiting one
+before it reads anything. Repeated refreshes and opens therefore prepare at most the revision
+under way and the newest one requested.
 
 The revision menu offers revisions from the document's pointer, at most the newest 50, and says
 when older revisions are not listed. The list does not grow: **Go to Revision…** shows any

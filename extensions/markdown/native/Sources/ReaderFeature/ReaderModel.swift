@@ -6,14 +6,6 @@ import WebKit
 
 let readerLog = Logger(subsystem: "local.harness.markdown-reader", category: "reader")
 
-/// A rendering prepared off the main thread.
-struct PreparedDocument: Sendable {
-    var snapshot: DocumentSnapshot
-    var rendered: RenderedDocument
-    var readMilliseconds: Double
-    var renderMilliseconds: Double
-}
-
 public struct ReaderTimings: Sendable, Equatable {
     public var readMilliseconds: Double
     public var renderMilliseconds: Double
@@ -131,6 +123,7 @@ public final class ReaderModel {
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var loadPending = false
     @ObservationIgnored private var watcher: DirectoryWatcher?
+    @ObservationIgnored let preparations = PreparationQueue<PreparationRequest, Result<PreparedDocument, any Error>>(work: PreparationRequest.prepare)
     @ObservationIgnored private var positionTask: Task<Void, Never>?
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
     @ObservationIgnored private var monitorTask: Task<Void, Never>?
@@ -234,21 +227,8 @@ public final class ReaderModel {
             position = state.position(for: reference)
         case .current: break
         }
-        let reference = self.reference
-        let result = await Task.detached(priority: .userInitiated) { () -> Result<PreparedDocument, any Error> in
-            Result {
-                let readStart = Date()
-                let snapshot = try DocumentLoader.load(reference, revision: revision, pinnedDigest: pinnedDigest)
-                let renderStart = Date()
-                let rendered = MarkdownRenderer.render(snapshot.source, resolver: snapshot.resolver)
-                return PreparedDocument(
-                    snapshot: snapshot,
-                    rendered: rendered,
-                    readMilliseconds: renderStart.timeIntervalSince(readStart) * 1000,
-                    renderMilliseconds: Date().timeIntervalSince(renderStart) * 1000
-                )
-            }
-        }.value
+        // A newer load replaced this one before its preparation started.
+        guard let result = await preparations.run(PreparationRequest(reference: reference, revision: revision, pinnedDigest: pinnedDigest)) else { return }
         switch result {
         case .success(let prepared): await preparationGate?(prepared.snapshot.revision)
         case .failure: await preparationGate?(revision)
@@ -692,6 +672,7 @@ public final class ReaderModel {
         closed = true
         generation += 1
         watcher = nil
+        preparations.discardWaiting()
         positionTask?.cancel()
         monitorTask?.cancel()
         review.close()
@@ -714,6 +695,7 @@ extension ReaderModel {
     package var refusedAssetRequests: Int { assets.refused }
     package var savedPositionForCheck: ReadingPosition? { state.position(for: reference) }
     package var servedAssetRequests: Int { assets.served }
+    package var preparationsStartedForCheck: Int { preparations.started }
 
     package func capturePositionForCheck() async -> ReadingPosition? {
         await capturePosition()
