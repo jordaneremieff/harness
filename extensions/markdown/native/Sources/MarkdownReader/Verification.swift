@@ -416,6 +416,7 @@ struct Context {
             try Self.png().write(to: image)
             let model = try await openFile("deadline.md", "# Bounded image inspection\n\n![image](deadline.png)\n", keep: &keep)
             _ = await js(model, """
+            globalThis.readerImageDecodeStates?.clear();
             const original = document.querySelector('img[data-asset]');
             const replacement = original.cloneNode(true);
             replacement.decode = () => new Promise(() => {});
