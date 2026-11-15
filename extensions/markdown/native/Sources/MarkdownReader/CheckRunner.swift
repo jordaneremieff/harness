@@ -139,7 +139,9 @@ struct CheckRunner {
                 model.findQuery = find
                 await model.find()
             }
-            _ = try? await model.page.callJavaScript("await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); return true;", contentWorld: .world(name: "markdown-reader"))
+            await Task.yield()
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
             Self.emit(["window": window.windowNumber, "title": window.title, "width": width, "height": height, "pid": Int(getpid()), "visibleWindows": NSApp.windows.filter(\.isVisible).map { $0.windowNumber }], to: nil)
         } catch {
             Self.emit(["ok": false, "error": String(describing: error)], to: nil)
