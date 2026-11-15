@@ -9,7 +9,10 @@ export type DocumentKind = "published" | "response" | "file";
 export type Completeness = { state: "complete" | "partial"; reason?: "length" | "aborted" | "error" | "tool-use"; note?: string };
 export type ContentOrigin = { kind: "ordinary-response" | "native-response" | "file" | "tool"; host?: string; session?: string; conversation?: string; entry?: string; model?: string; path?: string; cwd?: string; capturedAt: string; parts?: { chars: number }[] };
 export type AssetRecord = { kind: "image" | "link"; reference: string; state: "retained" | "external" | "embedded" | "unavailable" | "local-only"; file?: string; mediaType?: string; bytes?: number; digest?: string; reason?: "outside-root" | "missing" | "too-large" | "unsupported-type" | "unsupported-scheme" | "invalid" | "no-base" | "limit" };
-export type ReferenceInventory = { state: "inspected" | "uninspected"; truncated: boolean; omitted: number; items: AssetRecord[] };
+/** Why a publication that asked for reference inspection holds an uninspected inventory. */
+export type InspectionFailure = "app-missing" | "app-incompatible" | "tool-failed" | "tool-timeout" | "output-invalid";
+export const INSPECTION_FAILURES: readonly InspectionFailure[] = ["app-missing", "app-incompatible", "tool-failed", "tool-timeout", "output-invalid"];
+export type ReferenceInventory = { state: "inspected" | "uninspected"; truncated: boolean; omitted: number; items: AssetRecord[]; reason?: InspectionFailure };
 export type CapturedAsset = { record: AssetRecord; data?: Uint8Array };
 export type DocumentRecord = { version: 1; id: string; kind: DocumentKind; title: string; createdAt: string; updatedAt: string; revision: number; digest: string; bytes: number };
 export type RevisionRecord = { version: 1; document: string; revision: number; title: string; createdAt: string; digest: string; bytes: number; publication?: string; completeness: Completeness; contentOrigin: ContentOrigin; references: ReferenceInventory; selfContained?: boolean };
@@ -37,6 +40,16 @@ function validateReferences(references?: ReferenceInventory): void {
 	if (!references) return;
 	if (!["inspected", "uninspected"].includes(references.state) || typeof references.truncated !== "boolean" || !Number.isSafeInteger(references.omitted) || references.omitted < 0 || !Array.isArray(references.items) || references.items.length > 256) throw new StoreError("invalid", "Invalid reference inventory.");
 	if (references.state === "uninspected" && (references.items.length || references.omitted || references.truncated)) throw new StoreError("invalid", "Uninspected references have no inventory.");
+	if (references.reason !== undefined && (references.state !== "uninspected" || !INSPECTION_FAILURES.includes(references.reason))) throw new StoreError("invalid", "Only an uninspected inventory names an inspection failure.");
+}
+/**
+ * The captured content that decides whether a snapshot capture repeats its stored revision: the
+ * exact source digest, reference coverage, and each listed reference with its retained asset
+ * identity. Capture time, provenance and the cause of a failed inspection are not content.
+ */
+function captureKey(sourceDigest: string, references: ReferenceInventory | undefined): string {
+	const inventory = references ?? { state: "uninspected", truncated: false, omitted: 0, items: [] };
+	return JSON.stringify([sourceDigest, inventory.state, inventory.truncated, inventory.omitted, inventory.items.map((item) => [item.kind, item.reference, item.state, item.file ?? null, item.mediaType ?? null, item.bytes ?? null, item.digest ?? null, item.reason ?? null])]);
 }
 function validateAssets(assets: CapturedAsset[]): void {
 	if (assets.length > LIMITS.assetCount) throw new StoreError("too-large", "Asset count exceeds 64.");
@@ -259,7 +272,7 @@ export class MarkdownStore {
 			try { existing = await readJson(index); } catch (error) { if (!absent(error)) throw error; }
 			const current = existing ? await this.sourceDocument(existing.documentId) : undefined;
 			if (current && current.document.kind === kind) {
-				if (current.revision.digest === digest(input.source)) return { ...current, created: false, replayed: true };
+				if (captureKey(current.revision.digest, current.revision.references) === captureKey(digest(input.source), input.references)) return { ...current, created: false, replayed: true };
 				return this.write(input, { id: current.document.id, expectedRevision: current.document.revision });
 			}
 			const plan = await this.snapshotPlan(index, input, existing, current);

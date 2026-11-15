@@ -11,8 +11,8 @@ import * as Durable from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { captureReferences, inspectReferences, fileSnapshotInput, createNativePublishTool, createPublishTool, invocationDigest, publish, type PublishOutcome, type PublishInput } from "./publish.ts";
-import { LIMITS, MarkdownStore, type PublicationPlan } from "./store.ts";
+import { captureReferences, inspectReferences, fileSnapshotInput, createNativePublishTool, createPublishTool, invocationDigest, publish, publicationText, type InspectionResult, type PublishOutcome, type PublishInput } from "./publish.ts";
+import { LIMITS, MarkdownStore, type PublicationPlan, type WriteResult } from "./store.ts";
 import { paneCommand, PANE_MODE } from "./pane-command.ts";
 const scratch = tmpdir();
 async function fixture(run: (root: string, store: MarkdownStore) => Promise<void>) { const root = await mkdtemp(join(scratch, "markdown-publish-")); try { await run(root, new MarkdownStore(join(root, "store"))); } finally { await rm(root, { recursive: true, force: true }); } }
@@ -20,6 +20,7 @@ async function inspection(root: string, images: string[] = [], links: string[] =
 	const app = join(root, "Reader.app"); await mkdir(join(app, "Contents/Resources"), { recursive: true }); await writeFile(join(app, "Contents/Resources/build.json"), JSON.stringify({ contract: 1 }));
 	return { app, runner: async () => JSON.stringify({ version: 1, images, links, truncated }) };
 }
+const images = (result: InspectionResult) => "inspection" in result ? result.inspection.images : undefined;
 function error(outcome: PublishOutcome, code: string) { assert.equal(outcome.ok, false); if (!outcome.ok) assert.equal(outcome.error.code, code); }
 function success(outcome: PublishOutcome) { assert.equal(outcome.ok, true, JSON.stringify(outcome)); if (!outcome.ok) throw new Error("Expected success"); return outcome; }
 test("publication validates every outcome code and preserves exact Unicode source", () => fixture(async (root, store) => {
@@ -71,11 +72,14 @@ test("asset manifest captures retained, remote, missing, traversal, symlink, siz
 	const source = refs.map((ref) => `![x](${ref})`).join("\n"); const path = join(project, "source.md"); await writeFile(path, source);
 	const parser = await inspection(root, refs);
 	const outcome = success(await publish({ title: "Assets", file: path }, { cwd: root, store, ...parser }));
-	assert.equal(outcome.selfContained, false); assert.deepEqual(outcome.references, { state: "inspected", retained: 1, embedded: 0, external: 1, unavailable: 6, localLinks: 0 });
+	const { unavailableItems, ...counts } = outcome.references;
+	assert.equal(outcome.selfContained, false); assert.deepEqual(counts, { state: "inspected", truncated: false, omitted: 0, retained: 1, embedded: 0, external: 1, unavailable: 6, localLinks: 0 });
+	assert.deepEqual(unavailableItems, [["missing.png", "missing"], ["../outside.png", "outside-root"], ["escape.png", "outside-root"], ["large.png", "too-large"], ["script.js", "unsupported-type"]].map(([reference, reason]) => ({ reference, reason })));
+	assert.match(publicationText(outcome), /References: 1 image retained; 1 external image; 6 unavailable \("missing\.png": missing, .*, …\)\./u);
 	const stored = await store.get(outcome.documentId);
 	assert.deepEqual(stored.revision.references.items.slice(2, 7).map((asset) => asset.reason), ["missing", "outside-root", "outside-root", "too-large", "unsupported-type"]);
 	assert.equal(await readFile(path, "utf8"), source);
-	assert.equal((await captureReferences({ version: 1, images: ["a.png"], links: [], truncated: false })).references.items[0]?.reason, "no-base");
+	assert.equal((await captureReferences({ inspection: { version: 1, images: ["a.png"], links: [], truncated: false } })).references.items[0]?.reason, "no-base");
 	await writeFile(path, "![x](a.png)"); assert.equal(success(await publish({ title: "Contained", file: path }, { cwd: root, store, ...await inspection(root, ["a.png"]) })).selfContained, true);
 }));
 test("asset containment rejects a descriptor opened through a restored ancestor swap", () => fixture(async (root) => {
@@ -88,19 +92,19 @@ test("asset containment rejects a descriptor opened through a restored ancestor 
 		try { await symlink(outside, images); const handle = await open(path, flags, mode); swaps++; return handle; }
 		finally { await rm(images, { force: true }); await rename(held, images); }
 	};
-	const result = await captureReferences({ version: 1, images: ["images/a.png"], links: [], truncated: false }, project, opener);
+	const result = await captureReferences({ inspection: { version: 1, images: ["images/a.png"], links: [], truncated: false } }, project, opener);
 	assert.equal(swaps, 1); assert.equal(result.assets.length, 0);
 	assert.equal(result.references.items[0]?.state, "unavailable"); assert.equal(result.references.items[0]?.reason, "outside-root");
 	assert.equal(await readFile(join(images, "a.png"), "utf8"), "inside");
 }));
 test("parser inventory enforces item, retained count and total byte limits", () => fixture(async (root) => {
 	for (let i = 0; i < 5; i++) { const path = join(root, `${i}.png`); await writeFile(path, ""); await truncate(path, LIMITS.assetBytes); }
-	const captured = await captureReferences({ version: 1, images: Array.from({ length: 5 }, (_, i) => `${i}.png`), links: [], truncated: false }, root);
+	const captured = await captureReferences({ inspection: { version: 1, images: Array.from({ length: 5 }, (_, i) => `${i}.png`), links: [], truncated: false } }, root);
 	assert.equal(captured.assets.length, 4); assert.equal(captured.references.items[4]?.reason, "limit");
-	const bounded = await captureReferences({ version: 1, images: Array.from({ length: 300 }, (_, i) => `https://example.invalid/${i}.png`), links: [], truncated: true }, root);
+	const bounded = await captureReferences({ inspection: { version: 1, images: Array.from({ length: 300 }, (_, i) => `https://example.invalid/${i}.png`), links: [], truncated: true } }, root);
 	assert.equal(bounded.references.items.length, 256); assert.equal(bounded.references.omitted, 44); assert.equal(bounded.references.truncated, true);
 	await writeFile(join(root, "small.png"), "image");
-	const count = await captureReferences({ version: 1, images: Array.from({ length: 65 }, (_, i) => `small.png?${i}`), links: [], truncated: false }, root);
+	const count = await captureReferences({ inspection: { version: 1, images: Array.from({ length: 65 }, (_, i) => `small.png?${i}`), links: [], truncated: false } }, root);
 	assert.equal(count.assets.length, 64); assert.equal(count.references.items[64]?.reason, "limit");
 }));
 test("a publication with the maximum number of long external references stays within the reader's record limit", () => fixture(async (root, store) => {
@@ -116,32 +120,70 @@ test("a publication with the maximum number of long external references stays wi
 test("metadata keeps a retained image's whole reference and never lets a shortened reference name another image", () => fixture(async (root) => {
 	await writeFile(join(root, "a.png"), "image");
 	const retained = `a.png?${"q".repeat(1000)}`; const prefix = "x".repeat(512); const long = `${prefix}${"y".repeat(100)}.png`; const link = `docs/${"l".repeat(1000)}.md`;
-	const captured = await captureReferences({ version: 1, images: [retained, long, prefix, `${"z".repeat(600)}.png`], links: [link], truncated: false }, root);
+	const captured = await captureReferences({ inspection: { version: 1, images: [retained, long, prefix, `${"z".repeat(600)}.png`], links: [link], truncated: false } }, root);
 	assert.deepEqual(captured.references.items.map((item) => [item.reference.length, item.state]), [[retained.length, "retained"], [512, "unavailable"], [512, "unavailable"], [512, "local-only"]]);
 	assert.equal(captured.references.items[0]?.reference, retained); assert.equal(captured.references.items[1]?.reference, prefix); assert.equal(captured.references.omitted, 1);
 	assert.equal(captured.references.items.filter((item) => item.reference === prefix).length, 1);
 }));
 test("reference inspection requires a compatible local build and records honest fallback", () => fixture(async (root, store) => {
 	const parser = await inspection(root, ["https://example.invalid/x.png", "//example.invalid/y", "data:image/png;base64,abcd", "custom:payload", "%xx.png", "a.png", "/etc/a.png"], ["#heading", "https://example.invalid/", "mailto:a@example.invalid", "file:other.md", "../spec.md", "custom:action"]);
-	assert.equal((await inspectReferences("source", parser))?.images.length, 7);
+	assert.equal(images(await inspectReferences("source", parser))?.length, 7);
 	const captured = await captureReferences(await inspectReferences("source", parser));
 	assert.deepEqual(captured.references.items.map((item) => item.state), ["external", "external", "embedded", "unavailable", "unavailable", "unavailable", "unavailable", "local-only", "local-only"]);
 	assert.deepEqual(captured.references.items.slice(3, 7).map((item) => item.reason), ["unsupported-scheme", "invalid", "no-base", "outside-root"]);
-	assert.equal(await inspectReferences("source", { ...parser, runner: async () => "not json" }), undefined);
-	assert.equal(await inspectReferences("source", { ...parser, runner: async () => JSON.stringify({ version: 1, images: ["duplicate", "duplicate"], links: [], truncated: false }) }), undefined);
+	assert.deepEqual(await inspectReferences("source", { ...parser, runner: async () => "not json" }), { failure: "output-invalid" });
+	assert.deepEqual(await inspectReferences("source", { ...parser, runner: async () => JSON.stringify({ version: 1, images: ["duplicate", "duplicate"], links: [], truncated: false }) }), { failure: "output-invalid" });
+	assert.deepEqual(await inspectReferences("source", { ...parser, runner: async () => { throw new Error("refused"); } }), { failure: "tool-failed" });
+	assert.deepEqual(await inspectReferences("source", { app: join(root, "Absent.app"), runner: parser.runner }), { failure: "app-missing" });
+	assert.deepEqual(await inspectReferences("source", {}), { failure: "app-missing" });
 	await writeFile(join(parser.app, "Contents/Resources/build.json"), JSON.stringify({ contract: 2 }));
-	assert.equal(await inspectReferences("source", parser), undefined);
+	assert.deepEqual(await inspectReferences("source", parser), { failure: "app-incompatible" });
 	const outcome = success(await publish({ title: "Uninspected", text: "![remote](https://example.invalid/x.png)" }, { cwd: root, store, app: parser.app }));
 	assert.equal(outcome.references.state, "uninspected"); assert.equal(Object.hasOwn(outcome, "selfContained"), false);
-	assert.deepEqual((await store.get(outcome.documentId)).revision.references, { state: "uninspected", truncated: false, omitted: 0, items: [] });
+	assert.deepEqual((await store.get(outcome.documentId)).revision.references, { state: "uninspected", truncated: false, omitted: 0, items: [], reason: "app-incompatible" });
+	assert.equal(outcome.references.reason, "app-incompatible");
+	assert.match(publicationText(outcome), /References not inspected: the installed reader app is incompatible or incomplete; rebuild it with node extensions\/markdown\/native\/build\.mts\. Local images are not retained\./u);
 }));
 test("the fixed headless executable receives exact stdin and failures remain uninspected", () => fixture(async (root) => {
 	const parser = await inspection(root); const tool = join(parser.app, "Contents/MacOS/markdown-core"); await mkdir(join(parser.app, "Contents/MacOS"));
 	const executable = async (body: string) => { await writeFile(tool, `#!${process.execPath}\n${body}`); await chmod(tool, 0o700); };
 	await executable("let source='';for await(const chunk of process.stdin)source+=chunk;process.stdout.write(JSON.stringify({version:1,images:[source],links:[],truncated:false}));");
-	const exact = "# Unicode 🦘\\nExact"; assert.deepEqual((await inspectReferences(exact, { app: parser.app }))?.images, [exact]);
-	await executable("process.stderr.write('refused');process.exit(1);"); assert.equal(await inspectReferences("source", { app: parser.app }), undefined);
-	await executable("process.stdout.write('x'.repeat(4*1024*1024+1));"); assert.equal(await inspectReferences("source", { app: parser.app }), undefined);
+	const exact = "# Unicode 🦘\\nExact"; assert.deepEqual(images(await inspectReferences(exact, { app: parser.app })), [exact]);
+	await executable("process.stderr.write('refused');process.exit(1);"); assert.deepEqual(await inspectReferences("source", { app: parser.app }), { failure: "tool-failed" });
+	await executable("process.stdout.write('x'.repeat(4*1024*1024+1));"); assert.deepEqual(await inspectReferences("source", { app: parser.app }), { failure: "output-invalid" });
+	await rm(tool); assert.deepEqual(await inspectReferences("source", { app: parser.app }), { failure: "app-incompatible" });
+}));
+test("a new file capture includes retained images, missing assets and reference coverage in its identity", () => fixture(async (root, store) => {
+	const path = join(root, "report.md"); const image = join(root, "architecture.svg");
+	await writeFile(path, "# Report\n\n![diagram](architecture.svg)\n"); await writeFile(image, "<svg>first</svg>");
+	const parser = await inspection(root, ["architecture.svg"]);
+	const capture = async (options: { app?: string; runner?: typeof parser.runner } = parser) => store.snapshot(`file\0${path}`, "file", await fileSnapshotInput(path, { cwd: root, ...options }));
+	const asset = (result: WriteResult) => readFile(join(store.root, "snapshots", result.document.id, "revisions", String(result.revision.revision), result.revision.references.items[0]?.file ?? "absent"), "utf8");
+	const first = await capture();
+	assert.equal(first.revision.revision, 1); assert.equal(first.revision.references.items[0]?.state, "retained");
+	const repeated = await capture();
+	assert.equal(repeated.revision.revision, 1); assert.equal(repeated.replayed, true);
+	await writeFile(image, "<svg>second</svg>");
+	const imageOnly = await capture();
+	assert.equal(imageOnly.document.id, first.document.id); assert.equal(imageOnly.revision.revision, 2); assert.equal(imageOnly.replayed, false);
+	assert.equal(imageOnly.revision.digest, first.revision.digest);
+	assert.notEqual(imageOnly.revision.references.items[0]?.digest, first.revision.references.items[0]?.digest);
+	assert.equal(await asset(await store.get(first.document.id, 1) as WriteResult), "<svg>first</svg>");
+	assert.equal(await asset(imageOnly), "<svg>second</svg>");
+	await rm(image);
+	const missing = await capture();
+	assert.equal(missing.revision.revision, 3); assert.equal(missing.revision.references.items[0]?.reason, "missing");
+	assert.equal((await capture()).revision.revision, 3);
+	await writeFile(image, "<svg>second</svg>");
+	assert.equal((await capture()).revision.revision, 4);
+	const uninspected = await capture({ app: join(root, "Absent.app"), runner: parser.runner });
+	assert.equal(uninspected.revision.revision, 5); assert.equal(uninspected.revision.references.reason, "app-missing"); assert.equal(uninspected.revision.digest, first.revision.digest);
+	const incompatible = join(root, "Old.app"); await mkdir(join(incompatible, "Contents/Resources"), { recursive: true }); await writeFile(join(incompatible, "Contents/Resources/build.json"), JSON.stringify({ contract: 2 }));
+	const otherCause = await capture({ app: incompatible, runner: parser.runner });
+	assert.equal(otherCause.revision.revision, 5); assert.equal(otherCause.replayed, true);
+	const inspectedAgain = await capture();
+	assert.equal(inspectedAgain.revision.revision, 6); assert.equal(inspectedAgain.revision.references.state, "inspected"); assert.equal(await asset(inspectedAgain), "<svg>second</svg>");
+	assert.equal((await store.get(first.document.id, 2)).revision.references.items[0]?.digest, imageOnly.revision.references.items[0]?.digest);
 }));
 test("explicit file reuse returns the original receipt after file and asset changes", () => fixture(async (root, store) => {
 	const path = join(root, "source.md"); await writeFile(path, "![a](a.png)"); await writeFile(join(root, "a.png"), "original"); const parser = await inspection(root, ["a.png"]);
@@ -265,7 +307,7 @@ test("native model and codemode calls share outcomes, prefixes and explicit reus
 		faux.setResponses([fauxAssistantMessage(fauxToolCall("markdown_publish", { title: "Native", text: "# persisted" }), { stopReason: "toolUse" }), fauxAssistantMessage("Saved.")]);
 		const submission = await conversation.submit({ type: "input", content: "Publish." }, context);
 		assert.equal((await submission.wait(context)).status, "done"); const firstOutcome = results[0]?.outcome; assert.ok(firstOutcome?.ok);
-		assert.match(results[0]?.text ?? "", /^Saved md-[a-f0-9]{20}, revision 1, \d+ bytes\.\nNo window opened\. The operator opens it from the Markdown view under Published \(in the agent view, under Owner views\)\. In an ordinary Pi session, \/markdown md-[a-f0-9]{20} also opens it\./u);
+		assert.match(results[0]?.text ?? "", /^Saved md-[a-f0-9]{20}, revision 1, \d+ bytes\.\nReferences not inspected: the reader app is not installed; build it with node extensions\/markdown\/native\/build\.mts\. Local images are not retained\.\nNo window opened\. The operator opens it from the Markdown view under Published \(in the agent view, under Owner views\)\. In an ordinary Pi session, \/markdown md-[a-f0-9]{20} also opens it\./u);
 		faux.setResponses([fauxAssistantMessage(fauxToolCall("markdown_publish", { title: "Prefix update", text: "updated by prefix", document: firstOutcome.documentId.slice(0, 12), expectedRevision: 1 }), { stopReason: "toolUse" }), fauxAssistantMessage("Updated.")]);
 		assert.equal((await (await conversation.submit({ type: "input", content: "Update by prefix." }, context)).wait(context)).status, "done");
 		assert.equal((await store.get(firstOutcome.documentId)).document.revision, 2);

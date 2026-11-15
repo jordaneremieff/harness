@@ -6,7 +6,7 @@ import { LoadingView, openOperatorFrame, publishOperatorViews } from "../../oper
 import { markdownContribution } from "./durable.ts";
 import { readSettings, publishSettings } from "./settings.ts";
 import { MarkdownStore } from "./store.ts";
-import { createPublishTool, fileSnapshotInput } from "./publish.ts";
+import { coverageText, createPublishTool, fileSnapshotInput, referenceSummary } from "./publish.ts";
 import { toolDisplay } from "./display.ts";
 import { readOrdinary, recentOrdinary, type ResponseSnapshot } from "./responses.ts";
 import type { MarkdownOperations, MarkdownScope, MarkdownViewState } from "./operator-view.ts";
@@ -89,14 +89,17 @@ async function openFile(ctx: ExtensionContext, path: string, signal: AbortSignal
 	signal.throwIfAborted();
 	const reveal = await import("./reveal.ts");
 	signal.throwIfAborted();
-	return reveal.revealNotice(await reveal.materializeAndReveal(async () => {
+	let coverage: string | undefined;
+	const notice = reveal.revealNotice(await reveal.materializeAndReveal(async () => {
 		const store = new MarkdownStore(settings.dir);
 		const result = await store.snapshot(`file\0${input.contentOrigin.path}`, "file", input);
+		coverage = coverageText(referenceSummary(result.revision.references), "file");
 		signal.throwIfAborted();
 		const identity = await store.initialise();
 		signal.throwIfAborted();
 		return { root: settings.dir, storeId: identity.storeId, documentId: result.document.id, revision: result.revision.revision, digest: result.revision.digest, newlySaved: !result.replayed };
 	}, signal, { gui: ctx.mode === "tui" }));
+	return coverage ? `${notice} ${coverage}` : notice;
 }
 export default function markdown(pi: ExtensionAPI): void {
 	const states = new Map<string, MarkdownViewState>();

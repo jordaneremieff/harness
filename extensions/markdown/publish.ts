@@ -11,7 +11,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { previousNative } from "./native-responses.ts";
 import { paneCommand } from "./pane-command.ts";
 import { previousOrdinary, responseSnapshotWrite, type ResponseSnapshot } from "./responses.ts";
-import { digest, LIMITS, type MarkdownStore, StoreError, validateInput, type AssetRecord, type CapturedAsset, type ContentOrigin, type ErrorCode, type PublicationPlan, type ReferenceInventory, type WriteInput, type WriteResult } from "./store.ts";
+import { digest, INSPECTION_FAILURES, LIMITS, type MarkdownStore, StoreError, validateInput, type AssetRecord, type CapturedAsset, type ContentOrigin, type ErrorCode, type InspectionFailure, type PublicationPlan, type ReferenceInventory, type WriteInput, type WriteResult } from "./store.ts";
 
 export const PublishParameters = obj({
 	title: opt(str({ minLength: 1, maxLength: 200, description: "One-line document title. Required with text or file." })),
@@ -23,18 +23,36 @@ export const PublishParameters = obj({
 	reuseKey: opt(str({ minLength: 1, maxLength: 256, description: "Explicit request identity. Equal input reuses the first publication; different input conflicts." })),
 }, { open: false });
 export type PublishInput = Static<typeof PublishParameters>;
-export type PublishOutcome = { ok: true; documentId: string; revision: number; digest: string; bytes: number; title: string; kind: "published" | "response"; created: boolean; replayed: boolean; selfContained?: boolean; references: { state: "inspected" | "uninspected"; retained: number; embedded: number; external: number; unavailable: number; localLinks: number }; provenance: ContentOrigin; open: string; show?: string[]; showUnavailable?: string } | { ok: false; error: { code: ErrorCode; message: string; currentRevision?: number; currentDigest?: string } };
+/**
+ * Reference coverage of a saved revision. `truncated` and `omitted` qualify an inspected inventory;
+ * `reason` says why inspection did not run; `unavailableItems` names the first unavailable images.
+ */
+export type ReferenceSummary = { state: "inspected" | "uninspected"; truncated: boolean; omitted: number; retained: number; embedded: number; external: number; unavailable: number; localLinks: number; reason?: InspectionFailure; unavailableItems?: { reference: string; reason: string }[] };
+export type PublishOutcome = { ok: true; documentId: string; revision: number; digest: string; bytes: number; title: string; kind: "published" | "response"; created: boolean; replayed: boolean; selfContained?: boolean; references: ReferenceSummary; provenance: ContentOrigin; open: string; show?: string[]; showUnavailable?: string } | { ok: false; error: { code: ErrorCode; message: string; currentRevision?: number; currentDigest?: string } };
 const OriginSchema = obj({ kind: str(), capturedAt: str() }, { open: true });
+export const ReferenceSummarySchema = obj({ state: union([lit("inspected"), lit("uninspected")]), truncated: bool(), omitted: int(), retained: int(), embedded: int(), external: int(), unavailable: int(), localLinks: int(), reason: opt(union(INSPECTION_FAILURES.map((reason) => lit(reason)))), unavailableItems: opt(arr(obj({ reference: str(), reason: str() }))) });
 export const PublishOutcomeSchema = union([
-	obj({ ok: lit(true), documentId: str(), revision: int(), digest: str(), bytes: int(), title: str(), kind: union([lit("published"), lit("response")]), created: bool(), replayed: bool(), selfContained: opt(bool()), references: obj({ state: union([lit("inspected"), lit("uninspected")]), retained: int(), embedded: int(), external: int(), unavailable: int(), localLinks: int() }), provenance: OriginSchema, open: str(), show: opt(arr(str())), showUnavailable: opt(str()) }),
+	obj({ ok: lit(true), documentId: str(), revision: int(), digest: str(), bytes: int(), title: str(), kind: union([lit("published"), lit("response")]), created: bool(), replayed: bool(), selfContained: opt(bool()), references: ReferenceSummarySchema, provenance: OriginSchema, open: str(), show: opt(arr(str())), showUnavailable: opt(str()) }),
 	obj({ ok: lit(false), error: obj({ code: union(["invalid", "too-large", "not-found", "conflict", "replay-conflict", "file-unreadable", "store-failure"].map((code) => lit(code))), message: str(), currentRevision: opt(int()), currentDigest: opt(str()) }) }),
 ]);
-const REMEDY = "Reference inspection unavailable. Build with node extensions/markdown/native/build.mts.";
+const BUILD = "node extensions/markdown/native/build.mts";
+const INSPECTION_TEXT: Record<InspectionFailure, string> = {
+	"app-missing": `the reader app is not installed; build it with ${BUILD}`,
+	"app-incompatible": `the installed reader app is incompatible or incomplete; rebuild it with ${BUILD}`,
+	"tool-failed": `the reference tool failed; retry, or rebuild the reader app with ${BUILD}`,
+	"tool-timeout": "the reference tool timed out after 10 seconds; retry",
+	"output-invalid": `the reference tool returned invalid or oversized output; rebuild the reader app with ${BUILD}`,
+};
 const DESCRIPTION = "Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Publish requested documents or long deliverables, not every reply. When the operator should read a document now, run the result's show command as the program of one new split pane beside the pane where the operator reads your conversation, in the terminal window where you yourself run, not in whichever window has focus, in a pane that closes when its program ends: the native reader window then sits over that pane, with real selection, copying, find, links and scrolling, and your conversation stays visible beside it. Do not float the reader over your conversation. An open reader follows new revisions of its document, so publish a correction as an update to the same document instead of opening another pane; to show a different document while a reader pane that you opened is still open, open the new pane in that pane's place and close the earlier one. To show a stored document again later, run the same command with that document's ID: the reader returns to the saved reading position. To show an earlier answer exactly, use response \"previous\" instead of retyping it. To explain something visually, write an SVG or PNG diagram beside a Markdown file, reference it with a relative image link, and publish the file: the revision keeps the image.";
 export type ReferenceRunner = (tool: string, source: string) => Promise<string>;
 export type InspectionOptions = { app?: string; runner?: ReferenceRunner; toolPath?: string };
 export type PublishOptions = InspectionOptions & { store: MarkdownStore; cwd: string; provenance?: Partial<ContentOrigin>; plan?: PublicationPlan; previousResponse?: () => Promise<ResponseSnapshot> };
 export type ReferenceInspection = { version: 1; images: string[]; links: string[]; truncated: boolean };
+export type InspectionResult = { inspection: ReferenceInspection } | { failure: InspectionFailure };
+class InspectionError extends Error {
+	readonly reason: InspectionFailure;
+	constructor(reason: InspectionFailure, message: string) { super(message); this.reason = reason; }
+}
 
 /** Checks a publication's parameters and returns its title. */
 function validateParameters(value: PublishInput): string {
@@ -67,33 +85,39 @@ function runReferences(tool: string, source: string): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(tool, ["references"], { stdio: ["pipe", "pipe", "pipe"] });
 		const chunks: Buffer[] = []; let bytes = 0; let stderrBytes = 0;
-		const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("Reference tool timed out")); }, 10000);
-		child.stdout.on("data", (chunk: Buffer) => { bytes += chunk.length; if (bytes > INSPECTION_OUTPUT_BYTES) { child.kill("SIGKILL"); reject(new Error("Reference output exceeded limit")); } else chunks.push(chunk); });
-		child.stderr.on("data", (chunk: Buffer) => { stderrBytes += chunk.length; if (stderrBytes > 4096) { child.kill("SIGKILL"); reject(new Error("Reference diagnostics exceeded limit")); } });
+		const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new InspectionError("tool-timeout", "Reference tool timed out")); }, 10000);
+		child.stdout.on("data", (chunk: Buffer) => { bytes += chunk.length; if (bytes > INSPECTION_OUTPUT_BYTES) { child.kill("SIGKILL"); reject(new InspectionError("output-invalid", "Reference output exceeded limit")); } else chunks.push(chunk); });
+		child.stderr.on("data", (chunk: Buffer) => { stderrBytes += chunk.length; if (stderrBytes > 4096) { child.kill("SIGKILL"); reject(new InspectionError("tool-failed", "Reference diagnostics exceeded limit")); } });
 		child.stdin.on("error", () => {});
-		child.on("error", (error) => { clearTimeout(timer); reject(error); });
-		child.on("close", (code) => { clearTimeout(timer); if (code !== 0) reject(new Error("Reference tool failed")); else resolve(Buffer.concat(chunks).toString("utf8")); });
+		child.on("error", (error: NodeJS.ErrnoException) => { clearTimeout(timer); reject(new InspectionError(error.code === "ENOENT" || error.code === "EACCES" ? "app-incompatible" : "tool-failed", "Reference tool did not start")); });
+		child.on("close", (code) => { clearTimeout(timer); if (code !== 0) reject(new InspectionError("tool-failed", "Reference tool failed")); else resolve(Buffer.concat(chunks).toString("utf8")); });
 		child.stdin.end(source);
 	});
 }
 function stringList(value: unknown): value is string[] { return Array.isArray(value) && value.length <= 4096 && value.every((item) => typeof item === "string" && !/[\ud800-\udfff]/u.test(item)) && new Set(value).size === value.length; }
-export async function inspectReferences(source: string, options: InspectionOptions): Promise<ReferenceInspection | undefined> {
+/** Runs the installed app's headless reference tool; a failure names its cause instead of an inventory. */
+export async function inspectReferences(source: string, options: InspectionOptions): Promise<InspectionResult> {
 	if (Buffer.byteLength(source) > LIMITS.sourceBytes) throw new StoreError("too-large", "Source exceeds 2 MiB.");
+	const tool = options.toolPath ?? (options.app ? join(options.app, "Contents/MacOS/markdown-core") : undefined);
+	if (!tool) return { failure: "app-missing" };
+	const failure = await buildFailure(options.app ?? resolve(dirname(tool), "../.."));
+	if (failure) return { failure };
+	try { return parseInventory(await (options.runner ?? runReferences)(tool, source)); } catch (error) { return { failure: error instanceof InspectionError ? error.reason : "tool-failed" }; }
+}
+async function buildFailure(app: string): Promise<InspectionFailure | undefined> {
+	let build: { contract?: unknown } | null;
+	try { build = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode((await boundedFile(join(app, "Contents/Resources/build.json"), 16384)).data)); }
+	catch (error) { return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? "app-missing" : "app-incompatible"; }
+	return build?.contract === 1 ? undefined : "app-incompatible";
+}
+function parseInventory(result: string): InspectionResult {
 	try {
-		const tool = options.toolPath ?? (options.app ? join(options.app, "Contents/MacOS/markdown-core") : undefined);
-		if (!tool) return undefined;
-		const app = options.app ?? resolve(dirname(tool), "../..");
-		const buildPath = join(app, "Contents/Resources/build.json");
-		const build = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode((await boundedFile(buildPath, 16384)).data));
-		if (build?.contract !== 1) return undefined;
-		const result = await (options.runner ?? runReferences)(tool, source);
-		if (Buffer.byteLength(result) > INSPECTION_OUTPUT_BYTES) return undefined;
+		if (Buffer.byteLength(result) > INSPECTION_OUTPUT_BYTES) return { failure: "output-invalid" };
 		const value: unknown = JSON.parse(result);
-		if (!value || typeof value !== "object") return undefined;
-		const record = value as Record<string, unknown>;
-		if (record.version !== 1 || !stringList(record.images) || !stringList(record.links) || typeof record.truncated !== "boolean") return undefined;
-		return { version: 1, images: record.images, links: record.links, truncated: record.truncated };
-	} catch { return undefined; }
+		const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+		if (record.version !== 1 || !stringList(record.images) || !stringList(record.links) || typeof record.truncated !== "boolean") return { failure: "output-invalid" };
+		return { inspection: { version: 1, images: record.images, links: record.links, truncated: record.truncated } };
+	} catch { return { failure: "output-invalid" }; }
 }
 const MEDIA: Record<string, [string, string]> = { ".png": ["image/png", "png"], ".jpg": ["image/jpeg", "jpg"], ".jpeg": ["image/jpeg", "jpg"], ".gif": ["image/gif", "gif"], ".webp": ["image/webp", "webp"], ".svg": ["image/svg+xml", "svg"] };
 function unavailable(reference: string, reason: AssetRecord["reason"]): CapturedAsset { return { record: { kind: "image", reference, state: "unavailable", reason } }; }
@@ -140,8 +164,9 @@ function localLink(reference: string): boolean {
 	if (reference.startsWith("#") || /^(https?:|mailto:|\/\/)/i.test(reference)) return false;
 	return /^file:/i.test(reference) || !/^[a-z][a-z0-9+.-]*:/i.test(reference);
 }
-export async function captureReferences(inspection: ReferenceInspection | undefined, root?: string, opener: typeof open = open): Promise<{ references: ReferenceInventory; assets: CapturedAsset[] }> {
-	if (!inspection) return { references: { state: "uninspected", truncated: false, omitted: 0, items: [] }, assets: [] };
+export async function captureReferences(result: InspectionResult, root?: string, opener: typeof open = open): Promise<{ references: ReferenceInventory; assets: CapturedAsset[] }> {
+	if ("failure" in result) return { references: { state: "uninspected", truncated: false, omitted: 0, items: [], reason: result.failure }, assets: [] };
+	const { inspection } = result;
 	const canonicalRoot = root === undefined ? undefined : await realpath(root);
 	const destinations = [...inspection.images.map((reference) => ({ kind: "image" as const, reference })), ...inspection.links.filter(localLink).map((reference) => ({ kind: "link" as const, reference }))];
 	const references: ReferenceInventory = { state: "inspected", truncated: inspection.truncated, omitted: Math.max(0, destinations.length - 256), items: [] };
@@ -194,9 +219,36 @@ async function snapshotPrevious(params: PublishInput, options: PublishOptions): 
 	const { sourceKey, input } = responseSnapshotWrite(response);
 	return publicationOutcome(await options.store.snapshot(sourceKey, "response", input), options.store.root, options.app);
 }
+const SUMMARY_ITEMS = 5;
+const SUMMARY_REFERENCE_CHARS = 120;
+/** Bounded coverage of a stored inventory; the revision record keeps the complete inventory. */
+export function referenceSummary(references: ReferenceInventory): ReferenceSummary {
+	const { items } = references; const count = (state: AssetRecord["state"]) => items.filter((item) => item.state === state).length;
+	const unavailable = items.filter((item) => item.state === "unavailable").slice(0, SUMMARY_ITEMS).map((item) => ({ reference: [...item.reference].slice(0, SUMMARY_REFERENCE_CHARS).join(""), reason: item.reason ?? "unknown" }));
+	return { state: references.state, truncated: references.truncated, omitted: references.omitted, retained: count("retained"), embedded: count("embedded"), external: count("external"), unavailable: count("unavailable"), localLinks: count("local-only"), ...(references.reason ? { reason: references.reason } : {}), ...(unavailable.length ? { unavailableItems: unavailable } : {}) };
+}
 export function publicationOutcome(result: WriteResult, root: string, app: string | undefined): PublishOutcome {
-	const { revision } = result; const items = revision.references.items;
-	return { ok: true, documentId: revision.document, revision: revision.revision, digest: revision.digest, bytes: revision.bytes, title: revision.title, kind: result.document.kind === "response" ? "response" : "published", created: result.created, replayed: result.replayed, ...(revision.selfContained === undefined ? {} : { selfContained: revision.selfContained }), references: { state: revision.references.state, retained: items.filter((item) => item.state === "retained").length, embedded: items.filter((item) => item.state === "embedded").length, external: items.filter((item) => item.state === "external").length, unavailable: items.filter((item) => item.state === "unavailable").length, localLinks: items.filter((item) => item.state === "local-only").length }, provenance: revision.contentOrigin, open: `/markdown ${revision.document}`, ...paneCommand(app, root, revision.document) };
+	const { revision } = result;
+	return { ok: true, documentId: revision.document, revision: revision.revision, digest: revision.digest, bytes: revision.bytes, title: revision.title, kind: result.document.kind === "response" ? "response" : "published", created: result.created, replayed: result.replayed, ...(revision.selfContained === undefined ? {} : { selfContained: revision.selfContained }), references: referenceSummary(revision.references), provenance: revision.contentOrigin, open: `/markdown ${revision.document}`, ...paneCommand(app, root, revision.document) };
+}
+/** One line of capture qualifications, or nothing when the saved revision needs none. */
+export function coverageText(summary: ReferenceSummary, kind: "published" | "response" | "file"): string | undefined {
+	if (summary.state === "uninspected") return kind === "response" ? undefined : `References not inspected: ${summary.reason ? INSPECTION_TEXT[summary.reason] : "no inspection result was recorded"}. Local images are not retained.`;
+	const parts = [
+		summary.retained ? `${plural(summary.retained, "image")} retained` : "",
+		summary.external ? plural(summary.external, "external image") : "",
+		summary.unavailable ? unavailableText(summary) : "",
+		summary.truncated || summary.omitted ? partialText(summary) : "",
+	].filter(Boolean);
+	return parts.length ? `References: ${parts.join("; ")}.` : undefined;
+}
+function plural(count: number, noun: string): string { return `${count} ${noun}${count === 1 ? "" : "s"}`; }
+function unavailableText(summary: ReferenceSummary): string {
+	const listed = summary.unavailableItems ?? [];
+	return `${summary.unavailable} unavailable (${listed.map((item) => `${JSON.stringify(item.reference)}: ${item.reason}`).join(", ")}${summary.unavailable > listed.length ? ", …" : ""})`;
+}
+function partialText(summary: ReferenceSummary): string {
+	return `inventory partial${summary.omitted ? `: ${plural(summary.omitted, "reference")} not listed` : ""}${summary.truncated ? "; the parser stopped at its destination limit" : ""}`;
 }
 function failure(error: unknown): PublishOutcome {
 	if (!(error instanceof StoreError)) return { ok: false, error: { code: "store-failure", message: "Private document store is unavailable." } };
@@ -243,7 +295,8 @@ function openingRoute(outcome: Extract<PublishOutcome, { ok: true }>): string {
 }
 export function publicationText(outcome: PublishOutcome): string {
 	if (!outcome.ok) return `Markdown publication failed (${outcome.error.code}): ${outcome.error.message}`;
-	return `Saved ${outcome.documentId}, revision ${outcome.revision}, ${outcome.bytes} bytes.\nNo window opened. ${openingRoute(outcome)}${outcome.references.state === "uninspected" ? ` ${REMEDY}` : ""}\n${showText(outcome)}`;
+	const coverage = coverageText(outcome.references, outcome.kind);
+	return `Saved ${outcome.documentId}, revision ${outcome.revision}, ${outcome.bytes} bytes.\n${coverage ? `${coverage}\n` : ""}No window opened. ${openingRoute(outcome)}\n${showText(outcome)}`;
 }
 function showText(outcome: Extract<PublishOutcome, { ok: true }>): string {
 	if (!outcome.show) return `It cannot be shown in a terminal pane: ${outcome.showUnavailable ?? "no reader command is available."}`;

@@ -113,7 +113,7 @@ test("the file command reads a path under the home directory written with a lead
 		assert.ok(handler);
 		const source = { getLeafId: () => null, getSessionId: () => "session" };
 		await handler("file ~/notes.md", { mode: "print", cwd: join(root, "elsewhere"), sessionManager: source, ui: { notify } } as unknown as ExtensionContext);
-		assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", /^Saved md-[a-f0-9]{8} revision 1\. No window was opened\.$/u);
+		assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", /^Saved md-[a-f0-9]{8} revision 1\. No window was opened\. References not inspected: the reader app is not installed; build it with node extensions\/markdown\/native\/build\.mts\. Local images are not retained\.$/u);
 		const store = new MarkdownStore(process.env.PI_MARKDOWN_DIR);
 		const snapshot = (await store.list({ kind: "file" })).documents[0];
 		assert.equal((await store.get(snapshot.id)).source, "# Home note\n");
