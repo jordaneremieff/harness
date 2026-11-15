@@ -10,6 +10,7 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { PluginError, isChordError } from "@earendil-works/chord";
 import { connectTransport, type TransportClient, type TransportRequest, type TransportSubscription } from "../../transport/index.ts";
@@ -354,6 +355,8 @@ function startOwnedLaunch(metadata: HostMetadata, options: HostLaunchOptions, de
 	const paths = hostPaths(metadata);
 	const key = paths.serverId;
 	const runner = options.runner ?? fileURLToPath(new URL("./durable-runner.ts", import.meta.url));
+	// Node reports a missing cwd as `spawn <executable> ENOENT`, which names the wrong path.
+	if (!statSync(metadata.cwd, { throwIfNoEntry: false })?.isDirectory()) throw new HostError(`The agent's working directory no longer exists: ${metadata.cwd}`, "invalid");
 	const child = spawn(process.execPath, [runner, ...(options.runnerArgs ?? []), JSON.stringify(metadata)], {
 		cwd: metadata.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...options.env },
 	});

@@ -208,6 +208,18 @@ it("launches a host, echoes, and attaches to the live claim", { timeout: 30000 }
 	await first.close();
 });
 
+it("names a missing working directory instead of starting a host there", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const cwd = join(root, "removed-worktree");
+	const statePath = join(root, "state.json");
+	await assert.rejects(acquireHost({ ...fixtureMetadata(root), cwd }, launch()), (error: unknown) => {
+		assert.ok(error instanceof HostError);
+		assert.equal(error.message, `The agent's working directory no longer exists: ${cwd}`);
+		return true;
+	});
+	assert.equal(existsSync(statePath), false, "no host process started");
+});
+
 it("refuses to connect when no host is live", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	await assert.rejects(connectHost(fixtureMetadata(root), launch()), /No verified native host endpoint/u);
