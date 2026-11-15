@@ -125,7 +125,10 @@ Foundation directly.
   documents, the published documents of each known store folder, and a bounded listing of saved
   responses and file snapshots that says when its scan stopped. The known store folders are the
   `store` folder recorded in `build.json` and the stores of accepted open requests, which the app
-  remembers. Everything stays openable after every producer exited.
+  remembers. Everything stays openable after every producer exited. An absent collection is
+  separate from an unavailable collection. Permission, I/O and malformed-record failures appear
+  in the library; usable rows remain visible with bounded omission details, never a claim that
+  an unavailable collection has no documents. Bounded results are newest among scanned rows.
 - One window per document. A repeated open brings that window forward without rendering again
   unless a load is pending. The last explicit open supersedes pending loads, even when it names
   the revision already on screen. A reopen after closing returns to the saved reading position.
@@ -230,6 +233,7 @@ APP="<app>/Contents/MacOS/MarkdownReader"
   display times for two opens (each taken right after its open, so the second is a warm open),
   refresh and find latency, and app plus web content memory.
 - `--present` opens one visible window in a prepared state for screen capture and keeps running.
+  A store folder as its input presents the library on private in-memory reading state.
 - `--return-check` reads an open request without accepting it, opens its document offscreen with
   the request's origin and runs Return to Rex once with the real platform operations.
 - An open request given to `--export-image` or `--present` is read, not accepted.

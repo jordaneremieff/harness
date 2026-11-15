@@ -47,6 +47,7 @@ struct Verification {
             checks.append(await context.positionAcrossReopen(keep: &keep))
             checks.append(await context.launchOrigins(keep: &keep))
             checks.append(await context.recovery(keep: &keep))
+            checks.append(await context.honestLibrary())
         } catch {
             checks.append(Check(name: "setup", pass: false, detail: String(describing: error)))
         }
@@ -319,6 +320,31 @@ struct Context {
             return .init(name: "asset-scheme-containment", pass: pass, detail: "retained image decoded: \(loaded); symlink escape shown as unavailable: \(linkedShown); traversal, unknown token and other host refused: \(refused); same-size mutation refused: \(mutationRefused), qualified page failure: \(qualified); file swapped for a symlink refused: \(swapRefused)")
         } catch {
             return .init(name: "asset-scheme-containment", pass: false, detail: String(describing: error))
+        }
+    }
+
+    func honestLibrary() async -> Verification.Check {
+        do {
+            let fixture = try VerifyStore(root: workspace.appendingPathComponent("library-store"))
+            let good = VerifyStore.newId()
+            let bad = VerifyStore.newId()
+            try fixture.write(good, revision: 1, source: "# Usable row")
+            try fixture.write(bad, revision: 1, source: "# Broken row")
+            let documents = fixture.root.appendingPathComponent("documents")
+            try Data("{}".utf8).write(to: documents.appendingPathComponent("\(bad)/document.json"))
+            let model = LibraryModel(state: ReadingStateStore(directory: nil), extraRoots: [fixture.root.path])
+            await model.reload()
+            let partial = model.sections.first { $0.id.hasSuffix("|published") }
+            let kept = partial?.rows.count == 1 && partial?.note?.contains("omitted") == true
+            try FileManager.default.moveItem(at: documents, to: fixture.root.appendingPathComponent("held-documents"))
+            try Data().write(to: documents)
+            await model.reload()
+            let failed = model.sections.first { $0.id.hasSuffix("|published") }
+            let honest = failed?.note?.contains("unavailable") == true && failed?.note?.contains("No published documents") == false
+            return .init(name: "library-unavailable-is-not-empty", pass: kept && honest,
+                         detail: "usable row kept with omission: \(kept); unavailable collection shown without false empty state: \(honest)")
+        } catch {
+            return .init(name: "library-unavailable-is-not-empty", pass: false, detail: String(describing: error))
         }
     }
 

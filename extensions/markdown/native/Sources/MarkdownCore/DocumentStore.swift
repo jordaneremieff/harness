@@ -58,11 +58,22 @@ public struct LoadedRevision: Sendable {
     public var olderRevisionsUnlisted: Bool
 }
 
+public struct ListingIssue: Sendable, Equatable {
+    public var document: String
+    public var reason: String
+}
+
 public struct DocumentListing: Sendable {
     public var documents: [DocumentRecord]
     /// True when the scan bound stopped the listing before it saw every entry.
     public var truncated: Bool
     public var unreadable: Int
+    public var absent: Bool = false
+    public var scanned: Int = 0
+    /// Bounded examples of record failures; `unreadable` includes every omitted record.
+    public var issues: [ListingIssue] = []
+    /// A directory read failure after usable rows; the result is not complete.
+    public var failure: String? = nil
 }
 
 public protocol DocumentStore: Sendable {
@@ -103,7 +114,11 @@ public struct DirectoryStore: DocumentStore {
         for collection in StoreCollection.allCases {
             let path = canonicalRoot + "/" + collection.directory + "/" + id
             var info = stat()
-            guard lstat(path, &info) == 0 else { continue }
+            guard lstat(path, &info) == 0 else {
+                let code = errno
+                if code == ENOENT || code == ENOTDIR { continue }
+                throw StoreError.unreadable("\(id): \(String(cString: strerror(code)))")
+            }
             try requireCanonical(path)
             guard (info.st_mode & S_IFMT) == S_IFDIR else { continue }
             return (URL(fileURLWithPath: path, isDirectory: true), collection)
@@ -187,13 +202,24 @@ public struct DirectoryStore: DocumentStore {
     func list(_ collection: StoreCollection, scanLimit: Int) throws -> DocumentListing {
         var documents: [DocumentRecord] = []
         var unreadable = 0
-        guard let directory = opendir(canonicalRoot + "/" + collection.directory) else {
-            return DocumentListing(documents: [], truncated: false, unreadable: 0)
+        let path = canonicalRoot + "/" + collection.directory
+        try requireCanonical(path)
+        guard let directory = opendir(path) else {
+            let code = errno
+            guard code == ENOENT else { throw StoreError.unreadable("\(collection.directory): \(String(cString: strerror(code)))") }
+            return DocumentListing(documents: [], truncated: false, unreadable: 0, absent: true)
         }
         defer { closedir(directory) }
         var scanned = 0
         var truncated = false
-        while let entry = readdir(directory) {
+        var issues: [ListingIssue] = []
+        var failure: String?
+        while true {
+            errno = 0
+            guard let entry = readdir(directory) else {
+                if errno != 0 { failure = "\(collection.directory): \(String(cString: strerror(errno)))" }
+                break
+            }
             let name = withUnsafeBytes(of: entry.pointee.d_name) { bytes in
                 String(decoding: bytes.prefix(Int(entry.pointee.d_namlen)), as: UTF8.self)
             }
@@ -204,14 +230,17 @@ public struct DirectoryStore: DocumentStore {
             }
             scanned += 1
             guard Identifiers.isDocumentId(name) else { continue }
-            if let record = try? document(name) {
+            do {
+                let record = try document(name)
+                guard record.kind.collection == collection else { throw StoreError.unreadable("record belongs to another collection") }
                 documents.append(record)
-            } else {
+            } catch {
                 unreadable += 1
+                if issues.count < 8 { issues.append(ListingIssue(document: name, reason: String(describing: error))) }
             }
         }
         documents.sort { $0.updatedAt > $1.updatedAt }
-        return DocumentListing(documents: documents, truncated: truncated, unreadable: unreadable)
+        return DocumentListing(documents: documents, truncated: truncated, unreadable: unreadable, scanned: scanned, issues: issues, failure: failure)
     }
 
     /// Refuses a path below the store root that is reached through a symbolic link.

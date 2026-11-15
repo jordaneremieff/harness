@@ -13,6 +13,7 @@ struct CheckRunner {
 
     /// Check modes copy to a private pasteboard so that they never replace the user's clipboard.
     static let checkPasteboard = NSPasteboard(name: NSPasteboard.Name("local.harness.markdown-reader.check"))
+    private static var presentedLibrary: NSWindow?
 
     static func platform() -> ReaderPlatform {
         ReaderPlatform(
@@ -85,6 +86,23 @@ struct CheckRunner {
     func present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool) async {
         if let appearance { NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua) }
         do {
+            var directory = ObjCBool(false)
+            if FileManager.default.fileExists(atPath: input, isDirectory: &directory), directory.boolValue {
+                _ = try DirectoryStore(root: URL(fileURLWithPath: input))
+                let model = LibraryModel(state: windows.state, extraRoots: [input])
+                await model.reload()
+                let view = LibraryView(model: model, open: { reference in windows.open(reference, revision: nil, origin: nil) }, openFile: {})
+                let window = NSWindow(contentViewController: NSHostingController(rootView: view))
+                window.title = "Markdown Library"
+                window.styleMask = [.titled, .closable, .resizable]
+                window.isReleasedWhenClosed = false
+                window.setContentSize(NSSize(width: width, height: height))
+                window.center()
+                window.makeKeyAndOrderFront(nil)
+                Self.presentedLibrary = window
+                Self.emit(["window": window.windowNumber, "title": window.title, "width": width, "height": height, "pid": Int(getpid())], to: nil)
+                return
+            }
             let (reference, revision) = try Self.reference(for: input)
             let model = windows.open(reference, revision: revision, origin: nil)
             guard let window = NSApp.windows.first(where: { $0.isVisible && $0.title != "" && $0.delegate === windows }) else { return }

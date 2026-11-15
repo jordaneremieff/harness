@@ -45,12 +45,13 @@ public final class LibraryModel {
             }
             sections.append(Section(id: "recent", title: "Recently Read", rows: recentRows, note: recentRows.isEmpty ? "Documents you open appear here." : nil))
             for root in roots {
-                guard let store = try? DirectoryStore(root: URL(fileURLWithPath: root)) else {
-                    sections.append(Section(id: root, title: root, rows: [], note: "This folder is not readable as a document store."))
-                    continue
-                }
-                for collection in StoreCollection.allCases {
-                    sections.append(Self.section(store: store, root: root, collection: collection))
+                do {
+                    let store = try DirectoryStore(root: URL(fileURLWithPath: root))
+                    for collection in StoreCollection.allCases {
+                        sections.append(Self.section(store: store, root: root, collection: collection))
+                    }
+                } catch {
+                    sections.append(Section(id: root, title: root, rows: [], note: "Store unavailable: \(error)"))
                 }
             }
             return sections
@@ -59,11 +60,14 @@ public final class LibraryModel {
         loading = false
     }
 
-    /// Published documents are few and listed completely. Snapshots grow with every opened
-    /// response; their listing is a bounded scan that says when it stopped.
+    /// Each collection read reports its bound and omissions. An unavailable collection is not
+    /// an empty collection, and usable rows survive individual malformed records.
     nonisolated static func section(store: DirectoryStore, root: String, collection: StoreCollection) -> Section {
-        let listing = try? store.list(collection)
-        let rows = (listing?.documents ?? []).map { record in
+        let title = collection == .published ? "Published in \(abbreviated(root))" : "Saved responses and files in \(abbreviated(root))"
+        let listing: DocumentListing
+        do { listing = try store.list(collection) }
+        catch { return Section(id: "\(root)|\(collection.rawValue)", title: title, rows: [], note: "Collection unavailable: \(error)") }
+        let rows = listing.documents.map { record in
             Row(
                 reference: .stored(root: FileAccess.canonicalPath(root), storeId: store.storeId, document: record.id),
                 title: record.title,
@@ -71,10 +75,14 @@ public final class LibraryModel {
             )
         }
         var notes: [String] = []
-        if listing?.truncated == true { notes.append("The scan stopped after \(Limits.listingScan) entries; other documents in this folder are not listed.") }
-        if let unreadable = listing?.unreadable, unreadable > 0 { notes.append("\(unreadable) entries could not be read.") }
-        if rows.isEmpty { notes.append(collection == .published ? "No published documents." : "No saved snapshots.") }
-        let title = collection == .published ? "Published in \(abbreviated(root))" : "Saved responses and files in \(abbreviated(root))"
+        if listing.truncated { notes.append("Newest among scanned rows. The scan stopped after \(listing.scanned) entries; other documents are not listed.") }
+        if listing.unreadable > 0 { notes.append("\(listing.unreadable) document records omitted. This list is incomplete.") }
+        for issue in listing.issues { notes.append("\(issue.document): \(issue.reason)") }
+        if let failure = listing.failure { notes.append("Collection read failed: \(failure). This list is incomplete.") }
+        if listing.absent { notes.append("This collection does not exist yet.") }
+        else if rows.isEmpty && !listing.truncated && listing.unreadable == 0 && listing.failure == nil {
+            notes.append(collection == .published ? "No published documents." : "No saved snapshots.")
+        }
         return Section(id: "\(root)|\(collection.rawValue)", title: title, rows: rows, note: notes.isEmpty ? nil : notes.joined(separator: " "))
     }
 
