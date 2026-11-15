@@ -150,7 +150,7 @@ export default function markdown(pi: ExtensionAPI): void {
 	pi.registerCommand("markdown", { description: "Read the latest response; browse recent responses or published documents; open an ID or file", getArgumentCompletions: markdownCompletions, handler: action });
 	pi.registerShortcut("ctrl+alt+r", { description: "Read the latest assistant response in Markdown", handler: (ctx) => action("", ctx) });
 	pi.registerTool(createPublishTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app }));
-	pi.registerTool(createReadTool({ store: new MarkdownStore(localSettings().dir) }));
+	pi.registerTool(createReadTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app }));
 	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
 	pi.events.on("harness:tool-display:request", (request) => { if (typeof request === "object" && request !== null && "version" in request && request.version === 1) publishDisplay(); });
 	publishDisplay();

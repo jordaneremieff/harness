@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { publish, publicationText, type PublishOutcome } from "./publish.ts";
 import { createReadTool, READ_PAGE_BYTES, readStored, readText, SEARCH_LIMITS, sourcePage, type ReadOutcome } from "./read.ts";
 import { MarkdownStore } from "./store.ts";
+import { PANE_MODE, PANE_OPEN } from "./pane-command.ts";
 
 async function fixture(run: (root: string, store: MarkdownStore) => Promise<void>) {
 	const root = await mkdtemp(join(tmpdir(), "markdown-read-"));
@@ -97,11 +98,17 @@ test("a read lists retained and unavailable images on its first page", () => fix
 	const app = join(root, "Reader.app"); await mkdir(join(app, "Contents/Resources"), { recursive: true }); await writeFile(join(app, "Contents/Resources/build.json"), JSON.stringify({ contract: 1 }));
 	const runner = async () => JSON.stringify({ version: 1, images: ["diagram.svg", "gone.png"], links: [], truncated: false });
 	const outcome = saved(await publish({ title: "Diagram", file: path }, { cwd: root, store, app, runner }));
-	const page = read(await readStored(store, { document: outcome.documentId }));
+	const page = read(await readStored(store, { document: outcome.documentId }, app));
 	assert.deepEqual(page.images?.map((image) => [image.reference, image.state, image.reason ?? image.mediaType]), [["diagram.svg", "retained", "image/svg+xml"], ["gone.png", "unavailable", "missing"]]);
 	assert.equal(page.imagesOmitted, 0);
 	assert.match(readText(page).header, /References: 1 image retained; 1 unavailable \("gone\.png": missing\)\./u);
-	const tool = createReadTool({ store });
+	assert.equal(page.show, undefined); assert.match(page.showUnavailable ?? "", /cannot show documents in a pane/u, "the fixture app declares no pane mode");
+	await writeFile(join(app, "Contents/Resources/build.json"), JSON.stringify({ contract: 1, pane: PANE_MODE, paneOpen: PANE_OPEN }));
+	const shown = read(await readStored(store, { document: outcome.documentId }, app));
+	assert.deepEqual(shown.show, [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", store.root, outcome.documentId]);
+	assert.equal(shown.paneInput, `:open ${outcome.documentId}\r`);
+	assert.match(readText(shown).header, new RegExp(`\\nTo show it, type ":open ${outcome.documentId}" and Enter into a reader pane that you opened, or run \\[`, "u"));
+	const tool = createReadTool({ store, app });
 	const result = await tool.execute("call", { document: outcome.documentId }, undefined, undefined, {} as never);
 	assert.equal(result.content.length, 2);
 	assert.equal(result.content[1]?.type === "text" ? result.content[1].text : "", "![diagram](diagram.svg)\n![gone](gone.png)\n");

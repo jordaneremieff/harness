@@ -72,7 +72,7 @@ export function markdownContribution(source: string, bus: SettingsBus, stopFacto
 			const store = new MarkdownStore(settings.dir);
 			return host.durable.defineExtension({
 				name: "markdown",
-				tools: [createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store, app: settings.app }), createNativeReadTool(host.durable, { store })],
+				tools: [createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store, app: settings.app }), createNativeReadTool(host.durable, { store, app: settings.app })],
 				sections: [host.durable.section("markdown", () => "Use markdown_publish for an explicitly requested document or a deliverable meant for sustained reading. Publication saves silently. Existing assistant responses are already readable through the operator's Markdown view; do not publish every reply. Use markdown_read to find a stored document and read an exact revision before you correct it.")],
 			});
 		},

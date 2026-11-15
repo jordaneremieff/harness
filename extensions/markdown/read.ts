@@ -2,6 +2,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import { arr, bool, int, lit, obj, opt, str, union, type Static } from "@earendil-works/pi-schema";
 import { toolDisplay } from "./display.ts";
+import { paneCommand } from "./pane-command.ts";
 import { coverageText, referenceSummary, ReferenceSummarySchema, type ReferenceSummary } from "./publish.ts";
 import { type AssetRecord, type Completeness, type ContentOrigin, type DocumentKind, type DocumentRecord, type MarkdownStore, StoreError } from "./store.ts";
 
@@ -30,13 +31,13 @@ export type SourceSearch = { contains: string; candidates: number; searched: num
 export type ListedImage = { reference: string; state: AssetRecord["state"]; reason?: string; mediaType?: string; bytes?: number; digest?: string };
 export type ReadOutcome =
 	| { ok: true; op: "find"; kind: DocumentKind; query?: string; search?: SourceSearch; rows: FoundDocument[]; matched: number; scanned: number; unreadable: number; bounded: boolean }
-	| { ok: true; op: "read"; documentId: string; kind: DocumentKind; title: string; currentRevision: number; revision: number; revisionTitle: string; createdAt: string; digest: string; bytes: number; completeness: Completeness; selfContained?: boolean; references: ReferenceSummary; images?: ListedImage[]; imagesOmitted?: number; provenance: ContentOrigin; offset: number; nextOffset: number | null; chars: number; text: string }
+	| { ok: true; op: "read"; documentId: string; kind: DocumentKind; title: string; currentRevision: number; revision: number; revisionTitle: string; createdAt: string; digest: string; bytes: number; completeness: Completeness; selfContained?: boolean; references: ReferenceSummary; images?: ListedImage[]; imagesOmitted?: number; provenance: ContentOrigin; offset: number; nextOffset: number | null; chars: number; text: string; show?: string[]; paneInput?: string; showUnavailable?: string }
 	| { ok: false; error: { code: "invalid" | "not-found" | "store-failure"; message: string } };
 
 const KindSchema = union([lit("published"), lit("response"), lit("file")]);
 export const ReadOutcomeSchema = union([
 	obj({ ok: lit(true), op: lit("find"), kind: KindSchema, query: opt(str()), search: opt(obj({ contains: str(), candidates: int(), searched: int(), bytes: int(), complete: bool(), unreadable: int() })), rows: arr(obj({ id: str(), title: str(), kind: KindSchema, revision: int(), bytes: int(), digest: str(), createdAt: str(), updatedAt: str(), excerpt: opt(obj({ line: int(), text: str() })) })), matched: int(), scanned: int(), unreadable: int(), bounded: bool() }),
-	obj({ ok: lit(true), op: lit("read"), documentId: str(), kind: KindSchema, title: str(), currentRevision: int(), revision: int(), revisionTitle: str(), createdAt: str(), digest: str(), bytes: int(), completeness: obj({ state: str() }, { open: true }), selfContained: opt(bool()), references: ReferenceSummarySchema, images: opt(arr(obj({ reference: str(), state: str() }, { open: true }))), imagesOmitted: opt(int()), provenance: obj({ kind: str(), capturedAt: str() }, { open: true }), offset: int(), nextOffset: union([int(), lit(null)]), chars: int(), text: str() }),
+	obj({ ok: lit(true), op: lit("read"), documentId: str(), kind: KindSchema, title: str(), currentRevision: int(), revision: int(), revisionTitle: str(), createdAt: str(), digest: str(), bytes: int(), completeness: obj({ state: str() }, { open: true }), selfContained: opt(bool()), references: ReferenceSummarySchema, images: opt(arr(obj({ reference: str(), state: str() }, { open: true }))), imagesOmitted: opt(int()), provenance: obj({ kind: str(), capturedAt: str() }, { open: true }), offset: int(), nextOffset: union([int(), lit(null)]), chars: int(), text: str(), show: opt(arr(str())), paneInput: opt(str()), showUnavailable: opt(str()) }),
 	obj({ ok: lit(false), error: obj({ code: union([lit("invalid"), lit("not-found"), lit("store-failure")]), message: str() }) }),
 ]);
 
@@ -104,7 +105,7 @@ function listedImages(items: AssetRecord[]): { images: ListedImage[]; imagesOmit
 		imagesOmitted: Math.max(0, images.length - LISTED_IMAGES),
 	};
 }
-async function readDocument(store: MarkdownStore, params: ReadInput & { document: string }): Promise<ReadOutcome> {
+async function readDocument(store: MarkdownStore, params: ReadInput & { document: string }, app: string | undefined): Promise<ReadOutcome> {
 	const stored = await store.get(params.document, params.revision);
 	const offset = params.offset ?? 0;
 	const page = sourcePage(stored.source, offset);
@@ -115,14 +116,15 @@ async function readDocument(store: MarkdownStore, params: ReadInput & { document
 		completeness: revision.completeness, ...(revision.selfContained === undefined ? {} : { selfContained: revision.selfContained }),
 		references: referenceSummary(revision.references), ...(offset === 0 ? listedImages(revision.references.items) : {}),
 		provenance: revision.contentOrigin, offset, nextOffset: page.nextOffset, chars: stored.source.length, text: page.text,
+		...(offset === 0 ? paneCommand(app, store.root, document.id) : {}),
 	};
 }
-/** Reads only: no window, reveal, publication or model work. */
-export async function readStored(store: MarkdownStore, params: ReadInput): Promise<ReadOutcome> {
+/** Reads only: no window, reveal, publication or model work. `app` names the installed reader for the pane command. */
+export async function readStored(store: MarkdownStore, params: ReadInput, app?: string): Promise<ReadOutcome> {
 	try {
 		validate(params);
 		if (params.document === undefined) return await find(store, params);
-		return await readDocument(store, { ...params, document: params.document });
+		return await readDocument(store, { ...params, document: params.document }, app);
 	} catch (error) {
 		if (error instanceof StoreError && (error.code === "invalid" || error.code === "not-found")) return { ok: false, error: { code: error.code, message: error.message.slice(0, 300) } };
 		return { ok: false, error: { code: "store-failure", message: error instanceof StoreError ? error.message.slice(0, 300) : "The document store is unavailable." } };
@@ -164,7 +166,8 @@ function readHeader(outcome: Extract<ReadOutcome, { op: "read" }>): string {
 	const newer = outcome.revision === outcome.currentRevision ? "" : ` Revision ${outcome.currentRevision} is current.`;
 	const partial = outcome.completeness.state === "partial" ? ` The captured response is partial (${outcome.completeness.reason ?? "unknown reason"}).` : "";
 	const update = outcome.kind === "published" ? ` To correct it, publish with document ${outcome.documentId} and expectedRevision ${outcome.currentRevision}.` : "";
-	return [`${outcome.documentId} revision ${outcome.revision} of ${outcome.currentRevision} · ${outcome.kind} · ${JSON.stringify(line(outcome.revisionTitle))} · ${outcome.bytes} bytes · ${outcome.digest}.${newer}${partial}${update}`, ...(coverage ? [coverage] : []), position].join("\n");
+	const show = outcome.show ? [`To show it, type ${JSON.stringify(`:open ${outcome.documentId}`)} and Enter into a reader pane that you opened${outcome.paneInput ? "" : " (this reader build cannot)"}, or run ${JSON.stringify(outcome.show)} as the program of a new pane.`] : [];
+	return [`${outcome.documentId} revision ${outcome.revision} of ${outcome.currentRevision} · ${outcome.kind} · ${JSON.stringify(line(outcome.revisionTitle))} · ${outcome.bytes} bytes · ${outcome.digest}.${newer}${partial}${update}`, ...(coverage ? [coverage] : []), ...show, position].join("\n");
 }
 export function readText(outcome: ReadOutcome): { header: string; source?: string } {
 	if (!outcome.ok) return { header: `Markdown read failed (${outcome.error.code}): ${outcome.error.message}` };
@@ -176,16 +179,16 @@ function content(outcome: ReadOutcome): { type: "text"; text: string }[] {
 	return [{ type: "text", text: header }, ...(source === undefined ? [] : [{ type: "text" as const, text: source }])];
 }
 
-export function createReadTool(options: { store: MarkdownStore }): ToolDefinition<typeof ReadParameters, ReadOutcome> {
+export function createReadTool(options: { store: MarkdownStore; app?: string }): ToolDefinition<typeof ReadParameters, ReadOutcome> {
 	const presentation = toolDisplay().tools.find((tool) => tool.name === "markdown_read");
 	return { ...presentation, name: "markdown_read", label: "Markdown Read", description: DESCRIPTION, promptSnippet: "Find stored Markdown documents and read an exact revision in pages, for example before an update.", parameters: ReadParameters, outputSchema: ReadOutcomeSchema, async execute(_id, params) {
-		const outcome = await readStored(options.store, params as ReadInput);
+		const outcome = await readStored(options.store, params as ReadInput, options.app);
 		return { content: content(outcome), details: outcome, structuredContent: outcome, isError: !outcome.ok };
 	} };
 }
-export function createNativeReadTool(durable: typeof Durable, options: { store: MarkdownStore }): Durable.ToolRegistration<typeof ReadParameters, Durable.JsonObject> {
+export function createNativeReadTool(durable: typeof Durable, options: { store: MarkdownStore; app?: string }): Durable.ToolRegistration<typeof ReadParameters, Durable.JsonObject> {
 	return durable.defineTool({ name: "markdown_read", description: DESCRIPTION, parameters: ReadParameters, structuredOutputSchema: ReadOutcomeSchema, replay: "safe", async execute(params) {
-		const outcome = await readStored(options.store, params as ReadInput);
+		const outcome = await readStored(options.store, params as ReadInput, options.app);
 		return { output: content(outcome), structuredOutput: outcome, details: outcome, isError: !outcome.ok };
 	} });
 }
