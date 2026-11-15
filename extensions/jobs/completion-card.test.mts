@@ -60,7 +60,7 @@ test("the label uses Pi's custom message label colour, the outcome is bold text 
 	colors.length = 0;
 	render(details());
 	assert.ok(colors.some(({ color, value }) => color === "customMessageLabel" && value === "[jobs]"));
-	assert.ok(colors.some(({ color, value }) => color === "text" && value === " Job succeeded"));
+	assert.ok(colors.some(({ color, value }) => color === "text" && value === "Job succeeded"));
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "exit 0 · 10s · npm test"));
 	assert.ok(colors.some(({ color, value }) => color === "text" && value === "line 4"));
 	assert.equal(colors.some(({ color }) => color === "customMessageText"), false);
@@ -73,7 +73,7 @@ test("a collapsed card shows the last output lines, then Pi's expansion hint", (
 	assert.match(lines[7] ?? "", /^ \.\.\. \(\d+ more lines, ctrl\+o to expand\)$/u);
 	assert.equal(lines[8], "");
 	assert.equal(lines.length, 9);
-	assert.match(render(details(), false, "")[7] ?? "", /^ \.\.\. \(\d+ more lines, expand for full details\)$/u);
+	assert.match(render(details(), false, "")[7] ?? "", /^ \.\.\. \(\d+ more lines, click to expand\)$/u);
 });
 
 test("the preview wraps errors and outcomes as prose and stays within three visual lines", () => {
@@ -101,7 +101,7 @@ test("long output lines and facts clip with one ellipsis and keep the row backgr
 		assert.doesNotMatch(row, /\x1b\[0m(?!\x1b\[48;5;2m)/u, "a reset never ends the background inside the row");
 	}
 	const clipped = component.render(30).find((row) => stripVTControlCharacters(row).includes("x…")) ?? "";
-	assert.match(clipped, /x…\x1b\[39m/u, "the ellipsis keeps the line's own colour");
+	assert.match(clipped, /\x1b\[38;5;1mx+…\x1b\[[\d;]*39m/u, "the ellipsis keeps the line's own colour and only then resets the foreground");
 });
 
 test("an expanded card shows the header, a blank line and the whole message text without a hint", () => {
@@ -120,4 +120,54 @@ test("terminal control sequences in the details and the content never reach the 
 		assert.ok(component);
 		assert.doesNotMatch(component.render(80).join("\n"), /\x1b|\u0007/u, expanded ? "expanded" : "collapsed");
 	}
+});
+
+test("the preview counts blank output lines inside the window and drops them at its edges", () => {
+	assert.deepEqual(render(details({}, "first\nsecond\n\nthird\n\n", 20)).slice(4, 7), [" second", "", " third"]);
+	const edge = render(details({}, "first\n\nsecond\nthird", 20));
+	assert.deepEqual(edge.slice(4, 6), [" second", " third"], "a blank first line of the window is dropped");
+	assert.match(edge[6] ?? "", /^ \.\.\. \(/u);
+});
+
+test("the hint dims the key from Pi's keyHint, mutes the rest and keeps the row background", () => {
+	const piHint = { ...options(false), keyHint: (_binding: string, description: string) => `\x1b[2mctrl+o\x1b[22m\x1b[38;5;3m ${description}\x1b[39m` } as unknown as MessageRenderOptions;
+	const component = renderJobCompletionMessage(message(details()), piHint, ansiTheme);
+	assert.ok(component);
+	const rows = component.render(80);
+	const hint = rows.find((row) => stripVTControlCharacters(row).includes("to expand")) ?? "";
+	assert.match(stripVTControlCharacters(hint).trim(), /^\.\.\. \(\d+ more lines, ctrl\+o to expand\)$/u);
+	assert.ok(hint.includes("\x1b[2mctrl+o"), "the key comes from Pi's keyHint");
+	assert.match(hint, /\x1b\[38;5;1m\.\.\. \(\d+ more lines, \x1b\[39m/u, "the rest is muted");
+	for (const row of rows) {
+		assert.ok(row.startsWith("\x1b[48;5;2m"));
+		const body = row.slice(0, -5);
+		for (const match of body.matchAll(/\x1b\[(?:0|49)?m/gu)) assert.ok(body.startsWith("\x1b[48;5;2m", (match.index ?? 0) + match[0].length), "every reset restores the background");
+	}
+});
+
+test("display text keeps tabs and removes control sequences", () => {
+	const lines = render(details({}, "col\tvalue \x1b[31mred\x1b[0m \u202ebidi", 30));
+	assert.match(lines.join("\n"), /col {3}value red bidi/u, "the tab stays whitespace and draws as three spaces, as Pi's Text does");
+	assert.doesNotMatch(lines.join("\n"), /\\t|\\u|\u202e/u);
+});
+
+test("a left click anywhere on the card toggles it, as on Pi's cards, and Pi's global expansion resets the choice", () => {
+	const stored = message(details());
+	const card = (expanded: boolean) => { const component = renderJobCompletionMessage(stored, options(expanded), theme); assert.ok(component); return component; };
+	const at = (component: { handleMouse?(event: never): unknown }, y: number, patch: Record<string, unknown> = {}) => component.handleMouse?.({ type: "click", button: "left", x: 2, y, width: 80, height: 40, shift: false, alt: false, ctrl: false, clickCount: 1, ...patch } as never) as { handled?: boolean } | undefined;
+	const text = (component: { render(width: number): string[] }) => component.render(80).map((line) => stripVTControlCharacters(line)).join("\n");
+	const collapsed = card(false);
+	const body = collapsed.render(80).findIndex((line, index) => index > 2 && stripVTControlCharacters(line).trim() !== "");
+	assert.match(text(collapsed), /to expand\)/u);
+	assert.equal(at(collapsed, 0), undefined, "a click on the padding row passes through");
+	assert.equal(at(collapsed, body, { button: "right" }), undefined, "a right click passes through");
+	assert.equal(at(collapsed, body, { type: "press" }), undefined, "a press or a drag passes through, so text selection works");
+	assert.equal(at(collapsed, body)?.handled, true, "a click on the body toggles, as Pi's MouseRegion does");
+	assert.doesNotMatch(text(collapsed), /to expand\)/u);
+	assert.equal(at(collapsed, 1, { shift: true })?.handled, true, "a modified click on the header toggles too; Pi does not filter modifiers");
+	assert.match(text(collapsed), /to expand\)/u);
+	assert.equal(at(collapsed, body, { clickCount: 2 })?.handled, true, "each click of a multi-click toggles; Pi does not filter the click count");
+	assert.doesNotMatch(text(card(false)), /to expand\)/u, "a rebuild over the same stored message keeps the local choice");
+	assert.doesNotMatch(text(card(true)), /to expand\)/u);
+	assert.match(text(card(false)), /to expand\)/u, "a change of Pi's global expansion discards the local choice");
 });
