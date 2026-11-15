@@ -144,7 +144,9 @@ public final class ReaderModel {
     @ObservationIgnored private var navigationGeneration = 0
     /// Suspends a preparation result before installation or failure handling.
     @ObservationIgnored package var preparationGate: (@MainActor (Int?) async -> Void)?
-    @ObservationIgnored var expectingLoad = false
+    @ObservationIgnored private var displayWait: DisplayWait?
+    @ObservationIgnored package var displayNavigationForCheck: (@MainActor () async throws -> Void)?
+    var expectingLoad: Bool { displayWait != nil }
 
     public init(reference: DocumentReference, platform: ReaderPlatform, state: ReadingStateStore) {
         self.reference = reference
@@ -211,6 +213,7 @@ public final class ReaderModel {
     func load(revision: Int?, pinnedDigest: String? = nil, restore: RestoreMode, automatic: Bool = false) async {
         guard !closed else { return }
         generation += 1
+        supersedeDisplay()
         imageInspectionTask?.cancel()
         let token = generation
         loadPending = true
@@ -284,6 +287,8 @@ public final class ReaderModel {
                 ? PageTemplate.sourcePage(source: prepared.snapshot.source, title: prepared.snapshot.title, settings: settings)
                 : PageTemplate.page(body: prepared.rendered.body, title: prepared.snapshot.title, settings: settings)
             try await display(html: html)
+        } catch is DisplayWait.Superseded {
+            return false
         } catch {
             guard token == generation, !closed else { return false }
             assets.replace(rendered?.assets ?? [:])
@@ -350,14 +355,34 @@ public final class ReaderModel {
     /// Loads a page and throws when it did not display. A load that the end of the web content
     /// process interrupted is tried once more.
     func display(html: String) async throws {
-        expectingLoad = true
-        defer { expectingLoad = false }
+        supersedeDisplay()
+        let wait = DisplayWait()
+        displayWait = wait
+        defer { if displayWait === wait { displayWait = nil } }
+        let page = self.page
+        let check = displayNavigationForCheck
         do {
-            for try await _ in page.load(html: html, baseURL: URL(string: "about:blank")!) {}
+            if let check {
+                try await wait.run(check)
+            } else {
+                let navigation = page.load(html: html, baseURL: URL(string: "about:blank")!)
+                try await wait.run { for try await _ in navigation {} }
+            }
         } catch WebPage.NavigationError.webContentProcessTerminated {
+            guard displayWait === wait else { throw DisplayWait.Superseded() }
             recoveries += 1
-            for try await _ in page.load(html: html, baseURL: URL(string: "about:blank")!) {}
+            let retry = DisplayWait()
+            displayWait = retry
+            defer { if displayWait === retry { displayWait = nil } }
+            let navigation = page.load(html: html, baseURL: URL(string: "about:blank")!)
+            try await retry.run { for try await _ in navigation {} }
         }
+    }
+
+    private func supersedeDisplay() {
+        let previous = displayWait
+        displayWait = nil
+        previous?.supersede()
     }
 
     /// Reloads the shown revision after the page's web content process ended, then returns to the
@@ -368,6 +393,8 @@ public final class ReaderModel {
         let position = state.position(for: reference)
         do {
             try await display(html: pageHTML())
+        } catch is DisplayWait.Superseded {
+            return
         } catch {
             post("The page could not be shown: \(error.localizedDescription)", kind: .warning)
             return
@@ -571,6 +598,8 @@ public final class ReaderModel {
         showingSource.toggle()
         do {
             try await display(html: pageHTML())
+        } catch is DisplayWait.Superseded {
+            return
         } catch {
             showingSource.toggle()
             post("The page could not be shown: \(error.localizedDescription)", kind: .warning)
@@ -663,6 +692,7 @@ public final class ReaderModel {
         guard !closed else { return }
         closed = true
         generation += 1
+        supersedeDisplay()
         updates.stop()
         preparations.discardWaiting()
         positionTask?.cancel()

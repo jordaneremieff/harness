@@ -24,33 +24,48 @@ struct Verification {
         defer { try? FileManager.default.removeItem(at: workspace) }
         var checks: [Check] = []
         var keep: [NSWindow] = []
+        let deadline = VerificationDeadline()
+        func run(_ name: String, operation: () async -> Check) async {
+            let previous = checks
+            deadline.start { stage in
+                CheckRunner.emit([
+                    "pass": false,
+                    "macOS": ProcessInfo.processInfo.operatingSystemVersionString,
+                    "checks": (previous + [Check(name: name, pass: false, detail: "Deadline exceeded (30 seconds); stage: \(stage)")])
+                        .map { ["name": $0.name, "pass": $0.pass, "detail": $0.detail] },
+                ], to: output)
+                exit(1)
+            }
+            checks.append(await operation())
+            deadline.stop()
+        }
         do {
             let store = try VerifyStore(root: workspace.appendingPathComponent("store"))
-            let context = Context(windows: windows, workspace: workspace, store: store)
-            checks.append(await context.latestExplicitOpen(keep: &keep))
-            checks.append(await context.inlineFind(keep: &keep))
-            checks.append(await context.codeLineEndings(keep: &keep))
-            checks.append(await context.tableColumnWidths(keep: &keep))
-            checks.append(await context.contentScript(keep: &keep))
-            checks.append(await context.remoteLoads(keep: &keep))
-            checks.append(await context.assetContainment(keep: &keep))
-            checks.append(await context.imageInspectionDeadline(keep: &keep))
-            checks.append(await context.find(keep: &keep))
-            checks.append(await context.codeCopy(keep: &keep))
-            checks.append(await context.externalLink(keep: &keep))
-            checks.append(await context.pinnedOpen(keep: &keep))
-            checks.append(await context.initialRevisionGap(followsLatest: false, keep: &keep))
-            checks.append(await context.initialRevisionGap(followsLatest: true, keep: &keep))
-            checks.append(await context.positionAtInstallation(keep: &keep))
-            checks.append(await context.interactionDuringPreparation(keep: &keep))
-            checks.append(await context.positionAcrossRefresh(keep: &keep))
-            checks.append(await context.positionAcrossReopen(keep: &keep))
-            checks.append(await context.launchOrigins(keep: &keep))
-            checks.append(await context.recovery(keep: &keep))
-            checks.append(await context.honestLibrary())
-            checks.append(await context.libraryContinuation())
-            checks.append(await context.storeSelection())
-            checks.append(await context.revisionExports(keep: &keep))
+            let context = Context(windows: windows, workspace: workspace, store: store, progress: deadline)
+            await run("latest-explicit-open-wins") { await context.latestExplicitOpen(keep: &keep) }
+            await run("find-across-inline-formatting") { await context.inlineFind(keep: &keep) }
+            await run("code-copy-crlf") { await context.codeLineEndings(keep: &keep) }
+            await run("table-column-geometry") { await context.tableColumnWidths(keep: &keep) }
+            await run("content-javascript-disabled") { await context.contentScript(keep: &keep) }
+            await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
+            await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
+            await run("image-inspection-deadline") { await context.imageInspectionDeadline(keep: &keep) }
+            await run("find-moves-selection") { await context.find(keep: &keep) }
+            await run("code-copy-exact") { await context.codeCopy(keep: &keep) }
+            await run("external-link-confirmation") { await context.externalLink(keep: &keep) }
+            await run("pinned-open-request") { await context.pinnedOpen(keep: &keep) }
+            await run("initial-gap-announces-update") { await context.initialRevisionGap(followsLatest: false, keep: &keep) }
+            await run("initial-gap-follows-latest") { await context.initialRevisionGap(followsLatest: true, keep: &keep) }
+            await run("position-captured-at-installation") { await context.positionAtInstallation(keep: &keep) }
+            await run("interaction-during-revision-preparation") { await context.interactionDuringPreparation(keep: &keep) }
+            await run("position-survives-refresh") { await context.positionAcrossRefresh(keep: &keep) }
+            await run("position-survives-reopen") { await context.positionAcrossReopen(keep: &keep) }
+            await run("launch-origin-per-open") { await context.launchOrigins(keep: &keep) }
+            await run("webcontent-recovery") { await context.recovery(keep: &keep) }
+            await run("library-unavailable-is-not-empty") { await context.honestLibrary() }
+            await run("library-continuation-and-shared-recents") { await context.libraryContinuation() }
+            await run("explicit-store-selection") { await context.storeSelection() }
+            await run("selected-revision-exports") { await context.revisionExports(keep: &keep) }
         } catch {
             checks.append(Check(name: "setup", pass: false, detail: String(describing: error)))
         }
@@ -182,12 +197,15 @@ struct Context {
     let windows: WindowManager
     let workspace: URL
     let store: VerifyStore
+    var progress: VerificationDeadline? = nil
 
     func js(_ model: ReaderModel, _ body: String, _ arguments: [String: Any] = [:]) async -> Any? {
-        try? await model.page.callJavaScript(body, arguments: arguments, contentWorld: .world(name: "markdown-reader"))
+        progress?.stage = "DOM inspection"
+        return try? await model.page.callJavaScript(body, arguments: arguments, contentWorld: .world(name: "markdown-reader"))
     }
 
     func wait(seconds: Double, until condition: () async -> Bool) async -> Bool {
+        progress?.stage = "waiting for check condition"
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {
             if await condition() { return true }
@@ -205,7 +223,9 @@ struct Context {
     func open(_ reference: DocumentReference, revision: Int?, digest: String? = nil, state: ReadingStateStore? = nil, trackedScroll: Bool = false, keep: inout [NSWindow]) async -> ReaderModel {
         let model = ReaderModel(reference: reference, platform: windows.platform, state: state ?? windows.state)
         keep.append(trackedScroll ? readerWindow(model) : CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
+        progress?.stage = "opening document"
         await model.open(revision: revision, digest: digest, origin: nil)
+        progress?.stage = "document opened"
         return model
     }
 
@@ -523,7 +543,9 @@ struct Context {
                     await Task.yield()
                 }
                 let overlapped = duringDisplay ? model.isDisplayingForCheck : model.launchOrigin != nil
+                progress?.stage = "\(duringDisplay ? "display" : "preparation") overlap: opening replacement"
                 await model.open(revision: 1, origin: nil)
+                progress?.stage = "\(duringDisplay ? "display" : "preparation") overlap: waiting for superseded open"
                 await pending.value
                 let heading = await js(model, "return document.querySelector('h1').textContent") as? String ?? "?"
                 let correct = overlapped && model.snapshot?.revision == 1 && heading.trimmingCharacters(in: .whitespacesAndNewlines) == "First revision" && model.launchOrigin == nil

@@ -101,6 +101,54 @@ private final class LifecycleGate {
         #expect(observed === PageScript.world)
     }
 
+    @Test func aNewLoadReleasesASupersededDisplayEvenWhenNavigationStaysOpen() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1)
+        try store.publish(2)
+        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
+        let window = window(model)
+        defer { window.close() }
+        await model.open(revision: 1, origin: nil)
+        let held = LifecycleGate()
+        defer { held.release() }
+        model.displayNavigationForCheck = { await held.wait() }
+        var returned = false
+        let obsolete = Task { await model.open(revision: 2, origin: nil); returned = true }
+        #expect(await wait { held.reached })
+        #expect(model.isDisplayingForCheck)
+        model.displayNavigationForCheck = nil
+        await model.open(revision: 1, origin: nil)
+        #expect(await wait { returned })
+        #expect(model.snapshot?.revision == 1)
+        #expect(model.failure == nil)
+        #expect(!model.isDisplayingForCheck)
+        // The old navigation has not ended; the model's caller has already returned.
+        await obsolete.value
+        held.release()
+        await model.close()
+    }
+
+    @Test func aNewDisplayOwnsExpectingLoadUntilItsOwnNavigationEnds() async throws {
+        let model = model(reference: .file(path: "/notes/test.md"), state: ReadingStateStore(directory: nil))
+        let first = LifecycleGate()
+        let second = LifecycleGate()
+        defer { first.release(); second.release() }
+        model.displayNavigationForCheck = { await first.wait() }
+        var firstReturned = false
+        let old = Task { await model.displayForCheck(html: "old"); firstReturned = true }
+        #expect(await wait { first.reached })
+        model.displayNavigationForCheck = { await second.wait() }
+        let newer = Task { await model.displayForCheck(html: "new") }
+        #expect(await wait { second.reached && firstReturned })
+        #expect(model.isDisplayingForCheck)
+        second.release()
+        await newer.value
+        #expect(!model.isDisplayingForCheck)
+        await old.value
+        await model.close()
+    }
+
     @Test func decodedImageEvidenceSurvivesSeparateDOMCalls() async throws {
         let directory = try ReadingStateIntake.directory()
         defer { try? FileManager.default.removeItem(at: directory) }

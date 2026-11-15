@@ -263,7 +263,9 @@ change of reason.
 A window prepares one revision at a time. Reading and rendering run to completion once started,
 so a load that starts while another prepares waits, and a newer load replaces the waiting one
 before it reads anything. Repeated refreshes and opens therefore prepare at most the revision
-under way and the newest one requested.
+under way and the newest one requested. A new load or display also ends the previous display's
+wait from the model side. A replaced WebKit navigation need not finish before its caller releases
+the obsolete prepared revision. Only the current display controls the expected-navigation state.
 
 The revision menu offers revisions from the document's pointer, at most the newest 50, and says
 when older revisions are not listed. The list does not grow: **Go to Revision…** shows any
@@ -404,7 +406,10 @@ APP="<app>/Contents/MacOS/MarkdownReader"
   with the revision before it (`previous`); `--present` shows that comparison in its window.
   `--present --inspect n` opens the inspection of the document's image `n`, counted from 1, at
   Fit, and `n:actual` at actual size.
-- `--verify` runs a fixed list of WebKit checks on this Mac and exits nonzero on a failure:
+- `--verify` runs a fixed list of WebKit checks on this Mac and exits nonzero on a failure.
+  Each check has a 30-second deadline. If a check exceeds it, the report includes its exact name,
+  its last stage and the completed checks; the process then exits nonzero without starting another
+  check over unfinished effects. The checks cover:
   content scripts do not run; nothing reaches a loopback listener from remote images,
   stylesheets, frames or media (a control request proves the listener); the asset scheme serves
   a retained image and refuses traversal, unknown tokens, other hosts, modified retained bytes
