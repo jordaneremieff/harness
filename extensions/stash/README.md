@@ -120,13 +120,21 @@ second line:
 
 A blank line follows the header. Collapsed, a card shows at most three visual
 lines of the message text, wrapped at word boundaries and without the redaction
-summary or the capacity notice header, then Pi's `... (N more lines, ctrl+o to
-expand)` hint when text is hidden. Expanded, it shows the whole message text as
+summary or the capacity notice header. A blank line between paragraphs counts
+as a line, and a blank line at the end of the preview is dropped. When text is
+hidden, Pi's `... (N more lines, ctrl+o to expand)` hint follows: the key comes
+from Pi's `keyHint`, the rest is muted, and without a configured key the hint
+reads `click to expand`. A left click anywhere on the card's content rows toggles that card, as Pi's
+compaction and tool cards toggle on a left click; a modified click and each
+click of a multi-click toggle too, and a drag still selects text. Pi's global
+expansion resets that local choice. Expanded, it shows the whole message text as
 Markdown and no hint; a budget notice omits its model-facing `[stash-budget]`
 tag line, which stays in the message text. The facts come from the message's
 own details (redaction report, capacity state) or its own text (budget
-notices). A header line that does not fit ends in `…`. The renderers escape
-terminal controls and change neither the content nor the details.
+notices). A header line that does not fit ends in `…` in its own colour. The
+renderers remove terminal control and escape sequences and other control or
+format characters from every displayed string, keep newlines and tabs, and
+change neither the content nor the details.
 
 ## Recover a checkpoint
 

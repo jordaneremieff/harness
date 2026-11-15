@@ -47,7 +47,7 @@ it("a redaction notice names the removed values on the facts line and previews t
 	colors.length = 0;
 	render(renderRedactionMessage, STASH_MESSAGES.redaction, redactionNotice(report), { redactions: report });
 	assert.ok(colors.some(({ color, value }) => color === "customMessageLabel" && value === "[stash]"));
-	assert.ok(colors.some(({ color, value }) => color === "text" && value === " Credentials redacted"));
+	assert.ok(colors.some(({ color, value }) => color === "text" && value === "Credentials redacted"));
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "3 values · JWT 2, Bearer 1"));
 	assert.equal(colors.some(({ color }) => color === "customMessageText"), false);
 });
@@ -95,7 +95,7 @@ it("a capacity request names the requested act and the context share only when P
 	assert.deepEqual(lines.slice(4, 6), [" Pi estimates context use at 85.2% (170000 tokens). This is not a safe", " remaining budget."], "a preview that reaches a paragraph break stops before the blank line");
 	assert.equal(lines.length, 8);
 	assert.match(lines[6] ?? "", /^ \.\.\. \(\d+ more lines, ctrl\+o to expand\)$/u);
-	assert.match(render(renderCapacityMessage, STASH_MESSAGES.capacity, capacityText, capacity({}), false, "")[6] ?? "", /expand for full details\)$/u);
+	assert.match(render(renderCapacityMessage, STASH_MESSAGES.capacity, capacityText, capacity({}), false, "")[6] ?? "", /click to expand\)$/u);
 });
 
 it("an expanded card shows the header, a blank line and the whole message text without a hint", () => {
@@ -118,7 +118,7 @@ it("long facts clip with one ellipsis in their own colour and keep the row backg
 		assert.ok(row.startsWith("\x1b[48;5;2m"));
 		assert.doesNotMatch(row, /\x1b\[0m(?!\x1b\[48;5;2m)/u);
 	}
-	assert.match(rows[2] ?? "", /…\x1b\[39m/u);
+	assert.match(rows[2] ?? "", /…\x1b\[[\d;]*39m/u, "the ellipsis keeps the colour of the text it cuts");
 });
 
 it("terminal control sequences in details and content never reach the card", () => {
@@ -129,4 +129,51 @@ it("terminal control sequences in details and content never reach the card", () 
 		assert.ok(component);
 		assert.doesNotMatch(component.render(80).join("\n"), /\x1b|\x07/u);
 	}
+});
+
+/** Every reset inside a row restores the message background, so the row background never breaks. */
+function assertContinuousBackground(row: string): void {
+	assert.ok(row.startsWith("\x1b[48;5;2m"), "the row starts on the message background");
+	const body = row.endsWith("\x1b[49m") ? row.slice(0, -5) : row;
+	for (const match of body.matchAll(/\x1b\[(?:0|49)?m/gu)) assert.ok(body.startsWith("\x1b[48;5;2m", (match.index ?? 0) + match[0].length), "every reset restores the background");
+}
+
+const piKeyHint = (expanded: boolean) => ({ ...options(expanded), keyHint: (_binding: string, description: string) => `\x1b[2mctrl+o\x1b[22m\x1b[38;5;3m ${description}\x1b[39m` }) as unknown as MessageRenderOptions;
+
+it("the hint dims the key from Pi's keyHint, mutes the rest and keeps the row background", () => {
+	const component = renderCapacityMessage({ role: "custom", customType: STASH_MESSAGES.capacity, display: true, timestamp: 0, content: capacityText, details: capacity({}) }, piKeyHint(false), ansiTheme);
+	assert.ok(component);
+	const rows = component.render(80);
+	const hint = rows.find((row) => stripVTControlCharacters(row).includes("to expand")) ?? "";
+	assert.match(stripVTControlCharacters(hint).trim(), /^\.\.\. \(\d+ more lines, ctrl\+o to expand\)$/u);
+	assert.ok(hint.includes("\x1b[2mctrl+o"), "the key comes from Pi's keyHint");
+	assert.match(hint, /\x1b\[38;5;1m\.\.\. \(\d+ more lines, \x1b\[39m/u, "the rest is muted");
+	for (const row of rows) assertContinuousBackground(row);
+});
+
+it("display text keeps tabs and removes control sequences", () => {
+	const text = render(renderBudgetStatusMessage, STASH_MESSAGES.budgetStatus, "col\tvalue \x1b[31mred\x1b[0m \u202ebidi").join("\n");
+	assert.match(text, /col\s+value red bidi/u, "the tab stays whitespace; Pi's Markdown draws it as spaces");
+	assert.doesNotMatch(text, /\\t|\\u|\\x|\u202e/u, "no visible escape text and no raw control");
+});
+
+it("a left click anywhere on the card toggles it, as on Pi's cards, and Pi's global expansion resets the choice", () => {
+	const stored = { role: "custom" as const, customType: STASH_MESSAGES.capacity, display: true, timestamp: 0, content: capacityText, details: capacity({}) };
+	const card = (expanded: boolean) => { const component = renderCapacityMessage(stored, options(expanded), theme); assert.ok(component); return component; };
+	const at = (component: { handleMouse?(event: never): unknown }, y: number, patch: Record<string, unknown> = {}) => component.handleMouse?.({ type: "click", button: "left", x: 2, y, width: 80, height: 40, shift: false, alt: false, ctrl: false, clickCount: 1, ...patch } as never) as { handled?: boolean } | undefined;
+	const text = (component: { render(width: number): string[] }) => component.render(80).map((line) => stripVTControlCharacters(line)).join("\n");
+	const collapsed = card(false);
+	const body = collapsed.render(80).findIndex((line, index) => index > 2 && stripVTControlCharacters(line).trim() !== "");
+	assert.match(text(collapsed), /to expand\)/u);
+	assert.equal(at(collapsed, 0), undefined, "a click on the padding row passes through");
+	assert.equal(at(collapsed, body, { button: "right" }), undefined, "a right click passes through");
+	assert.equal(at(collapsed, body, { type: "press" }), undefined, "a press or a drag passes through, so text selection works");
+	assert.equal(at(collapsed, body)?.handled, true, "a click on the body toggles, as Pi's MouseRegion does");
+	assert.doesNotMatch(text(collapsed), /to expand\)/u);
+	assert.equal(at(collapsed, 1, { shift: true })?.handled, true, "a modified click on the header toggles too; Pi does not filter modifiers");
+	assert.match(text(collapsed), /to expand\)/u);
+	assert.equal(at(collapsed, body, { clickCount: 2 })?.handled, true, "each click of a multi-click toggles; Pi does not filter the click count");
+	assert.doesNotMatch(text(card(false)), /to expand\)/u, "a rebuild over the same stored message keeps the local choice");
+	assert.doesNotMatch(text(card(true)), /to expand\)/u);
+	assert.match(text(card(false)), /to expand\)/u, "a change of Pi's global expansion discards the local choice");
 });

@@ -1,10 +1,10 @@
 import { getMarkdownTheme, type MessageRenderer, type MessageRenderOptions, type Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { Box, Markdown, MouseRegion, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { BUDGET_NOTICE, budgetNoticeFacts, budgetStatusFacts } from "./budget.ts";
 import { CAPACITY_NOTICE_HEADER, CAPACITY_REQUEST, type CapacityState } from "./capacity.ts";
 import type { RedactionReport } from "./redact.ts";
-import { formatTokenCount, sanitizeTerminalText } from "./text.ts";
+import { formatTokenCount } from "./text.ts";
 
 /** Displayed stash messages, by type. */
 export const STASH_MESSAGES = Object.freeze({
@@ -27,13 +27,8 @@ interface CardFacts {
 	preview: string;
 }
 
-/** One styled run of a card line; `text` is plain display text. */
-interface Run {
-	text: string;
-	style: (text: string) => string;
-}
-
-const safe = (value: string) => sanitizeTerminalText(value).text;
+/** Displayed text keeps newlines and tabs and drops terminal controls and other control or format characters. */
+const safe = (value: string) => stripVTControlCharacters(value).replace(/[\p{Cc}\p{Cf}]/gu, (character) => (character === "\n" || character === "\t" ? character : ""));
 const oneLine = (value: string) => safe(value).replace(/\s+/gu, " ").trim();
 
 function record(value: unknown): Record<string, unknown> {
@@ -101,33 +96,21 @@ export function capacityFacts(details: unknown, text: string): CardFacts {
 	};
 }
 
-/** Runs on one row; a clipped row ends in `…` in the style of the run it cuts. */
-function fitRow(runs: readonly Run[], width: number): string {
-	if (runs.reduce((total, run) => total + visibleWidth(run.text), 0) <= width) return runs.map((run) => run.style(run.text)).join("");
-	let used = 0;
-	let line = "";
-	for (const run of runs) {
-		const size = visibleWidth(run.text);
-		if (used + size < width) {
-			line += run.style(run.text);
-			used += size;
-			continue;
-		}
-		const kept = stripVTControlCharacters(truncateToWidth(run.text, Math.max(0, width - used - 1), ""));
-		return width > used ? line + run.style(`${kept}…`) : line;
-	}
-	return line;
+/** One row at most `width` wide; a clipped row ends in `…` in the colour of the text it cuts and keeps the row background. */
+function clipRow(line: string, width: number): string {
+	return truncateToWidth(line, Math.max(0, width), "…").replace(/\x1b\[0m…\x1b\[0m$/u, "…\x1b[22;23;24;25;27;28;29;39m");
 }
 
-/** Pi's tool-card hint: `... (2 more lines, ctrl+o to expand)`. */
-function hintRuns(theme: Theme, options: MessageRenderOptions, hidden: number): Run[] {
-	const muted = (text: string) => theme.fg("muted", text);
+/** Pi's tool-card hint, `... (2 more lines, ctrl+o to expand)`, with the key from Pi's `keyHint` and the rest muted. */
+function expansionHint(theme: Theme, options: MessageRenderOptions, hidden: number): string {
 	const key = typeof options.keyText === "function" ? options.keyText("app.tools.expand") : "";
-	const more = `${hidden} more line${hidden === 1 ? "" : "s"}, `;
-	if (!key) return [{ text: `... (${more}expand for full details)`, style: muted }];
-	return [{ text: `... (${more}`, style: muted }, { text: key, style: (text) => theme.fg("dim", text) }, { text: " to expand)", style: muted }];
+	const action = !key
+		? theme.fg("muted", "click to expand")
+		: typeof options.keyHint === "function" ? options.keyHint("app.tools.expand", "to expand") : theme.fg("dim", key) + theme.fg("muted", " to expand");
+	return theme.fg("muted", `... (${hidden} more line${hidden === 1 ? "" : "s"}, `) + action + theme.fg("muted", ")");
 }
 
+/** Blank lines at the start and the end of a run of lines are dropped; blank lines inside it stay. */
 function trimBlank(lines: string[]): string[] {
 	let start = 0;
 	let end = lines.length;
@@ -137,6 +120,30 @@ function trimBlank(lines: string[]): string[] {
 }
 
 const markdown = (text: string, theme: Theme) => new Markdown(safe(text).trim() || "(no text)", 0, 0, getMarkdownTheme(), { color: (value) => theme.fg("text", value) });
+
+/**
+ * A card's own disclosure, kept with the stored message object that Pi hands to every rebuild of the card. A
+ * choice holds only under the global expansion it was made under; a change of Pi's global expansion discards it.
+ */
+const disclosures = new WeakMap<object, { expanded: boolean; under: boolean }>();
+
+function disclosedExpansion(message: object, global: boolean): boolean {
+	const choice = disclosures.get(message);
+	if (choice && choice.under !== global) disclosures.delete(message);
+	return disclosures.get(message)?.expanded ?? global;
+}
+
+/**
+ * A left click on the card's content toggles it, as Pi's compaction and tool cards do with `MouseRegion`: Pi checks
+ * only the click type and the left button. A drag still selects text, because Pi sends no click for it.
+ */
+function clickToggle(body: Component & { toggle(): void }): MouseRegion {
+	return new MouseRegion(body, (event) => {
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		body.toggle();
+		return { handled: true };
+	});
+}
 
 /**
  * The `[stash]` header and its facts line, a blank line, then at most three body lines with Pi's expansion
@@ -149,28 +156,38 @@ class MessageCardBody implements Component {
 	private readonly facts: CardFacts;
 	private readonly theme: Theme;
 	private readonly options: MessageRenderOptions;
-	constructor(facts: CardFacts, theme: Theme, options: MessageRenderOptions) {
+	private readonly message: object;
+	private expanded: boolean;
+	constructor(message: object, facts: CardFacts, theme: Theme, options: MessageRenderOptions) {
+		this.message = message;
 		this.facts = facts;
 		this.theme = theme;
 		this.options = options;
+		this.expanded = disclosedExpansion(message, options.expanded);
 		this.full = markdown(facts.body, theme);
 		this.preview = markdown(facts.preview, theme);
 	}
 	private header(width: number): string[] {
 		const theme = this.theme;
-		const title = fitRow([{ text: "[stash]", style: (text) => theme.fg("customMessageLabel", theme.bold(text)) }, { text: ` ${oneLine(this.facts.label)}`, style: (text) => theme.fg("text", theme.bold(text)) }], width);
+		const title = clipRow(`${theme.fg("customMessageLabel", theme.bold("[stash]"))} ${theme.fg("text", theme.bold(oneLine(this.facts.label)))}`, width);
 		const facts = this.facts.facts.map(oneLine).filter(Boolean);
-		return [title, ...(facts.length ? [fitRow([{ text: facts.join(" · "), style: (text) => theme.fg("muted", text) }], width)] : []), ""];
+		return [title, ...(facts.length ? [clipRow(theme.fg("muted", facts.join(" · ")), width)] : []), ""];
+	}
+	/** Shows the other form of this card and keeps the choice under the current global expansion. */
+	toggle(): void {
+		this.expanded = !this.expanded;
+		disclosures.set(this.message, { expanded: this.expanded, under: this.options.expanded });
+		this.cache = undefined;
 	}
 	render(width: number): string[] {
 		if (this.cache?.width === width) return this.cache.lines;
 		const full = trimBlank(this.full.render(width));
 		let lines: string[];
-		if (this.options.expanded) lines = [...this.header(width), ...full];
+		if (this.expanded) lines = [...this.header(width), ...full];
 		else {
 			const preview = trimBlank(trimBlank(this.preview.render(width)).slice(0, MESSAGE_PREVIEW_LINES));
 			const hidden = Math.max(0, full.length - preview.length);
-			lines = [...this.header(width), ...preview, ...(hidden > 0 ? [fitRow(hintRuns(this.theme, this.options, hidden), width)] : [])];
+			lines = [...this.header(width), ...preview, ...(hidden > 0 ? [clipRow(expansionHint(this.theme, this.options, hidden), width)] : [])];
 		}
 		this.cache = { width, lines };
 		return lines;
@@ -182,33 +199,33 @@ class MessageCardBody implements Component {
 	}
 }
 
-function card(facts: CardFacts, options: MessageRenderOptions, theme: Theme): Component {
+function card(message: object, facts: CardFacts, options: MessageRenderOptions, theme: Theme): Component {
 	const background = theme.getBgAnsi("customMessageBg");
 	const box = new Box(options.outputPad, 1, (line) => theme.bg("customMessageBg", line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background)));
-	box.addChild(new MessageCardBody(facts, theme, options));
+	box.addChild(clickToggle(new MessageCardBody(message, facts, theme, options)));
 	return box;
 }
 
 /** `[stash] Credentials redacted`, then `2 values · JWT 1, Bearer 1`, then the redaction contexts. */
 export const renderRedactionMessage: MessageRenderer = (message, options, theme) => {
 	const content = contentText(message.content);
-	return card(redactionFacts(message.details, content), options, theme);
+	return card(message, redactionFacts(message.details, content), options, theme);
 };
 
 /** `[stash] Budget reached`, then `context 105% of 200k` and the cost share when it is known, then the budget lines. */
 export const renderBudgetMessage: MessageRenderer = (message, options, theme) => {
 	const content = contentText(message.content);
-	return card(budgetFacts(content), options, theme);
+	return card(message, budgetFacts(content), options, theme);
 };
 
 /** `[stash] Budget notices on`, then `200k tokens · USD 5`, after `/stash budget`. */
 export const renderBudgetStatusMessage: MessageRenderer = (message, options, theme) => {
 	const content = contentText(message.content);
-	return card(budgetStatusCardFacts(content), options, theme);
+	return card(message, budgetStatusCardFacts(content), options, theme);
 };
 
 /** `[stash] Capacity checkpoint requested`, then `context 85%` when Pi estimates it, then the request text. */
 export const renderCapacityMessage: MessageRenderer = (message, options, theme) => {
 	const content = contentText(message.content);
-	return card(capacityFacts(message.details, content), options, theme);
+	return card(message, capacityFacts(message.details, content), options, theme);
 };
