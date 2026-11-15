@@ -228,6 +228,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func refreshDocument(_ sender: Any?) { withModel { await $0.refresh() } }
     @objc func olderRevision(_ sender: Any?) { withModel { await $0.showAdjacentRevision(newer: false) } }
     @objc func newerRevision(_ sender: Any?) { withModel { await $0.showAdjacentRevision(newer: true) } }
+    @objc func reviewChanges(_ sender: Any?) { withModel { await $0.reviewChanges() } }
+    @objc func goToRevision(_ sender: Any?) { withModel { $0.review.entry = .show } }
     @objc func showDetails(_ sender: Any?) { withModel { $0.detailsVisible.toggle() } }
     @objc func revealDocument(_ sender: Any?) { withModel { $0.revealInFinder() } }
     @objc func returnToTerminal(_ sender: Any?) { withModel { await $0.returnToTerminal() } }
@@ -249,11 +251,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(refreshDocument(_:)):
             return model.snapshot != nil
         case #selector(olderRevision(_:)):
-            guard let snapshot = model.snapshot, let revision = snapshot.revision else { return false }
-            return snapshot.revisions.first.map { $0 < revision } ?? false
+            guard let revision = model.snapshot?.revision else { return false }
+            return revision > 1
         case #selector(newerRevision(_:)):
-            guard let snapshot = model.snapshot, let revision = snapshot.revision else { return false }
-            return snapshot.revisions.last.map { $0 > revision } ?? false
+            guard let revision = model.snapshot?.revision else { return false }
+            return revision < (model.latestRevision ?? revision)
+        case #selector(reviewChanges(_:)):
+            item.title = model.review.shown == nil ? "Review Changes" : "Close Comparison"
+            return model.canReviewChanges
+        case #selector(goToRevision(_:)):
+            return model.canReviewChanges
         case #selector(returnToTerminal(_:)):
             item.title = model.returnLabel ?? "Return to Terminal"
             return model.launchOrigin != nil
@@ -383,6 +390,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             item("Show Latest Revision", #selector(refreshDocument(_:)), "r"),
             item("Older Revision", #selector(olderRevision(_:)), "[", [.command, .option]),
             item("Newer Revision", #selector(newerRevision(_:)), "]", [.command, .option]),
+            item("Go to Revision…", #selector(goToRevision(_:)), "g", [.command, .option]),
+            item("Review Changes", #selector(reviewChanges(_:)), "d"),
             .separator(),
             item("Document Details", #selector(showDetails(_:)), "i"),
         ]

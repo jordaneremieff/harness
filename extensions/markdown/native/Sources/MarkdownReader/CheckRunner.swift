@@ -30,14 +30,14 @@ struct CheckRunner {
     func run() async {
         let status: Int32
         switch mode {
-        case .exportImage(let input, let output, let width, let maxHeight, let appearance, let textSize):
-            status = await exportImage(input: input, output: output, width: width, maxHeight: maxHeight, appearance: appearance, textSize: textSize)
+        case .exportImage(let input, let output, let width, let maxHeight, let appearance, let textSize, let review):
+            status = await exportImage(input: input, output: output, width: width, maxHeight: maxHeight, appearance: appearance, textSize: textSize, review: review)
         case .verify(let output):
             status = await Verification(windows: windows).run(output: output)
         case .measure(let corpus, let sizes, let output):
             status = await Measurement(windows: windows).run(corpus: corpus, sizes: sizes, output: output)
-        case .present(let input, let width, let height, let appearance, let find, let source, let outline):
-            await present(input: input, width: width, height: height, appearance: appearance, find: find, source: source, outline: outline)
+        case .present(let input, let width, let height, let appearance, let find, let source, let outline, let review):
+            await present(input: input, width: width, height: height, appearance: appearance, find: find, source: source, outline: outline, review: review)
             return
         case .returnCheck(let request):
             status = await returnCheck(request: request)
@@ -83,7 +83,7 @@ struct CheckRunner {
 
     /// Opens a normal reader window in the requested state and prints its window number, so that
     /// a session with screen recording permission can capture the real window.
-    func present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool) async {
+    func present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool, review: String?) async {
         if let appearance { NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua) }
         do {
             var directory = ObjCBool(false)
@@ -111,6 +111,7 @@ struct CheckRunner {
             while model.phase != .ready, Date() < deadline { try? await Task.sleep(for: .milliseconds(50)) }
             model.outlineVisible = outline
             if source { await model.toggleSource() }
+            if let review { await model.reviewChanges(base: Int(review), target: model.snapshot?.revision) }
             if let find {
                 model.showFind()
                 model.findQuery = find
@@ -158,7 +159,7 @@ struct CheckRunner {
         }
     }
 
-    func exportImage(input: String, output: String, width: Double, maxHeight: Double, appearance: String?, textSize: Int?) async -> Int32 {
+    func exportImage(input: String, output: String, width: Double, maxHeight: Double, appearance: String?, textSize: Int?, review: String?) async -> Int32 {
         if let appearance {
             NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua)
         }
@@ -173,13 +174,25 @@ struct CheckRunner {
                 Self.emit(["ok": false, "error": message], to: nil)
                 return 1
             }
-            let fullHeight = (try? await model.page.callJavaScript("return document.documentElement.scrollHeight") as? Double) ?? 1000
+            var page = model.page
+            if let review {
+                await model.reviewChanges(base: Int(review), target: model.snapshot?.revision)
+                guard let reviewPage = model.review.visiblePage else {
+                    Self.emit(["ok": false, "error": model.review.failure ?? "the comparison did not appear"], to: nil)
+                    return 1
+                }
+                page = reviewPage
+                (window.contentView as? NSHostingView<AnyView>)?.rootView = AnyView(WebView(page).frame(width: width, height: 1000))
+                window.contentView?.layoutSubtreeIfNeeded()
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+            let fullHeight = (try? await page.callJavaScript("return document.documentElement.scrollHeight") as? Double) ?? 1000
             let height = min(max(fullHeight, 400), maxHeight)
             window.setContentSize(NSSize(width: width, height: height))
-            (window.contentView as? NSHostingView<AnyView>)?.rootView = AnyView(WebView(model.page).frame(width: width, height: height))
+            (window.contentView as? NSHostingView<AnyView>)?.rootView = AnyView(WebView(page).frame(width: width, height: height))
             window.contentView?.layoutSubtreeIfNeeded()
             try? await Task.sleep(for: .milliseconds(300))
-            let raw = try await model.page.exported(as: .image(region: .rect(CGRect(x: 0, y: 0, width: width, height: height)), snapshotWidth: width))
+            let raw = try await page.exported(as: .image(region: .rect(CGRect(x: 0, y: 0, width: width, height: height)), snapshotWidth: width))
             guard let png = Self.pngData(raw) else {
                 Self.emit(["ok": false, "error": "the exported image could not be encoded as PNG"], to: nil)
                 return 1
@@ -195,6 +208,7 @@ struct CheckRunner {
                 "title": model.snapshot?.title ?? "",
                 "summary": model.snapshot.map { Provenance.summary($0, rendered: model.rendered, latestRevision: model.latestRevision) } ?? "",
                 "totalMilliseconds": model.timings?.totalMilliseconds ?? 0,
+                "review": model.review.shown.map { "revision \($0.base) to \($0.target): \($0.line)" } ?? "",
                 "documentHeight": fullHeight,
                 "clipped": fullHeight > maxHeight,
             ], to: nil)

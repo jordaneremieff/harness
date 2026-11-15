@@ -80,7 +80,9 @@ node extensions/markdown/native/build.mts test
 This runs the swift-testing suites: `MarkdownCoreTests` (GFM rendering and heading anchors, raw
 HTML and unsafe links, images and asset containment, store reading against a fixture in the store
 format including symbolic links and scan bounds, open requests and their removal, the pinned
-digest, the reference inventory), `MacPlatformTests` (the pane helper runner against fake helper
+digest, the reference inventory, the blocks and line ranges of a source, the bounded comparison
+of two revisions' blocks, lines, words and recorded images, and stepping to revisions outside
+the listed choices), `MacPlatformTests` (the pane helper runner against fake helper
 scripts: each outcome, a timeout, malformed output, refusal, an oversized origin and a helper that
 closes its input; the pane reader's coordinate conversion, window matching, printable
 placeholder text and bounded error lines; search rounds against a model screen with a slow
@@ -96,7 +98,9 @@ saves from several stores in reverse order within one second; a lock that a seco
 holds, a failed write, unreadable, unsupported and corrupt state files, a change during a save
 and flush receipts before, during and after the write; revision following with a held
 preparation: a publication during the first load and during a manual refresh, a newer revision
-during a failing attempt, scrolling during preparation and a text selection) and
+during a failing attempt, scrolling during preparation and a text selection; the comparison
+page of two revisions, an image-only revision, a comparison that prepares or fails over the
+document, and revisions older than the listed choices) and
 `MarkdownReaderTests` (the built binary in pane mode on a pseudo-terminal, with its own store and
 home folder: `q`, termination, interruption, hang-up and a closed terminal; a held state lock;
 standard error and a terminal that stop reading; store text with terminal controls). Under the
@@ -163,7 +167,55 @@ view lost it) and says that the update failed; a window whose first load fails s
 page's web content process ends, the app reloads the shown revision at the saved position.
 
 The revision menu offers revisions from the document's pointer, at most the newest 50, and says
-when older revisions are not listed.
+when older revisions are not listed. The list does not grow: **Go to Revision…** shows any
+existing revision by its number, and Older Revision and Newer Revision continue outside the
+listed choices to the nearest existing revision, probing at most 50 numbers for each step.
+
+## Reviewing changes
+
+**Review Changes** compares two retained revisions of the open document. The reader computes
+the comparison itself from the two stored revisions. No model takes part, and the page carries
+no explanation by an author: it shows what differs, not why, and not whether the change is
+accepted. When the window knows a newer revision than the one on screen, the comparison runs
+from the shown revision to the newest; otherwise from the nearest earlier revision to the shown
+one. The earlier revision is always the base. The bar above the comparison names both
+revisions and offers another revision to compare with, from the listed choices or by number.
+
+The comparison is one column at every width:
+
+- The document ID and, for each revision, its number, date, byte count, line count and source
+  digest.
+- Retained images. Each revision's reference inventory records a state, a byte count and a
+  digest for every image reference. A reference whose records differ appears with both records
+  and both images, and with the sections that use it, so a revision that changes only an image
+  never reads as unchanged. Images that only one revision retains are listed too. When an
+  inventory is uninspected or incomplete, the page says that images were not compared, or not
+  completely.
+- Each changed part, under the headings above it and with its source line numbers in both
+  revisions: the blocks of both revisions in rendered form between their unchanged neighbours,
+  then the exact source difference, line by line, with the changed words of replaced lines
+  marked and long unchanged runs folded. When both revisions render a part alike, the page says
+  that the difference is in the source only. A changed line that ends with a carriage return
+  shows it.
+
+The work is bounded. The comparison aligns top-level blocks, then the lines of each changed run
+of blocks, then the words of replaced lines, each through the platform's collection difference
+after the common start and end are set aside, and each only up to an element bound (2500 blocks,
+2500 lines for one part, 1200 words for one replaced run), because that difference keeps state
+that grows with the square of the number of differences. Above a bound the level reports a
+coarser result: one replaced region, or lines listed as removed and added without alignment.
+The page shows at most 200 changed parts, 400 difference lines for one part and 6000
+altogether, rendered blocks only for parts up to 12 blocks and 80 lines for each side, and 40
+image changes. Every bound that took effect is stated at the top of the page or at the part as a
+partial comparison, with its counts.
+
+The comparison has its own page above the document. Both revisions are read, rendered and
+compared off the main thread. While that runs, and when it fails (for example, a revision whose
+source no longer matches its digest), the document stays on screen as it was, with its
+position and selection, and a line says what happens or why it failed; a failure while another
+comparison is on screen keeps that comparison. Find and Copy act on the comparison while it is
+on screen. The reader does not replace the document below with a newer revision by itself
+during a comparison; closing the comparison checks for one again.
 
 Find uses an app-owned find bar over `window.find` in the app's content world. SwiftUI's find
 navigator does work on `WebView` on macOS 26.2, but the menu's Find Next and Find Previous cannot
@@ -179,6 +231,7 @@ would not share one function.
 | Show Outline, Show Source, Wrap Code Lines | View | ⌃⌘S, ⌥⌘U, ⌥⌘L |
 | Bigger, Smaller, Actual Size text | View | ⌘=, ⌘-, ⌘0 |
 | Show Latest, Older, Newer Revision | Document | ⌘R, ⌥⌘[, ⌥⌘] |
+| Go to Revision, Review Changes | Document | ⌥⌘G, ⌘D |
 | Document Details | Document | ⌘I |
 | Return to Rex | Document | ⇧⌘R |
 
@@ -208,14 +261,16 @@ their reading state in memory.
 
 ```sh
 APP="<app>/Contents/MacOS/MarkdownReader"
-"$APP" --export-image --out page.png [--width 900] [--max-height 6000] [--appearance light|dark] <file.md | open request>
+"$APP" --export-image --out page.png [--width 900] [--max-height 6000] [--appearance light|dark] [--review previous|n] <file.md | open request>
 "$APP" --verify [--out report.json]
 "$APP" --measure [--sizes 51200,512000,2097152] [--out report.json] <corpus.md>...
-"$APP" --present [--width 960] [--height 900] [--appearance light|dark] [--find text] [--source yes] [--outline no] <file.md | open request>
+"$APP" --present [--width 960] [--height 900] [--appearance light|dark] [--find text] [--source yes] [--outline no] [--review previous|n] <file.md | open request>
 "$APP" --return-check <open request>
 ```
 
 - `--export-image` renders the page with the real stylesheet and writes a PNG of its top part.
+  With `--review` it writes the comparison of the document's revision with revision `n`, or
+  with the revision before it (`previous`); `--present` shows that comparison in its window.
 - `--verify` runs a fixed list of WebKit checks on this Mac and exits nonzero on a failure:
   content scripts do not run; nothing reaches a loopback listener from remote images,
   stylesheets, frames or media (a control request proves the listener); the asset scheme serves
@@ -375,7 +430,7 @@ reference inventory, so there is one Markdown parser.
 
 | Target | Responsibility | Frameworks |
 | --- | --- | --- |
-| `MarkdownCore` | store records and reading, identities, open requests, asset resolution, rendering through cmark-gfm, page template and stylesheet | Foundation, CryptoKit, cmark |
+| `MarkdownCore` | store records and reading, identities, open requests, asset resolution, rendering through cmark-gfm, source blocks and revision comparison, page template and stylesheet | Foundation, CryptoKit, cmark |
 | `ReaderFeature` | the reader view and per-window reading state, reading-state store, library view | SwiftUI, WebKit |
 | `MacPlatform` | pasteboard, browser hand-off, Finder reveal, pane helper runner, Rex activation, terminal anchor, pane stacking feed and printable terminal text | AppKit, Accessibility |
 | `MarkdownReader` | application entry: windows, menus, open intake, pane mode, check modes | AppKit, SwiftUI |

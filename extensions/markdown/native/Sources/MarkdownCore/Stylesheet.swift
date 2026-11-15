@@ -5,7 +5,7 @@ public enum Stylesheet {
         for (index, size) in PageSettings.textSizes.enumerated() {
             rules += "html[data-ts=\"\(index)\"] { font-size: \(size)px; }\n"
         }
-        return rules + base
+        return rules + base + review
     }()
 
     static let base = #"""

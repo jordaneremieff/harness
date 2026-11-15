@@ -82,6 +82,8 @@ public final class ReaderModel {
     public var pendingExternalURL: URL?
     public var detailsVisible = false
     public var imageEvidence: [ImageEvidence] = []
+    /// The comparison of two revisions that this window shows over its document.
+    public let review = RevisionReview()
     /// When set, a newer revision replaces the shown one at the same reading position as soon as
     /// the reader sees it. Scrolling defers replacement until it settles. A text selection or
     /// an open find bar keeps the update notice for the reader's choice.
@@ -164,10 +166,12 @@ public final class ReaderModel {
     }
 
     public func showAdjacentRevision(newer: Bool) async {
-        guard let snapshot, let current = snapshot.revision, let index = snapshot.revisions.firstIndex(of: current) else { return }
-        let next = index + (newer ? 1 : -1)
-        guard snapshot.revisions.indices.contains(next) else { return }
-        await showRevision(snapshot.revisions[next])
+        guard let snapshot, let current = snapshot.revision else { return }
+        if let index = snapshot.revisions.firstIndex(of: current), snapshot.revisions.indices.contains(index + (newer ? 1 : -1)) {
+            await showRevision(snapshot.revisions[index + (newer ? 1 : -1)])
+        } else {
+            await showUnlistedAdjacentRevision(newer: newer)
+        }
     }
 
     enum RestoreMode {
@@ -469,7 +473,7 @@ public final class ReaderModel {
             findStatus = .idle
             return
         }
-        let found = (try? await page.callJavaScript(PageScript.find, arguments: ["query": query, "backwards": backwards], contentWorld: PageScript.world) as? Bool) ?? false
+        let found = (try? await (review.visiblePage ?? page).callJavaScript(PageScript.find, arguments: ["query": query, "backwards": backwards], contentWorld: PageScript.world) as? Bool) ?? false
         findStatus = found ? .found : .notFound
     }
 
@@ -478,9 +482,10 @@ public final class ReaderModel {
     }
 
     /// Whether the reader is in the middle of something that a page replacement would undo: a
-    /// text selection, an open find bar or a scroll that has not settled.
+    /// text selection, an open find bar, a scroll that has not settled or a comparison of
+    /// revisions on screen.
     func interacting() async -> Bool {
-        if findVisible || scrolling { return true }
+        if findVisible || scrolling || review.shown != nil { return true }
         let selection = await selectedText()
         return findVisible || scrolling || !selection.isEmpty
     }
@@ -611,6 +616,7 @@ public final class ReaderModel {
         watcher = nil
         positionTask?.cancel()
         monitorTask?.cancel()
+        review.close()
         await savePosition(final: true)
         state.saveNow()
     }

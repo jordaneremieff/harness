@@ -81,6 +81,8 @@ public struct ReaderView: View {
                 .webViewContextMenu { info in contextMenu(info) }
                 .webViewOnScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }, action: { _, _ in model.scrolled() })
                 .accessibilityLabel(model.showingSource ? "Markdown source" : "Document")
+                .accessibilityHidden(model.review.shown != nil)
+                .overlay(alignment: .top) { RevisionReviewLayer(model: model) }
         }
     }
 
@@ -111,6 +113,9 @@ public struct ReaderView: View {
                     Text("The file changed on disk.")
                 }
             } action: {
+                if update != .fileChanged, model.review.shown == nil {
+                    Button("Review Changes") { Task { await model.reviewChanges() } }
+                }
                 Button(update == .fileChanged ? "Reload" : "Show Latest") { Task { await model.refresh() } }
                     .keyboardShortcut("r", modifiers: .command)
             }
@@ -221,10 +226,12 @@ struct RevisionMenu: View {
                         }
                     }
                 }
+                Divider()
                 if snapshot.olderRevisionsUnlisted {
-                    Divider()
                     Text("Older revisions are not listed")
                 }
+                Button("Go to Revision…") { model.review.entry = .show }
+                Button(model.review.shown == nil ? "Review Changes" : "Close Comparison") { Task { await model.reviewChanges() } }
             } label: {
                 Label("Revision \(snapshot.revision ?? 0)", systemImage: "clock.arrow.circlepath")
             }

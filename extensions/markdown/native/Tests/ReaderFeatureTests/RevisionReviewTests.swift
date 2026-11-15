@@ -1,0 +1,284 @@
+import Testing
+import AppKit
+import CryptoKit
+import SwiftUI
+import WebKit
+@testable import MarkdownCore
+@testable import ReaderFeature
+
+/// A store in the version-1 layout with revisions that carry inspected reference inventories.
+@MainActor
+private struct ReviewStore {
+    let root: URL
+    private let storeId = "0123456789abcdef0123456789abcdef"
+    let id = "md-0123456789abcdef0123"
+
+    init() throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent("markdown-review-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try write(["version": 1, "storeId": storeId], to: root.appendingPathComponent("store.json"))
+    }
+
+    var reference: DocumentReference { .stored(root: FileAccess.canonicalPath(root.path), storeId: storeId, document: id) }
+
+    private func write(_ value: Any, to url: URL) throws {
+        try JSONSerialization.data(withJSONObject: value).write(to: url, options: .atomic)
+    }
+
+    static func digest(_ data: Data) -> String {
+        "sha256:" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Publishes a revision. Each image is retained under its reference with the given bytes.
+    @discardableResult
+    func publish(_ revision: Int, _ source: String, images: [String: Data] = [:]) throws -> String {
+        let document = root.appendingPathComponent("documents/\(id)")
+        let location = document.appendingPathComponent("revisions/\(revision)")
+        try FileManager.default.createDirectory(at: location.appendingPathComponent("assets"), withIntermediateDirectories: true)
+        let data = Data(source.utf8)
+        try data.write(to: location.appendingPathComponent("source.md"))
+        var items: [[String: Any]] = []
+        for (reference, bytes) in images.sorted(by: { $0.key < $1.key }) {
+            let digest = Self.digest(bytes)
+            let file = "assets/\(digest.dropFirst(7)).png"
+            try bytes.write(to: location.appendingPathComponent(file))
+            items.append(["kind": "image", "reference": reference, "state": "retained", "file": file, "mediaType": "image/png", "bytes": bytes.count, "digest": digest])
+        }
+        let date = "2026-11-14T00:0\(revision % 10):00Z"
+        try write(["version": 1, "document": id, "revision": revision, "title": "Design report", "createdAt": date,
+                   "digest": Self.digest(data), "bytes": data.count, "completeness": ["state": "complete"],
+                   "references": ["state": "inspected", "truncated": false, "omitted": 0, "items": items]],
+                  to: location.appendingPathComponent("revision.json"))
+        try write(["version": 1, "id": id, "kind": "published", "title": "Design report", "createdAt": date,
+                   "updatedAt": date, "revision": revision, "digest": Self.digest(data), "bytes": data.count],
+                  to: document.appendingPathComponent("document.json"))
+        return Self.digest(data)
+    }
+
+    func corrupt(_ revision: Int) throws {
+        try Data("# Changed after publication\n".utf8).write(to: root.appendingPathComponent("documents/\(id)/revisions/\(revision)/source.md"))
+    }
+}
+
+@MainActor
+private final class ReviewGate {
+    private(set) var reached = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        reached = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private let reportSource = """
+# Design report
+
+Intro text.
+
+## Latency
+
+The cache answers in about 40 ms.
+
+![Diagram](diagram.png)
+
+"""
+
+/// Two different files with the PNG signature; the reader compares their recorded identities.
+private let imageOne = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1])
+private let imageTwo = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 2, 2])
+
+@MainActor @Suite(.serialized) struct RevisionReviews {
+    private func model(_ reference: DocumentReference) -> ReaderModel {
+        ReaderModel(reference: reference, platform: ReaderPlatform(
+            copyText: { _ in }, openExternal: { _ in false }, reveal: { _ in },
+            returnToTerminal: { _ in TerminalReturnResult(pane: .unavailable("test"), application: .failed("test")) }
+        ), state: ReadingStateStore(directory: nil))
+    }
+
+    private func window(_ model: ReaderModel) -> NSWindow {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 420, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: ReaderView(model: model, chrome: .embedded(close: {}, release: {})))
+        window.orderFrontRegardless()
+        return window
+    }
+
+    private func wait(until condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while ContinuousClock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
+    }
+
+    @Test func thePageNamesTheDocumentBothRevisionsAndTheirDigests() throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let first = try store.publish(1, reportSource, images: ["diagram.png": imageOne])
+        let second = try store.publish(2, reportSource.replacingOccurrences(of: "40 ms", with: "25 ms"), images: ["diagram.png": imageOne])
+        let prepared = try ReviewPage.prepare(store.reference, base: nil, target: 2, settings: PageSettings())
+        #expect(prepared.summary.base == 1)
+        #expect(prepared.summary.target == 2)
+        #expect(prepared.summary.changedRegions == 1)
+        #expect(prepared.summary.assetChanges == 0)
+        #expect(!prepared.summary.partial)
+        #expect(prepared.html.contains("<code>\(store.id)</code>"))
+        #expect(prepared.html.contains("Revision 1 ·"))
+        #expect(prepared.html.contains("Revision 2 (latest)"))
+        #expect(prepared.html.contains(first))
+        #expect(prepared.html.contains(second))
+        #expect(prepared.html.contains("Design report › Latency"))
+        #expect(prepared.html.contains("<mark>40</mark>"))
+        #expect(prepared.html.contains("<mark>25</mark>"))
+        #expect(prepared.html.contains("rv-side rv-before"))
+        #expect(prepared.html.contains("rv-side rv-after"))
+        #expect(prepared.html.contains("without a model"))
+        #expect(prepared.html.contains("The recorded images are the same in both revisions (1 compared"))
+        #expect(prepared.html.contains(PageTemplate.contentSecurityPolicy))
+    }
+
+    @Test func anImageOnlyRevisionShowsBothImagesAndNoSourceChange() throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1, reportSource, images: ["diagram.png": imageOne])
+        try store.publish(2, reportSource, images: ["diagram.png": imageTwo])
+        let prepared = try ReviewPage.prepare(store.reference, base: 1, target: 2, settings: PageSettings())
+        #expect(prepared.summary.changedRegions == 0)
+        #expect(prepared.summary.assetChanges == 1)
+        #expect(prepared.summary.line == "same Markdown source · 1 image change")
+        #expect(prepared.html.contains("Changed: <code>diagram.png</code>"))
+        #expect(prepared.html.contains("Used in: Design report › Latency"))
+        #expect(prepared.html.contains("9 bytes"))
+        #expect(prepared.html.contains("10 bytes"))
+        #expect(prepared.html.contains(ReviewStore.digest(imageOne)))
+        #expect(prepared.html.contains(ReviewStore.digest(imageTwo)))
+        #expect(prepared.assets["rb-0"]?.bytes == 9)
+        #expect(prepared.assets["rt-0"]?.bytes == 10)
+        #expect(prepared.html.contains("src=\"reader-asset://doc/rb-0\""))
+        #expect(prepared.html.contains("src=\"reader-asset://doc/rt-0\""))
+    }
+
+    @Test func aChangedBlockWithAnImageServesBothRevisionsImages() throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1, reportSource, images: ["diagram.png": imageOne])
+        try store.publish(2, reportSource.replacingOccurrences(of: "![Diagram]", with: "![Flow]"), images: ["diagram.png": imageTwo])
+        let prepared = try ReviewPage.prepare(store.reference, base: 1, target: 2, settings: PageSettings())
+        #expect(prepared.html.contains("src=\"reader-asset://doc/b-a0\""))
+        #expect(prepared.html.contains("src=\"reader-asset://doc/t-a0\""))
+        #expect(prepared.assets["b-a0"]?.bytes == 9)
+        #expect(prepared.assets["t-a0"]?.bytes == 10)
+    }
+
+    @Test func theEarlierRevisionIsAlwaysTheBase() throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        for revision in 1...3 { try store.publish(revision, "# Revision \(revision)\n") }
+        let prepared = try ReviewPage.prepare(store.reference, base: 3, target: 1, settings: PageSettings())
+        #expect(prepared.summary.base == 1)
+        #expect(prepared.summary.target == 3)
+        #expect(throws: ReviewError.self) { try ReviewPage.prepare(store.reference, base: 2, target: 2, settings: PageSettings()) }
+        #expect(throws: ReviewError.self) { try ReviewPage.prepare(store.reference, base: nil, target: 1, settings: PageSettings()) }
+    }
+
+    @Test func theDocumentStaysWhileAComparisonPreparesAndWhenItFails() async throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1, reportSource)
+        try store.publish(2, reportSource.replacingOccurrences(of: "40 ms", with: "25 ms"))
+        let model = model(store.reference)
+        let window = window(model)
+        defer { window.close() }
+        await model.open(origin: nil)
+        #expect(model.canReviewChanges)
+        let gate = ReviewGate()
+        model.review.preparationGate = { await gate.wait() }
+        let comparing = Task { await model.reviewChanges() }
+        #expect(await wait { gate.reached })
+        #expect(model.review.preparing?.target == 2)
+        #expect(model.review.shown == nil)
+        #expect(model.phase == .ready)
+        #expect(model.snapshot?.revision == 2)
+        gate.release()
+        await comparing.value
+        model.review.preparationGate = nil
+        #expect(model.review.shown?.base == 1)
+        #expect(model.review.shown?.target == 2)
+        #expect(model.review.preparing == nil)
+        #expect(model.review.visiblePage != nil)
+        let heading = try await model.review.visiblePage?.callJavaScript("return document.querySelector('.rv-head h1').textContent;", contentWorld: PageScript.world) as? String
+        #expect(heading == "Design report")
+        let documentHeading = try await model.page.callJavaScript("return document.querySelector('h1').textContent.trim();", contentWorld: PageScript.world) as? String
+        #expect(documentHeading == "Design report")
+        model.findQuery = "without a model"
+        await model.find()
+        #expect(model.findStatus == .found)
+
+        try store.corrupt(1)
+        await model.reviewChanges(base: 1, target: 2)
+        #expect(model.review.failure?.contains("digest") == true)
+        #expect(model.review.shown?.base == 1)
+        await model.closeReview()
+        #expect(model.review.page == nil)
+        await model.reviewChanges()
+        #expect(model.review.shown == nil)
+        #expect(model.review.failure != nil)
+        #expect(model.phase == .ready)
+        #expect(model.snapshot?.revision == 2)
+        #expect(model.failure == nil)
+        await model.close()
+    }
+
+    @Test func aNewerAvailableRevisionIsComparedWithTheShownOne() async throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        for revision in 1...2 { try store.publish(revision, "# Report\n\nRevision \(revision) text.\n") }
+        let model = model(store.reference)
+        let window = window(model)
+        defer { window.close() }
+        await model.open(origin: nil)
+        try store.publish(3, "# Report\n\nRevision 3 text.\n")
+        await model.checkForUpdate()
+        #expect(model.update == .revision(3))
+        await model.reviewChanges()
+        #expect(model.review.shown?.base == 2)
+        #expect(model.review.shown?.target == 3)
+        #expect(model.snapshot?.revision == 2)
+        await model.reviewChanges()
+        #expect(model.review.shown == nil)
+        await model.close()
+    }
+
+    @Test func revisionsOlderThanTheListedChoicesStayReachable() async throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        for revision in [1, 2, 4] + Array(60...62) { try store.publish(revision, "# Revision \(revision)\n") }
+        let model = model(store.reference)
+        let window = window(model)
+        defer { window.close() }
+        await model.open(origin: nil)
+        #expect(model.snapshot?.revisions == [60, 61, 62])
+        #expect(model.snapshot?.olderRevisionsUnlisted == true)
+        await model.goToRevision(4)
+        #expect(model.snapshot?.revision == 4)
+        await model.showAdjacentRevision(newer: false)
+        #expect(model.snapshot?.revision == 2)
+        await model.showAdjacentRevision(newer: true)
+        #expect(model.snapshot?.revision == 4)
+        await model.goToRevision(63)
+        #expect(model.snapshot?.revision == 4)
+        #expect(model.notice?.kind == .warning)
+        await model.goToRevision(61)
+        await model.showAdjacentRevision(newer: false)
+        #expect(model.snapshot?.revision == 60)
+        await model.close()
+    }
+}
