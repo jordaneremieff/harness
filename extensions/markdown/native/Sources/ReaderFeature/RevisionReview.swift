@@ -224,6 +224,14 @@ struct RevisionReviewLayer: View {
     var body: some View {
         let review = model.review
         VStack(spacing: 0) {
+            // The number entry attaches here, so that it has an anchor while the layer is empty.
+            Color.clear
+                .frame(height: 1)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                .popover(item: Binding(get: { review.entry.map(EntryRequest.init) }, set: { if $0 == nil { review.entry = nil } }), arrowEdge: .bottom) { request in
+                    RevisionEntryView(model: model, entry: request.entry)
+                }
             if let summary = review.shown {
                 ReviewBar(model: model, summary: summary)
             }
@@ -263,9 +271,6 @@ struct RevisionReviewLayer: View {
         }
         .frame(maxWidth: .infinity, maxHeight: review.shown == nil ? nil : .infinity, alignment: .top)
         .background { if review.shown != nil { Rectangle().fill(.background) } }
-        .popover(item: Binding(get: { review.entry.map(EntryRequest.init) }, set: { if $0 == nil { review.entry = nil } }), attachmentAnchor: .point(.top), arrowEdge: .top) { request in
-            RevisionEntryView(model: model, entry: request.entry)
-        }
         .onChange(of: model.settings) { _, settings in Task { await review.apply(settings) } }
     }
 
