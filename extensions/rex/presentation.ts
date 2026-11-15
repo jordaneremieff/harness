@@ -94,7 +94,9 @@ function canonicalLines(name: string, value: Record<string, unknown>, options: T
 function leadLine(name: string, request: Record<string, unknown>, value: Record<string, unknown>, data: Record<string, unknown>, isPartial: boolean): Line {
 	const unknown = object(value.effects).state === "unknown";
 	const subject = string(data.label) ?? string(request.label) ?? subjectKind(name, request, value.target);
-	const parts = [isPartial ? "partial" : undefined, subject, String(value.outcome).replaceAll("_", " "), unknown ? "UNKNOWN EFFECTS" : undefined].filter(Boolean);
+	const exit = object(object(data.process).last_exit).exit_code;
+	const childExit = name === "rex_wait" && ["child_completed", "child_failed"].includes(String(value.outcome)) && Number.isInteger(exit) ? `exit ${exit}` : undefined;
+	const parts = [isPartial ? "partial" : undefined, subject, String(value.outcome).replaceAll("_", " "), childExit, unknown ? "UNKNOWN EFFECTS" : undefined].filter(Boolean);
 	return line(parts.join(" · "), unknown ? "warning" : value.ok ? "toolOutput" : "error");
 }
 
@@ -220,6 +222,14 @@ function countLines(coverage: Record<string, unknown>, data: Record<string, unkn
 	return lines;
 }
 
+/** Recent output stays beside its established outcome, including a failed optional capture. */
+function capturePreview(data: Record<string, unknown>): Line[] {
+	const capture = string(data.content) ?? string(object(data.snapshot).content) ?? string(object(data.capture).content);
+	const lines = capture ? capture.trimEnd().split("\n").slice(-2).map((part) => line(part, "toolOutput", true)) : [];
+	if (string(data.captureError)) lines.push(line(`Capture: ${data.captureError}`, "muted", true));
+	return lines;
+}
+
 /** Collapsed: the error, notes and a two-line capture preview. Expanded: exact identities, then the complete bounded result. */
 function resultDetails(value: Record<string, unknown>, effects: Record<string, unknown>, coverage: Record<string, unknown>, data: Record<string, unknown>, expanded: boolean): Line[] {
 	const lines: Line[] = [];
@@ -227,8 +237,7 @@ function resultDetails(value: Record<string, unknown>, effects: Record<string, u
 	if (!expanded) {
 		if (string(effects.note)) lines.push(line(String(effects.note), "muted", true));
 		if (string(coverage.note)) lines.push(line(String(coverage.note), "muted", true));
-		const capture = string(data.content) ?? string(object(data.snapshot).content);
-		if (capture) lines.push(...capture.split("\n").slice(0, 2).map((part) => line(part, "toolOutput", true)));
+		lines.push(...capturePreview(data));
 		return lines;
 	}
 	lines.push(line(""), line("Details", "muted"));

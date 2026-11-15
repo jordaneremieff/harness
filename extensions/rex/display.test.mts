@@ -67,6 +67,36 @@ test("cards expose omissions and complete bounded JSON without changing canonica
 	assert.deepEqual(channels.details, { outcome: value.outcome, effects: "none" });
 });
 
+test("child-exit cards expose the exit code and recent diagnosis without opening JSON", () => {
+	for (const width of [24, 48, 120]) {
+		for (const code of [0, 7]) {
+			const value = fixture({ ok: code === 0, outcome: code === 0 ? "child_completed" : "child_failed", effects: { state: "none" }, data: {
+				process: { last_exit: { exit_code: code } }, capture: { content: "early build output\nlast build phase\nERROR: result absent\n", total: 70, start: 0, end: 70 },
+			} });
+			const rows = render("rex_wait", value, { op: "wait", condition: "child_exit" }, false, width);
+			assert.match(rows.join(" "), new RegExp(`exit ${code}`));
+			assert.match(rows.join("\n"), /last build phase\nERROR: result absent/);
+			assert.doesNotMatch(rows.join("\n"), /early build output/);
+			assert.ok(rows.every((row) => visibleWidth(row) <= width));
+		}
+	}
+	const timeout = fixture({ ok: false, outcome: "timeout", effects: { state: "none" }, data: { process: { last_exit: { exit_code: 7 } } } });
+	assert.doesNotMatch(render("rex_wait", timeout, { op: "wait", condition: "child_exit" }).join("\n"), /exit 7/);
+	const unavailable = fixture({ outcome: "child_completed", data: { process: { last_exit: { exit_code: 0 } }, captureError: "Tail read timed out" } });
+	const text = render("rex_wait", unavailable, { op: "wait", condition: "child_exit" }).join("\n");
+	assert.match(text, /child completed · exit 0/);
+	assert.match(text, /Capture: Tail read timed out/);
+});
+
+test("capture cards preview the end of the bounded output and preserve full expanded output", () => {
+	const value = fixture({ outcome: "capture", data: { content: "early build output\nlast build phase\nFINAL DIAGNOSIS\n\n" } });
+	const args = { op: "inspect", view: "capture" };
+	const text = render("rex_terminal", value, args).join("\n");
+	assert.match(text, /last build phase\nFINAL DIAGNOSIS/);
+	assert.doesNotMatch(text, /early build output/);
+	assert.match(render("rex_terminal", value, args, true).join("\n"), /early build output/);
+});
+
 test("call and result text escape terminal controls and preserve safe row colours", () => {
 	const hostile = "label\u001b]52;c;clipboard\u0007\r\u009b2J\u202e\ud800";
 	const args = { op: "create", kind: "session", label: hostile, text: hostile, target: { server: server.endpoint, block }, command: ["application", hostile] };

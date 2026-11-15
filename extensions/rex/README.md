@@ -105,6 +105,11 @@ function that the host passes in the tool render context. An unbound key, or a
 render context without keybinding hints, produces no hint and no invented mouse
 instruction.
 
+Child-exit wait cards show the direct child's exit code and the last two non-trailing-blank
+output lines. Capture cards also preview the end of their bounded output, not its beginning.
+A failed tail read stays visible beside the established child outcome. Expansion retains the
+complete bounded result, including earlier captured lines.
+
 Collapsed cards keep these distinctions visible:
 
 - **UNKNOWN EFFECTS** remains meaningful even when other facts are absent.
