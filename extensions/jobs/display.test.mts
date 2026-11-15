@@ -64,6 +64,7 @@ test("ordinary publication answers a version 1 request and stops after unsubscri
 			},
 		},
 		registerTool() {},
+		registerMessageRenderer() {},
 		on() {},
 		sendMessage() {},
 	};

@@ -19,6 +19,7 @@ import {
 	JOB_COMPLETION_MESSAGE,
 	type JobCompletionDetails,
 } from "./completion.ts";
+import { renderJobCompletionMessage } from "./completion-card.ts";
 import { createJobsContribution } from "./durable.ts";
 import { toolDisplay } from "./display.ts";
 import { JOB_LIMITS, JobManager, type JobSnapshot } from "./manager.ts";
@@ -143,6 +144,7 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 		if (typeof request === "object" && request !== null && "version" in request && request.version === 1) publishDisplay();
 	});
 	publishDisplay();
+	pi.registerMessageRenderer(JOB_COMPLETION_MESSAGE, renderJobCompletionMessage);
 	const manager = new JobManager();
 	const jobsDisplay = display.tools.find((tool) => tool.name === "jobs");
 	const bashDisplay = display.tools.find((tool) => tool.name === "bash");

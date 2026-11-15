@@ -325,6 +325,23 @@ display descriptor each Durable contribution advertises, which the standalone
 Agent terminal loads locally. `display.ts` imports presentation code only: it
 registers no tools, emits no events, and starts nothing.
 
+## Transcript message
+
+The ordinary extension registers a message renderer for `jobs.completion`, the
+one message it shows in the transcript. The first line is the bold label
+`[jobs]` in Pi's custom message label colour, then what happened in bold text:
+`Job succeeded`, `Job failed`, `Job timed out` or `Job lost`. A muted second
+line holds the known facts: the exit code, the settled duration and, last, the
+command preview (`exit 0 · 10s · npm test`). An unknown fact is left out. A
+blank line follows. Collapsed, the card shows at most three visual body lines
+(the backend error or the host-loss outcome as wrapped prose, then the last
+output lines, each clipped to one row with `…`) and Pi's `... (N more lines,
+ctrl+o to expand)` hint. Expanded, it shows the whole message text as Markdown,
+as Pi shows a custom message without a renderer, and no hint.
+Every displayed string passes through the display sanitation above. The
+renderer reads only the message's own `details` and content; it changes
+neither, so the model context and the stored entry stay the same.
+
 ## Programmatic results
 
 Every tool of the extension declares an output schema and returns `structuredContent`. Native

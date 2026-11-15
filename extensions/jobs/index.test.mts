@@ -65,6 +65,10 @@ class TestPi {
 	registerTool(tool: Tool) {
 		this.tools.set(tool.name, tool);
 	}
+	renderers = new Map<string, unknown>();
+	registerMessageRenderer(customType: string, renderer: unknown) {
+		this.renderers.set(customType, renderer);
+	}
 	on(name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) {
 		assert.ok(["session_start", "before_agent_start", "agent_start", "message_end", "turn_end", "agent_end", "agent_before_settle", "agent_settled", "session_tree", "session_shutdown"].includes(name), `unexpected event ${name}`);
 		this.#handlers.set(name, [...(this.#handlers.get(name) ?? []), handler]);
@@ -181,6 +185,7 @@ describe("Command Jobs adapter", () => {
 		const { pi, call } = setup();
 		try {
 			assert.deepEqual([...pi.tools.keys()], ["bash", "jobs", "jobs_yield"]);
+			assert.deepEqual([...pi.renderers.keys()], [JOB_COMPLETION_MESSAGE]);
 			assert.deepEqual(pi.emitted.map((event) => event.channel), ["durable:contribution", "harness:tool-display:publish"]);
 			const contribution = pi.emitted[0].data as { name: string; source: string; display: { version: number; entry: string; export: string } };
 			assert.equal(contribution.name, "jobs");

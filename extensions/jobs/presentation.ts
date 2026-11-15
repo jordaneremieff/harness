@@ -64,7 +64,8 @@ function known(value: string | undefined): string {
 	return value ?? "unknown";
 }
 
-function seconds(start: number, end: number): string {
+/** Elapsed time between two clock readings: one decimal below ten seconds, whole seconds above. */
+export function seconds(start: number, end: number): string {
 	const value = Math.max(0, (end - start) / 1000);
 	return value < 10 ? `${value.toFixed(1)}s` : `${Math.round(value)}s`;
 }
