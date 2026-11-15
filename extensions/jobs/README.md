@@ -3,7 +3,9 @@
 Run a build, test suite, or noninteractive development server while the agent
 continues independent work. The extension adds `background` to the `bash` tool,
 registers `jobs` for status, logs, and cancellation, and delivers a finite job's
-completion back into the session so the agent continues without polling.
+completion back into the session so the agent continues without polling. In a
+session that a person types into, `jobs_yield` ends a turn whose only remaining
+work is the session's background jobs.
 
 ## Use
 
@@ -52,6 +54,62 @@ settles while the session is idle is appended to the transcript without
 starting a turn. The next prompt sees it in context. A later run clears that
 state, so completions during or after ordinary work continue it as usual.
 
+### Ending a turn while jobs run
+
+An ordinary session registers `jobs_yield`. While background jobs of the
+session still run and no other work of the agent is ready, the agent calls it
+with one short `note` for the operator (1 to 1200 characters): what still runs
+and what happens next. The
+call returns `terminate: true`, so Pi requests no further model reply when every
+call of that tool batch ends the turn, and the agent writes no chat text with
+it. Each job's completion message starts the next turn. The note and the card
+cover only the session's jobs: when other open work of the session has its own
+tool that ends the turn, the description asks for that call in the same batch,
+so that each kind of open work has its own card.
+
+```json
+{"note":"The test suite runs in the background; its result follows when it settles."}
+```
+
+The call succeeds only while a job of this session is still to deliver a
+completion: a job that runs and was not cancelled through `jobs`, or a job that
+settled while Pi holds its completion message (`queued` or `sent` below). When
+no such job exists, the call fails with an error that says no job completion is
+coming and asks for the answer as a text message; that result does not end the
+turn. A completion that reaches the conversation, a failed send, and a settled
+run without the message each end the job's place in that set.
+
+The result's `details` and `structuredContent` hold `{ note, at, jobs, omitted? }`:
+the note, the time the turn ended, at most eight jobs in start order as
+`{ id, commandPreview, state }` with `state` `running` or `settled` (its
+completion is still to arrive), and the count of jobs not listed. The model
+receives only a short text that the turn ends here.
+
+The call is a card in the message background, not a tool outcome box. Its title
+names the tool and what happened, for example
+`jobs_yield · turn ended · 2 jobs still run · 1 job completion pending · 9:05 AM`.
+The time is local, in 12-hour form; a turn of an earlier day also shows its
+date (`Nov 14, 9:30 PM`). Collapsed, the card shows at most three wrapped note
+lines and Pi's expansion hint with the operator's configured key. Expanded, it
+shows the whole note, one line per job (short job ID, `running` or
+`completion pending`, then the command preview, which the card's width cuts
+first), and the line `Each job completion starts the next turn.` A failed
+call shows its error in the error background. The card's renderers live in
+`presentation.ts` and are published through `display.ts` with the other job
+cards; the card draws its own shell (`renderShell: "self"`).
+
+Print and JSON runs (`ctx.mode` `print` or `json`) have no operator view and
+answer with their last text message, so they do not offer `jobs_yield`: a
+`before_agent_start` handler removes it from the run's selected tools. Text
+print mode prints only the final assistant message. When a `jobs.completion`
+message arrives in such a run after the run already answered with text, the
+reply to the completion alone would replace that answer. The extension then
+appends, at `agent_before_settle`, one context-only custom message
+(`jobs-complete-answer`, `display: false`) that asks for the complete final
+answer, including the results written before the completion, and requests one
+continuation. It does so once for each such completion. The state belongs to
+one run and resets at `agent_settled` and `session_start`.
+
 ### Footer status and terminal records
 
 While at least one job of the session runs, the footer shows `jobs: N running`
@@ -75,7 +133,7 @@ hyphens>`:
 Each record carries the title `Background job` and one message line made only
 from the job record. A running job shows `Background job running`. When the
 session's run settles quietly while the job runs, that is when its last model
-message is a tool result, such as a turn that only waits for the job, the
+message is a tool result, such as a turn that ended with `jobs_yield`, the
 message also says `its completion starts the next turn`. Pi writes its own
 `done` record for the settled run after the extensions' `agent_settled`
 handlers return; this update follows it, so the running job is the newest
@@ -232,6 +290,7 @@ page, so a log card names the command it belongs to.
 
 ## Tool cards
 
+The `jobs_yield` card is described [above](#ending-a-turn-while-jobs-run).
 The `jobs` tool and background `bash` results have owner renderers. A compact
 card leads with the command preview, then one context line that tells repeated
 commands apart (`job 7 · in harness · storage:9`: the short job ID, the last
@@ -268,7 +327,7 @@ registers no tools, emits no events, and starts nothing.
 
 ## Programmatic results
 
-Both tools declare output schemas and return `structuredContent`. Native
+Every tool of the extension declares an output schema and returns `structuredContent`. Native
 codemode scripts receive these objects directly, without parsing the displayed
 text. Direct tool calls keep their existing text and `details`.
 
@@ -422,7 +481,12 @@ The manager tests cover bounded retention and active native process cleanup.
 The adapter tests cover foreground behavior, output-schema conformance,
 contextual environment, shell settings, turn-abort ownership, shutdown, and
 completion delivery: one bounded message per finite job, none for
-cancellation or shutdown, and the quiet append after an aborted run.
+cancellation or shutdown, and the quiet append after an aborted run. They also
+cover which jobs let `jobs_yield` end the turn. The yield test covers the tool's
+result, refusal, card and print-mode handling; the print answer test runs real
+`pi -p` and `pi --mode json` processes against a scripted provider and checks
+the printed complete answer after a late completion and the absence of
+`jobs_yield` from those runs.
 The delivery test runs a real `AgentSession` with a deterministic provider and
 a `before_agent_start` gate. It settles jobs while a run prepares, during a
 streaming turn, and while idle, then lets the run continue, aborts it, clears

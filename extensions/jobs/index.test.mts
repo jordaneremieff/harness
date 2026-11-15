@@ -14,7 +14,8 @@ import { compile, type Schema } from "@earendil-works/pi-schema";
 import { createJobActivity, formatStatusRecord, recordId } from "./activity.ts";
 import { COMPLETION_LIMITS, JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./completion.ts";
 import registerJobs from "./index.ts";
-import type { JobLogs, JobSnapshot } from "./manager.ts";
+import { JOB_LIMITS, type JobLogs, type JobSnapshot } from "./manager.ts";
+import { YIELD_ENDED_TEXT, YIELD_REFUSED, type YieldDetails } from "./yield.ts";
 
 interface Result {
 	isError?: boolean;
@@ -55,7 +56,7 @@ class TestPi {
 			return () => handlers.delete(handler);
 		},
 	};
-	#handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
+	#handlers = new Map<string, Array<(event: unknown, ctx: ExtensionContext) => unknown>>();
 	/** Pi's idle state as `ctx.isIdle()` reports it. */
 	idle = true;
 	/** Session entries on the current branch; an idle send that starts no turn appends at once, as Pi does. */
@@ -64,9 +65,9 @@ class TestPi {
 	registerTool(tool: Tool) {
 		this.tools.set(tool.name, tool);
 	}
-	on(name: string, handler: (event: unknown) => Promise<void>) {
-		assert.ok(["agent_start", "message_end", "turn_end", "agent_end", "agent_settled", "session_tree", "session_shutdown"].includes(name), `unexpected event ${name}`);
-		this.#handlers.set(name, handler);
+	on(name: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) {
+		assert.ok(["session_start", "before_agent_start", "agent_start", "message_end", "turn_end", "agent_end", "agent_before_settle", "agent_settled", "session_tree", "session_shutdown"].includes(name), `unexpected event ${name}`);
+		this.#handlers.set(name, [...(this.#handlers.get(name) ?? []), handler]);
 	}
 	failSend = false;
 	sendMessage(message: SentMessage["message"], options?: SentMessage["options"]) {
@@ -81,7 +82,7 @@ class TestPi {
 	}
 	async emit(name: string, event: unknown = {}): Promise<void> {
 		assert.ok(this.ctx, "context bound");
-		await this.#handlers.get(name)?.(event, this.ctx);
+		for (const handler of this.#handlers.get(name) ?? []) await handler(event, this.ctx);
 	}
 	async shutdown(): Promise<void> {
 		await this.emit("session_shutdown", { reason: "quit" });
@@ -179,7 +180,7 @@ describe("Command Jobs adapter", () => {
 	it("registers bash admission and a management-only tool without an alternate launch schema", async () => {
 		const { pi, call } = setup();
 		try {
-			assert.deepEqual([...pi.tools.keys()], ["bash", "jobs"]);
+			assert.deepEqual([...pi.tools.keys()], ["bash", "jobs", "jobs_yield"]);
 			assert.deepEqual(pi.emitted.map((event) => event.channel), ["durable:contribution", "harness:tool-display:publish"]);
 			const contribution = pi.emitted[0].data as { name: string; source: string; display: { version: number; entry: string; export: string } };
 			assert.equal(contribution.name, "jobs");
@@ -419,6 +420,49 @@ describe("Command Jobs adapter", () => {
 			pi.branch.push({ type: "custom_message", customType: JOB_COMPLETION_MESSAGE, details: missingSent.message.details });
 			await pi.emit("agent_end", { type: "agent_end" });
 			assert.equal(terminal.writes.at(-1), record(missing.id, "completion in the conversation"), "a later retained entry establishes the addition");
+		} finally {
+			await pi.shutdown();
+		}
+	});
+
+	it("ends the turn with jobs_yield only while a job of the session is still to deliver its completion", async () => {
+		const { pi, call } = setup();
+		const yieldCall = (note: string) => call("jobs_yield", { note }) as Promise<Result & { terminate?: boolean; details: YieldDetails }>;
+		const refused = (error: Error) => error.message === YIELD_REFUSED;
+		try {
+			await assert.rejects(yieldCall("The suite runs."), refused, "no job: no completion is coming");
+
+			pi.idle = false;
+			const job = jobOf(await call("bash", { command: "sleep 30", background: true }));
+			const running = await yieldCall("The suite runs; its result follows.");
+			assert.equal(running.terminate, true);
+			assert.deepEqual(running.content, [{ type: "text", text: YIELD_ENDED_TEXT }]);
+			assert.deepEqual(running.details.jobs, [{ id: job.id, commandPreview: "sleep 30", state: "running" }]);
+			await call("jobs", { action: "cancel", id: job.id });
+			await assert.rejects(yieldCall("The suite runs."), refused, "a cancelled job delivers no completion");
+			await settled(call, job.id);
+
+			const quick = jobOf(await call("bash", { command: "printf done", background: true }));
+			const sent = await completion(pi, quick.id);
+			await delay(0);
+			const held = await yieldCall("The check finished; its completion follows.");
+			assert.deepEqual(held.details.jobs, [{ id: quick.id, commandPreview: "printf done", state: "settled" }], "Pi holds the completion, so it still starts a turn");
+			await pi.emit("message_end", { type: "message_end", message: { role: "custom", ...sent.message } });
+			await assert.rejects(yieldCall("Done."), refused, "a delivered completion is in the conversation");
+
+			const lost = jobOf(await call("bash", { command: "printf done", background: true }));
+			await completion(pi, lost.id);
+			await delay(0);
+			assert.equal((await yieldCall("The check finished.")).terminate, true);
+			await pi.emit("agent_settled", { type: "agent_settled", aborted: true });
+			await assert.rejects(yieldCall("Done."), refused, "a run that settled without the message leaves no completion to wait for");
+
+			pi.idle = true;
+			const many = [];
+			for (let index = 0; index < JOB_LIMITS.active; index++) many.push(jobOf(await call("bash", { command: `sleep 30 # ${index}`, background: true })));
+			const full = await yieldCall("Eight checks run.");
+			assert.deepEqual(full.details.jobs.map((row) => row.id), many.map((entry) => entry.id), "rows keep start order");
+			assert.equal(full.details.omitted, undefined);
 		} finally {
 			await pi.shutdown();
 		}

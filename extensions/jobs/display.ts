@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { renderBashCall, renderBashResult, renderJobsCall, renderJobsResult } from "./presentation.ts";
+import { renderBashCall, renderBashResult, renderJobsCall, renderJobsResult, renderYieldCall, renderYieldResult } from "./presentation.ts";
 
 type ToolDisplayPublication = {
 	version: 1;
@@ -18,6 +18,7 @@ export function toolDisplay(): ToolDisplayPublication {
 		tools: [
 			{ name: "jobs", renderCall: renderJobsCall, renderResult: renderJobsResult },
 			{ name: "bash", renderCall: renderBashCall, renderResult: renderBashResult },
+			{ name: "jobs_yield", renderCall: renderYieldCall, renderResult: renderYieldResult, renderShell: "self" },
 		],
 	};
 }

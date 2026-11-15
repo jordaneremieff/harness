@@ -1,5 +1,5 @@
 import { createBashToolDefinition, type AgentToolResult, type Theme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { basename } from "node:path";
 import { displayText, executionErrorLabel } from "./completion.ts";
 
@@ -283,4 +283,158 @@ export function renderBashResult(
 	if (native) return native(result as never, options, theme, context as NativeContext);
 	const { lines, more } = jobsLines(result.details, options.expanded, result.isError === true, resultText(result));
 	return card(lines, theme, context, more);
+}
+
+/** Collapsed `jobs_yield` cards show at most this many note lines. */
+export const YIELD_NOTE_LINES = 3;
+
+interface YieldFacts {
+	note: string;
+	at?: number;
+	jobs: { id: string; commandPreview?: string; state: string }[];
+	omitted: number;
+	error?: string;
+	settled: boolean;
+}
+
+type YieldContext = RenderContext & { state?: Record<string, unknown> };
+
+const count = (value: number, one: string, many: string) => `${value} ${value === 1 ? one : many}`;
+
+/** Local time the turn ended in 12-hour form, as `9:05 AM`; a turn of an earlier day also shows its date. */
+export function yieldClock(at: number, now = Date.now()): string {
+	const date = new Date(at);
+	const today = new Date(now);
+	const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+	if (date.toDateString() === today.toDateString()) return time;
+	const day = date.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
+	return `${day}, ${time}`;
+}
+
+/** What remains, by state: `2 jobs still run`, `1 job completion pending`, or a total when rows were omitted. */
+export function yieldSummary(jobs: readonly { state: string }[], omitted: number): string[] {
+	if (omitted > 0) return [count(jobs.length + omitted, "job open", "jobs open")];
+	const running = jobs.filter((job) => job.state === "running").length;
+	const settled = jobs.length - running;
+	return [
+		...(running > 0 ? [count(running, "job still runs", "jobs still run")] : []),
+		...(settled > 0 ? [count(settled, "job completion pending", "job completions pending")] : []),
+	];
+}
+
+/**
+ * The `jobs_yield` card in the message background: the turn ended there, so the card is a note to the
+ * operator, not a tool outcome. Collapsed, it shows the title, at most three note lines and Pi's expansion
+ * hint; expanded, the whole note, the jobs, and what starts the next turn. Every line keeps the background to
+ * the edge of the row.
+ */
+class YieldCard implements Component {
+	private facts: YieldFacts = { note: "", jobs: [], omitted: 0, settled: false };
+	private theme: Theme | undefined;
+	private context: YieldContext | undefined;
+	/** The call slot draws nothing once the result slot draws the card. */
+	private hidden: () => boolean = () => false;
+	set(facts: YieldFacts, theme: Theme, context: YieldContext, hidden: () => boolean): void {
+		this.facts = facts;
+		this.theme = theme;
+		this.context = context;
+		this.hidden = hidden;
+	}
+	invalidate(): void {}
+	private title(theme: Theme): string {
+		const head = this.facts.error !== undefined ? "could not end the turn" : this.facts.settled ? "turn ended" : "ending turn";
+		const parts = this.facts.error === undefined ? yieldSummary(this.facts.jobs, this.facts.omitted) : [];
+		const time = this.facts.at === undefined ? "" : theme.fg("muted", ` · ${yieldClock(this.facts.at)}`);
+		return theme.fg("toolTitle", theme.bold("jobs_yield")) + theme.fg("accent", ` · ${[head, ...parts].join(" · ")}`) + time;
+	}
+	private jobLines(theme: Theme, width: number): string[] {
+		const lines = this.facts.jobs.map((job) => {
+			const state = job.state === "running" ? "running" : "completion pending";
+			// The ID and state lead, so a long command preview loses only its own end at the card's width.
+			const row = [`job ${job.id.slice(0, 8)}`, state, lineOf(job.commandPreview) ?? "command unknown"].join(" · ");
+			return truncateToWidth(`  ${theme.fg("text", row)}`, width);
+		});
+		if (this.facts.omitted > 0) lines.push(theme.fg("muted", `  ${this.facts.omitted} more not listed`));
+		return lines;
+	}
+	private expandedLines(theme: Theme, width: number): string[] {
+		const lines = this.jobLines(theme, width);
+		const out = lines.length > 0 ? ["", ...lines] : [];
+		if (this.facts.settled && this.facts.error === undefined) out.push("", ...wrapTextWithAnsi("Each job completion starts the next turn.", width).map((line) => theme.fg("muted", line)));
+		return out;
+	}
+	/** Pi's tool card hint: `... (2 more lines, ctrl+o to expand)`, or `... (ctrl+o to expand)` when only details are hidden. */
+	private hint(theme: Theme, width: number, hiddenLines: number): string[] {
+		const context = this.context;
+		if (!this.facts.settled || (hiddenLines === 0 && this.facts.error !== undefined)) return [];
+		const key = typeof context?.keyText === "function" ? context.keyText("app.tools.expand") : "";
+		const action = !key
+			? theme.fg("muted", "expand for full details")
+			: typeof context?.keyHint === "function" ? context.keyHint("app.tools.expand", "to expand") : theme.fg("dim", key) + theme.fg("muted", " to expand");
+		const more = hiddenLines > 0 ? `${hiddenLines} more line${hiddenLines === 1 ? "" : "s"}, ` : "";
+		return [truncateToWidth(theme.fg("muted", `... (${more}`) + action + theme.fg("muted", ")"), width)];
+	}
+	private body(theme: Theme, width: number): string[] {
+		const expanded = this.context?.expanded === true;
+		const lines = wrapTextWithAnsi(this.title(theme), width);
+		const note = this.facts.note ? wrapTextWithAnsi(this.facts.note, width) : [];
+		const shown = expanded ? note : note.slice(0, YIELD_NOTE_LINES);
+		lines.push(...shown.map((line) => theme.fg("text", line)));
+		if (this.facts.error !== undefined) lines.push(...wrapTextWithAnsi(this.facts.error, width).map((line) => theme.fg("error", line)));
+		return [...lines, ...(expanded ? this.expandedLines(theme, width) : this.hint(theme, width, note.length - shown.length))];
+	}
+	render(width: number): string[] {
+		const theme = this.theme;
+		if (!theme || this.hidden()) return [];
+		const pad = Math.max(0, Math.min(this.context?.outputPad ?? 1, Math.floor((width - 1) / 2)));
+		const inner = Math.max(1, width - pad * 2);
+		const color = this.facts.error === undefined ? "customMessageBg" : "toolErrorBg";
+		const background = theme.getBgAnsi(color);
+		const fill = (line: string): string => {
+			const content = line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background);
+			return theme.bg(color, " ".repeat(pad) + content + " ".repeat(Math.max(0, inner - visibleWidth(line)) + pad));
+		};
+		return ["", ...this.body(theme, inner), ""].map(fill);
+	}
+}
+
+function yieldNote(args: unknown): string {
+	const note = args !== null && typeof args === "object" ? (args as { note?: unknown }).note : undefined;
+	return lineOf(note) ?? "";
+}
+
+function yieldRows(value: unknown): YieldFacts["jobs"] {
+	if (!Array.isArray(value)) return [];
+	return value.flatMap((entry) => {
+		const job = jobView(entry) as { id?: unknown; commandPreview?: unknown; state?: unknown } | undefined;
+		if (typeof job?.id !== "string" || job.id.length === 0) return [];
+		return [{ id: lineOf(job.id) ?? "", ...(typeof job.commandPreview === "string" ? { commandPreview: job.commandPreview } : {}), state: job.state === "settled" ? "settled" : "running" }];
+	});
+}
+
+/** The call slot shows the note while it arrives and draws nothing once the result exists. */
+export function renderYieldCall(args: unknown, theme: Theme, context: RenderContext): Component {
+	const card = context.lastComponent instanceof YieldCard ? context.lastComponent : new YieldCard();
+	const state = (context as YieldContext).state;
+	card.set({ note: yieldNote(args), jobs: [], omitted: 0, settled: false }, theme, context, () => state?.yieldResult === true);
+	return card;
+}
+
+/** The result slot draws the whole card: the time the turn ended and the jobs, or the error in the error background. */
+export function renderYieldResult(result: AgentToolResult<unknown>, _options: { expanded: boolean }, theme: Theme, context: RenderContext): Component {
+	const state = (context as YieldContext).state;
+	if (state) state.yieldResult = true;
+	const details = jobView(result.details) as { note?: unknown; at?: unknown; jobs?: unknown; omitted?: unknown } | undefined;
+	const card = context.lastComponent instanceof YieldCard ? context.lastComponent : new YieldCard();
+	const at = details?.at;
+	const omitted = details?.omitted;
+	card.set({
+		note: yieldNote(context.args ?? details),
+		jobs: yieldRows(details?.jobs),
+		omitted: typeof omitted === "number" && Number.isSafeInteger(omitted) && omitted > 0 ? omitted : 0,
+		...(typeof at === "number" && Number.isSafeInteger(at) && at >= 0 ? { at } : {}),
+		...(result.isError === true || context.isError === true ? { error: lineOf(resultText(result)) ?? "unknown error" } : {}),
+		settled: true,
+	}, theme, context, () => false);
+	return card;
 }

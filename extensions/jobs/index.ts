@@ -22,6 +22,7 @@ import {
 import { createJobsContribution } from "./durable.ts";
 import { toolDisplay } from "./display.ts";
 import { JOB_LIMITS, JobManager, type JobSnapshot } from "./manager.ts";
+import { registerYield, YIELD_TOOL, type YieldJobState, type YieldRow } from "./yield.ts";
 
 /** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
 const StringEnum = <T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: values });
@@ -145,10 +146,18 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 	const manager = new JobManager();
 	const jobsDisplay = display.tools.find((tool) => tool.name === "jobs");
 	const bashDisplay = display.tools.find((tool) => tool.name === "bash");
+	const yieldDisplay = display.tools.find((tool) => tool.name === YIELD_TOOL);
 	const native = createBashToolDefinition(process.cwd());
 	assert(native.outputSchema, "Native Bash must declare its output schema.");
 	let closed = false;
 	let lastRunAborted = false;
+	/**
+	 * Jobs of this session whose completion is still to arrive in the conversation, in start order: a job that
+	 * runs, or one that settled while Pi held its completion. Cancellation, delivery, a failed send and a settled
+	 * run without the message remove the entry.
+	 */
+	const outstanding = new Map<string, { preview: string; state: YieldJobState }>();
+	const openJobs = (): YieldRow[] => (closed ? [] : [...outstanding].map(([id, job]) => ({ id, commandPreview: job.preview, state: job.state })));
 
 	/**
 	 * One message per settled finite job; explicit cancellation and shutdown settle quietly. Returns the state at
@@ -167,6 +176,7 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 
 	/** Delivers the completion and settles the job's activity even when delivery fails. */
 	function settleJob(settled: JobSnapshot, preview: string, ctx: ExtensionContext): void {
+		outstanding.delete(settled.id);
 		if (settled.status === "cancelled") {
 			activity.cancel(settled);
 			return;
@@ -183,6 +193,7 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 				notifySendFailure(settled.id, error, ctx);
 			}
 		} finally {
+			if (delivery === "queued" || delivery === "sent") outstanding.set(settled.id, { preview, state: "settled" });
 			activity.settle(settled, delivery);
 		}
 	}
@@ -209,6 +220,7 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 	 * After a settled run, a message still missing is shown as not in the conversation.
 	 */
 	function reconcile(ctx: ExtensionContext, runSettled = false): void {
+		forgetArrived(ctx, runSettled);
 		const awaiting = activity.awaiting();
 		if (awaiting.length === 0) return;
 		const present = retainedCompletions(ctx);
@@ -216,6 +228,21 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 			if (present.has(jobId)) activity.deliver(jobId, "added");
 			else if (runSettled) activity.deliver(jobId, "absent");
 		}
+	}
+
+	/** Removes held completions that are in the conversation; after a settled run, also those still missing. */
+	function forgetArrived(ctx: ExtensionContext, runSettled: boolean): void {
+		const held = [...outstanding].filter(([, job]) => job.state === "settled");
+		if (held.length === 0) return;
+		const present = retainedCompletions(ctx);
+		for (const [jobId] of held) if (runSettled || present.has(jobId)) outstanding.delete(jobId);
+	}
+
+	/** A cancelled job delivers no completion; one that settled before the request still does. */
+	function cancelJob(id: string): JobSnapshot {
+		const job = manager.cancel(id);
+		if (job.status === "running" && outstanding.get(job.id)?.state === "running") outstanding.delete(job.id);
+		return job;
 	}
 
 	pi.registerTool({
@@ -259,6 +286,7 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 			await tool.execute(id, params, signal, undefined, ctx);
 			if (!job) throw new Error("The command job was not accepted.");
 			const preview = commandPreview(params.command);
+			outstanding.set(job.id, { preview, state: "running" });
 			activity.start(job, ctx);
 			void manager.wait(job.id).then((settled) => settleJob(settled, preview, ctx));
 			return textResult({ job });
@@ -294,9 +322,16 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 					structuredContent: { ...details },
 				};
 			}
-			if (params.action === "cancel") return textResult({ job: manager.cancel(params.id) });
+			if (params.action === "cancel") return textResult({ job: cancelJob(params.id) });
 			return textResult({ job: manager.status(params.id) });
 		},
+	});
+
+	registerYield(pi, {
+		open: openJobs,
+		renderCall: yieldDisplay?.renderCall,
+		renderResult: yieldDisplay?.renderResult,
+		renderShell: yieldDisplay?.renderShell,
 	});
 
 	pi.on("agent_start", async (_event, ctx) => {
@@ -308,6 +343,7 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 		const { message } = event;
 		if (message.role !== "custom") return;
 		const jobId = completionJobId(message);
+		if (jobId !== undefined && outstanding.get(jobId)?.state === "settled") outstanding.delete(jobId);
 		if (jobId !== undefined && activity.awaiting().includes(jobId)) activity.deliver(jobId, "added");
 	});
 	pi.on("turn_end", async (_event, ctx) => reconcile(ctx));
