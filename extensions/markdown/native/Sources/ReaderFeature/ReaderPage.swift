@@ -95,6 +95,7 @@ enum NavigationRequest {
     case documentLoad
     case sameDocument(anchor: String)
     case copyCode(nonce: String, index: Int)
+    case inspectImage(nonce: String, index: Int)
     case external(URL)
     case blocked(URL?)
 
@@ -117,6 +118,9 @@ enum NavigationRequest {
             let parts = action.split(separator: "/")
             if parts.count == 3, parts[0] == "copy-code", let index = Int(parts[2]) {
                 return .copyCode(nonce: String(parts[1]), index: index)
+            }
+            if parts.count == 3, parts[0] == "inspect-image", let index = Int(parts[2]) {
+                return .inspectImage(nonce: String(parts[1]), index: index)
             }
             return .blocked(url)
         case "http", "https":

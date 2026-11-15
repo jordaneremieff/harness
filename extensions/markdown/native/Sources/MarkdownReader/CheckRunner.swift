@@ -36,8 +36,8 @@ struct CheckRunner {
             status = await Verification(windows: windows).run(output: output)
         case .measure(let corpus, let sizes, let output):
             status = await Measurement(windows: windows).run(corpus: corpus, sizes: sizes, output: output)
-        case .present(let input, let width, let height, let appearance, let find, let source, let outline, let embedded, let textSize, let review):
-            await present(input: input, width: width, height: height, appearance: appearance, find: find, source: source, outline: outline, embedded: embedded, textSize: textSize, review: review)
+        case .present(let input, let width, let height, let appearance, let find, let source, let outline, let embedded, let textSize, let review, let inspect):
+            await present(input: input, width: width, height: height, appearance: appearance, find: find, source: source, outline: outline, embedded: embedded, textSize: textSize, review: review, inspect: inspect)
             return
         case .returnCheck(let request):
             status = await returnCheck(request: request)
@@ -83,7 +83,7 @@ struct CheckRunner {
 
     /// Opens a reader window in the requested state and prints its window number, so that
     /// a session with screen recording permission can capture the real window.
-    func present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool, embedded: Bool, textSize: Int?, review: String?) async {
+    func present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool, embedded: Bool, textSize: Int?, review: String?, inspect: String?) async {
         if let appearance { NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua) }
         do {
             var directory = ObjCBool(false)
@@ -139,6 +139,7 @@ struct CheckRunner {
             model.outlinePopoverVisible = outline && model.outlineCompact
             if source { await model.toggleSource() }
             if let review { await model.reviewChanges(base: Int(review), target: model.snapshot?.revision) }
+            if let inspect { await Self.inspect(model, inspect) }
             if let find {
                 model.showFind()
                 model.findQuery = find
@@ -153,6 +154,16 @@ struct CheckRunner {
             Self.emit(["ok": false, "error": String(describing: error)], to: nil)
             exit(1)
         }
+    }
+
+    /// Opens the inspection of the image that `option` names, at the zoom it names.
+    static func inspect(_ model: ReaderModel, _ option: String) async {
+        let parts = option.split(separator: ":", maxSplits: 1).map(String.init)
+        guard let number = parts.first.flatMap(Int.init) else { return }
+        await model.inspectImage(number - 1)
+        // The view's size is known once the window laid the inspection out.
+        try? await Task.sleep(for: .milliseconds(300))
+        if parts.count > 1, parts[1] == "actual" { await model.inspection.actualSize() }
     }
 
     /// Reads (does not accept) an open request, opens its document offscreen with the request's

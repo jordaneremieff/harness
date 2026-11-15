@@ -86,7 +86,8 @@ HTML and unsafe links, images and asset containment, store reading against a fix
 format including symbolic links and scan bounds, open requests and their removal, the pinned
 digest, the reference inventory, the blocks and line ranges of a source, the bounded comparison
 of two revisions' blocks, lines, words and recorded images, stepping to revisions outside the
-listed choices, and the source lines of a selected passage with their basis), `MacPlatformTests` (the pane helper runner against fake helper
+listed choices, the source lines of a selected passage with their basis, and the list of a
+source's images with the actions that open them), `MacPlatformTests` (the pane helper runner against fake helper
 scripts: each outcome, a timeout, malformed output, refusal, an oversized origin and a helper that
 closes its input; the pane reader's coordinate conversion, window matching, printable
 placeholder text and bounded error lines; search rounds against a model screen with a slow
@@ -105,7 +106,10 @@ preparation: a publication during the first load and during a manual refresh, a 
 during a failing attempt, scrolling during preparation and a text selection; the comparison
 page of two revisions, an image-only revision, a comparison that prepares or fails over the
 document, revisions older than the listed choices, and a passage copied with its source from
-the rendering and from the source view; a burst of refreshes; the preparation queue's bound of
+the rendering and from the source view; image inspection: the facts of retained, local,
+embedded, external and unavailable images, zoom steps and Fit, a wide SVG at Fit and at actual
+size in a narrow window, images without a shown form, and a retained image that changed on
+disk; a burst of refreshes; the preparation queue's bound of
 one running and one waiting request; update observation with an unreadable pointer, a removed
 and restored document folder and a removed plain file) and
 `MarkdownReaderTests` (the built binary in pane mode on a pseudo-terminal, with its own store and
@@ -286,6 +290,35 @@ comparison is on screen keeps that comparison. Find and Copy act on the comparis
 on screen. The reader does not replace the document below with a newer revision by itself
 during a comparison; closing the comparison checks for one again.
 
+## Inspecting images
+
+A click on an image opens its inspection over the document; so do **Inspect Image** in the
+image's context menu and in the View menu, which opens the image in view. A placeholder for an
+image that is not shown carries a **Details** control that opens the same view. An image inside
+a Markdown link keeps the link's click and opens from the menu. The inspection has its own page,
+where WebKit renders the image under the reader's content policy (an SVG image runs no script);
+the document's page stays loaded below with its position and selection, and the reader does not
+replace it with a newer revision by itself meanwhile.
+
+- **Fit** shows the whole image inside the view. **Actual Size** (1:1) shows one image pixel
+  for each point, or an SVG at the size it declares; the view then scrolls both ways, so a wide
+  diagram is readable in a narrow window. Zoom In and Zoom Out step through 10, 25, 50, 75,
+  100, 150, 200, 300, 400, 600 and 800 percent, from the scale that Fit gives when they start
+  at Fit. The middle of the view stays in the middle.
+- Below the image: its alternative text (or a line that the source gives none), its title, the
+  reference exactly as the Markdown source has it, and its state: retained with the revision
+  (media type, byte count and digest from the revision's reference inventory), a local file
+  beside a plain Markdown file, embedded in the source, external and not loaded, or unavailable
+  with the reason. "In the document" says what the document page observed for the image:
+  served and displayed, served only, or the failure. The image itself carries the same
+  alternative text and title for assistive technology, and an image without alternative text
+  is announced as such with its reference.
+- **Copy Reference**, for a retained image, copies the reference with the document ID, the
+  revision, the media type, the byte count and the asset digest.
+- A retained image is served only when its bytes match the recorded identity. When they do
+  not, the inspection shows no image and gives the reason.
+- Previous and next move through the revision's images. Escape or Done closes the inspection.
+
 Find uses an app-owned find bar over `window.find` in the app's content world. SwiftUI's find
 navigator does work on `WebView` on macOS 26.2, but the menu's Find Next and Find Previous cannot
 reach it (the hosted web view does not handle `performTextFinderAction:`), so menu, key and click
@@ -299,6 +332,8 @@ would not share one function.
 | Find, Find Next, Find Previous | Edit > Find | ⌘F, ⌘G, ⇧⌘G |
 | Show Outline, Show Source, Wrap Code Lines | View | ⌃⌘S, ⌥⌘U, ⌥⌘L |
 | Bigger, Smaller, Actual Size text | View | ⌘=, ⌘-, ⌘0 |
+| Inspect Image | View | ⇧⌘I |
+| Zoom In, Zoom Out, Actual Size, Zoom to Fit (image inspection) | View | ⌘=, ⌘-, ⌘0, ⌘9 |
 | Go Back After Jump | Document | ⌘[ |
 | Show Latest, Older, Newer Revision | Document | ⌘R, ⌥⌘[, ⌥⌘] |
 | Go to Revision, Review Changes | Document | ⌥⌘G, ⌘D |
@@ -334,13 +369,15 @@ APP="<app>/Contents/MacOS/MarkdownReader"
 "$APP" --export-image --out page.png [--width 900] [--max-height 6000] [--appearance light|dark] [--review previous|n] <file.md | open request>
 "$APP" --verify [--out report.json]
 "$APP" --measure [--sizes 51200,512000,2097152] [--out report.json] <corpus.md>...
-"$APP" --present [--width 960] [--height 900] [--appearance light|dark] [--find text] [--source yes] [--outline no] [--embedded yes] [--text-size n] [--review previous|n] <file.md | open request>
+"$APP" --present [--width 960] [--height 900] [--appearance light|dark] [--find text] [--source yes] [--outline no] [--embedded yes] [--text-size n] [--review previous|n] [--inspect n[:actual]] <file.md | open request>
 "$APP" --return-check <open request>
 ```
 
 - `--export-image` renders the page with the real stylesheet and writes a PNG of its top part.
   With `--review` it writes the comparison of the document's revision with revision `n`, or
   with the revision before it (`previous`); `--present` shows that comparison in its window.
+  `--present --inspect n` opens the inspection of the document's image `n`, counted from 1, at
+  Fit, and `n:actual` at actual size.
 - `--verify` runs a fixed list of WebKit checks on this Mac and exits nonzero on a failure:
   content scripts do not run; nothing reaches a loopback listener from remote images,
   stylesheets, frames or media (a control request proves the listener); the asset scheme serves
@@ -459,8 +496,9 @@ while the host runs and every three seconds while no host is known.
 The window shows `ReaderView` with embedded chrome: the title, outline, back, find and close
 controls, a separate revision/mode status line, and More Actions for secondary controls.
 The outline opens in a popover in narrow panes. More Actions includes a control that returns
-the keyboard to the host. Escape outside a text field also
-returns the keyboard to the host. Pane mode follows new revisions: the model's `followsLatest`
+the keyboard to the host. Escape outside a text field first ends an image inspection or a
+comparison that lies over the document, and otherwise returns the keyboard to the host. Pane
+mode follows new revisions: the model's `followsLatest`
 loads a revision as soon as the pointer watcher sees it, with the reader's block, heading and
 ratio restoration, and a failed load keeps the shown revision with a warning. The watcher
 starts before the first read, and after every load that settles, whether it opened, refreshed,
@@ -556,7 +594,8 @@ assume it is the only screen of the app. Each window owns one model and one `Web
   replaces a parent folder between the path check and the open is outside this guarantee.
 - Every navigation is decided: the document load passes; in-page anchors use the reader's
   position-aware jump action; web links open in
-  the browser only after confirmation; code-copy actions carry a per-rendering nonce;
+  the browser only after confirmation; code-copy and image-inspection actions carry a
+  per-rendering nonce;
   everything else is cancelled. App DOM helpers run only through `callJavaScript` in the
   `markdown-reader` content world with data arguments. There is no script message handler.
 - Limits: source 2 MiB; store records 256 KiB; image 8 MiB; reading-state file 1 MiB (a larger

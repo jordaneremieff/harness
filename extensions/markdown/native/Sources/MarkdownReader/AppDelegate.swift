@@ -238,9 +238,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func goBack(_ sender: Any?) { withModel { await $0.goBack() } }
     @objc func toggleSource(_ sender: Any?) { withModel { await $0.toggleSource() } }
     @objc func toggleWrap(_ sender: Any?) { withModel { $0.toggleWrap() } }
-    @objc func biggerText(_ sender: Any?) { withModel { $0.changeTextSize(by: 1) } }
-    @objc func smallerText(_ sender: Any?) { withModel { $0.changeTextSize(by: -1) } }
-    @objc func actualSize(_ sender: Any?) { withModel { $0.resetTextSize() } }
+    // While an image inspection is open, the size commands zoom the image instead of the text.
+    @objc func biggerText(_ sender: Any?) { withModel { model in if model.inspection.isOpen { await model.inspection.zoomIn() } else { model.changeTextSize(by: 1) } } }
+    @objc func smallerText(_ sender: Any?) { withModel { model in if model.inspection.isOpen { await model.inspection.zoomOut() } else { model.changeTextSize(by: -1) } } }
+    @objc func actualSize(_ sender: Any?) { withModel { model in if model.inspection.isOpen { await model.inspection.actualSize() } else { model.resetTextSize() } } }
+    @objc func zoomToFit(_ sender: Any?) { withModel { await $0.inspection.zoomToFit() } }
+    @objc func inspectImage(_ sender: Any?) { withModel { await $0.toggleImageInspection() } }
     @objc func refreshDocument(_ sender: Any?) { withModel { await $0.refresh() } }
     @objc func olderRevision(_ sender: Any?) { withModel { await $0.showAdjacentRevision(newer: false) } }
     @objc func newerRevision(_ sender: Any?) { withModel { await $0.showAdjacentRevision(newer: true) } }
@@ -263,6 +266,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(toggleSource(_:)):
             item.state = model.showingSource ? .on : .off
             return model.snapshot != nil
+        case #selector(biggerText(_:)):
+            item.title = model.inspection.isOpen ? "Zoom In" : "Bigger Text"
+            return model.snapshot != nil
+        case #selector(smallerText(_:)):
+            item.title = model.inspection.isOpen ? "Zoom Out" : "Smaller Text"
+            return model.snapshot != nil
+        case #selector(zoomToFit(_:)):
+            return model.inspection.isOpen
+        case #selector(inspectImage(_:)):
+            item.title = model.inspection.isOpen ? "Close Image" : "Inspect Image"
+            return model.inspection.isOpen || !(model.rendered?.images.isEmpty ?? true)
         case #selector(toggleWrap(_:)):
             item.state = model.settings.wrapCode ? .on : .off
             return true
@@ -398,6 +412,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             item("Bigger Text", #selector(biggerText(_:)), "="),
             item("Smaller Text", #selector(smallerText(_:)), "-"),
             item("Actual Size", #selector(actualSize(_:)), "0"),
+            item("Zoom to Fit", #selector(zoomToFit(_:)), "9"),
+            .separator(),
+            item("Inspect Image", #selector(inspectImage(_:)), "i", [.command, .shift]),
         ]
         if fullScreen {
             items += [.separator(), standard("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control])]

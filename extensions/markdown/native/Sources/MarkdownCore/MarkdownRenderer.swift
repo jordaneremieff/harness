@@ -35,6 +35,9 @@ public struct RenderedDocument: Sendable {
     public var startsWithHeading: Bool
     /// Per-rendering secret that app-owned action links carry.
     public var nonce: String
+    /// Every image of the source in document order, shown or not. An image's position here is
+    /// the index that its inspection action carries.
+    public var images: [RenderedImage] = []
 
     /// A title taken from the content: the heading that opens the document, else the first text
     /// line of the first block, shortened to 80 characters.
@@ -86,7 +89,8 @@ public enum MarkdownRenderer {
             blockCount: context.blockCount,
             leadingText: context.leadingBlock?.text,
             startsWithHeading: context.leadingBlock?.isHeading ?? false,
-            nonce: nonce
+            nonce: nonce,
+            images: context.images
         )
     }
 
@@ -110,6 +114,7 @@ public enum MarkdownRenderer {
         var embeddedImages = 0
         var localOnlyLinks = 0
         var unavailableImages: [(reference: String, reason: String)] = []
+        var images: [RenderedImage] = []
         var rawHTML = 0
         var blockCount = 0
         var leadingBlock: (text: String, isHeading: Bool)?
@@ -212,7 +217,7 @@ public enum MarkdownRenderer {
             if type == CMARK_NODE_IMAGE {
                 if event == CMARK_EVENT_ENTER {
                     if imageDepth == 0 {
-                        let html = imageHTML(reference: string(cmark_node_get_url(node)), alt: plainText(node), title: string(cmark_node_get_title(node)), context: &context)
+                        let html = imageHTML(reference: string(cmark_node_get_url(node)), alt: plainText(node), title: string(cmark_node_get_title(node)), linked: isInsideLink(node), context: &context)
                         work.append(.image(node, html: html))
                     }
                     imageDepth += 1
@@ -308,29 +313,56 @@ public enum MarkdownRenderer {
         }
     }
 
-    static func imageHTML(reference: String, alt: String, title: String, context: inout Context) -> String {
+    /// The HTML of one image. Every image carries its index and, unless a Markdown link already
+    /// holds it, an app action that opens its inspection: around a shown image, or as a control
+    /// inside a placeholder.
+    static func imageHTML(reference: String, alt: String, title: String, linked: Bool = false, context: inout Context) -> String {
         let shownAlt = alt.isEmpty ? "" : "<span class=\"ph-alt\">\(escape(alt))</span>"
+        let index = context.images.count
+        let action = "\(actionScheme):inspect-image/\(context.nonce)/\(index)"
+        func record(_ source: RenderedImage.Source) {
+            context.images.append(RenderedImage(reference: reference, alt: alt, title: title, source: source))
+        }
+        func opening(_ image: String) -> String {
+            linked ? image : "<a class=\"img-open\" href=\"\(action)\"\(alt.isEmpty ? " aria-label=\"Inspect image\"" : "")>\(image)</a>"
+        }
+        let details = linked ? "" : "<a class=\"img-inspect\" href=\"\(action)\">Details</a>"
         switch context.resolver.resolve(reference) {
         case .local(let asset):
             let token = "a\(context.assets.count)"
             context.assets[token] = asset
-            return "<img data-asset=\"\(token)\" data-image-rendering=\"\(escape(context.nonce))\" data-reference=\"\(escape(reference))\" src=\"\(assetScheme)://doc/\(token)\" alt=\"\(escape(alt))\"\(titleAttribute(title)) decoding=\"async\">"
+            record(.local(token: token))
+            return opening("<img data-asset=\"\(token)\" data-image-rendering=\"\(escape(context.nonce))\" data-reference=\"\(escape(reference))\" src=\"\(assetScheme)://doc/\(token)\" alt=\"\(escape(alt))\"\(titleAttribute(title)) decoding=\"async\" data-image=\"\(index)\">")
         case .embedded(let address):
             context.embeddedImages += 1
-            return "<img src=\"\(escape(address))\" alt=\"\(escape(alt))\"\(titleAttribute(title))>"
+            record(.embedded)
+            return opening("<img src=\"\(escape(address))\" alt=\"\(escape(alt))\"\(titleAttribute(title)) data-image=\"\(index)\">")
         case .external(let url):
             context.externalImages.append(url)
+            record(.external(url))
             let host = url.host ?? url.absoluteString
-            return "<span class=\"img-ph remote\" role=\"img\" aria-label=\"Remote image not loaded: \(escape(alt.isEmpty ? host : alt))\">"
+            return "<span class=\"img-ph remote\" role=\"img\" aria-label=\"Remote image not loaded: \(escape(alt.isEmpty ? host : alt))\" data-image=\"\(index)\">"
                 + "<span class=\"ph-kind\">Remote image not loaded</span>"
                 + "<a class=\"ext\" href=\"\(escape(url.absoluteString))\" title=\"\(escape(url.absoluteString))\">\(escape(host))</a>"
-                + shownAlt + "</span>"
+                + shownAlt + details + "</span>"
         case .unavailable(let reason):
             context.unavailableImages.append((reference, reason))
-            return "<span class=\"img-ph unavailable\" role=\"img\" aria-label=\"Image unavailable: \(escape(alt.isEmpty ? reference : alt))\">"
+            record(.unavailable(reason: reason))
+            return "<span class=\"img-ph unavailable\" role=\"img\" aria-label=\"Image unavailable: \(escape(alt.isEmpty ? reference : alt))\" data-image=\"\(index)\">"
                 + "<span class=\"ph-kind\">Image unavailable (\(escape(reasonLabel(reason))))</span>"
-                + shownAlt + "<code>\(escape(reference))</code></span>"
+                + shownAlt + "<code>\(escape(reference))</code>" + details + "</span>"
         }
+    }
+
+    /// Whether a Markdown link holds the node. A link inside a link is not valid HTML, so such an
+    /// image gets no action of its own.
+    static func isInsideLink(_ node: Node) -> Bool {
+        var parent = cmark_node_parent(node)
+        while let current = parent {
+            if cmark_node_get_type(current) == CMARK_NODE_LINK { return true }
+            parent = cmark_node_parent(current)
+        }
+        return false
     }
 
     public static func reasonLabel(_ reason: String) -> String {

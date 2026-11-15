@@ -98,7 +98,12 @@ final class PaneHost: NSObject, NSWindowDelegate {
         window.isMovable = false
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .ignoresCycle]
         window.delegate = self
-        window.onCancel = { [weak self] in self?.releaseFocus() }
+        window.onCancel = { [weak self] in
+            // Escape first ends an image inspection or a comparison; otherwise it gives the
+            // keyboard back.
+            guard let self, !self.model.dismissOverlay() else { return }
+            self.releaseFocus()
+        }
         return window
     }
 

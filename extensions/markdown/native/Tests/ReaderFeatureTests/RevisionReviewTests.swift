@@ -8,7 +8,7 @@ import WebKit
 
 /// A store in the version-1 layout with revisions that carry inspected reference inventories.
 @MainActor
-private struct ReviewStore {
+struct ReviewStore {
     let root: URL
     private let storeId = "0123456789abcdef0123456789abcdef"
     let id = "md-0123456789abcdef0123"
@@ -40,9 +40,10 @@ private struct ReviewStore {
         var items: [[String: Any]] = []
         for (reference, bytes) in images.sorted(by: { $0.key < $1.key }) {
             let digest = Self.digest(bytes)
-            let file = "assets/\(digest.dropFirst(7)).png"
+            let svg = reference.hasSuffix(".svg")
+            let file = "assets/\(digest.dropFirst(7)).\(svg ? "svg" : "png")"
             try bytes.write(to: location.appendingPathComponent(file))
-            items.append(["kind": "image", "reference": reference, "state": "retained", "file": file, "mediaType": "image/png", "bytes": bytes.count, "digest": digest])
+            items.append(["kind": "image", "reference": reference, "state": "retained", "file": file, "mediaType": svg ? "image/svg+xml" : "image/png", "bytes": bytes.count, "digest": digest])
         }
         let date = "2026-11-14T00:0\(revision % 10):00Z"
         try write(["version": 1, "document": id, "revision": revision, "title": "Design report", "createdAt": date,

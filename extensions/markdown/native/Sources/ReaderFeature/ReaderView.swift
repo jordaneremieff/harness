@@ -85,8 +85,9 @@ public struct ReaderView: View {
                 .webViewContextMenu { info in contextMenu(info) }
                 .webViewOnScrollGeometryChange(for: CGFloat.self, of: { $0.contentOffset.y }, action: { _, _ in model.scrolled() })
                 .accessibilityLabel(model.showingSource ? "Markdown source" : "Document")
-                .accessibilityHidden(model.review.shown != nil)
+                .accessibilityHidden(model.review.shown != nil || model.inspection.isOpen)
                 .overlay(alignment: .top) { RevisionReviewLayer(model: model) }
+                .overlay { ImageInspectionLayer(model: model) }
         }
     }
 
@@ -94,6 +95,10 @@ public struct ReaderView: View {
         if let url = info.linkURL, ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
             Button("Open Link in Browser…") { model.pendingExternalURL = url }
             Button("Copy Link") { model.platform.copyText(url.absoluteString) }
+            Divider()
+        }
+        if let image = model.inspectableImage(info.linkURL) {
+            Button("Inspect Image") { Task { await model.inspectImage(image) } }
             Divider()
         }
         Button("Copy") {

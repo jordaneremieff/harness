@@ -104,6 +104,8 @@ public final class ReaderModel {
     public var imageEvidence: [ImageEvidence] = []
     /// The comparison of two revisions that this window shows over its document.
     public let review = RevisionReview()
+    /// The inspection of one image that this window shows over its document.
+    public let inspection = ImageInspection()
     /// When set, a newer revision replaces the shown one at the same reading position as soon as
     /// the reader sees it. Scrolling defers replacement until it settles. A text selection or
     /// an open find bar keeps the update notice for the reader's choice.
@@ -530,9 +532,9 @@ public final class ReaderModel {
     /// text selection, source view, an open find bar, a scroll that has not settled or a
     /// comparison of revisions on screen.
     func interacting() async -> Bool {
-        if showingSource || findVisible || scrolling || review.shown != nil { return true }
+        if showingSource || findVisible || scrolling || review.shown != nil || inspection.isOpen { return true }
         let selection = await selectedText()
-        return showingSource || findVisible || scrolling || review.shown != nil || !selection.isEmpty
+        return showingSource || findVisible || scrolling || review.shown != nil || inspection.isOpen || !selection.isEmpty
     }
 
     public func showFind() {
@@ -666,6 +668,7 @@ public final class ReaderModel {
         positionTask?.cancel()
         monitorTask?.cancel()
         review.close()
+        inspection.close()
         imageInspectionTask?.cancel()
         await savePosition(final: true)
         state.saveNow()
@@ -697,6 +700,8 @@ extension ReaderModel: NavigationHandling {
         switch request {
         case .copyCode(let nonce, let index):
             if nonce == rendered?.nonce { copyCode(index) }
+        case .inspectImage(let nonce, let index):
+            if nonce == rendered?.nonce { Task { await inspectImage(index) } }
         case .external(let url):
             pendingExternalURL = url
         case .blocked(let url):

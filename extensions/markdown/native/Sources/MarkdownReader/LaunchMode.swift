@@ -14,7 +14,9 @@ enum LaunchMode {
     /// Measures opening, refresh and memory for generated documents of the given sizes.
     case measure(corpus: [String], sizes: [Int], output: String?)
     /// Opens one visible reader window in a prepared state for screen capture, and keeps running.
-    case present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool, embedded: Bool, textSize: Int?, review: String?)
+    /// `inspect` names an image to open in the inspection, counted from 1: `2` shows it at Fit,
+    /// `2:actual` at actual size.
+    case present(input: String, width: Double, height: Double, appearance: String?, find: String?, source: Bool, outline: Bool, embedded: Bool, textSize: Int?, review: String?, inspect: String?)
     /// Opens an open request's document offscreen with the real platform operations and runs
     /// Return to Rex once, printing its result.
     case returnCheck(request: String)
@@ -71,7 +73,7 @@ enum LaunchMode {
             )
         case "--present":
             guard let input = positional.first else {
-                return .usage("--present [--width 960] [--height 900] [--appearance light|dark] [--find text] [--source yes] [--outline no] [--embedded yes] [--text-size n] [--review previous|n] <file.md | open request>")
+                return .usage("--present [--width 960] [--height 900] [--appearance light|dark] [--find text] [--source yes] [--outline no] [--embedded yes] [--text-size n] [--review previous|n] [--inspect n[:actual]] <file.md | open request>")
             }
             return .present(
                 input: input,
@@ -83,7 +85,8 @@ enum LaunchMode {
                 outline: options["outline"] != "no",
                 embedded: options["embedded"] == "yes",
                 textSize: options["text-size"].flatMap(Int.init),
-                review: options["review"]
+                review: options["review"],
+                inspect: options["inspect"]
             )
         case "--return-check":
             guard let request = positional.first else { return .usage("--return-check <open request>") }

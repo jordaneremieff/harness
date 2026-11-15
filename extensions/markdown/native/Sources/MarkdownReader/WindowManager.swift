@@ -3,6 +3,17 @@ import MarkdownCore
 import ReaderFeature
 import SwiftUI
 
+/// A reader's window. Escape that no view handles ends what lies over the document: an image
+/// inspection or a comparison.
+final class ReaderWindow: NSWindow {
+    /// Returns true when it handled the cancel.
+    var onCancel: (() -> Bool)?
+
+    override func cancelOperation(_ sender: Any?) {
+        if onCancel?() != true { super.cancelOperation(sender) }
+    }
+}
+
 /// One window per document. A repeated open of a document brings its window forward and passes
 /// the open's launch origin to it.
 @MainActor
@@ -82,7 +93,8 @@ final class WindowManager: NSObject, NSWindowDelegate {
         let host = NSHostingController(rootView: ReaderView(model: model))
         host.sizingOptions = []
         host.sceneBridgingOptions = [.toolbars]
-        let window = NSWindow(contentViewController: host)
+        let window = ReaderWindow(contentViewController: host)
+        window.onCancel = { [weak model] in model?.dismissOverlay() ?? false }
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .unifiedTitleAndToolbar]
         window.toolbarStyle = .unified
         window.isReleasedWhenClosed = false
