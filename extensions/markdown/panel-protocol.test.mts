@@ -52,7 +52,7 @@ test("page identity, digest and completeness mismatches fail before materializat
 });
 test("published rows require a store identity, but an absent store has none", () => {
 	const request = { op: "published" } as const;
-	const absent = { op: "published", rows: [], root: "/store", limited: false };
+	const absent = { op: "published", rows: [], root: "/store", limited: false, unreadable: 0 };
 	assert.deepEqual(readPanelAnswer(request, absent), absent);
 	assert.throws(() => readPanelAnswer(request, { ...absent, storeId: "invalid" }));
 	const present = { ...absent, rows: [{ id: `md-${"a".repeat(20)}`, title: "Document", revision: 1, bytes: 2, kind: "published", digest: `sha256:${"b".repeat(64)}`, updatedAt: "2026-01-01T00:00:00Z" }] };

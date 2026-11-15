@@ -7,6 +7,7 @@ import { markdownContribution } from "./durable.ts";
 import { readSettings, publishSettings } from "./settings.ts";
 import { MarkdownStore } from "./store.ts";
 import { coverageText, createPublishTool, fileSnapshotInput, referenceSummary } from "./publish.ts";
+import { createReadTool } from "./read.ts";
 import { toolDisplay } from "./display.ts";
 import { readOrdinary, recentOrdinary, type ResponseSnapshot } from "./responses.ts";
 import type { MarkdownOperations, MarkdownScope, MarkdownViewState } from "./operator-view.ts";
@@ -52,7 +53,7 @@ export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => Abort
 			const page = await new MarkdownStore(root).list({ kind: "published" });
 			check(signal);
 			const rows = page.documents;
-			return { rows: rows.map((document) => ({ kind: "document", document, root })), coverage: `${rows.length} document${rows.length === 1 ? "" : "s"} · ${page.scanned} scanned${page.bounded ? " · scan limit reached" : ""}` };
+			return { rows: rows.map((document) => ({ kind: "document", document, root })), coverage: `${rows.length} document${rows.length === 1 ? "" : "s"} · ${page.scanned} scanned${page.bounded ? " · scan limit reached" : ""}${page.unreadable ? ` · ${page.unreadable} unreadable, not listed` : ""}` };
 		},
 		read: async (row, viewSignal) => {
 			const signal = AbortSignal.any([viewSignal, lifecycle()]);
@@ -149,6 +150,7 @@ export default function markdown(pi: ExtensionAPI): void {
 	pi.registerCommand("markdown", { description: "Read the latest response; browse recent responses or published documents; open an ID or file", getArgumentCompletions: markdownCompletions, handler: action });
 	pi.registerShortcut("ctrl+alt+r", { description: "Read the latest assistant response in Markdown", handler: (ctx) => action("", ctx) });
 	pi.registerTool(createPublishTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app }));
+	pi.registerTool(createReadTool({ store: new MarkdownStore(localSettings().dir) }));
 	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
 	pi.events.on("harness:tool-display:request", (request) => { if (typeof request === "object" && request !== null && "version" in request && request.version === 1) publishDisplay(); });
 	publishDisplay();

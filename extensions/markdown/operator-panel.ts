@@ -26,6 +26,7 @@ export function panelOperations(host: PanelHost): MarkdownOperations {
 		signal.throwIfAborted();
 		return reveal.openStored(root, id, signal, { gui: true, storeId, pin: { revision, digest } });
 	};
+	const publishedCoverage = (answer: { rows: unknown[]; limited: boolean; unreadable: number }) => [`${answer.rows.length} published document${answer.rows.length === 1 ? "" : "s"}`, ...(answer.limited ? ["store scan limit reached"] : []), ...(answer.unreadable ? [`${answer.unreadable} unreadable, not listed`] : [])].join(" · ");
 	return {
 		load: async (scope, signal) => {
 			if (scope === "recent") {
@@ -35,7 +36,7 @@ export function panelOperations(host: PanelHost): MarkdownOperations {
 			}
 			const answer = await ask({ op: "published" }, signal);
 			if (answer.op !== "published") throw new Error("Unexpected published answer.");
-			return { rows: answer.rows.map((document) => ({ kind: "document", document, root: answer.root, storeId: answer.storeId })), coverage: `${answer.rows.length} published document${answer.rows.length === 1 ? "" : "s"}${answer.limited ? " · store scan limit reached" : ""}` };
+			return { rows: answer.rows.map((document) => ({ kind: "document", document, root: answer.root, storeId: answer.storeId })), coverage: publishedCoverage(answer) };
 		},
 		read,
 		latest: async (signal) => {

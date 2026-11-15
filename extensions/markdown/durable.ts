@@ -5,6 +5,7 @@ import { MarkdownStore } from "./store.ts";
 import { recentNative, readNative, type NativeSource } from "./native-responses.ts";
 import { readPanelRequest, responsePage, type MarkdownAnswer } from "./panel-protocol.ts";
 import { createNativePublishTool } from "./publish.ts";
+import { createNativeReadTool } from "./read.ts";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export interface MarkdownHost {
@@ -31,9 +32,9 @@ function nativeSource(call: MarkdownCommandCall): NativeSource {
 }
 async function published(store: MarkdownStore): Promise<Extract<MarkdownAnswer, { op: "published" }>> {
 	const identity = await store.identity();
-	if (!identity) return { op: "published", rows: [], root: store.root, limited: false };
+	if (!identity) return { op: "published", rows: [], root: store.root, limited: false, unreadable: 0 };
 	const result = await store.list({ kind: "published" });
-	return { op: "published", rows: result.documents, root: store.root, storeId: identity.storeId, limited: result.bounded };
+	return { op: "published", rows: result.documents, root: store.root, storeId: identity.storeId, limited: result.bounded, unreadable: result.unreadable };
 }
 /** Both text and structured command routes only read; origin grants no additional effect. */
 export async function runMarkdownCommand(call: MarkdownCommandCall): Promise<string | { text: string; data: JsonValue }> {
@@ -44,7 +45,7 @@ export async function runMarkdownCommand(call: MarkdownCommandCall): Promise<str
 		return [
 			`Markdown: ${recent.rows.length} recent responses (stop: ${recent.stop}, ${recent.visited} entries visited). Previews only.`,
 			...recent.rows.slice(0, 10).map((row) => `${row.entryId} · ${row.bytes} bytes · ${row.completeness.state} · ${line(row.preview)}`),
-			`${documents.rows.length} published documents${documents.limited ? " (scan limit reached)" : ""}:`,
+			`${documents.rows.length} published documents${documents.limited ? " (scan limit reached)" : ""}${documents.unreadable ? ` (${documents.unreadable} unreadable, not listed)` : ""}:`,
 			...documents.rows.slice(0, 10).map((row) => `${row.id} · revision ${row.revision} · ${line(row.title)}`),
 			"Use the Markdown owner view to read a complete response or document. No model turn or window was started.",
 		].join("\n");
@@ -68,10 +69,11 @@ export function markdownContribution(source: string, bus: SettingsBus, stopFacto
 			stopFactoryPublisher();
 			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));
 			const settings = readSettings({ agentDir: host.agentDir }).values;
+			const store = new MarkdownStore(settings.dir);
 			return host.durable.defineExtension({
 				name: "markdown",
-				tools: [createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store: new MarkdownStore(settings.dir), app: settings.app })],
-				sections: [host.durable.section("markdown", () => "Use markdown_publish for an explicitly requested document or a deliverable meant for sustained reading. Publication saves silently. Existing assistant responses are already readable through the operator's Markdown view; do not publish every reply.")],
+				tools: [createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store, app: settings.app }), createNativeReadTool(host.durable, { store })],
+				sections: [host.durable.section("markdown", () => "Use markdown_publish for an explicitly requested document or a deliverable meant for sustained reading. Publication saves silently. Existing assistant responses are already readable through the operator's Markdown view; do not publish every reply. Use markdown_read to find a stored document and read an exact revision before you correct it.")],
 			});
 		},
 	};

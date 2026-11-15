@@ -142,7 +142,7 @@ test("reference inspection requires a compatible local build and records honest 
 	assert.equal(outcome.references.state, "uninspected"); assert.equal(Object.hasOwn(outcome, "selfContained"), false);
 	assert.deepEqual((await store.get(outcome.documentId)).revision.references, { state: "uninspected", truncated: false, omitted: 0, items: [], reason: "app-incompatible" });
 	assert.equal(outcome.references.reason, "app-incompatible");
-	assert.match(publicationText(outcome), /References not inspected: the installed reader app is incompatible or incomplete; rebuild it with node extensions\/markdown\/native\/build\.mts\. Local images are not retained\./u);
+	assert.match(publicationText(outcome), /\nReferences not inspected: the installed reader app is incompatible or incomplete; rebuild it with node extensions\/markdown\/native\/build\.mts\.\n/u);
 }));
 test("the fixed headless executable receives exact stdin and failures remain uninspected", () => fixture(async (root) => {
 	const parser = await inspection(root); const tool = join(parser.app, "Contents/MacOS/markdown-core"); await mkdir(join(parser.app, "Contents/MacOS"));
@@ -201,11 +201,11 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 	const result = await tool.execute("call", { title: "Ordinary", text: "# exact" }, undefined, undefined, context);
 	assert.equal((result.structuredContent as PublishOutcome).ok, true);
 	assert.deepEqual(result.structuredContent, result.details);
-	assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /No window opened\. The operator opens it from the Markdown view under Published \(in the agent view, under Owner views\)\. In an ordinary Pi session, \/markdown md-[a-f0-9]{20} also opens it\./u);
+	assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /^Saved new document md-[a-f0-9]{20} revision 1 \(7 bytes, sha256:[a-f0-9]{64}\)\. No window opened\.\n/u);
 	assert.ok(tool.outputSchema);
 	const first = success(result.details);
 	assert.equal(first.show, undefined);
-	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith("\nIt cannot be shown in a terminal pane: No reader app is configured. Build it with node extensions/markdown/native/build.mts.")); assert.equal(first.provenance.session, "first"); assert.equal(first.provenance.model, "faux/faux-1"); assert.ok(first.provenance.host);
+	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith("\nIt cannot be shown in a pane: No reader app is configured. Build it with node extensions/markdown/native/build.mts.")); assert.equal(first.provenance.session, "first"); assert.equal(first.provenance.model, "faux/faux-1"); assert.ok(first.provenance.host);
 	session = "second";
 	const updated = await tool.execute("next", { title: "Updated", text: "other", document: first.documentId.slice(0, 12), expectedRevision: 1 }, undefined, undefined, context);
 	assert.equal(success(updated.details).provenance.session, "second"); assert.equal(success(updated.details).revision, 2);
@@ -307,7 +307,7 @@ test("native model and codemode calls share outcomes, prefixes and explicit reus
 		faux.setResponses([fauxAssistantMessage(fauxToolCall("markdown_publish", { title: "Native", text: "# persisted" }), { stopReason: "toolUse" }), fauxAssistantMessage("Saved.")]);
 		const submission = await conversation.submit({ type: "input", content: "Publish." }, context);
 		assert.equal((await submission.wait(context)).status, "done"); const firstOutcome = results[0]?.outcome; assert.ok(firstOutcome?.ok);
-		assert.match(results[0]?.text ?? "", /^Saved md-[a-f0-9]{20}, revision 1, \d+ bytes\.\nReferences not inspected: the reader app is not installed; build it with node extensions\/markdown\/native\/build\.mts\. Local images are not retained\.\nNo window opened\. The operator opens it from the Markdown view under Published \(in the agent view, under Owner views\)\. In an ordinary Pi session, \/markdown md-[a-f0-9]{20} also opens it\./u);
+		assert.match(results[0]?.text ?? "", /^Saved new document md-[a-f0-9]{20} revision 1 \(\d+ bytes, sha256:[a-f0-9]{64}\)\. No window opened\.\nReferences not inspected: the reader app is not installed; build it with node extensions\/markdown\/native\/build\.mts\.\nIt cannot be shown in a pane: /u);
 		faux.setResponses([fauxAssistantMessage(fauxToolCall("markdown_publish", { title: "Prefix update", text: "updated by prefix", document: firstOutcome.documentId.slice(0, 12), expectedRevision: 1 }), { stopReason: "toolUse" }), fauxAssistantMessage("Updated.")]);
 		assert.equal((await (await conversation.submit({ type: "input", content: "Update by prefix." }, context)).wait(context)).status, "done");
 		assert.equal((await store.get(firstOutcome.documentId)).document.revision, 2);
@@ -343,7 +343,13 @@ test("the show command runs the installed reader's pane mode only when the build
 	const result = await tool.execute("call", { title: "Shown", text: "# exact" }, undefined, undefined, context);
 	const outcome = success(result.details);
 	assert.deepEqual(outcome.show, [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", store.root, outcome.documentId]);
-	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(`run this command as the program of a new split pane beside the pane where the operator reads your conversation, a pane that closes when its program ends: ${JSON.stringify(outcome.show)}. The reader window sits over that pane and follows new revisions of this document; q in the pane or the reader's close button ends it.`));
+	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(`\nTo show it now, run ${JSON.stringify(outcome.show)} as the program of a new pane.`));
+	const update = await tool.execute("update", { title: "Shown", text: "# changed", document: outcome.documentId, expectedRevision: 1 }, undefined, undefined, context);
+	assert.ok((update.content[0]?.type === "text" ? update.content[0].text : "").endsWith(`\nA reader pane that shows ${outcome.documentId} follows this revision by itself. To show it in a new pane, run ${JSON.stringify(outcome.show)} as the pane's program.`));
+	const replay = await tool.execute("replay", { title: "Keyed", text: "# keyed", reuseKey: "shown" }, undefined, undefined, context);
+	const again = await tool.execute("again", { title: "Keyed", text: "# keyed", reuseKey: "shown" }, undefined, undefined, context);
+	assert.match(replay.content[0]?.type === "text" ? replay.content[0].text : "", /^Saved new document /u);
+	assert.match(again.content[0]?.type === "text" ? again.content[0].text : "", /^Returned the earlier publication md-[a-f0-9]{20} revision 1 \(7 bytes, sha256:[a-f0-9]{64}\): this request was already saved, so later changes to its text, file or images are not in it\. No window opened\.\n/u);
 }));
 
 test("a response snapshot saves the earlier answer exactly, once per response", () => fixture(async (root, store) => {

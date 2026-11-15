@@ -13,6 +13,55 @@ import { markdownContribution, type MarkdownCommandCall, type MarkdownHost } fro
 import { acquireResponse, PAGE_BYTES, readPanelAnswer } from "./panel-protocol.ts";
 import { MarkdownStore } from "./store.ts";
 
+test("a native agent reads an exact revision and recovers from a stale update through the model tools", { timeout: 20000 }, async () => {
+	const root = await mkdtemp(join(tmpdir(), "markdown-native-read-"));
+	const previous = { dir: process.env.PI_MARKDOWN_DIR, app: process.env.PI_MARKDOWN_APP, file: process.env.PI_HARNESS_FILE };
+	process.env.PI_MARKDOWN_DIR = join(root, "documents");
+	process.env.PI_MARKDOWN_APP = join(root, "missing.app");
+	process.env.PI_HARNESS_FILE = join(root, "harness.json");
+	const faux = fauxProvider();
+	const models = createModels(); models.setProvider(faux.provider);
+	const registry = Durable.createRegistry();
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
+	const disposers: (() => void | Promise<void>)[] = [];
+	try {
+		const host: MarkdownHost = { durable: Durable, agentDir: root, cwd: root, storageId: "synthetic", harness, onClose: (callback) => disposers.push(callback) };
+		const extension = markdownContribution(fileURLToPath(new URL("./index.ts", import.meta.url)), createEventBus(), () => {}).create(host);
+		assert.deepEqual(extension.tools?.map((tool) => [tool.name, tool.replay]), [["markdown_publish", "safe"], ["markdown_read", "safe"]]);
+		registry.install(extension);
+		const conversation = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+		const store = new MarkdownStore(process.env.PI_MARKDOWN_DIR);
+		const document = (await store.create({ title: "Plan", source: "# Plan\n\nFirst.\n", contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() } })).document.id;
+		await store.update(document, 1, { title: "Plan", source: "# Plan\n\nSecond.\n", contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() } });
+		const results = async () => (await conversation.entries({}, 100, undefined, context)).items.filter((entry) => Durable.ToolResultEntry.is(entry)).sort((a, b) => Number(a.id) - Number(b.id)).map((entry) => {
+			const model = entry.model?.[0];
+			return model?.role === "toolResult" ? { isError: model.isError, parts: model.content.map((part) => part.type === "text" ? part.text : "") } : undefined;
+		});
+		faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("markdown_read", { query: "plan" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("markdown_publish", { title: "Plan", text: "# Plan\n\nStale.\n", document, expectedRevision: 1 }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("markdown_read", { document, revision: 2 }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("markdown_publish", { title: "Plan", text: "# Plan\n\nSecond.\n\nThird.\n", document, expectedRevision: 2 }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Corrected."),
+		]);
+		assert.equal((await (await conversation.submit({ type: "input", content: "Correct the plan." }, context)).wait(context)).status, "done");
+		const [find, stale, read, update] = await results();
+		assert.match(find?.parts[0] ?? "", new RegExp(`^1 published document match "plan" among 1 scanned entries\\.\\n${document} · revision 2 · `, "u"));
+		assert.equal(stale?.isError, true);
+		assert.match(stale?.parts.join("") ?? "", /Revision 2 \(sha256:[a-f0-9]{64}\) is current\. Read it with markdown_read/u);
+		assert.equal(read?.isError, false); assert.equal(read?.parts.length, 2); assert.equal(read?.parts[1], "# Plan\n\nSecond.\n");
+		assert.match(read?.parts[0] ?? "", /To correct it, publish with document md-[a-f0-9]{20} and expectedRevision 2\./u);
+		assert.equal(update?.isError, false);
+		const current = await store.get(document);
+		assert.equal(current.revision.revision, 3); assert.equal(current.source, "# Plan\n\nSecond.\n\nThird.\n");
+	} finally {
+		for (const dispose of disposers) await dispose();
+		await harness.close(context);
+		for (const [key, value] of Object.entries({ PI_MARKDOWN_DIR: previous.dir, PI_MARKDOWN_APP: previous.app, PI_HARNESS_FILE: previous.file })) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 // Native calls use the open host Harness; the contribution never opens storage itself.
 test("the real contribution publishes and serves text/data reads without a submission or model turn", { timeout: 20000 }, async () => {
 	const root = await mkdtemp(join(tmpdir(), "markdown-contribution-"));
@@ -37,7 +86,7 @@ test("the real contribution publishes and serves text/data reads without a submi
 		const contents = await readdir(root);
 		const absent = await command.run({ ...call, data: { op: "published" } });
 		assert.ok(typeof absent !== "string");
-		assert.deepEqual(readPanelAnswer({ op: "published" }, absent.data), { op: "published", rows: [], root: process.env.PI_MARKDOWN_DIR, limited: false });
+		assert.deepEqual(readPanelAnswer({ op: "published" }, absent.data), { op: "published", rows: [], root: process.env.PI_MARKDOWN_DIR, limited: false, unreadable: 0 });
 		await command.run(call);
 		assert.deepEqual(await readdir(root), contents, "reads of an absent store create no directories or locks");
 		const source = `${"x".repeat(PAGE_BYTES - 1)}😀e\u0301\nsecond page`;
@@ -52,7 +101,7 @@ test("the real contribution publishes and serves text/data reads without a submi
 		if (result?.role !== "toolResult") throw new Error("Missing tool result");
 		assert.equal(result.isError, false);
 		const receipt = result.content.map((part) => part.type === "text" ? part.text : "").join("");
-		assert.match(receipt, /No window opened\. The operator opens it from the Markdown view under Published \(in the agent view, under Owner views\)\. In an ordinary Pi session, \/markdown md-[a-f0-9]{20} also opens it\./u);
+		assert.match(receipt, /^Saved new document md-[a-f0-9]{20} revision 1 \(\d+ bytes, sha256:[a-f0-9]{64}\)\. No window opened\.\n/u);
 		assert.equal((await new MarkdownStore(process.env.PI_MARKDOWN_DIR).list()).documents.length, 1);
 		const count = faux.state.callCount;
 		const text = await command.run(call);

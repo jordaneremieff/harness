@@ -208,21 +208,38 @@ export class MarkdownStore {
 			return { document, revision: record, source };
 		} catch (error) { if (error instanceof StoreError) throw error; if (absent(error)) throw new StoreError("not-found", "Document not found."); throw new StoreError("store-failure", "Document is unavailable or invalid."); }
 	}
-	async list(options: { kind?: DocumentKind; limit?: number } = {}): Promise<{ documents: DocumentRecord[]; bounded: boolean; scanned: number }> {
+	/**
+	 * Lists the newest documents among at most `LIMITS.listing` entries of one collection, in
+	 * directory order. `bounded` says that the scan stopped before the end of the collection, so the
+	 * rows are the newest scanned, not the newest stored. `unreadable` counts document directories
+	 * whose pointer is missing, unreadable or invalid; they are not rows. `matched` counts the rows
+	 * that `match` accepted before the result limit. An absent collection is an empty listing; any
+	 * other failure to open it is a store error.
+	 */
+	async list(options: { kind?: DocumentKind; limit?: number; match?: (record: DocumentRecord) => boolean } = {}): Promise<{ documents: DocumentRecord[]; bounded: boolean; scanned: number; matched: number; unreadable: number }> {
 		const limit = listLimit(options.limit);
 		const kind = options.kind ?? "published";
 		const documents: DocumentRecord[] = [];
-		let scanned = 0; let bounded = false;
+		let scanned = 0; let bounded = false; let unreadable = 0;
 		let entries: Awaited<ReturnType<typeof opendir>>;
-		try { entries = await opendir(join(this.root, collection(kind))); } catch (error) { if (absent(error)) return { documents, bounded, scanned }; throw error; }
+		try { entries = await opendir(join(this.root, collection(kind))); } catch (error) { if (absent(error)) return { documents, bounded, scanned, matched: 0, unreadable }; throw new StoreError("store-failure", "Document collection is unreadable."); }
 		for await (const entry of entries) {
 			if (scanned >= LIMITS.listing) { bounded = true; break; }
 			scanned++;
 			if (!entry.isDirectory() || !validId(entry.name)) continue;
-			try { const record = await readJson<DocumentRecord>(join(this.path(entry.name, kind), "document.json")); if (listingRecord(record, entry.name, kind)) documents.push(record); } catch { /* An incomplete or damaged document is not a listing row. */ }
+			const record = await this.listingPointer(entry.name, kind);
+			if (!record) unreadable++;
+			else if (!options.match || options.match(record)) documents.push(record);
 		}
 		documents.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
-		return { documents: documents.slice(0, limit), bounded, scanned };
+		return { documents: documents.slice(0, limit), bounded, scanned, matched: documents.length, unreadable };
+	}
+	/** The pointer of a listed directory, or nothing when it is missing, unreadable or invalid. */
+	private async listingPointer(name: string, kind: DocumentKind): Promise<DocumentRecord | undefined> {
+		try {
+			const record = await readJson<DocumentRecord>(join(this.path(name, kind), "document.json"));
+			return listingRecord(record, name, kind) ? record : undefined;
+		} catch { return undefined; }
 	}
 	async resolve(prefix: string): Promise<string> {
 		if (!/^md-[0-9a-f]{3,20}$/.test(prefix)) throw new StoreError("invalid", "Use an identity prefix of at least six characters.");

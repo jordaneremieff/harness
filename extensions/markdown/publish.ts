@@ -43,7 +43,7 @@ const INSPECTION_TEXT: Record<InspectionFailure, string> = {
 	"tool-timeout": "the reference tool timed out after 10 seconds; retry",
 	"output-invalid": `the reference tool returned invalid or oversized output; rebuild the reader app with ${BUILD}`,
 };
-const DESCRIPTION = "Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Publish requested documents or long deliverables, not every reply. When the operator should read a document now, run the result's show command as the program of one new split pane beside the pane where the operator reads your conversation, in the terminal window where you yourself run, not in whichever window has focus, in a pane that closes when its program ends: the native reader window then sits over that pane, with real selection, copying, find, links and scrolling, and your conversation stays visible beside it. Do not float the reader over your conversation. An open reader follows new revisions of its document, so publish a correction as an update to the same document instead of opening another pane; to show a different document while a reader pane that you opened is still open, open the new pane in that pane's place and close the earlier one. To show a stored document again later, run the same command with that document's ID: the reader returns to the saved reading position. To show an earlier answer exactly, use response \"previous\" instead of retyping it. To explain something visually, write an SVG or PNG diagram beside a Markdown file, reference it with a relative image link, and publish the file: the revision keeps the image.";
+const DESCRIPTION = "Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Publish requested documents or long deliverables, not every reply. When the operator should read a document now, run the result's show command as the program of one new split pane beside the pane where the operator reads your conversation, in the terminal window where you yourself run, not in whichever window has focus, in a pane that closes when its program ends: the native reader window then sits over that pane, with real selection, copying, find, links and scrolling, and your conversation stays visible beside it. Do not float the reader over your conversation. An open reader follows new revisions of its document, so publish a correction as an update to the same document instead of opening another pane; to show a different document while a reader pane that you opened is still open, open the new pane in that pane's place and close the earlier one. To show a stored document again later, run the same command with that document's ID: the reader returns to the saved reading position. To show an earlier answer exactly, use response \"previous\" instead of retyping it. To explain something visually, write an SVG or PNG diagram beside a Markdown file, reference it with a relative image link, and publish the file: the revision keeps the image. Before you update a document whose current text you do not hold, read it with markdown_read; after a conflict, read the current revision that the conflict names. The operator can also open a published document from the Markdown view under Published, or with the result's open command in an ordinary Pi session.";
 export type ReferenceRunner = (tool: string, source: string) => Promise<string>;
 export type InspectionOptions = { app?: string; runner?: ReferenceRunner; toolPath?: string };
 export type PublishOptions = InspectionOptions & { store: MarkdownStore; cwd: string; provenance?: Partial<ContentOrigin>; plan?: PublicationPlan; previousResponse?: () => Promise<ResponseSnapshot> };
@@ -232,8 +232,8 @@ export function publicationOutcome(result: WriteResult, root: string, app: strin
 	return { ok: true, documentId: revision.document, revision: revision.revision, digest: revision.digest, bytes: revision.bytes, title: revision.title, kind: result.document.kind === "response" ? "response" : "published", created: result.created, replayed: result.replayed, ...(revision.selfContained === undefined ? {} : { selfContained: revision.selfContained }), references: referenceSummary(revision.references), provenance: revision.contentOrigin, open: `/markdown ${revision.document}`, ...paneCommand(app, root, revision.document) };
 }
 /** One line of capture qualifications, or nothing when the saved revision needs none. */
-export function coverageText(summary: ReferenceSummary, kind: "published" | "response" | "file"): string | undefined {
-	if (summary.state === "uninspected") return kind === "response" ? undefined : `References not inspected: ${summary.reason ? INSPECTION_TEXT[summary.reason] : "no inspection result was recorded"}. Local images are not retained.`;
+export function coverageText(summary: ReferenceSummary, origin: ContentOrigin["kind"]): string | undefined {
+	if (summary.state === "uninspected") return uninspectedText(summary, origin);
 	const parts = [
 		summary.retained ? `${plural(summary.retained, "image")} retained` : "",
 		summary.external ? plural(summary.external, "external image") : "",
@@ -241,6 +241,11 @@ export function coverageText(summary: ReferenceSummary, kind: "published" | "res
 		summary.truncated || summary.omitted ? partialText(summary) : "",
 	].filter(Boolean);
 	return parts.length ? `References: ${parts.join("; ")}.` : undefined;
+}
+/** Response capture never inspects references, so its uninspected inventory is not a qualification. */
+function uninspectedText(summary: ReferenceSummary, origin: ContentOrigin["kind"]): string | undefined {
+	if (origin === "ordinary-response" || origin === "native-response") return undefined;
+	return `References not inspected: ${summary.reason ? INSPECTION_TEXT[summary.reason] : "no inspection result was recorded"}.${origin === "file" ? " Local images are not retained." : ""}`;
 }
 function plural(count: number, noun: string): string { return `${count} ${noun}${count === 1 ? "" : "s"}`; }
 function unavailableText(summary: ReferenceSummary): string {
@@ -288,22 +293,35 @@ export async function publish(params: PublishInput, options: PublishOptions): Pr
 		return await save(params, await preparePublication(params, options), { ...options, plan });
 	} catch (error) { return failure(error); }
 }
-/** An attached agent terminal sends slash text to the conversation, so the receipt names the view first. */
-function openingRoute(outcome: Extract<PublishOutcome, { ok: true }>): string {
-	if (outcome.kind === "response") return `In an ordinary Pi session, /markdown ${outcome.documentId} opens it.`;
-	return `The operator opens it from the Markdown view under Published (in the agent view, under Owner views). In an ordinary Pi session, /markdown ${outcome.documentId} also opens it.`;
-}
+/**
+ * A receipt names the saved identity and revision, material capture qualifications and the next
+ * action; the tool description holds the stable guidance. Failures add the recovery step.
+ */
 export function publicationText(outcome: PublishOutcome): string {
-	if (!outcome.ok) return `Markdown publication failed (${outcome.error.code}): ${outcome.error.message}`;
-	const coverage = coverageText(outcome.references, outcome.kind);
-	return `Saved ${outcome.documentId}, revision ${outcome.revision}, ${outcome.bytes} bytes.\n${coverage ? `${coverage}\n` : ""}No window opened. ${openingRoute(outcome)}\n${showText(outcome)}`;
+	if (!outcome.ok) return failureText(outcome.error);
+	const coverage = coverageText(outcome.references, outcome.provenance.kind);
+	return [savedText(outcome), ...(coverage ? [coverage] : []), nextText(outcome)].join("\n");
 }
-function showText(outcome: Extract<PublishOutcome, { ok: true }>): string {
-	if (!outcome.show) return `It cannot be shown in a terminal pane: ${outcome.showUnavailable ?? "no reader command is available."}`;
-	return `To show it to the operator now, run this command as the program of a new split pane beside the pane where the operator reads your conversation, a pane that closes when its program ends: ${JSON.stringify(outcome.show)}. The reader window sits over that pane and follows new revisions of this document; q in the pane or the reader's close button ends it.`;
+function savedText(outcome: Extract<PublishOutcome, { ok: true }>): string {
+	const identity = `${outcome.documentId} revision ${outcome.revision} (${outcome.bytes} bytes, ${outcome.digest})`;
+	if (outcome.kind === "response") return outcome.replayed ? `This response is already saved as ${identity}. No window opened.` : `Saved the response as ${identity}. No window opened.`;
+	if (outcome.replayed) return `Returned the earlier publication ${identity}: this request was already saved, so later changes to its text, file or images are not in it. No window opened.`;
+	return `Saved ${outcome.created ? "new document " : ""}${identity}. No window opened.`;
+}
+function nextText(outcome: Extract<PublishOutcome, { ok: true }>): string {
+	if (!outcome.show) return `It cannot be shown in a pane: ${outcome.showUnavailable ?? "no reader command is available."}`;
+	const command = JSON.stringify(outcome.show);
+	if (outcome.kind === "published" && outcome.revision > 1 && !outcome.replayed) return `A reader pane that shows ${outcome.documentId} follows this revision by itself. To show it in a new pane, run ${command} as the pane's program.`;
+	return `To show it now, run ${command} as the program of a new pane.`;
+}
+function failureText(error: Extract<PublishOutcome, { ok: false }>["error"]): string {
+	const text = `Markdown publication failed (${error.code}): ${error.message}`;
+	if (error.code === "conflict" && error.currentRevision !== undefined) return `${text} Revision ${error.currentRevision} (${error.currentDigest ?? "digest unknown"}) is current. Read it with markdown_read (this document, revision ${error.currentRevision}), apply your change to that text, and publish again with expectedRevision ${error.currentRevision}. Text based on an older revision would undo its changes.`;
+	if (error.code === "replay-conflict") return `${text} This reuseKey already names other input; use a new reuseKey for new input.`;
+	return text;
 }
 export function createPublishTool(options: Omit<PublishOptions, "cwd"> & { cwd?: string }): ToolDefinition<typeof PublishParameters, PublishOutcome> {
-	const presentation = toolDisplay().tools[0];
+	const presentation = toolDisplay().tools.find((tool) => tool.name === "markdown_publish");
 	return { ...presentation, name: "markdown_publish", label: "Markdown Publish", description: DESCRIPTION, promptSnippet: "Save an exact Markdown document for the native reader; its show command puts the reader over a terminal pane.", parameters: PublishParameters, outputSchema: PublishOutcomeSchema, async execute(_id, params, _signal, _update, context) {
 		const outcome = await publish(params as PublishInput, { ...options, cwd: context.cwd, provenance: { ...options.provenance, session: context.sessionManager.getSessionId(), ...(context.model ? { model: `${context.model.provider}/${context.model.id}` } : {}) }, previousResponse: async () => previousOrdinary(context.sessionManager) });
 		return { content: [{ type: "text", text: publicationText(outcome) }], details: outcome, structuredContent: outcome, isError: !outcome.ok };
