@@ -390,12 +390,12 @@ struct DetailsView: View {
     @Bindable var model: ReaderModel
 
     var body: some View {
-        let rows = Provenance.details(model.snapshot, rendered: model.rendered, latestRevision: model.latestRevision, origin: model.launchOrigin)
+        let rows = Provenance.details(model.snapshot, rendered: model.rendered, latestRevision: model.latestRevision, origin: model.launchOrigin, imageEvidence: model.imageEvidence)
         VStack(alignment: .leading, spacing: 10) {
             Text("Document Details").font(.headline)
             ScrollView {
                 Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 4) {
-                    ForEach(rows, id: \.0) { row in
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                         GridRow {
                             Text(row.0).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
                             Text(row.1).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
@@ -415,5 +415,6 @@ struct DetailsView: View {
         }
         .padding(16)
         .frame(width: 520)
+        .task { model.imageEvidence = await model.inspectImages() }
     }
 }

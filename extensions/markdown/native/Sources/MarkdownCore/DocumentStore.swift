@@ -22,6 +22,7 @@ public enum StoreError: Error, Equatable, Sendable, CustomStringConvertible {
     case tooLarge(name: String, bytes: Int, limit: Int)
     case notUTF8
     case digestMismatch
+    case assetIdentityMismatch
     /// The revision on disk no longer carries the digest that the accepted open request pinned.
     case pinnedDigestMismatch(Int)
     case unreadable(String)
@@ -36,6 +37,7 @@ public enum StoreError: Error, Equatable, Sendable, CustomStringConvertible {
         case .tooLarge(let name, let bytes, let limit): "\(name) has \(bytes) bytes; the limit is \(limit)."
         case .notUTF8: "The source is not valid UTF-8."
         case .digestMismatch: "The source bytes do not match the recorded digest."
+        case .assetIdentityMismatch: "The retained image bytes do not match the recorded digest and size."
         case .pinnedDigestMismatch(let revision): "Revision \(revision) changed after the open request was accepted; the reader does not show it."
         case .unreadable(let reason): "Unreadable: \(reason)"
         }
@@ -235,6 +237,26 @@ public struct FileIdentity: Equatable, Sendable {
     }
 }
 
+/// Evidence of the opened file before and after a read. Change time detects replacements whose
+/// modification time was restored; file identity distinguishes a new file at the same path.
+public struct FileEvidence: Equatable, Sendable {
+    public var identity: FileIdentity
+    public var bytes: Int64
+    public var modifiedSeconds: Int64
+    public var modifiedNanoseconds: Int64
+    public var changedSeconds: Int64
+    public var changedNanoseconds: Int64
+
+    init(_ info: stat) {
+        identity = FileIdentity(info)
+        bytes = Int64(info.st_size)
+        modifiedSeconds = Int64(info.st_mtimespec.tv_sec)
+        modifiedNanoseconds = Int64(info.st_mtimespec.tv_nsec)
+        changedSeconds = Int64(info.st_ctimespec.tv_sec)
+        changedNanoseconds = Int64(info.st_ctimespec.tv_nsec)
+    }
+}
+
 /// Bounded, symlink-aware file access shared by the store reader, the open-request intake and
 /// the asset resolver.
 public enum FileAccess {
@@ -269,6 +291,11 @@ public enum FileAccess {
 
     /// Reads like `readRegularFile` and also returns the identity of the file that was read.
     public static func readRegularFileWithIdentity(_ url: URL, limit: Int, missing: StoreError) throws -> (data: Data, identity: FileIdentity) {
+        let read = try readRegularFileWithEvidence(url, limit: limit, missing: missing)
+        return (read.data, read.evidence.identity)
+    }
+
+    public static func readRegularFileWithEvidence(_ url: URL, limit: Int, missing: StoreError) throws -> (data: Data, evidence: FileEvidence) {
         let name = url.lastPathComponent
         let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard descriptor >= 0 else {
@@ -290,6 +317,10 @@ public enum FileAccess {
             throw StoreError.unreadable("\(name): \(error.localizedDescription)")
         }
         guard data.count <= limit else { throw StoreError.tooLarge(name: name, bytes: max(Int(info.st_size), data.count), limit: limit) }
-        return (data, FileIdentity(info))
+        var after = stat()
+        guard fstat(descriptor, &after) == 0, FileEvidence(info) == FileEvidence(after) else {
+            throw StoreError.unreadable("\(name) changed during the read")
+        }
+        return (data, FileEvidence(after))
     }
 }

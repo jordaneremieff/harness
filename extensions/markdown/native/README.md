@@ -216,8 +216,8 @@ APP="<app>/Contents/MacOS/MarkdownReader"
 - `--verify` runs a fixed list of WebKit checks on this Mac and exits nonzero on a failure:
   content scripts do not run; nothing reaches a loopback listener from remote images,
   stylesheets, frames or media (a control request proves the listener); the asset scheme serves
-  a retained image and refuses traversal, unknown tokens, other hosts and a file swapped for a
-  symlink; find moves the selection, including across inline formatting; code copy puts the
+  a retained image and refuses traversal, unknown tokens, other hosts, modified retained bytes
+  (with a qualified page failure) and a file swapped for a symlink; find moves the selection, including across inline formatting; code copy puts the
   literal on the pasteboard and a forged action copies nothing; web links ask for confirmation; a pinned open
   request shows its revision with the update notice; the folder watcher reports a new revision
   and the position survives the refresh; the position survives a reopen through a reading-state
@@ -393,7 +393,13 @@ assume it is the only screen of the app. Each window owns one model and one `Web
   its `retained` inventory entries under its own `assets/` directory; a plain file's images
   resolve under its folder by canonical path. Each image is checked again when served: canonical
   path inside that root, allowed media type, at most 8 MiB, read through a descriptor opened
-  without following a symbolic link that must be a regular file.
+  without following a symbolic link that must be a regular file. Retained images must match the
+  revision's recorded SHA-256 digest and byte count. A cached hash is reused only for the same
+  opened file's device, inode, size, and nanosecond modification and change times; the evidence
+  must agree before and after the read. Plain-file images continue to use the file's folder.
+  Resolved, served and decoded images are separate facts. App-owned decode inspection adds a
+  visible qualified placeholder when serving or decoding fails; the original is never repaired
+  from a project file. Details retain capture inspection, partial coverage and per-image states.
 - The store reader requires the document directory, the revision directory and its `assets/`
   directory to be the expected paths under the canonical store root, with no symbolic link below
   the root. It reads `document.json`, `revision.json`, `source.md` and assets without following a

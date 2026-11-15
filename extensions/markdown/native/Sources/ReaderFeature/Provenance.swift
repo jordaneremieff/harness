@@ -85,18 +85,19 @@ public enum Provenance {
             let total = counts.retained + counts.embedded + counts.external + counts.unavailable
             if total > 0 {
                 var described: [String] = []
-                if counts.retained + counts.embedded > 0 { described.append("\(counts.retained + counts.embedded) shown") }
+                if counts.retained + counts.embedded > 0 { described.append("\(counts.retained) resolved, \(counts.embedded) embedded") }
                 if counts.external > 0 { described.append("\(counts.external) external") }
                 if counts.unavailable > 0 { described.append("\(counts.unavailable) unavailable") }
                 parts.append("\(total) image\(total == 1 ? "" : "s"): " + described.joined(separator: ", "))
             }
-            parts.append(rendered.selfContained ? "self-contained" : "has outside references")
+            if snapshot.record?.references?.state == .uninspected { parts.append("capture references not inspected") }
+            else if let captured = snapshot.record?.selfContained { parts.append(captured ? "capture self-contained" : "capture has outside references") }
         }
         return parts.joined(separator: " · ")
     }
 
     /// Every identifier and fact, for the details view and Copy Details.
-    public static func details(_ snapshot: DocumentSnapshot?, rendered: RenderedDocument?, latestRevision: Int?, origin: LaunchOrigin?) -> [(String, String)] {
+    public static func details(_ snapshot: DocumentSnapshot?, rendered: RenderedDocument?, latestRevision: Int?, origin: LaunchOrigin?, imageEvidence: [ImageEvidence] = []) -> [(String, String)] {
         guard let snapshot else { return [] }
         var rows: [(String, String)] = []
         func add(_ label: String, _ value: String?) {
@@ -137,7 +138,10 @@ public enum Provenance {
         }
         if let rendered {
             let counts = images(rendered)
-            add("Images", "\(counts.retained) retained, \(counts.embedded) embedded, \(counts.external) external (not loaded), \(counts.unavailable) unavailable")
+            add("Images", "\(counts.retained) resolved locally, \(counts.embedded) embedded, \(counts.external) external (not loaded), \(counts.unavailable) unavailable")
+            for image in imageEvidence.prefix(64) {
+                add("Image state", "\(image.reference): resolved \(image.resolved ? "yes" : "no"), served \(image.served ? "yes" : "unconfirmed"), displayed \(image.displayed ? "yes (decoded)" : "unconfirmed")" + (image.failure.map { "; unavailable: \($0)" } ?? ""))
+            }
             for item in rendered.unavailableImages.prefix(20) {
                 add("Unavailable image", "\(item.reference) (\(MarkdownRenderer.reasonLabel(item.reason)))")
             }
@@ -145,15 +149,21 @@ public enum Provenance {
                 add("External image", url.absoluteString)
             }
             add("Local-only links", rendered.localOnlyLinks > 0 ? "\(rendered.localOnlyLinks)" : nil)
-            add("Self-contained", rendered.selfContained ? "yes" : "no")
+            add("Page references", rendered.selfContained ? "all resolved locally or embedded; display is separate" : "outside or unavailable references")
             add("Raw HTML shown as text", rendered.rawHTMLFragments > 0 ? "\(rendered.rawHTMLFragments) fragments" : nil)
             add("Headings", "\(rendered.outline.count)")
             add("Code blocks", "\(rendered.codeBlocks.count)")
         }
         if let inventory = snapshot.record?.references {
             var text = inventory.state.rawValue
-            if inventory.truncated == true || (inventory.omitted ?? 0) > 0 { text += ", inventory incomplete" }
+            if let reason = inventory.reason { text += ": " + reason }
+            if inventory.truncated == true { text += "; partial: parser limit, further coverage unknown" }
+            if let omitted = inventory.omitted, omitted > 0 { text += "; \(omitted) known references omitted" }
             add("Reference inventory", text)
+            for item in (inventory.items ?? []).filter({ $0.kind == .image }).prefix(64) {
+                add("Captured image", "\(item.reference): \(item.state)" + (item.reason.map { " (\(MarkdownRenderer.reasonLabel($0)))" } ?? ""))
+            }
+            add("Captured self-contained", snapshot.record?.selfContained.map { $0 ? "yes" : "no" })
         }
         if let origin {
             add("Opened from", origin.terminal + (origin.exact == nil ? " (application only)" : " (pane recorded)"))

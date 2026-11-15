@@ -274,12 +274,12 @@ struct Context {
             let png = Self.png()
             let outside = workspace.appendingPathComponent("outside.png")
             try png.write(to: outside)
-            let good = String(repeating: "a", count: 64)
+            let good = String(VerifyStore.digest(png).dropFirst(7))
             let linked = String(repeating: "b", count: 64)
             let id = VerifyStore.newId()
             let references: [String: Any] = ["state": "inspected", "omitted": 0, "items": [
-                ["kind": "image", "reference": "good.png", "state": "retained", "file": "assets/\(good).png"],
-                ["kind": "image", "reference": "linked.png", "state": "retained", "file": "assets/\(linked).png"],
+                ["kind": "image", "reference": "good.png", "state": "retained", "file": "assets/\(good).png", "mediaType": "image/png", "bytes": png.count, "digest": "sha256:\(good)"],
+                ["kind": "image", "reference": "linked.png", "state": "retained", "file": "assets/\(linked).png", "mediaType": "image/png", "bytes": png.count, "digest": "sha256:\(linked)"],
             ]]
             let dir = try store.write(id, revision: 1, source: "# Assets\n\n![good](good.png)\n\n![linked](linked.png)\n", kind: "file", references: references, assets: ["\(good).png": png])
             try FileManager.default.createSymbolicLink(at: dir.appendingPathComponent("assets/\(linked).png"), withDestinationURL: outside)
@@ -297,15 +297,25 @@ struct Context {
             return true;
             """)
             let refused = await wait(seconds: 3) { model.refusedAssetRequests - refusedBefore >= 4 }
-            // A retained file replaced by a symlink after rendering is refused when served.
+            // Same-size mutation after a successful serve must invalidate cached validation.
             let retained = dir.appendingPathComponent("assets/\(good).png")
+            try Data(repeating: 0, count: png.count).write(to: retained)
+            let beforeMutation = model.refusedAssetRequests
+            _ = await js(model, "const i = document.querySelector('img[data-asset]'); i.src = 'reader-asset://doc/a0?modified'; return true;")
+            let mutationRefused = await wait(seconds: 3) { model.refusedAssetRequests > beforeMutation }
+            let evidence = await model.inspectImages()
+            let placeholderVisible = (await js(model, "return document.body.textContent.includes('Image unavailable:')") as? Bool) ?? false
+            let detailRows = Provenance.details(model.snapshot, rendered: model.rendered, latestRevision: model.latestRevision, origin: nil, imageEvidence: evidence)
+            let qualified = evidence.contains { !$0.displayed && $0.failure?.contains("recorded digest") == true }
+                && placeholderVisible && detailRows.contains { $0.1.contains("recorded digest") }
+            // A retained file replaced by a symlink after rendering is refused when served.
             try FileManager.default.removeItem(at: retained)
             try FileManager.default.createSymbolicLink(at: retained, withDestinationURL: outside)
             let beforeSwap = model.refusedAssetRequests
             _ = await js(model, "const img = document.createElement('img'); img.src = 'reader-asset://doc/a0?again'; document.body.appendChild(img); return true;")
             let swapRefused = await wait(seconds: 3) { model.refusedAssetRequests > beforeSwap }
-            let pass = loaded && linkedShown && refused && swapRefused
-            return .init(name: "asset-scheme-containment", pass: pass, detail: "retained image served: \(loaded); symlink escape shown as unavailable: \(linkedShown); traversal, unknown token and other host refused: \(refused); file swapped for a symlink refused: \(swapRefused)")
+            let pass = loaded && linkedShown && refused && swapRefused && mutationRefused && qualified
+            return .init(name: "asset-scheme-containment", pass: pass, detail: "retained image decoded: \(loaded); symlink escape shown as unavailable: \(linkedShown); traversal, unknown token and other host refused: \(refused); same-size mutation refused: \(mutationRefused), qualified page failure: \(qualified); file swapped for a symlink refused: \(swapRefused)")
         } catch {
             return .init(name: "asset-scheme-containment", pass: false, detail: String(describing: error))
         }

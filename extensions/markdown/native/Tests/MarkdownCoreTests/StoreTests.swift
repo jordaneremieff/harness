@@ -324,7 +324,7 @@ let docC = "md-00000000001111111111"
 
 @Suite(.serialized) struct AssetContainment {
     static let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
-    static let hash = String(repeating: "a", count: 64)
+    static let hash = String(Digest.sha256(png).dropFirst(7))
 
     @Test func storedResolverServesOnlyRetainedFilesInsideTheRevision() throws {
         let store = try FixtureStore()
@@ -335,8 +335,8 @@ let docC = "md-00000000001111111111"
         let references: [String: Any] = [
             "state": "inspected", "omitted": 0, "truncated": false,
             "items": [
-                ["kind": "image", "reference": "img/a.png", "state": "retained", "file": "assets/\(Self.hash).png", "mediaType": "image/png", "bytes": 8, "digest": "sha256:x"],
-                ["kind": "image", "reference": "img/link.png", "state": "retained", "file": "assets/\(linkHash).png"],
+                ["kind": "image", "reference": "img/a.png", "state": "retained", "file": "assets/\(Self.hash).png", "mediaType": "image/png", "bytes": 8, "digest": "sha256:\(Self.hash)"],
+                ["kind": "image", "reference": "img/link.png", "state": "retained", "file": "assets/\(linkHash).png", "mediaType": "image/png", "bytes": 8, "digest": "sha256:\(linkHash)"],
                 ["kind": "image", "reference": "img/up.png", "state": "retained", "file": "assets/../../../secret.png"],
                 ["kind": "image", "reference": "../s.png", "state": "unavailable", "reason": "outside-root"],
                 ["kind": "link", "reference": "docs/x.md", "state": "local-only"],
@@ -363,6 +363,33 @@ let docC = "md-00000000001111111111"
         try FileManager.default.removeItem(at: retained)
         try FileManager.default.createSymbolicLink(at: retained, withDestinationURL: outsideFile)
         #expect(throws: StoreError.self) { try asset.readData() }
+    }
+
+    @Test func modifiedRetainedBytesNeverReplaceTheRecordedImage() throws {
+        let store = try FixtureStore()
+        defer { store.remove() }
+        let references: [String: Any] = ["state": "inspected", "items": [
+            ["kind": "image", "reference": "a.png", "state": "retained", "file": "assets/\(Self.hash).png", "mediaType": "image/png", "bytes": Self.png.count, "digest": "sha256:\(Self.hash)"],
+        ]]
+        let dir = try store.addRevision(docA, revision: 1, source: "![a](a.png)", references: references, assets: ["\(Self.hash).png": Self.png])
+        let loaded = try DirectoryStore(root: store.root).loadRevision(docA)
+        let resolver = StoredAssetResolver(revisionDirectory: dir, references: loaded.record.references, kind: .published)
+        guard case .local(let asset) = resolver.resolve("a.png") else { Issue.record("expected retained image"); return }
+        #expect(try asset.readData() == Self.png)
+        #expect(try asset.readData() == Self.png)
+        let path = dir.appendingPathComponent("assets/\(Self.hash).png")
+        let modifiedAt = try FileManager.default.attributesOfItem(atPath: path.path)[.modificationDate]!
+        try Data(repeating: 0, count: Self.png.count).write(to: path)
+        try FileManager.default.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: path.path)
+        #expect(throws: StoreError.assetIdentityMismatch) { try asset.readData() }
+        try (Self.png + Data([0])).write(to: path)
+        #expect(throws: StoreError.assetIdentityMismatch) { try asset.readData() }
+        try Self.png.write(to: path)
+        #expect(try asset.readData() == Self.png)
+        let plain = DirectoryAssetResolver(directory: path.deletingLastPathComponent())
+        guard case .local(let current) = plain.resolve(path.lastPathComponent) else { Issue.record("expected plain image"); return }
+        try Data([1, 2]).write(to: path)
+        #expect(try current.readData() == Data([1, 2]))
     }
 
     @Test func symlinkedAssetsDirectoryServesNothing() throws {
@@ -423,7 +450,7 @@ let docC = "md-00000000001111111111"
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         try Self.png.write(to: base.appendingPathComponent("a.png"))
         let rendered = MarkdownRenderer.render("![alt](a.png) ![again](a.png) ![no](../x.png)", resolver: DirectoryAssetResolver(directory: base), nonce: "n")
-        #expect(rendered.body.contains("<img src=\"reader-asset://doc/a0\" alt=\"alt\""))
+        #expect(rendered.body.contains("src=\"reader-asset://doc/a0\" alt=\"alt\""))
         #expect(rendered.body.contains("reader-asset://doc/a1"))
         #expect(!rendered.body.contains(base.path))
         #expect(rendered.assets.count == 2)

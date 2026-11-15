@@ -8,9 +8,15 @@ final class AssetTable: @unchecked Sendable {
     private var assets: [String: ResolvedAsset] = [:]
     private var refusedCount = 0
     private var servedCount = 0
+    private var servedTokens: Set<String> = []
+    private var failures: [String: String] = [:]
 
     func replace(_ assets: [String: ResolvedAsset]) {
-        lock.withLock { self.assets = assets }
+        lock.withLock {
+            self.assets = assets
+            servedTokens = []
+            failures = [:]
+        }
     }
 
     func asset(_ token: String) -> ResolvedAsset? {
@@ -18,6 +24,11 @@ final class AssetTable: @unchecked Sendable {
     }
 
     func noteRefused() { lock.withLock { refusedCount += 1 } }
+    func noteServed(_ token: String) { lock.withLock { _ = servedTokens.insert(token); failures[token] = nil } }
+    func noteFailure(_ token: String, _ reason: String) { lock.withLock { failures[token] = reason } }
+    func evidence(_ token: String) -> (served: Bool, failure: String?) {
+        lock.withLock { (servedTokens.contains(token), failures[token]) }
+    }
     func noteServed() { lock.withLock { servedCount += 1 } }
     var refused: Int { lock.withLock { refusedCount } }
     var served: Int { lock.withLock { servedCount } }
@@ -65,7 +76,14 @@ struct AssetSchemeHandler: URLSchemeHandler {
         case "doc":
             let token = String(path.dropFirst())
             guard let asset = table.asset(token) else { throw URLError(.fileDoesNotExist) }
-            return (try asset.readData(), asset.mediaType)
+            do {
+                let data = try asset.readData()
+                table.noteServed(token)
+                return (data, asset.mediaType)
+            } catch {
+                table.noteFailure(token, String(describing: error))
+                throw error
+            }
         default:
             throw URLError(.unsupportedURL)
         }

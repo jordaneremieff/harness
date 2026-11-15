@@ -111,6 +111,7 @@ public struct ReferenceInventory: Codable, Sendable, Equatable {
     public var state: State
     public var truncated: Bool?
     public var omitted: Int?
+    public var reason: String? = nil
     public var items: [ReferenceItem]?
 }
 

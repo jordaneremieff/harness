@@ -1,6 +1,7 @@
 import Foundation
 
-/// A local image that passed containment, type and size checks.
+/// A local image that passed containment, type and size checks. Retained identity is checked
+/// against the bytes read from the opened file, never against a project file.
 public struct ResolvedAsset: Sendable, Equatable {
     /// Canonical path of the file.
     public var path: String
@@ -8,13 +9,52 @@ public struct ResolvedAsset: Sendable, Equatable {
     public var root: String
     public var mediaType: String
     public var bytes: Int
+    public var expectedDigest: String? = nil
+    public var expectedBytes: Int? = nil
+    private let validation = AssetValidation()
+
+    public init(path: String, root: String, mediaType: String, bytes: Int, expectedDigest: String? = nil, expectedBytes: Int? = nil) {
+        self.path = path
+        self.root = root
+        self.mediaType = mediaType
+        self.bytes = bytes
+        self.expectedDigest = expectedDigest
+        self.expectedBytes = expectedBytes
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.path == rhs.path && lhs.root == rhs.root && lhs.mediaType == rhs.mediaType && lhs.bytes == rhs.bytes
+            && lhs.expectedDigest == rhs.expectedDigest && lhs.expectedBytes == rhs.expectedBytes
+    }
 
     /// Reads the bytes again with the same checks, so that a file replaced after resolution
     /// (for example by a symlink) cannot escape the root. The file is opened without following a
     /// symbolic link and must be a regular file.
     public func readData() throws -> Data {
         guard FileAccess.canonicalPath(path) == path, FileAccess.isInside(path, root: root) else { throw StoreError.outsideStore }
-        return try FileAccess.readRegularFile(URL(fileURLWithPath: path), limit: Limits.assetBytes, missing: .notFound(path))
+        let read = try FileAccess.readRegularFileWithEvidence(URL(fileURLWithPath: path), limit: Limits.assetBytes, missing: .notFound(path))
+        if let expectedDigest, let expectedBytes {
+            guard read.data.count == expectedBytes, validation.digest(read.data, evidence: read.evidence) == expectedDigest else {
+                throw StoreError.assetIdentityMismatch
+            }
+        }
+        return read.data
+    }
+}
+
+/// One cached hash per resolved asset. Reuse requires the evidence of the opened descriptor,
+/// including nanosecond modification and change times, to match the read that produced the hash.
+private final class AssetValidation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var previous: (FileEvidence, String)?
+
+    func digest(_ data: Data, evidence: FileEvidence) -> String {
+        lock.withLock {
+            if let previous, previous.0 == evidence { return previous.1 }
+            let digest = Digest.sha256(data)
+            previous = (evidence, digest)
+            return digest
+        }
     }
 }
 
@@ -131,7 +171,16 @@ public struct StoredAssetResolver: AssetResolving {
               parts[0].utf8.allSatisfy({ (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }) else {
             return .unavailable(reason: "invalid")
         }
-        return References.check((assetsRoot as NSString).appendingPathComponent(name), root: assetsRoot)
+        guard let digest = item.digest, digest == "sha256:" + parts[0],
+              let bytes = item.bytes, bytes >= 0, bytes <= Limits.assetBytes,
+              let mediaType = item.mediaType, MediaTypes.images[String(parts[1])] == mediaType else {
+            return .unavailable(reason: "invalid-retained-identity")
+        }
+        let resolution = References.check((assetsRoot as NSString).appendingPathComponent(name), root: assetsRoot)
+        guard case .local(var asset) = resolution else { return resolution }
+        asset.expectedDigest = digest
+        asset.expectedBytes = bytes
+        return .local(asset)
     }
 }
 

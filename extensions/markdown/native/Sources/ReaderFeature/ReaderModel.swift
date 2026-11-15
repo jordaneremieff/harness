@@ -81,6 +81,7 @@ public final class ReaderModel {
     }
     public var pendingExternalURL: URL?
     public var detailsVisible = false
+    public var imageEvidence: [ImageEvidence] = []
     /// When set, a newer revision replaces the shown one at the same reading position as soon as
     /// the reader sees it. Scrolling defers replacement until it settles. A text selection or
     /// an open find bar keeps the update notice for the reader's choice.
@@ -282,6 +283,8 @@ public final class ReaderModel {
             update = nil
         }
         showingSource = false
+        imageEvidence = await inspectImages()
+        guard token == generation, !closed else { return false }
         phase = .ready
         lastRestore = position.map { _ in .none } ?? .none
         if let position { lastRestore = await restorePosition(position) }
