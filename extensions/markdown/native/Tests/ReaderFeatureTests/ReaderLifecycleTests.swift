@@ -94,6 +94,30 @@ private final class LifecycleGate {
         return window
     }
 
+    @Test func supersedingOpenDoesNotWaitForImageInspection() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1)
+        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
+        let window = window(model)
+        defer { window.close() }
+        let gate = LifecycleGate()
+        defer { gate.release() }
+        model.imageInspectionGate = { await gate.wait() }
+        let first = Task { await model.open(revision: 1, origin: nil) }
+        #expect(await wait { gate.reached })
+        #expect(model.phase == .ready)
+        #expect(!model.isLoadingForCheck)
+        let origin = LaunchOrigin(terminal: "Rex", bundleId: LaunchOrigin.rexBundleId)
+        let superseding = Task { await model.open(revision: 1, origin: origin) }
+        #expect(await wait { model.launchOrigin == origin })
+        #expect(model.phase == .ready && model.snapshot?.revision == 1)
+        gate.release()
+        await first.value
+        await superseding.value
+        await model.close()
+    }
+
     @Test func closingDoesNotWaitForAStateWrite() async throws {
         let directory = try ReadingStateIntake.directory()
         defer { try? FileManager.default.removeItem(at: directory) }

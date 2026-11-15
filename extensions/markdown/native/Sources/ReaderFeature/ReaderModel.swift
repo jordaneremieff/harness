@@ -106,6 +106,8 @@ public final class ReaderModel {
     @ObservationIgnored private var positionTask: Task<Void, Never>?
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
     @ObservationIgnored private var monitorTask: Task<Void, Never>?
+    @ObservationIgnored private var imageInspectionTask: Task<Void, Never>?
+    @ObservationIgnored package var imageInspectionGate: (@MainActor () async -> Void)?
     @ObservationIgnored private var closed = false
     @ObservationIgnored private var scrolling = false
     /// The reader chose an older revision than the latest; following waits until the reader
@@ -184,6 +186,7 @@ public final class ReaderModel {
     func load(revision: Int?, pinnedDigest: String? = nil, restore: RestoreMode, automatic: Bool = false) async {
         guard !closed else { return }
         generation += 1
+        imageInspectionTask?.cancel()
         let token = generation
         loadPending = true
         startWatching()
@@ -287,8 +290,7 @@ public final class ReaderModel {
             update = nil
         }
         showingSource = false
-        imageEvidence = await inspectImages()
-        guard token == generation, !closed else { return false }
+        imageEvidence = []
         phase = .ready
         lastRestore = position.map { _ in .none } ?? .none
         if let position { lastRestore = await restorePosition(position) }
@@ -301,6 +303,14 @@ public final class ReaderModel {
         state.noteOpened(reference, title: Provenance.displayTitle(prepared.snapshot, rendered: prepared.rendered))
         readerLog.notice("rendered \(self.reference.key, privacy: .public) revision=\(prepared.snapshot.revision.map(String.init) ?? "-", privacy: .public) latest=\(prepared.snapshot.latestRevision.map(String.init) ?? "-", privacy: .public) update=\(self.update == nil ? "none" : "available", privacy: .public) restore=\(self.lastRestore.rawValue, privacy: .public) totalMs=\(Int(self.timings?.totalMilliseconds ?? 0), privacy: .public)")
         await savePosition()
+        imageInspectionTask = Task { [weak self] in
+            guard let self, token == self.generation, !self.closed else { return }
+            await self.imageInspectionGate?()
+            guard token == self.generation, !self.closed, !Task.isCancelled else { return }
+            let evidence = await self.inspectImages()
+            guard token == self.generation, !self.closed, !Task.isCancelled else { return }
+            self.imageEvidence = evidence
+        }
         return true
     }
 
@@ -617,6 +627,7 @@ public final class ReaderModel {
         positionTask?.cancel()
         monitorTask?.cancel()
         review.close()
+        imageInspectionTask?.cancel()
         await savePosition(final: true)
         state.saveNow()
     }

@@ -314,7 +314,7 @@ public enum MarkdownRenderer {
         case .local(let asset):
             let token = "a\(context.assets.count)"
             context.assets[token] = asset
-            return "<img data-asset=\"\(token)\" data-reference=\"\(escape(reference))\" src=\"\(assetScheme)://doc/\(token)\" alt=\"\(escape(alt))\"\(titleAttribute(title)) decoding=\"async\">"
+            return "<img data-asset=\"\(token)\" data-image-rendering=\"\(escape(context.nonce))\" data-reference=\"\(escape(reference))\" src=\"\(assetScheme)://doc/\(token)\" alt=\"\(escape(alt))\"\(titleAttribute(title)) decoding=\"async\">"
         case .embedded(let address):
             context.embeddedImages += 1
             return "<img src=\"\(escape(address))\" alt=\"\(escape(alt))\"\(titleAttribute(title))>"

@@ -484,8 +484,10 @@ assume it is the only screen of the app. Each window owns one model and one `Web
   must agree before and after the read. Plain-file images continue to use the file's folder.
   Resolved, served and decoded images are separate facts. App-owned decode inspection adds a
   visible qualified placeholder when serving or decoding fails; the original is never repaired
-  from a project file. Image inspection waits at most two seconds after page display. A decode
-  that has not settled stays unconfirmed, not failed, and opening Details reads the evidence again.
+  from a project file. Image inspection runs separately after the page is ready and its position
+  is restored, with a two-second evidence deadline. It never holds installation. Its results and
+  DOM effects belong to that rendering only. A decode that has not settled stays unconfirmed,
+  not failed, and opening Details reads the evidence again.
   Details retain capture inspection, partial coverage and per-image states.
 - The store reader requires the document directory, the revision directory and its `assets/`
   directory to be the expected paths under the canonical store root, with no symbolic link below

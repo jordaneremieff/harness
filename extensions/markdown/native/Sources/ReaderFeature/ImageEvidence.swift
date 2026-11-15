@@ -14,7 +14,7 @@ public struct ImageEvidence: Equatable, Sendable {
 extension PageScript {
     static let waitForImages = """
     const states = globalThis.readerImageDecodeStates ||= new WeakMap();
-    const pending = [...document.querySelectorAll('img[data-asset]')].map(i => {
+    const pending = [...document.querySelectorAll('img[data-asset]')].filter(i => i.dataset.imageRendering === rendering).map(i => {
       if (!states.has(i)) {
         const state = { result: 'pending' };
         state.promise = i.decode().then(() => { state.result = 'decoded'; }, () => { state.result = 'failed'; });
@@ -32,7 +32,7 @@ extension PageScript {
     """
 
     static let inspectImages = """
-    const images = [...document.querySelectorAll('img[data-asset]')];
+    const images = [...document.querySelectorAll('img[data-asset]')].filter(i => i.dataset.imageRendering === rendering);
     return images.map(i => {
       const token = i.dataset.asset;
       const decoded = globalThis.readerImageDecodeStates?.get(i)?.result;
@@ -59,12 +59,14 @@ extension ReaderModel {
     /// qualified placeholder; no project-file fallback or document script is involved.
     public func inspectImages() async -> [ImageEvidence] {
         guard let rendered, !rendered.assets.isEmpty, !showingSource else { return [] }
-        _ = try? await page.callJavaScript(PageScript.waitForImages, contentWorld: PageScript.world)
+        let rendering = rendered.nonce
+        _ = try? await page.callJavaScript(PageScript.waitForImages, arguments: ["rendering": rendering], contentWorld: PageScript.world)
+        guard self.rendered?.nonce == rendering, !Task.isCancelled else { return [] }
         var failures: [String: String] = [:]
         for token in rendered.assets.keys {
             if let reason = assets.evidence(token).failure { failures[token] = reason }
         }
-        guard let rows = try? await page.callJavaScript(PageScript.inspectImages, arguments: ["failures": failures], contentWorld: PageScript.world) as? [[String: Any]] else { return [] }
+        guard let rows = try? await page.callJavaScript(PageScript.inspectImages, arguments: ["failures": failures, "rendering": rendering], contentWorld: PageScript.world) as? [[String: Any]] else { return [] }
         return rows.compactMap { row in
             guard let token = row["token"] as? String, let reference = row["reference"] as? String else { return nil }
             let evidence = assets.evidence(token)
