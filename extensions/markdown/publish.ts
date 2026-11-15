@@ -11,7 +11,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { previousNative } from "./native-responses.ts";
 import { paneCommand } from "./pane-command.ts";
 import { previousOrdinary, responseSnapshotWrite, type ResponseSnapshot } from "./responses.ts";
-import { digest, INSPECTION_FAILURES, LIMITS, type MarkdownStore, StoreError, validateInput, type AssetRecord, type CapturedAsset, type ContentOrigin, type ErrorCode, type InspectionFailure, type PublicationPlan, type ReferenceInventory, type WriteInput, type WriteResult } from "./store.ts";
+import { digest, INSPECTION_FAILURES, LIMITS, type MarkdownStore, StoreError, validateInput, type AssetRecord, type CapturedAsset, type ContentOrigin, type ErrorCode, type InspectionFailure, type PublicationPlan, type ReferenceInventory, type StoredDocument, type WriteInput, type WriteResult } from "./store.ts";
 
 export const PublishParameters = obj({
 	title: opt(str({ minLength: 1, maxLength: 200, description: "One-line document title. Required with text or file." })),
@@ -25,12 +25,13 @@ export const PublishParameters = obj({
 export type PublishInput = Static<typeof PublishParameters>;
 /**
  * Reference coverage of a saved revision. `truncated` and `omitted` qualify an inspected inventory;
- * `reason` says why inspection did not run; `unavailableItems` names the first unavailable images.
+ * `reason` says why inspection did not run; `unavailableItems` names the first unavailable images;
+ * `kept` counts the retained images that a text update kept from the revision it edits.
  */
-export type ReferenceSummary = { state: "inspected" | "uninspected"; truncated: boolean; omitted: number; retained: number; embedded: number; external: number; unavailable: number; localLinks: number; reason?: InspectionFailure; unavailableItems?: { reference: string; reason: string }[] };
+export type ReferenceSummary = { state: "inspected" | "uninspected"; truncated: boolean; omitted: number; retained: number; embedded: number; external: number; unavailable: number; localLinks: number; reason?: InspectionFailure; unavailableItems?: { reference: string; reason: string }[]; kept?: { revision: number; images: number } };
 export type PublishOutcome = { ok: true; documentId: string; revision: number; digest: string; bytes: number; title: string; kind: "published" | "response"; created: boolean; replayed: boolean; selfContained?: boolean; references: ReferenceSummary; provenance: ContentOrigin; open: string; show?: string[]; paneInput?: string; showUnavailable?: string } | { ok: false; error: { code: ErrorCode; message: string; currentRevision?: number; currentDigest?: string } };
 const OriginSchema = obj({ kind: str(), capturedAt: str() }, { open: true });
-export const ReferenceSummarySchema = obj({ state: union([lit("inspected"), lit("uninspected")]), truncated: bool(), omitted: int(), retained: int(), embedded: int(), external: int(), unavailable: int(), localLinks: int(), reason: opt(union(INSPECTION_FAILURES.map((reason) => lit(reason)))), unavailableItems: opt(arr(obj({ reference: str(), reason: str() }))) });
+export const ReferenceSummarySchema = obj({ state: union([lit("inspected"), lit("uninspected")]), truncated: bool(), omitted: int(), retained: int(), embedded: int(), external: int(), unavailable: int(), localLinks: int(), reason: opt(union(INSPECTION_FAILURES.map((reason) => lit(reason)))), unavailableItems: opt(arr(obj({ reference: str(), reason: str() }))), kept: opt(obj({ revision: int(), images: int() })) });
 export const PublishOutcomeSchema = union([
 	obj({ ok: lit(true), documentId: str(), revision: int(), digest: str(), bytes: int(), title: str(), kind: union([lit("published"), lit("response")]), created: bool(), replayed: bool(), selfContained: opt(bool()), references: ReferenceSummarySchema, provenance: OriginSchema, open: str(), show: opt(arr(str())), paneInput: opt(str()), showUnavailable: opt(str()) }),
 	obj({ ok: lit(false), error: obj({ code: union(["invalid", "too-large", "not-found", "conflict", "replay-conflict", "file-unreadable", "store-failure"].map((code) => lit(code))), message: str(), currentRevision: opt(int()), currentDigest: opt(str()) }) }),
@@ -164,7 +165,9 @@ function localLink(reference: string): boolean {
 	if (reference.startsWith("#") || /^(https?:|mailto:|\/\/)/i.test(reference)) return false;
 	return /^file:/i.test(reference) || !/^[a-z][a-z0-9+.-]*:/i.test(reference);
 }
-export async function captureReferences(result: InspectionResult, root?: string, opener: typeof open = open): Promise<{ references: ReferenceInventory; assets: CapturedAsset[] }> {
+/** Retained images of an earlier revision by whole reference, read on demand. */
+export type KeptImages = (reference: string) => Promise<CapturedAsset | undefined>;
+export async function captureReferences(result: InspectionResult, root?: string, opener: typeof open = open, kept?: KeptImages): Promise<{ references: ReferenceInventory; assets: CapturedAsset[] }> {
 	if ("failure" in result) return { references: { state: "uninspected", truncated: false, omitted: 0, items: [], reason: result.failure }, assets: [] };
 	const { inspection } = result;
 	const canonicalRoot = root === undefined ? undefined : await realpath(root);
@@ -172,9 +175,10 @@ export async function captureReferences(result: InspectionResult, root?: string,
 	const references: ReferenceInventory = { state: "inspected", truncated: inspection.truncated, omitted: Math.max(0, destinations.length - 256), items: [] };
 	const images = new Set(inspection.images);
 	const assets: CapturedAsset[] = []; let total = 0;
+	const image = async (reference: string) => (canonicalRoot === undefined ? await kept?.(reference) : undefined) ?? await captureImage(reference, canonicalRoot, opener);
 	for (const destination of destinations.slice(0, 256)) {
 		if (destination.kind === "link") { references.items.push({ ...destination, reference: shortReference(destination.reference), state: "local-only" }); continue; }
-		let asset = await captureImage(destination.reference, canonicalRoot, opener);
+		let asset = await image(destination.reference);
 		if (asset.data && (assets.length >= LIMITS.assetCount || total + asset.data.length > LIMITS.totalAssetBytes)) asset = unavailable(destination.reference, "limit");
 		if (asset.data) { total += asset.data.length; assets.push(asset); }
 		const record = imageRecord(asset.record, destination.reference, images);
@@ -200,7 +204,8 @@ export async function preparePublication(params: PublishInput, options: PublishO
 		input = { title, source: params.text ?? "", contentOrigin: { kind: "tool", capturedAt: new Date().toISOString(), cwd: options.cwd } };
 		validateInput(input);
 		if (!input.source.trim()) throw new StoreError("invalid", "Publication source must not be empty.");
-		Object.assign(input, await captureReferences(await inspectReferences(input.source, options)));
+		const kept = params.document && params.expectedRevision ? await keptImages(options.store, params.document, params.expectedRevision) : undefined;
+		Object.assign(input, await captureReferences(await inspectReferences(input.source, options), undefined, open, kept));
 	}
 	if (!input.source.trim()) throw new StoreError("invalid", "Publication source must not be empty.");
 	input.title = title;
@@ -208,6 +213,21 @@ export async function preparePublication(params: PublishInput, options: PublishO
 	input.invocationDigest = invocationDigest(params, options.cwd);
 	validateInput(input);
 	return input;
+}
+/**
+ * A text update reads no image files, so an image reference that the edited revision retained
+ * keeps that revision's checked bytes. A reference that the edited revision did not retain, or
+ * whose retained bytes fail their check, stays unavailable without a folder.
+ */
+async function keptImages(store: MarkdownStore, document: string, revision: number): Promise<KeptImages | undefined> {
+	let base: StoredDocument;
+	try { base = await store.get(document, revision); } catch (error) { if (error instanceof StoreError && error.code === "not-found") return undefined; throw error; }
+	const retained = new Map(base.revision.references.items.filter((item) => item.kind === "image" && item.state === "retained").map((item) => [item.reference, item]));
+	return async (reference) => {
+		const item = retained.get(reference);
+		if (!item) return undefined;
+		try { return { record: { ...item }, data: await store.retainedAsset(document, revision, item), keptFrom: revision }; } catch { return undefined; }
+	};
 }
 /** Saves the earlier answer exactly as a response snapshot; the same response always names the same snapshot. */
 async function snapshotPrevious(params: PublishInput, options: PublishOptions): Promise<PublishOutcome> {
@@ -227,15 +247,20 @@ export function referenceSummary(references: ReferenceInventory): ReferenceSumma
 	const unavailable = items.filter((item) => item.state === "unavailable").slice(0, SUMMARY_ITEMS).map((item) => ({ reference: [...item.reference].slice(0, SUMMARY_REFERENCE_CHARS).join(""), reason: item.reason ?? "unknown" }));
 	return { state: references.state, truncated: references.truncated, omitted: references.omitted, retained: count("retained"), embedded: count("embedded"), external: count("external"), unavailable: count("unavailable"), localLinks: count("local-only"), ...(references.reason ? { reason: references.reason } : {}), ...(unavailable.length ? { unavailableItems: unavailable } : {}) };
 }
-export function publicationOutcome(result: WriteResult, root: string, app: string | undefined): PublishOutcome {
+export function publicationOutcome(result: WriteResult, root: string, app: string | undefined, kept?: ReferenceSummary["kept"]): PublishOutcome {
 	const { revision } = result;
-	return { ok: true, documentId: revision.document, revision: revision.revision, digest: revision.digest, bytes: revision.bytes, title: revision.title, kind: result.document.kind === "response" ? "response" : "published", created: result.created, replayed: result.replayed, ...(revision.selfContained === undefined ? {} : { selfContained: revision.selfContained }), references: referenceSummary(revision.references), provenance: revision.contentOrigin, open: `/markdown ${revision.document}`, ...paneCommand(app, root, revision.document) };
+	return { ok: true, documentId: revision.document, revision: revision.revision, digest: revision.digest, bytes: revision.bytes, title: revision.title, kind: result.document.kind === "response" ? "response" : "published", created: result.created, replayed: result.replayed, ...(revision.selfContained === undefined ? {} : { selfContained: revision.selfContained }), references: { ...referenceSummary(revision.references), ...(kept && !result.replayed ? { kept } : {}) }, provenance: revision.contentOrigin, open: `/markdown ${revision.document}`, ...paneCommand(app, root, revision.document) };
+}
+/** The images that a text update kept from the revision it edits. */
+function keptSummary(input: WriteInput): ReferenceSummary["kept"] {
+	const kept = (input.assets ?? []).filter((asset) => asset.keptFrom !== undefined);
+	return kept.length ? { revision: kept[0]?.keptFrom ?? 0, images: kept.length } : undefined;
 }
 /** One line of capture qualifications, or nothing when the saved revision needs none. */
 export function coverageText(summary: ReferenceSummary, origin: ContentOrigin["kind"]): string | undefined {
 	if (summary.state === "uninspected") return uninspectedText(summary, origin);
 	const parts = [
-		summary.retained ? `${plural(summary.retained, "image")} retained` : "",
+		summary.retained ? `${plural(summary.retained, "image")} retained${summary.kept ? ` (${summary.kept.images} kept from revision ${summary.kept.revision}: a text publication reads no image files, so an unchanged reference keeps that revision's image; publish a file to change an image)` : ""}` : "",
 		summary.external ? plural(summary.external, "external image") : "",
 		summary.unavailable ? unavailableText(summary) : "",
 		summary.truncated || summary.omitted ? partialText(summary) : "",
@@ -268,7 +293,7 @@ async function normaliseInvocation(params: PublishInput, store: MarkdownStore, r
 	return { ...params, document: stored.document.id };
 }
 async function save(params: PublishInput, input: WriteInput, options: PublishOptions): Promise<PublishOutcome> {
-	if (params.document) return publicationOutcome(await options.store.update(params.document, params.expectedRevision ?? 0, input, { plan: options.plan, reuseKey: params.reuseKey }), options.store.root, options.app);
+	if (params.document) return publicationOutcome(await options.store.update(params.document, params.expectedRevision ?? 0, input, { plan: options.plan, reuseKey: params.reuseKey }), options.store.root, options.app, keptSummary(input));
 	return publicationOutcome(await options.store.create(input, { plan: options.plan, reuseKey: params.reuseKey }), options.store.root, options.app);
 }
 async function savedPlan(store: MarkdownStore, plan: PublicationPlan): Promise<WriteResult | undefined> {

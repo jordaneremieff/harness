@@ -185,6 +185,30 @@ test("a new file capture includes retained images, missing assets and reference 
 	assert.equal(inspectedAgain.revision.revision, 6); assert.equal(inspectedAgain.revision.references.state, "inspected"); assert.equal(await asset(inspectedAgain), "<svg>second</svg>");
 	assert.equal((await store.get(first.document.id, 2)).revision.references.items[0]?.digest, imageOnly.revision.references.items[0]?.digest);
 }));
+test("a text update keeps the edited revision's retained image for an unchanged reference", () => fixture(async (root, store) => {
+	const path = join(root, "report.md"); await writeFile(path, "# Report\n\n![diagram](architecture.svg)\n\nFirst.\n"); await writeFile(join(root, "architecture.svg"), "<svg>first</svg>");
+	const parser = await inspection(root, ["architecture.svg"]);
+	const first = success(await publish({ title: "Report", file: path }, { cwd: root, store, ...parser }));
+	const retained = (await store.get(first.documentId)).revision.references.items[0];
+	assert.equal(retained?.state, "retained");
+	await writeFile(join(root, "architecture.svg"), "<svg>changed in the project</svg>");
+	const text = "# Report\n\n![diagram](architecture.svg)\n\nCorrected.\n";
+	const corrected = success(await publish({ title: "Report", text, document: first.documentId, expectedRevision: 1 }, { cwd: join(root, "elsewhere"), store, ...parser }));
+	assert.equal(corrected.revision, 2); assert.equal(corrected.selfContained, true);
+	assert.deepEqual(corrected.references.kept, { revision: 1, images: 1 });
+	const stored = await store.get(first.documentId, 2);
+	assert.deepEqual(stored.revision.references.items[0], retained, "the kept image is the edited revision's bytes, not the project file");
+	assert.equal(Buffer.from(await store.retainedAsset(first.documentId, 2, stored.revision.references.items[0] ?? retained)).toString(), "<svg>first</svg>");
+	assert.match(publicationText(corrected), /\nReferences: 1 image retained \(1 kept from revision 1: a text publication reads no image files, so an unchanged reference keeps that revision's image; publish a file to change an image\)\.\n/u);
+	const created = success(await publish({ title: "New", text }, { cwd: root, store, ...parser }));
+	assert.equal(created.references.retained, 0, "a new text publication keeps nothing");
+	await writeFile(join(store.root, "documents", first.documentId, "revisions", "2", retained?.file ?? ""), "<svg>damaged</svg>");
+	await assert.rejects(store.retainedAsset(first.documentId, 2, retained ?? { kind: "image", reference: "", state: "retained" }), /does not match its record/u);
+	const damaged = success(await publish({ title: "Report", text, document: first.documentId, expectedRevision: 2 }, { cwd: root, store, ...parser }));
+	assert.equal(damaged.references.retained, 0, "bytes that fail their check are not kept"); assert.equal(damaged.references.unavailableItems?.[0]?.reason, "no-base");
+	const other = success(await publish({ title: "Report", text: "![other](other.svg)\n", document: first.documentId, expectedRevision: 3 }, { cwd: root, store, ...await inspection(root, ["other.svg"]) }));
+	assert.equal(other.references.kept, undefined); assert.equal(other.references.unavailableItems?.[0]?.reason, "no-base");
+}));
 test("explicit file reuse returns the original receipt after file and asset changes", () => fixture(async (root, store) => {
 	const path = join(root, "source.md"); await writeFile(path, "![a](a.png)"); await writeFile(join(root, "a.png"), "original"); const parser = await inspection(root, ["a.png"]);
 	const params = { title: "Reused", file: path, reuseKey: "file-reuse" };

@@ -13,7 +13,8 @@ export type AssetRecord = { kind: "image" | "link"; reference: string; state: "r
 export type InspectionFailure = "app-missing" | "app-incompatible" | "tool-failed" | "tool-timeout" | "output-invalid";
 export const INSPECTION_FAILURES: readonly InspectionFailure[] = ["app-missing", "app-incompatible", "tool-failed", "tool-timeout", "output-invalid"];
 export type ReferenceInventory = { state: "inspected" | "uninspected"; truncated: boolean; omitted: number; items: AssetRecord[]; reason?: InspectionFailure };
-export type CapturedAsset = { record: AssetRecord; data?: Uint8Array };
+/** `keptFrom` names the revision whose retained bytes a text update keeps for an unchanged reference; it is not stored. */
+export type CapturedAsset = { record: AssetRecord; data?: Uint8Array; keptFrom?: number };
 export type DocumentRecord = { version: 1; id: string; kind: DocumentKind; title: string; createdAt: string; updatedAt: string; revision: number; digest: string; bytes: number };
 export type RevisionRecord = { version: 1; document: string; revision: number; title: string; createdAt: string; digest: string; bytes: number; publication?: string; completeness: Completeness; contentOrigin: ContentOrigin; references: ReferenceInventory; selfContained?: boolean };
 export type StoredDocument = { document: DocumentRecord; revision: RevisionRecord; source: string };
@@ -216,6 +217,15 @@ export class MarkdownStore {
 	 * that `match` accepted before the result limit. An absent collection is an empty listing; any
 	 * other failure to open it is a store error.
 	 */
+	/** The bytes of one retained image of a revision, checked against the recorded digest and size. */
+	async retainedAsset(id: string, revision: number, item: AssetRecord): Promise<Uint8Array> {
+		if (item.state !== "retained" || !/^assets\/[0-9a-f]{64}\.(png|jpg|gif|webp|svg)$/.test(item.file ?? "") || !Number.isSafeInteger(revision) || revision < 1) throw new StoreError("invalid", "Not a retained image.");
+		const { path } = await this.locate(id);
+		let bytes: Buffer;
+		try { bytes = await readBytes(join(path, "revisions", String(revision), item.file ?? ""), LIMITS.assetBytes); } catch (error) { if (absent(error)) throw new StoreError("not-found", "Retained image not found."); throw new StoreError("store-failure", "Retained image is unreadable."); }
+		if (bytes.length !== item.bytes || digest(bytes) !== item.digest) throw new StoreError("store-failure", "Retained image does not match its record.");
+		return bytes;
+	}
 	async list(options: { kind?: DocumentKind; limit?: number; match?: (record: DocumentRecord) => boolean } = {}): Promise<{ documents: DocumentRecord[]; bounded: boolean; scanned: number; matched: number; unreadable: number }> {
 		const limit = listLimit(options.limit);
 		const kind = options.kind ?? "published";
