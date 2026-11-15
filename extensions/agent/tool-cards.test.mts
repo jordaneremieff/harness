@@ -94,7 +94,7 @@ describe("agent call cards", () => {
 		assert.match(screen(renderListCall({ query: "q".repeat(400) }, theme, context())), /\(ctrl\+o to expand\)/);
 	});
 
-	it("escapes controls and fits narrow widths", () => {
+	it("removes controls and fits narrow widths", () => {
 		const hostile = "日本語 😀\x1b]52;c;data\x07\u202e";
 		const view = renderAgentCall("agent_spawn", { model: `provider/${"long-".repeat(80)}`, prompt: hostile, cwd: "/project" }, theme, context());
 		for (const width of [12, 24, 80, 160]) {
@@ -169,7 +169,8 @@ describe("agent result cards", () => {
 		assert.match(text, /Activity: working · tool read · 1 pending/);
 		assert.match(text, /Running: read · call call-7/);
 		assert.match(text, /Running: bash · call call-8 · pending/);
-		assert.match(text, /Working on the task: Check the source\\u\{1b\}/);
+		assert.match(text, /Working on the task: Check the source$/mu);
+		assert.doesNotMatch(text, /\x1b|\\u\{/u, "a control in the task text is removed, not shown");
 		assert.match(text, /Saved: done · submission 3/);
 		assert.match(text, /Capability limits: 1 configured extension without a native form/);
 		assert.deepEqual(resultValue, before);
@@ -442,13 +443,11 @@ describe("agent result cards", () => {
 		assert.match(screen(renderAgentResult(result(undefined), { ...cardKeys, expanded: true, isPartial: false }, theme, context({ isError: true }))), /Tool error/);
 	});
 
-	it("bounds expanded source units and escape expansion separately", () => {
+	it("bounds expanded source units before it removes controls", () => {
 		const render = (value: string) => screen(renderAgentResult(result(undefined, value), { ...cardKeys, expanded: true, isPartial: false }, theme, context()), 800).replace(/\n/gu, "");
 		const source = "\u202e".repeat(32_000);
-		const escaped = "\\u{202e}".repeat(32_000);
-		assert.equal(escaped.length, 256_000);
-		assert.equal(render(source), escaped);
-		assert.equal(render(`${source}OMITTED`), `${escaped}[Display limit: 7 more UTF-16 code units. Full text remains in native history.]`);
+		assert.equal(render(source), "");
+		assert.equal(render(`${source}OMITTED`), "[Display limit: 7 more UTF-16 code units. Full text remains in native history.]");
 		assert.equal(render(`${"x".repeat(31_999)}\u{e0001}OMITTED`), `${"x".repeat(31_999)}[Display limit: 9 more UTF-16 code units. Full text remains in native history.]`);
 	});
 });

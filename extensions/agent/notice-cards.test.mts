@@ -2,14 +2,15 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { initTheme, keyHint, keyText, type ExtensionAPI, type MessageRenderer, type Theme } from "@earendil-works/pi-coding-agent";
+import { CustomMessageComponent, initTheme, keyHint, keyText, type ExtensionAPI, type MessageRenderer, type Theme } from "@earendil-works/pi-coding-agent";
 import { planningBudgetSelfBody, planningBudgetSelfFacts } from "./continuity-budget.ts";
 import register from "./index.ts";
 import { PLANNING_BUDGET_NOTICE } from "./ordinary-continuity.ts";
 import { SELF_COMPACTION_NOTICE } from "./self-compaction.ts";
-import { renderAgentCompactionMessage, renderAgentPlanningBudgetMessage } from "./tool-cards.ts";
+import { renderAgentCompactionMessage, renderAgentPeerMessage, renderAgentPlanningBudgetMessage } from "./tool-cards.ts";
 
 initTheme("dark", false);
+const piTheme = (await import(new URL("./modes/interactive/theme/theme.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href)).theme as Theme;
 const nativeTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
 function expandKey(t: { after(fn: () => void): void }): void {
 	const previous = nativeTui.getKeybindings();
@@ -77,4 +78,36 @@ it("terminal control sequences in a notice never reach the card", (t) => {
 			assert.doesNotMatch(component.render(80).join("\n"), /\x1b\]|\x07|\x1b\[31m/u);
 		}
 	}
+});
+
+/** Every reset inside a row restores the message background, so the row background never breaks. */
+function assertContinuousBackground(row: string, background: string): void {
+	assert.ok(row.startsWith(background), "the row starts on the message background");
+	const body = row.endsWith("\x1b[49m") ? row.slice(0, -5) : row;
+	for (const match of body.matchAll(/\x1b\[(?:0|49)?m/gu)) assert.ok(body.startsWith(background, (match.index ?? 0) + match[0].length), `a reset at ${match.index} restores the background`);
+}
+
+it("peer, communication and notice hints dim the key, mute the rest and keep the row background", (t) => {
+	expandKey(t);
+	const background = piTheme.getBgAnsi("customMessageBg");
+	const dim = piTheme.getFgAnsi("dim");
+	const muted = piTheme.getFgAnsi("muted");
+	const content = ["First line", "", "Second line", "", "Third line"].join("\n");
+	for (const [renderer, details] of [[renderAgentPeerMessage, { kind: "report", name: "Parser review" }], [renderAgentCompactionMessage, undefined]] as const) {
+		const component = new CustomMessageComponent({ role: "custom", customType: "fixture", display: true, timestamp: 0, content, details }, renderer as MessageRenderer);
+		const rows = component.render(80);
+		const hint = rows.find((row) => stripVTControlCharacters(row).includes("to expand"));
+		assert.ok(hint);
+		assert.equal(stripVTControlCharacters(hint).trim(), "... (2 more lines, ctrl+o to expand)");
+		assert.ok(hint.includes(`${dim}ctrl+o`), "the key is dimmed");
+		assert.ok(hint.includes(`${muted}... (2 more lines, `), "the rest is muted");
+		for (const row of rows.filter((line) => line.length > 0)) assertContinuousBackground(row, background);
+	}
+});
+
+it("message cards remove control sequences and keep tabs", () => {
+	const content = "Tab\there \x1b[31mred\x1b[0m \u202ebidi\u202c";
+	const lines = render(renderAgentCompactionMessage, SELF_COMPACTION_NOTICE, content);
+	assert.match(lines.join("\n"), /Tab\s+here red bidi/u);
+	assert.doesNotMatch(lines.join("\n"), /\\u\{|\\t|\x1b\[31m|\u202e/u, "no visible escape text and no raw control");
 });

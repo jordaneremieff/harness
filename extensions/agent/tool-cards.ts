@@ -59,16 +59,11 @@ export interface AgentToolCard {
 }
 
 /**
- * Show controls as text, never as terminal commands. Newlines retain message
- * structure.
+ * Displayed text, as every harness message card draws it: terminal control and escape sequences and other
+ * control or format characters are removed, so none reaches the terminal; newlines and tabs stay.
  */
 export function displayText(value: string): string {
-	return value.replace(/[\p{Cc}\p{Cf}]/gu, (char) => {
-		if (char === "\n") return char;
-		if (char === "\t") return "\\t";
-		if (char === "\r") return "\\r";
-		return `\\u{${char.codePointAt(0)?.toString(16)}}`;
-	});
+	return stripVTControlCharacters(value).replace(/[\p{Cc}\p{Cf}]/gu, (char) => (char === "\n" || char === "\t" ? char : ""));
 }
 
 function displayPrefix(value: string, limit: number): string {
@@ -121,7 +116,7 @@ interface CardLayoutOptions {
 	readonly previous?: Component;
 	readonly peerPadding?: number;
 	/** Peer cards draw their own expansion hint below hidden lines. */
-	readonly keys?: Pick<KeybindingHints, "keyText">;
+	readonly keys?: Pick<KeybindingHints, "keyText"> & Partial<Pick<KeybindingHints, "keyHint">>;
 	/** The stable message object a peer card's pointer disclosure is bound to; absent, the choice lives in the renderer only. */
 	readonly message?: object;
 }
@@ -166,14 +161,20 @@ function disclosureFor(message: object | undefined): CardDisclosure {
 }
 
 /** Tool parts inherit Pi's Box(1,1); custom-message renderers must supply that inner vertical padding. */
-function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOptions): Component {
+/** The title line and the muted facts line; message cards draw their bracket label in Pi's label colour. */
+function cardHeader(sections: CardSections, theme: Theme, peer: boolean): string[] {
 	const header: string[] = [];
-	const peer = options.peerPadding !== undefined;
-	const labelColor = peer ? "text" : "accent";
 	const tag = sections.tag ? `${theme.fg("customMessageLabel", theme.bold(sections.tag))} ` : "";
-	if (sections.title) header.push(tag + theme.fg(peer ? "text" : "toolTitle", theme.bold(sections.title)) + (sections.label ? theme.fg(labelColor, ` · ${displayText(sections.label).replace(/\s+/gu, " ").trim()}`) : ""));
+	const label = sections.label ? theme.fg(peer ? "text" : "accent", ` · ${displayText(sections.label).replace(/\s+/gu, " ").trim()}`) : "";
+	if (sections.title) header.push(tag + theme.fg(peer ? "text" : "toolTitle", theme.bold(sections.title)) + label);
 	const metadata = sections.metadata?.filter(Boolean).map((value) => displayText(value).replace(/\s+/gu, " ").trim()).join(" · ");
 	if (metadata) header.push(theme.fg("muted", metadata));
+	return header;
+}
+
+function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOptions): Component {
+	const peer = options.peerPadding !== undefined;
+	const header = cardHeader(sections, theme, peer);
 	const content = sections.body ?? [];
 	if (!peer) {
 		const component = options.previous instanceof CardText ? options.previous : new CardText("", 0, 0);
@@ -188,13 +189,13 @@ function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOpt
 }
 
 /**
- * The peer card body: a preview with its disclosure hint, or the complete body and details. A plain
- * click on the header or the hint toggles this card alone; Pi's global expansion rebuilds the card and
- * resets that local choice. Modified clicks, multi-clicks and body clicks pass through for selection.
+ * The peer card body: a preview with its disclosure hint, or the complete body and details. A left click
+ * anywhere on the card toggles this card alone, as Pi's compaction and tool cards toggle on a left click;
+ * a drag still selects text, because Pi sends no click for it. Pi's global expansion rebuilds the card and
+ * resets that local choice.
  */
 class PeerCardBody implements Component {
 	private expanded: boolean;
-	private layout?: { width: number; header: number; hint?: number; collapsible: boolean };
 	private details?: readonly (string | Component)[];
 	private readonly header: readonly string[];
 	private readonly content: readonly (string | Component)[];
@@ -221,32 +222,25 @@ class PeerCardBody implements Component {
 		return PeerCardBody.lines(this.details, width);
 	}
 	private hint(hidden: number): string {
-		if (this.sections.hint) return this.sections.hint;
-		return !this.expanded && (hidden > 0 || this.sections.details !== undefined) ? peerHint(this.options.keys, hidden) : "";
+		if (this.sections.hint) return this.theme.fg("muted", this.sections.hint);
+		return !this.expanded && (hidden > 0 || this.sections.details !== undefined) ? peerHint(this.theme, this.options.keys, hidden) : "";
 	}
 	render(width: number): string[] {
 		const lines = PeerCardBody.lines(this.content, width);
-		const limit = this.expanded ? lines.length : this.sections.previewLines ?? lines.length;
-		const hidden = Math.max(0, lines.length - limit);
+		const shown = this.expanded ? lines : previewWindow(lines, this.sections.previewLines ?? lines.length);
+		const hidden = Math.max(0, lines.length - shown.length);
 		const hint = this.hint(hidden);
-		const rows = [...this.header.map((line) => clipCardLine(line, width)), ...(this.header.length ? [""] : []), ...lines.slice(0, limit), ...this.detailLines(width), ...(this.sections.outcome ?? [])];
-		this.layout = { width, header: this.header.length, hint: hint ? rows.length : undefined, collapsible: hidden > 0 || this.sections.details !== undefined };
-		return hint ? [...rows, clipCardLine(this.theme.fg("muted", hint), width)] : rows;
+		const rows = [...this.header.map((line) => clipCardLine(line, width)), ...(this.header.length ? [""] : []), ...shown, ...this.detailLines(width), ...(this.sections.outcome ?? [])];
+		return hint ? [...rows, clipCardLine(hint, width)] : rows;
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		const layout = this.layout;
-		if (!layout || layout.width !== event.width) return undefined;
-		if (event.type !== "click" || event.button !== "left" || event.shift || event.alt || event.ctrl || (event.clickCount ?? 1) !== 1) return undefined;
-		const onHeader = event.y >= 0 && event.y < layout.header;
-		const onHint = layout.hint !== undefined && event.y === layout.hint;
-		if (!layout.collapsible || (!onHeader && !onHint)) return undefined;
+		if (event.type !== "click" || event.button !== "left") return undefined;
 		this.expanded = !this.expanded;
 		this.disclosure.set(this.expanded, this.options.expanded);
 		this.invalidate();
 		return { handled: true };
 	}
 	invalidate(): void {
-		this.layout = undefined;
 		for (const part of this.content) if (typeof part !== "string") part.invalidate();
 		for (const part of this.details ?? []) if (typeof part !== "string") part.invalidate();
 	}
@@ -257,14 +251,24 @@ function expansionHint(keys: Pick<KeybindingHints, "keyText"> | undefined): stri
 	return key ? `... (${key} to expand)` : "... (expand for full details)";
 }
 
+/** The first visual lines of a body, with a blank line between paragraphs counted and blank lines at the end dropped. */
+function previewWindow(lines: readonly string[], limit: number): string[] {
+	const window = lines.slice(0, limit);
+	while (window.length > 0 && stripVTControlCharacters(window[window.length - 1] ?? "").trim() === "") window.pop();
+	return window;
+}
+
 /**
- * Pi's tool-card hint for a message card: `... (2 more lines, ctrl+o to expand)`, or `... (ctrl+o to expand)`
- * when only source details are hidden. Without a configured key, the click on the card is the way to expand.
+ * Pi's tool-card hint for a message card: `... (2 more lines, ctrl+o to expand)` with the key dimmed and the
+ * rest muted, or `... (ctrl+o to expand)` when only source details are hidden.
  */
-function peerHint(keys: Pick<KeybindingHints, "keyText"> | undefined, hidden: number): string {
-	const key = keys?.keyText("app.tools.expand");
+function peerHint(theme: Theme, keys: CardLayoutOptions["keys"], hidden: number): string {
+	const key = keys?.keyText("app.tools.expand") ?? "";
 	const more = hidden > 0 ? `${hidden} more line${hidden === 1 ? "" : "s"}, ` : "";
-	return `... (${more}${key ? `${key} to expand` : "click to expand"})`;
+	const action = !key
+		? theme.fg("muted", "click to expand")
+		: typeof keys?.keyHint === "function" ? keys.keyHint("app.tools.expand", "to expand") : theme.fg("dim", key) + theme.fg("muted", " to expand");
+	return theme.fg("muted", `... (${more}`) + action + theme.fg("muted", ")");
 }
 
 
@@ -1548,7 +1552,7 @@ function communicationDetailLines(value: Communication, theme: Theme): (string |
  * Card for one retained communication (report, notice, result or check-in). The compact view answers
  * who, what kind, which thread or work and when; the body, exact identities and metadata open on disclosure.
  */
-export function renderCommunicationCard(value: Communication, theme: Theme, options: { expanded: boolean; outputPad?: number; message?: object } & Pick<KeybindingHints, "keyText">): Component {
+export function renderCommunicationCard(value: Communication, theme: Theme, options: { expanded: boolean; outputPad?: number; message?: object } & Pick<KeybindingHints, "keyText"> & Partial<Pick<KeybindingHints, "keyHint">>): Component {
 	const body: (string | Component)[] = [];
 	if (!value.body.complete) body.push(theme.fg("warning", "Partial body"));
 	if (value.body.redacted) body.push(theme.fg("warning", "Redacted body"));
@@ -1566,7 +1570,7 @@ export function renderCommunicationCard(value: Communication, theme: Theme, opti
 export const renderAgentCommunicationMessage: MessageRenderer = (message, options, theme) => {
 	const value = message.details as Communication | undefined;
 	if (!value || typeof value !== "object" || value.format !== "agent.communication/1") return undefined;
-	return renderCommunicationCard(value, theme, { expanded: options.expanded, outputPad: options.outputPad, keyText: options.keyText, message });
+	return renderCommunicationCard(value, theme, { expanded: options.expanded, outputPad: options.outputPad, keyText: options.keyText, keyHint: options.keyHint, message });
 };
 
 /** Body rows a collapsed compact communication shows under its header. */

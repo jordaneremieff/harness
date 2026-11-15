@@ -348,18 +348,22 @@ shows its receipt continuation call in its source details.
 A collapsed card has at most one expansion hint across its call and result.
 Before execution, the call owns the hint; after execution starts, the result
 owns it. The native-style `... (ctrl+o to expand)` hint applies to the whole
-card, not just its result. All card expansion hints use theme `muted`. Expanded
-cards show no expansion hint. Expanded messages use the plain `Message:` label.
+card, not just its result. All tool card expansion hints use theme `muted`.
+Expanded cards show no expansion hint. Expanded messages use the plain `Message:` label.
 
 Peer notices in ordinary chat show Pi's tool-card hint whenever the preview
 hides body text or the card holds source details, so a short notice never hides
 its details silently: `... (2 more lines, ctrl+o to expand)` names the hidden
 body lines, and `... (ctrl+o to expand)` stands alone when only source details
-are hidden. Without a configured key the action reads `click to expand`. A plain left click on the card's header or on
-that hint discloses that one card, and a click on the header collapses it again;
-this is local reading state that sends nothing, starts no turn and changes no
-retained content. Clicks on the body text, modified clicks and multi-clicks pass
-through to text selection. Pi's global expansion (`ctrl+o`) rebuilds every card
+are hidden. The key is drawn with Pi's `keyHint` (dimmed key, muted words) and
+the rest of the hint is muted, on the unbroken message background. Without a
+configured key the hint reads `click to expand`. A left click anywhere on the
+card's content rows toggles that one card, as Pi's compaction and tool cards
+toggle on a left click: Pi checks only the click type and the left button, so a
+modified click and each click of a multi-click also toggle. A click on the
+padding rows, a right click and a drag pass through; Pi sends no click for a
+drag, so text selection still works. The toggle is local reading state that
+sends nothing, starts no turn and changes no retained content. Pi's global expansion (`ctrl+o`) rebuilds every card
 and resets those local choices.
 
 In ordinary chat, retained communications (reports, thread notices, results and
@@ -500,7 +504,11 @@ is left out:
 The compaction and planning-budget cards use the peer card layout: a blank
 line, a preview of at most three visual lines in the text colour, the expansion
 hint only when text is hidden, and the whole notice text when expanded. The planning-budget facts come from the notice's own
-text. The renderers change neither the content nor the details of a message.
+text. Every displayed string of the agent's cards (tool cards, message cards,
+and the dashboard's compact communication cards) has terminal control and
+escape sequences and other control or format characters removed; newlines and
+tabs stay. The renderers
+change neither the content nor the details of a message.
 
 ### Continuity tool declarations
 
@@ -3967,13 +3975,14 @@ that line. The muted second line contains known provider/model, thinking level,
 check-in elapsed time, and cost. A blank line separates the header from the body.
 The `[agent]` label uses bold text in Pi's custom message label colour; peer
 kinds use bold theme text; their subjects and normal body use theme text.
-Metadata and expansion hints stay muted. Warning colors and native Markdown
+Metadata stays muted; the hint dims its key and mutes the rest. Warning colors and native Markdown
 styles retain their meaning. Missing optional facts produce no unknown or
 unavailable header fields. Expected reports and direct messages omit the unsaved
 result warning; genuine failure warnings remain in the body.
 The collapsed answer uses up to three visual lines, including any warning or
-reason lines, with one Pi expansion hint only when text is hidden and no
-separate ellipsis row. The shared layout adds the same inner top and bottom
+reason lines and a blank line between paragraphs; a blank line at the end of
+that window is dropped. One Pi expansion hint follows only when text or source
+details are hidden, with no separate ellipsis row. The shared layout adds the same inner top and bottom
 padding as Pi tool cards, with no collapsed navigation instructions. Expanding the notice shows the full
 received answer, source details including full identities and submission rows,
 and `/agent opens the dashboard`. Model-facing caveats stay in the stored

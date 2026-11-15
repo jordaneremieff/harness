@@ -50,8 +50,17 @@ function foregroundAt(line: string, index: number): string | undefined {
 	return foreground;
 }
 
+/** The colours an ellipsis may keep where it cuts `... (1 more line, ctrl+o to expand)`: dim inside the key, muted elsewhere. */
+function hintColours(line: string, muted: string | undefined, dim: string | undefined): (string | undefined)[] {
+	const cut = plain(line).trimStart().indexOf("…");
+	const keyStart = "... (1 more line, ".length;
+	const keyEnd = keyStart + "ctrl+o".length;
+	if (cut > keyStart && cut < keyEnd) return [dim];
+	return cut === keyStart || cut === keyEnd ? [muted, dim] : [muted];
+}
+
 for (const themeName of ["dark", "light"] as const) {
-	for (const rowName of ["metadata", "hint"] as const) it(`${themeName} clipped peer ${rowName} keeps muted through its ellipsis`, (t) => {
+	for (const rowName of ["metadata", "hint"] as const) it(`${themeName} clipped peer ${rowName} keeps its own colour through its ellipsis`, (t) => {
 		initTheme(themeName, false);
 		const previousKeys = nativeTui.getKeybindings();
 		nativeTui.setKeybindings(new nativeTui.KeybindingsManager({ ...nativeTui.TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" } }));
@@ -60,6 +69,8 @@ for (const themeName of ["dark", "light"] as const) {
 		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content: "First body line\nSecond body line\nThird body line\nFinal body line", details: { kind: "report", threadId: "source/thread", threadTitle: `Parser contract ${"界é🙂".repeat(24)}`, name: "Parser review", provider: "provider", modelId, thinkingLevel: "xhigh" } };
 		const mutedAnsi = themeModule.theme.getFgAnsi("muted");
 		const muted = foregroundAt(mutedAnsi, mutedAnsi.length);
+		const dimAnsi = themeModule.theme.getFgAnsi("dim");
+		const dim = foregroundAt(dimAnsi, dimAnsi.length);
 		assert.ok(muted);
 		for (const padding of [0, 1]) {
 			const component = new CustomMessageComponent(message, renderAgentPeerMessage, undefined, padding);
@@ -78,7 +89,8 @@ for (const themeName of ["dark", "light"] as const) {
 				const ellipsis = line.lastIndexOf("…");
 				assert.ok(ellipsis >= 0, `${rowName} clips at ${width} columns`);
 				assert.doesNotMatch(line.slice(0, ellipsis), /\x1b\[(?:0|49)?m/u, "the clipped prefix does not reset the foreground or background");
-				if (width - padding * 2 > 1) assert.equal(foregroundAt(line, ellipsis), muted, "the ellipsis retains muted when a styled prefix fits");
+				const expected = rowName === "metadata" ? [muted] : hintColours(line, muted, dim);
+				if (width - padding * 2 > 1) assert.ok(expected.includes(foregroundAt(line, ellipsis)), `the ellipsis keeps the colour of the text it cuts at ${width} columns`);
 				assert.equal(foregroundAt(line, line.lastIndexOf("\x1b[49m")), undefined, "padding does not inherit the foreground");
 			}
 			component.setExpanded(true);

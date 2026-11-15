@@ -267,7 +267,7 @@ it("native peer notices keep three visual body lines and one hint only when text
 	}
 });
 
-it("a plain click on the header or hint discloses one peer card locally and global expansion resets it", (t) => {
+it("a left click anywhere on a peer card toggles it locally, as on Pi's cards, and global expansion resets it", (t) => {
 	noticeKeys(t);
 	const content = `Opening finding. ${"Useful detail follows. ".repeat(40)}FINAL_BODY`;
 	const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content, details: { kind: "report", senderIdentity: identity, ...model } };
@@ -279,9 +279,16 @@ it("a plain click on the header or hint discloses one peer card locally and glob
 	assert.ok(hintRow() > 0);
 	assert.doesNotMatch(lines().join("\n"), /FINAL_BODY|Source details/u);
 	const bodyRow = lines().findIndex((line) => /Opening finding/u.test(line));
-	assert.equal(click(bodyRow), undefined, "body clicks stay available for selection");
-	assert.equal(click(hintRow(), { shift: true }), undefined, "modified clicks pass through");
-	assert.equal(click(hintRow(), { clickCount: 2 }), undefined, "double clicks pass through");
+	assert.equal(click(1), undefined, "a click on the padding row passes through");
+	assert.equal(click(bodyRow, { button: "right" }), undefined, "a right click passes through");
+	assert.equal(click(bodyRow, { type: "press" }), undefined, "a press or a drag passes through, so text selection works");
+	assert.equal(click(bodyRow)?.handled, true, "a click on the body toggles, as Pi's MouseRegion does");
+	assert.match(lines().join("\n"), /FINAL_BODY/u);
+	assert.equal(click(bodyRow, { shift: true })?.handled, true, "a modified click toggles too; Pi does not filter modifiers");
+	assert.doesNotMatch(lines().join("\n"), /FINAL_BODY/u);
+	assert.equal(click(bodyRow, { clickCount: 2 })?.handled, true, "each click of a multi-click toggles; Pi does not filter the click count");
+	assert.match(lines().join("\n"), /FINAL_BODY/u);
+	click(bodyRow);
 	assert.equal(click(hintRow())?.handled, true);
 	assert.match(lines().join("\n"), /FINAL_BODY/u);
 	assert.match(lines().join("\n"), /Source details/u);
@@ -351,7 +358,7 @@ it("thread notice headers show the subject before known sender and secondary fac
 	}
 });
 
-it("peer label uses Pi's custom message label colour, kind, subject and body use text, and metadata and hints remain muted", (t) => {
+it("peer label uses Pi's custom message label colour, kind, subject and body use text, and metadata and hints use Pi's hint colours", (t) => {
 	noticeKeys(t);
 	const colors: Array<{ color: string; value: string }> = [];
 	const bold: string[] = [];
@@ -364,8 +371,9 @@ it("peer label uses Pi's custom message label colour, kind, subject and body use
 	for (const value of ["thread notice", " · Parser contract"]) assert.ok(colors.some((entry) => entry.color === "text" && entry.value === value), value);
 	assert.ok(colors.some(({ color, value }) => color === "text" && value.includes("First body line")));
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "from Parser review · provider/model · xhigh"));
-	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "... (1 more line, ctrl+o to expand)"));
-	assert.equal(colors.some(({ color }) => ["accent", "customMessageText", "dim"].includes(color)), false);
+	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "... (1 more line, "));
+	assert.ok(colors.some(({ color, value }) => color === "muted" && value === ")"));
+	assert.equal(colors.some(({ color }) => ["accent", "customMessageText"].includes(color)), false);
 	colors.length = 0;
 	const failure = renderPeerNoticeCard({ content: "Failure body", details: { status: "failed", reason: "Diagnostic reason" } }, spy, false, cardKeys);
 	assert.ok(failure); failure.render(160);
