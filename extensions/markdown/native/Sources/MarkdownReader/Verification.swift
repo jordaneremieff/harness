@@ -34,6 +34,7 @@ struct Verification {
             checks.append(await context.contentScript(keep: &keep))
             checks.append(await context.remoteLoads(keep: &keep))
             checks.append(await context.assetContainment(keep: &keep))
+            checks.append(await context.imageInspectionDeadline(keep: &keep))
             checks.append(await context.find(keep: &keep))
             checks.append(await context.codeCopy(keep: &keep))
             checks.append(await context.externalLink(keep: &keep))
@@ -318,6 +319,31 @@ struct Context {
             return .init(name: "asset-scheme-containment", pass: pass, detail: "retained image decoded: \(loaded); symlink escape shown as unavailable: \(linkedShown); traversal, unknown token and other host refused: \(refused); same-size mutation refused: \(mutationRefused), qualified page failure: \(qualified); file swapped for a symlink refused: \(swapRefused)")
         } catch {
             return .init(name: "asset-scheme-containment", pass: false, detail: String(describing: error))
+        }
+    }
+
+    func imageInspectionDeadline(keep: inout [NSWindow]) async -> Verification.Check {
+        do {
+            let image = workspace.appendingPathComponent("deadline.png")
+            try Self.png().write(to: image)
+            let model = try await openFile("deadline.md", "# Bounded image inspection\n\n![image](deadline.png)\n", keep: &keep)
+            _ = await js(model, """
+            const original = document.querySelector('img[data-asset]');
+            const replacement = original.cloneNode(true);
+            replacement.decode = () => new Promise(() => {});
+            original.replaceWith(replacement);
+            return true;
+            """)
+            let start = ContinuousClock.now
+            let evidence = await model.inspectImages()
+            let elapsed = start.duration(to: .now)
+            let unconfirmed = evidence.count == 1 && !evidence[0].displayed && evidence[0].failure == nil
+            let ready = model.phase == .ready
+            let bounded = elapsed < .seconds(3)
+            return .init(name: "image-inspection-deadline", pass: ready && bounded && unconfirmed,
+                         detail: "never-settling decode bounded: \(bounded); page ready: \(ready); display unconfirmed without false failure: \(unconfirmed)")
+        } catch {
+            return .init(name: "image-inspection-deadline", pass: false, detail: String(describing: error))
         }
     }
 

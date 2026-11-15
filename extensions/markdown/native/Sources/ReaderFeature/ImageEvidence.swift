@@ -12,13 +12,31 @@ public struct ImageEvidence: Equatable, Sendable {
 }
 
 extension PageScript {
-    static let waitForImages = "await Promise.all([...document.querySelectorAll('img[data-asset]')].map(i => i.decode().catch(() => {}))); return true;"
+    static let waitForImages = """
+    const states = globalThis.readerImageDecodeStates ||= new WeakMap();
+    const pending = [...document.querySelectorAll('img[data-asset]')].map(i => {
+      if (!states.has(i)) {
+        const state = { result: 'pending' };
+        state.promise = i.decode().then(() => { state.result = 'decoded'; }, () => { state.result = 'failed'; });
+        states.set(i, state);
+      }
+      return states.get(i).promise;
+    });
+    let timer;
+    const settled = await Promise.race([
+      Promise.all(pending).then(() => true),
+      new Promise(resolve => { timer = setTimeout(() => resolve(false), 2000); })
+    ]);
+    clearTimeout(timer);
+    return settled;
+    """
 
     static let inspectImages = """
     const images = [...document.querySelectorAll('img[data-asset]')];
     return images.map(i => {
       const token = i.dataset.asset;
-      const reason = failures[token] || (i.complete && i.naturalWidth === 0 ? 'Image decode failed.' : null);
+      const decoded = globalThis.readerImageDecodeStates?.get(i)?.result;
+      const reason = failures[token] || (decoded === 'failed' ? 'Image decode failed.' : null);
       if (reason) {
         let placeholder = i.nextElementSibling;
         if (!placeholder || placeholder.dataset.failedAsset !== token) {
@@ -31,7 +49,7 @@ extension PageScript {
         placeholder.textContent = 'Image unavailable: ' + reason + ' (' + i.dataset.reference + ')';
         i.hidden = true;
       }
-      return { token, reference: i.dataset.reference, displayed: !reason && i.complete && i.naturalWidth > 0, failure: reason };
+      return { token, reference: i.dataset.reference, displayed: !reason && decoded === 'decoded' && i.complete && i.naturalWidth > 0, failure: reason };
     });
     """
 }
