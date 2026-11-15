@@ -11,8 +11,9 @@ enum LaunchMode {
     case exportImage(input: String, output: String, width: Double, maxHeight: Double, appearance: String?, textSize: Int?, review: String?)
     /// Runs the fixed WebKit checks and prints one JSON report.
     case verify(output: String?)
-    /// Measures opening, refresh and memory for generated documents of the given sizes.
-    case measure(corpus: [String], sizes: [Int], output: String?)
+    /// Measures opening, refresh, CPU and memory for documents built from a corpus at the given
+    /// sizes and for generated documents of the given shapes.
+    case measure(corpus: [String], sizes: [Int], shapes: [String], output: String?)
     /// Opens one visible reader window in a prepared state for screen capture, and keeps running.
     /// `inspect` names an image to open in the inspection, counted from 1: `2` shows it at Fit,
     /// `2:actual` at actual size.
@@ -94,9 +95,19 @@ enum LaunchMode {
         case "--verify":
             return .verify(output: options["out"])
         case "--measure":
-            let sizes = (options["sizes"] ?? "51200,512000,2097152").split(separator: ",").compactMap { Int($0) }
-            guard !positional.isEmpty else { return .usage("--measure [--sizes a,b,c] [--out report.json] <corpus.md>...") }
-            return .measure(corpus: positional, sizes: sizes, output: options["out"])
+            let sizeWords = (options["sizes"] ?? "51200,512000,2097152").split(separator: ",", omittingEmptySubsequences: false)
+            let sizes = sizeWords.compactMap { Int($0) }
+            guard !sizes.isEmpty, sizes.count == sizeWords.count, sizes.count <= 8,
+                  sizes.allSatisfy({ (256...2_097_152).contains($0) }), positional.count <= 8 else {
+                return .usage("--measure accepts at most eight sizes (256...2097152 bytes) and eight corpus files")
+            }
+            let shapes = options["shapes"].map { $0 == "all" ? ShapeMeasurement.allShapes : $0.split(separator: ",", omittingEmptySubsequences: false).map(String.init) } ?? []
+            guard shapes.count <= ShapeMeasurement.allShapes.count,
+                  Set(shapes).count == shapes.count, shapes.allSatisfy(ShapeMeasurement.allShapes.contains) else {
+                return .usage("--measure --shapes accepts all or distinct names from \(ShapeMeasurement.allShapes.joined(separator: ","))")
+            }
+            guard !positional.isEmpty || !shapes.isEmpty else { return .usage("--measure [--sizes a,b,c] [--shapes all|\(ShapeMeasurement.allShapes.joined(separator: ","))] [--out report.json] [<corpus.md>...]") }
+            return .measure(corpus: positional, sizes: positional.isEmpty ? [] : sizes, shapes: shapes, output: options["out"])
         default:
             // An unknown option is an error, so that a caller that expects a newer mode never
             // starts the library application in its place.

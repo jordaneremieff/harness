@@ -394,7 +394,7 @@ their reading state in memory.
 APP="<app>/Contents/MacOS/MarkdownReader"
 "$APP" --export-image --out page.png [--width 900] [--max-height 6000] [--appearance light|dark] [--review previous|n] <file.md | open request>
 "$APP" --verify [--out report.json]
-"$APP" --measure [--sizes 51200,512000,2097152] [--out report.json] <corpus.md>...
+"$APP" --measure [--sizes 51200,512000,2097152] [--shapes all|sections,table,code,images,revisions,windows] [--out report.json] [<corpus.md>...]
 "$APP" --present [--width 960] [--height 900] [--appearance light|dark] [--find text] [--source yes] [--outline no] [--embedded yes] [--text-size n] [--review previous|n] [--inspect n[:actual]] <file.md | open request>
 "$APP" --return-check <open request>
 ```
@@ -419,7 +419,17 @@ APP="<app>/Contents/MacOS/MarkdownReader"
   process is killed.
 - `--measure` builds documents of the given sizes from the corpus and reports read, render and
   display times for two opens (each taken right after its open, so the second is a warm open),
-  refresh and find latency, and app plus web content memory.
+  refresh and find latency, and app plus web content memory. `--shapes` adds generated
+  documents: many sections, a wide table, long code, many retained images, and for each the
+  same opens, refresh and find with the CPU time of the app and of its web content processes
+  and their idle CPU in consecutive periods; successive revisions (one refresh, a burst of
+  refreshes, publications that a following window loads, with the number of preparations
+  that ran); and several reader windows (memory, idle CPU shown and half hidden, CPU while
+  resizing above and across the outline width). Check-mode windows lie outside the visible
+  screen area, where WebKit can do less work than for a visible window. Idle percentages use
+  the actual monotonic elapsed time for each interval, not the requested delay. CPU and memory
+  results state complete, partial or unavailable coverage. A failed probe is never zero usage;
+  CPU intervals with changed process IDs report only explicitly qualified comparable evidence.
 - `--present` opens one visible window in a prepared state for screen capture and keeps running.
   A store folder as its input presents the library on private in-memory reading state.
   `--embedded yes` uses the pane header without terminal placement; `--text-size` selects an index

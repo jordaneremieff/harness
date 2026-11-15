@@ -20,15 +20,16 @@ struct Measurement {
         return String(decoding: data, as: UTF8.self)
     }
 
-    func run(corpus: [String], sizes: [Int], output: String?) async -> Int32 {
+    func run(corpus: [String], sizes: [Int], shapes: [String], output: String?) async -> Int32 {
         let pieces = corpus.compactMap { try? String(contentsOfFile: $0, encoding: .utf8) }
-        guard !pieces.isEmpty else {
+        guard !pieces.isEmpty || corpus.isEmpty else {
             CheckRunner.emit(["error": "the corpus files could not be read"], to: output)
             return 1
         }
         let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("markdown-reader-measure-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: workspace) }
         var results: [[String: Any]] = []
+        var shapeResults: [[String: Any]] = []
         do {
             let store = try VerifyStore(root: workspace.appendingPathComponent("store"))
             let context = Context(windows: windows, workspace: workspace, store: store)
@@ -55,9 +56,6 @@ struct Measurement {
                 let findStart = Date()
                 await second.find()
                 let findMs = Date().timeIntervalSince(findStart) * 1000
-                let content = keep.compactMap(ProcessProbe.webContentProcess(of:))
-                let webBytes = content.compactMap(ProcessProbe.footprint).reduce(0, +)
-                let appBytes = ProcessProbe.footprint(getpid()) ?? 0
                 results.append([
                     "bytes": source.utf8.count,
                     "topLevelBlocks": first.rendered?.blockCount ?? 0,
@@ -70,19 +68,22 @@ struct Measurement {
                     "findNearEndMs": findMs,
                     "findFound": second.findStatus == .found,
                     "openPages": 2,
-                    "appFootprintMB": Double(appBytes) / 1_048_576,
-                    "webContentProcesses": content.count,
-                    "webContentFootprintMB": Double(webBytes) / 1_048_576,
-                ])
+                ].merging(ShapeMeasurement.memory(keep), uniquingKeysWith: { $1 }))
                 await first.close()
                 await second.close()
                 for window in keep { window.close() }
             }
+            let shapeMeasurement = ShapeMeasurement(windows: windows, context: context, store: store)
+            for shape in shapes { shapeResults.append(try await shapeMeasurement.run(shape)) }
         } catch {
             CheckRunner.emit(["error": String(describing: error)], to: output)
             return 1
         }
-        CheckRunner.emit(["results": results, "note": "firstOpen of the first size includes starting a web content process"], to: output)
+        CheckRunner.emit([
+            "results": results,
+            "shapes": shapeResults,
+            "note": "the first open in the process includes starting a web content process; check-mode windows lie outside the visible screen area",
+        ], to: output)
         return 0
     }
 }

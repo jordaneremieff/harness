@@ -34,8 +34,8 @@ struct CheckRunner {
             status = await exportImage(input: input, output: output, width: width, maxHeight: maxHeight, appearance: appearance, textSize: textSize, review: review)
         case .verify(let output):
             status = await Verification(windows: windows).run(output: output)
-        case .measure(let corpus, let sizes, let output):
-            status = await Measurement(windows: windows).run(corpus: corpus, sizes: sizes, output: output)
+        case .measure(let corpus, let sizes, let shapes, let output):
+            status = await Measurement(windows: windows).run(corpus: corpus, sizes: sizes, shapes: shapes, output: output)
         case .present(let input, let width, let height, let appearance, let find, let source, let outline, let embedded, let textSize, let review, let inspect):
             await present(input: input, width: width, height: height, appearance: appearance, find: find, source: source, outline: outline, embedded: embedded, textSize: textSize, review: review, inspect: inspect)
             return
