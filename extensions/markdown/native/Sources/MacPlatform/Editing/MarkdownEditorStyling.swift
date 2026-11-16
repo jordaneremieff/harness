@@ -36,11 +36,50 @@ struct MarkdownSpanIndex: Sendable {
     }
 }
 
+/// Finds the changed source and semantic envelope after a background analysis.
+/// An unchanged suffix moves by the document's length delta; it needs no layout refresh.
+struct MarkdownPresentationInvalidation {
+    static func range(previousSource: String?, previousSpans: [EditorSemanticSpan],
+                      source: String, spans: [EditorSemanticSpan]) -> NSRange? {
+        guard let previousSource else { return NSRange(location: 0, length: source.utf16.count) }
+        let old = Array(previousSource.utf16), new = Array(source.utf16)
+        // Undo can restore the same bytes after intermediate edits replaced cached paragraphs.
+        guard old != new else { return NSRange(location: 0, length: new.count) }
+        var start = 0
+        while start < min(old.count, new.count), old[start] == new[start] { start += 1 }
+        var oldEnd = old.count, end = new.count
+        while oldEnd > start, end > start, old[oldEnd - 1] == new[end - 1] { oldEnd -= 1; end -= 1 }
+        let delta = new.count - old.count
+        var prefix = 0
+        while prefix < min(previousSpans.count, spans.count), previousSpans[prefix] == spans[prefix] { prefix += 1 }
+        var oldLast = previousSpans.count, newLast = spans.count
+        while oldLast > prefix, newLast > prefix {
+            let before = previousSpans[oldLast - 1], after = spans[newLast - 1]
+            guard before.role == after.role, before.range.length == after.range.length,
+                  before.range.location + delta == after.range.location else { break }
+            oldLast -= 1; newLast -= 1
+        }
+        if prefix < oldLast {
+            start = min(start, previousSpans[prefix].range.location)
+            for span in previousSpans[prefix..<oldLast] { end = max(end, NSMaxRange(span.range) + delta) }
+        }
+        if prefix < newLast {
+            start = min(start, spans[prefix].range.location)
+            for span in spans[prefix..<newLast] { end = max(end, NSMaxRange(span.range)) }
+        }
+        start = min(start, new.count)
+        end = min(max(end, start), new.count)
+        if start == end, start > 0 { start -= 1 }
+        return (source as NSString).rangeOfComposedCharacterSequences(for: NSRange(location: start, length: end - start))
+    }
+}
+
 @MainActor final class MarkdownEditorStyling: NSObject, @MainActor NSTextContentStorageDelegate {
     weak var controller: MarkdownEditorTextController?
     var presentation = MarkdownEditorPresentation()
     private var index = MarkdownSpanIndex([])
     private var analysedGeneration: UInt64?
+    private var analysedSource: String?
     private var running = false
     private var waiting: MarkdownEditorSnapshot?
     private var debounce: Task<Void, Never>?
@@ -83,14 +122,18 @@ struct MarkdownSpanIndex: Sendable {
         waiting = nil
         guard analysedGeneration != snapshot.generation else { return }
         running = true
+        let previousSource = analysedSource
+        let previousSpans = index.spans
         Task { [weak self] in
             let result = await Task.detached(priority: .utility) {
                 var words = 0
                 snapshot.source.enumerateSubstrings(in: snapshot.source.startIndex..<snapshot.source.endIndex,
                     options: [.byWords, .substringNotRequired]) { _, _, _, _ in words += 1 }
                 let analysis = EditorSourceAnalysis.scan(snapshot.source)
+                let changedRange = MarkdownPresentationInvalidation.range(previousSource: previousSource, previousSpans: previousSpans,
+                    source: snapshot.source, spans: analysis.spans)
                 return (MarkdownSpanIndex(analysis.spans),
-                        EditorSourceCoordinates(snapshot.source), words, snapshot.source.count, analysis.protectedRanges)
+                        EditorSourceCoordinates(snapshot.source), words, snapshot.source.count, analysis.protectedRanges, changedRange)
             }.value
             guard let self else { return }
             self.running = false
@@ -101,18 +144,19 @@ struct MarkdownSpanIndex: Sendable {
                 self.measuredCounts = (result.2, result.3)
                 self.codeRanges = result.4
                 self.analysedGeneration = snapshot.generation
-                self.invalidate()
+                self.analysedSource = snapshot.source
+                if let range = result.5 { self.invalidate(range: range) }
                 controller.onAnalysis?()
             }
             self.startNext()
         }
     }
 
-    func invalidate() {
+    func invalidate(range: NSRange? = nil) {
         guard let view = controller?.textView, !view.hasMarkedText() else { return }
         // Paragraph attributes are derived, so invalidate cached elements without rewriting storage.
         if let storage = view.textStorage {
-            storage.edited(.editedAttributes, range: NSRange(location: 0, length: storage.length), changeInLength: 0)
+            storage.edited(.editedAttributes, range: range ?? NSRange(location: 0, length: storage.length), changeInLength: 0)
         }
         view.needsDisplay = true
     }

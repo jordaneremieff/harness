@@ -160,6 +160,72 @@ import AppKit
         window.contentView = nil
     }
 
+    @Test func analysisInvalidationKeepsUnchangedShiftedParagraphs() throws {
+        let suffix = String(repeating: "## Heading\nText with **strong** and `code`.\n\n", count: 200)
+        let old = "plain text\n\n" + suffix
+        let new = "new plain text\n\n" + suffix
+        let range = try #require(MarkdownPresentationInvalidation.range(previousSource: old,
+            previousSpans: EditorSourceAnalysis.scan(old).spans, source: new, spans: EditorSourceAnalysis.scan(new).spans))
+        #expect(range.location == 0)
+        #expect(NSMaxRange(range) < 20)
+        let removedHeading = "plain text\n\n" + suffix.dropFirst(3)
+        let changed = try #require(MarkdownPresentationInvalidation.range(previousSource: old,
+            previousSpans: EditorSourceAnalysis.scan(old).spans, source: String(removedHeading),
+            spans: EditorSourceAnalysis.scan(String(removedHeading)).spans))
+        #expect(changed.location <= 12)
+        #expect(NSMaxRange(changed) < 40)
+    }
+
+    @Test func analysisInvalidationCoversMultilineContextAndUnicodeDeletion() throws {
+        let old = "intro\n\n```swift\n# code\n```\n\n## End\n"
+        let new = "intro\n\n```swift\n# code\n\n## End\n"
+        let range = try #require(MarkdownPresentationInvalidation.range(previousSource: old,
+            previousSpans: EditorSourceAnalysis.scan(old).spans, source: new, spans: EditorSourceAnalysis.scan(new).spans))
+        #expect(NSMaxRange(range) >= (new as NSString).range(of: "## End").upperBound)
+        let empty = MarkdownPresentationInvalidation.range(previousSource: "👩🏽‍💻", previousSpans: [], source: "", spans: [])
+        #expect(empty == NSRange(location: 0, length: 0))
+        #expect(MarkdownPresentationInvalidation.range(previousSource: "same", previousSpans: [], source: "same", spans: []) == NSRange(location: 0, length: 4))
+        let decomposed = "e\u{301}\nunchanged"
+        let normalised = try #require(MarkdownPresentationInvalidation.range(previousSource: "é\nunchanged",
+            previousSpans: [], source: decomposed, spans: []))
+        #expect(normalised == NSRange(location: 0, length: 2))
+    }
+
+    @Test func trailingEmptyLineHighlightFollowsNativeInput() async throws {
+        let source = "# First draft\n\nCafé e\u{301} 👩🏽‍💻 שלום.\n\nA **bold** and *italic* sentence.\n"
+        let editor = MarkdownEditorTextController(source: "")
+        let window = NSWindow(contentRect: NSRect(x: -2000, y: 0, width: 640, height: 480),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = editor.scrollView
+        window.makeFirstResponder(editor.textView)
+        editor.textView.insertText(source, replacementRange: NSRange(location: NSNotFound, length: 0))
+        await withCheckedContinuation { continuation in
+            editor.onAnalysis = { editor.onAnalysis = nil; continuation.resume() }
+        }
+        let manager = try #require(editor.textView.textLayoutManager)
+        let content = try #require(manager.textContentManager)
+        func frame(at offset: Int) throws -> NSRect {
+            let location = try #require(content.location(content.documentRange.location, offsetBy: offset))
+            let range = try #require(NSTextRange(location: location, end: location))
+            var result: NSRect?
+            manager.enumerateTextSegments(in: range, type: .standard, options: []) { _, frame, _, _ in
+                result = frame
+                return false
+            }
+            return try #require(result)
+        }
+        for mode in [MarkdownSourceMode.styled, .raw] {
+            editor.setPresentation(MarkdownEditorPresentation(mode: mode))
+            window.layoutIfNeeded()
+            let previous = try frame(at: source.utf16.count - 2)
+            let empty = try frame(at: source.utf16.count)
+            #expect(empty.minY >= previous.maxY)
+        }
+        #expect(editor.sourcePosition?.line == 6)
+        #expect(editor.sourcePosition?.column == 1)
+        window.contentView = nil
+    }
+
     @Test func snapshotsStayImmutableAfterLaterNativeInput() {
         let editor = MarkdownEditorTextController(source: "first")
         let snapshot = editor.snapshot
