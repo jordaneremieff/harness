@@ -15,17 +15,9 @@ struct DocumentEditorView: View {
                 Text("\(pending.rawValue) mode will open after text composition finishes.").font(.caption).foregroundStyle(.secondary)
             }
             Divider()
-            switch document.mode {
-            case .styled, .raw:
-                MarkdownEditorTextSurface(controller: document.text)
-            case .rendered:
-                preview
-            case .split:
-                HSplitView {
-                    MarkdownEditorTextSurface(controller: document.text).frame(minWidth: 180)
-                    preview.frame(minWidth: 180)
-                }
-            }
+            EditorModeLayout(document: document)
+                .id(document.id)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onChange(of: document.presentation) { _, _ in document.updatePresentation() }
         .preferredColorScheme(document.presentation.appearance == .system ? nil : document.presentation.appearance == .dark ? .dark : .light)
@@ -53,15 +45,4 @@ struct DocumentEditorView: View {
         .menuStyle(.borderlessButton).fixedSize()
     }
 
-    private var preview: some View {
-        VStack(spacing: 0) {
-            if document.preview.draftGeneration != document.session.record.generation {
-                HStack {
-                    Text("Preview update pending").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                }.padding(6)
-            }
-            ReaderView(model: document.preview, chrome: .preview)
-        }
-    }
 }
