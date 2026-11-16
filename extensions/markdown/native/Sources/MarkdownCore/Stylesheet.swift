@@ -5,40 +5,16 @@ public enum Stylesheet {
         for (index, size) in PageSettings.textSizes.enumerated() {
             rules += "html[data-ts=\"\(index)\"] { font-size: \(size)px; }\n"
         }
-        return rules + base + review + inspection
+        let colours = ":root {\n\(MarkdownThemePalette.light.cssVariables)\n}\n"
+            + "@media (prefers-color-scheme: dark) { :root {\n\(MarkdownThemePalette.dark.cssVariables)\n} }\n"
+        return rules + base + colours + review + inspection
     }()
 
     static let base = #"""
     :root {
       color-scheme: light dark;
-      --text: #1d1d1f;
-      --muted: #5f6368;
-      --faint: #8a8f98;
-      --background: #ffffff;
-      --surface: #f6f7f9;
-      --surface-strong: #eceef2;
-      --border: #dfe2e7;
-      --link: #0a5cc2;
-      --accent: #c8ccd4;
-      --mark: rgba(255, 213, 79, 0.55);
-      --check: #1f7a3d;
       --mono: ui-monospace, "SF Mono", Menlo, monospace;
       --sans: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --text: #e6e6e8;
-        --muted: #a1a5ad;
-        --faint: #7d828b;
-        --background: #1c1d20;
-        --surface: #25272b;
-        --surface-strong: #2e3035;
-        --border: #3a3d43;
-        --link: #6cb0ff;
-        --accent: #50545c;
-        --mark: rgba(255, 196, 0, 0.35);
-        --check: #3fae62;
-      }
     }
     * { box-sizing: border-box; }
     html { -webkit-text-size-adjust: 100%; background: var(--background); }
