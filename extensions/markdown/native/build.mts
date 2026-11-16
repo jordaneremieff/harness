@@ -30,7 +30,7 @@ import { homedir } from "node:os";
 import { createRequire, stripTypeScriptTypes } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PANE_MODE, PANE_OPEN } from "../pane-command.ts";
+import { EDITOR_OPEN, PANE_MODE, PANE_OPEN } from "../pane-command.ts";
 import { readSettings } from "../settings.ts";
 
 /** Version of the contract between openers and the app: open requests, store format, tool output. */
@@ -375,6 +375,7 @@ function main(): void {
 			pane: PANE_MODE,
 			paneOpen: PANE_OPEN,
 			paneOpenRequest: PANE_OPEN_REQUEST,
+			editorOpen: EDITOR_OPEN,
 			sourceDigest: digest,
 			builtAt: new Date().toISOString(),
 			swift: swiftVersion,
