@@ -113,7 +113,11 @@ import EditorFeature
     }
 
     @Test func paneFocusAfterAttachmentPreservesTheFirstNativeCharacter() async throws {
-        _ = NSApplication.shared
+        let app = NSApplication.shared
+        let previousPolicy = app.activationPolicy()
+        try #require(app.setActivationPolicy(.accessory))
+        defer { _ = app.setActivationPolicy(previousPolicy) }
+        if !NSRunningApplication.current.isFinishedLaunching { app.finishLaunching() }
         let root = try directory()
         defer { try? FileManager.default.removeItem(at: root) }
         let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil)
