@@ -117,7 +117,9 @@ it("keeps the approved snippets", () => {
 it("keeps the contract, reporting, polling, live-work, and authority guidance", () => {
 	const all = JSON.stringify(AGENT_CONTROL_GUIDANCE);
 	assert.match(all, /objective, output format, source guidance, and boundaries/u);
-	assert.match(all, /Intent authority/u);
+	assert.match(all, /carry each operator decision with its source, scope, and restrictions/u);
+	assert.match(all, /Say whether a correction comes from the operator or from you/u);
+	assert.doesNotMatch(all, /AGENTS\.md|Intent authority/u);
 	assert.match(all, /Resolve live work for this request/u);
 	assert.match(all, /delegated results required by this request before claiming completion/u);
 	assert.match(all, /a spawn or send receipt is not that result/u);

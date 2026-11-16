@@ -11,8 +11,9 @@ parsers for sibling-formatted output.
 Read the invocation's direction and grant before orientation. The
 [evo invocation contract](../extensions/evo/README.md#invocation) defines directed
 focus; its [authority contract](../extensions/evo/README.md#authority) defines the
-elevated grant and reserved acts. Apply **Intent authority** in the universal
-`AGENTS.md` throughout. Historical records inform judgment, not fresh authority.
+elevated grant and reserved acts. An operator decision keeps its authority when
+an agent carries it with its source and scope; an agent's own inference never
+becomes one. Historical records inform judgment, not fresh authority.
 
 ## Orient to the operator's work
 

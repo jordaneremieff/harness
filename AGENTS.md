@@ -110,9 +110,10 @@
 
 ## Authority
 
-Apply the Intent authority rule in the universal `AGENTS.md` to the approval
-requirements in this repository. For `/evo`, apply the elevated grant and
-reserved decisions in `extensions/evo/README.md`.
+An operator decision that covers an act meets an approval requirement in this
+repository, including a decision that another agent carries with its source and
+scope. For `/evo`, apply the elevated grant and reserved decisions in
+`extensions/evo/README.md`.
 
 ## Scope and dependencies
 

@@ -106,7 +106,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 			EXECUTION_PRESET_GUIDANCE,
 			"Before creating an agent for a recurring concern, look for an existing @handle whose role covers it. Reuse it with a short task; use a fresh agent for unrelated or independent work. Spawn with handle resolves or creates one independent root and never reapplies creation defaults on reuse. Display names may repeat; targets accept @handle or canonical identity, not bare names.",
 			"An explicit creation role is saved on the new agent's profile with or without a handle. Inside a Durable agent, spawning without a handle in the same cwd creates a conversation in your storage; a different cwd creates a storage with its own host. The receipt states placement. Created conversations use the resolved machine preset or explicit execution values, not your model or thinking level; their selected controls permit further delegation. Created agents remain addressable to the operator and eligible for the bounded /agent roster.",
-			'Write each agent task as a contract: objective, output format, source guidance, and boundaries. Include purpose, acceptance, and an end condition. Apply the universal AGENTS.md "Intent authority" section to assignments, corrections, and relayed decisions; preserve operator restrictions and distinguish them from agent choices.',
+			'Write each agent task as a contract: objective, output format, source guidance, and boundaries. Include purpose, acceptance, and an end condition. In assignments, corrections, and relayed decisions, carry each operator decision with its source, scope, and restrictions, and mark which choices are your own.',
 			"Results arrive without supervision turns. Set checkInMinutes only when a task needs a watchdog; the configured agent.checkInMinutes default is 0, so no automatic owner check-ins run otherwise. A check-in is not a finished result. Assess progress, let work continue, steer a wrap-up, or abort a hung tool. Steering waits for the tool boundary.",
 			"Agent work runs in the background. Each task's answer reports to its request's reply recipient automatically. Settlement is execution evidence, not task acceptance. Integrate the delegated results required by this request before claiming completion; a spawn or send receipt is not that result. Resolve live work for this request: continue useful work, redirect changed work, or abort superseded work. Do not stop unrelated, standing, or background agents merely to finish this request.",
 			OPEN_WORK_GUIDANCE,
@@ -126,7 +126,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 	},
 	agent_steer: {
 		snippet: "Redirect a running agent session",
-		guidelines: ["Apply Intent authority to corrections."],
+		guidelines: ["Say whether a correction comes from the operator or from you, and keep the scope of an operator correction."],
 	},
 	agent_abort: {
 		snippet: "Abort an agent session operation",

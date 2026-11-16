@@ -9,7 +9,7 @@ description: >
   contracts. Also use when a request opens harness inspection or improvement
   without naming the change, or when harness work is delegated across workers
   or sessions. New enumerated surfaces require authority before they land;
-  apply the universal Intent authority rule before asking for approval.
+  check the request and carried operator decisions before asking for approval.
   Reclassifying an addition does not supply authority. Do not use for invoking
   or installing an unchanged resource, ordinary application code, unrelated
   uses of "tool", "skill", or "extension", or Pi core development.
@@ -61,7 +61,7 @@ A prototype is evidence for a proposal, not an adopted surface. Landing it follo
 
 When the intended change lands a new surface on `main`:
 
-1. **Apply Intent authority in the universal `AGENTS.md`.** Determine whether the supplied authority covers the surface or delegates its selection. Apply any workflow-specific grant under the repository's authority rules. An operator request that names the surface already satisfies this gate.
+1. **Check the supplied authority.** Determine whether the operator's request, or an operator decision that another agent carries with its source and scope, covers the surface or delegates its selection. Apply any workflow-specific grant under the repository's authority rules. An operator request that names the surface already satisfies this gate.
 2. **Establish the required warrant** under workflow step 3. Name each new surface against the enumeration, the nearest existing surface and why it cannot absorb the change, the lowest sufficient layer, and out-of-scope items. A warrant establishes suitability, not authority.
 3. **If authority is missing, stop before landing.** Propose the complete change in chat, with the runnable prototype when one exists, and wait for explicit operator approval. Without a grant that delegates surface selection, approval must cover the surface itself, not only the desired outcome. Do not recreate this hold when step 1 already establishes authority.
 4. **Land only the authorized scope.** State the warrant in the result when no approval request was needed.
@@ -103,7 +103,7 @@ results. A calldiff invocation does not independently create a test obligation.
 
 ### 1. Reconstruct the contract
 
-Derive the requested outcome, acceptance, and granted permissions from the request and established sources. Separate operator directions and binding rules from agent interpretations, including inherited plans. Record only the fixed decisions, open choices, target, and release constraints that affect execution. Apply Intent authority in the universal `AGENTS.md` to handovers and delegated task contracts.
+Derive the requested outcome, acceptance, and granted permissions from the request and established sources. Separate operator directions and binding rules from agent interpretations, including inherited plans. Record only the fixed decisions, open choices, target, and release constraints that affect execution. An operator decision in a handover or delegated task contract keeps its authority within its source and scope; the agent interpretations around it stay revisable.
 
 Before designing a capability, search operator memory and read matching notes for standing operator decisions about that capability. Apply those decisions within their original scope under the current request and instructions.
 
@@ -189,7 +189,7 @@ that owns the claim with many cheap checks.
 
 ### 7. Apply authority once
 
-Confirm execution stays within granted authority under Intent authority in the universal `AGENTS.md`. Apply the relevant approval rules to new surfaces, destructive state changes, publication, and credential use; check supplied grants before treating an act as unapproved.
+Confirm execution stays within granted authority. Apply the relevant approval rules to new surfaces, destructive state changes, publication, and credential use; check supplied grants before treating an act as unapproved.
 
 Stop only the actions that depend on a disputed fact or on authority you were not granted. Name that exact boundary and complete the rest of the authorized work.
 

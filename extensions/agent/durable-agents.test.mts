@@ -1790,7 +1790,7 @@ it("renders the delegation guidance into the model-facing section", async () => 
 	const text = await section.render(input, context);
 	assert.ok(text, "the section renders when agent_spawn is offered");
 	assert.match(text, /Spawn a background full agent session/u);
-	assert.match(text, /Intent authority/u);
+	assert.match(text, /carry each operator decision with its source, scope, and restrictions/u);
 	assert.match(text, /Never poll with sleeps/u);
 	assert.match(text, /Every conversation has an external identity/u);
 	assert.doesNotMatch(text, /agent_detach/u);
