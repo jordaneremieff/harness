@@ -82,7 +82,10 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
         styling = MarkdownEditorStyling(controller: self)
         textView.compositionDidChange = { [weak self] in
             guard let self else { return }
-            if !self.hasMarkedText, let pending = self.pendingPresentation { self.setPresentation(pending) }
+            if !self.hasMarkedText {
+                if let pending = self.pendingPresentation { self.setPresentation(pending) }
+                else { self.refreshColours() }
+            }
             self.styling.changed()
             self.notify()
         }

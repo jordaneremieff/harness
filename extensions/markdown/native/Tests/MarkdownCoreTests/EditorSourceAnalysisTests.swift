@@ -62,6 +62,20 @@ private func spans(_ role: EditorSemanticRole, in analysis: EditorSourceAnalysis
 }
 
 @Suite struct EditorSourceSemantics {
+    @Test func codeProtectionIncludesDelimitersAndCarriageReturnLines() throws {
+        let source = "Text ``a`b``.\r\r```swift\r# code\r```\r# Real heading\r"
+        let analysis = EditorSourceAnalysis.scan(source)
+        let inline = try #require(utf16Range(of: "``a`b``", in: source))
+        let fenced = try #require(utf16Range(of: "```swift\r# code\r```", in: source))
+        #expect(analysis.protectedRanges.contains { $0.location == inline.location && $0.length == inline.length })
+        #expect(analysis.protectedRanges.contains { $0.location == fenced.location && $0.length == fenced.length })
+        let heading = try #require(utf16Range(of: "# Real heading", in: source))
+        #expect(spans(.heading1, in: analysis).map(\.range.location) == [heading.location])
+        let emptyFence = EditorSourceAnalysis.scan("```\n\n")
+        #expect(emptyFence.protectedRanges.first?.location == 0)
+        #expect((emptyFence.protectedRanges.first?.length ?? 0) >= 4)
+    }
+
     @Test func parserColumnsTranslateToTheExactSourceToken() throws {
         let source = "日本語 **強調** and `code`\r\n"
         let parsed = try #require(MarkdownParser.parse(Array(source.utf8)))

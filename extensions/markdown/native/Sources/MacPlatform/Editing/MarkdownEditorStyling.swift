@@ -47,6 +47,7 @@ struct MarkdownSpanIndex: Sendable {
     private(set) var completedAnalyses = 0
     private var coordinates: EditorSourceCoordinates?
     private var measuredCounts: (words: Int, characters: Int)?
+    private var codeRanges: [NSRange] = []
     var sourcePosition: (line: Int, column: Int)? {
         guard let controller, analysedGeneration == controller.generation else { return nil }
         return coordinates?.position(atUTF16: controller.selectedRange.location)
@@ -57,7 +58,7 @@ struct MarkdownSpanIndex: Sendable {
     }
     var protectedRanges: [NSRange]? {
         guard let controller, analysedGeneration == controller.generation else { return nil }
-        return index.spans.filter { $0.role == .codeBlock || $0.role == .inlineCode }.map(\.range)
+        return codeRanges
     }
 
     init(controller: MarkdownEditorTextController) {
@@ -67,7 +68,7 @@ struct MarkdownSpanIndex: Sendable {
     }
 
     func changed() {
-        guard let controller else { return }
+        guard let controller, analysedGeneration != controller.generation else { return }
         waiting = controller.snapshot
         guard !controller.hasMarkedText else { return }
         debounce?.cancel()
@@ -80,14 +81,16 @@ struct MarkdownSpanIndex: Sendable {
     private func startNext() {
         guard !running, let snapshot = waiting, let controller, !controller.hasMarkedText else { return }
         waiting = nil
+        guard analysedGeneration != snapshot.generation else { return }
         running = true
         Task { [weak self] in
             let result = await Task.detached(priority: .utility) {
                 var words = 0
                 snapshot.source.enumerateSubstrings(in: snapshot.source.startIndex..<snapshot.source.endIndex,
                     options: [.byWords, .substringNotRequired]) { _, _, _, _ in words += 1 }
-                return (MarkdownSpanIndex(EditorSourceAnalysis.scan(snapshot.source).spans),
-                        EditorSourceCoordinates(snapshot.source), words, snapshot.source.count)
+                let analysis = EditorSourceAnalysis.scan(snapshot.source)
+                return (MarkdownSpanIndex(analysis.spans),
+                        EditorSourceCoordinates(snapshot.source), words, snapshot.source.count, analysis.protectedRanges)
             }.value
             guard let self else { return }
             self.running = false
@@ -96,6 +99,7 @@ struct MarkdownSpanIndex: Sendable {
                 self.index = result.0
                 self.coordinates = result.1
                 self.measuredCounts = (result.2, result.3)
+                self.codeRanges = result.4
                 self.analysedGeneration = snapshot.generation
                 self.invalidate()
                 controller.onAnalysis?()
@@ -105,14 +109,11 @@ struct MarkdownSpanIndex: Sendable {
     }
 
     func invalidate() {
-        guard let view = controller?.textView, !view.hasMarkedText(), let manager = view.textLayoutManager,
-              let content = manager.textContentManager else { return }
+        guard let view = controller?.textView, !view.hasMarkedText() else { return }
         // Paragraph attributes are derived, so invalidate cached elements without rewriting storage.
         if let storage = view.textStorage {
             storage.edited(.editedAttributes, range: NSRange(location: 0, length: storage.length), changeInLength: 0)
         }
-        manager.invalidateLayout(for: content.documentRange)
-        view.needsLayout = true
         view.needsDisplay = true
     }
 
@@ -130,7 +131,15 @@ struct MarkdownSpanIndex: Sendable {
             for span in index.overlapping(range) {
                 let intersection = NSIntersectionRange(span.range, range)
                 let local = NSRange(location: intersection.location - range.location, length: intersection.length)
-                text.addAttributes(MarkdownEditorTheme.attributes(for: span.role, presentation: presentation, palette: palette), range: local)
+                if span.role == .strong || span.role == .emphasis {
+                    let trait: NSFontTraitMask = span.role == .strong ? .boldFontMask : .italicFontMask
+                    text.enumerateAttribute(.font, in: local) { value, run, _ in
+                        let font = value as? NSFont ?? MarkdownEditorTheme.font(presentation)
+                        text.addAttribute(.font, value: NSFontManager.shared.convert(font, toHaveTrait: trait), range: run)
+                    }
+                } else {
+                    text.addAttributes(MarkdownEditorTheme.attributes(for: span.role, presentation: presentation, palette: palette), range: local)
+                }
             }
         }
         return NSTextParagraph(attributedString: text)

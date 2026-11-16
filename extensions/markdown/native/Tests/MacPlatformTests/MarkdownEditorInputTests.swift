@@ -71,7 +71,7 @@ import AppKit
     }
 
     @Test func semanticRenderingDoesNotEnterTheBufferOrUndo() async {
-        let editor = MarkdownEditorTextController(source: "# Heading\nText with **strong** and `code`.\n")
+        let editor = MarkdownEditorTextController(source: "# Heading **bold *inner***\nText with **strong** and `code`.\n")
         let window = NSWindow(contentRect: NSRect(x: -2000, y: 0, width: 640, height: 480),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = editor.scrollView
@@ -102,6 +102,14 @@ import AppKit
                 if let paragraph = fragment.textElement as? NSTextParagraph,
                    let font = paragraph.attributedString.attribute(.font, at: 0, effectiveRange: nil) as? NSFont {
                     headingSize = font.pointSize
+                    let inner = (paragraph.attributedString.string as NSString).range(of: "inner")
+                    if inner.location != NSNotFound,
+                       let nested = paragraph.attributedString.attribute(.font, at: inner.location, effectiveRange: nil) as? NSFont {
+                        #expect(nested.pointSize == headingSize)
+                        #expect(NSFontManager.shared.traits(of: nested).contains([.boldFontMask, .italicFontMask]))
+                    } else {
+                        Issue.record("The heading's nested emphasis is missing")
+                    }
                 }
                 return false
             }
@@ -113,6 +121,41 @@ import AppKit
         #expect(editor.generation == 0)
         #expect(editor.textView.undoManager?.canUndo == false)
         #expect(editor.protectedRanges?.isEmpty == false)
+        #expect(editor.textView.textLayoutManager != nil)
+        window.contentView = nil
+    }
+
+    @Test func viewportSurvivesAnalysisBetweenDistantEdits() async {
+        let source = String(repeating: "## Heading 文\nText with **strong** and `code`.\n\n", count: 30)
+        let editor = MarkdownEditorTextController(source: source)
+        let window = NSWindow(contentRect: NSRect(x: -2000, y: 0, width: 640, height: 480),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = editor.scrollView
+        window.makeFirstResponder(editor.textView)
+        for position in [0, source.utf16.count / 2, source.utf16.count] {
+            let ready = await withCheckedContinuation { continuation in
+                var resumed = false
+                editor.onAnalysis = {
+                    guard !resumed else { return }
+                    resumed = true
+                    continuation.resume(returning: true)
+                }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(5))
+                    guard !resumed else { return }
+                    resumed = true
+                    continuation.resume(returning: false)
+                }
+            }
+            #expect(ready)
+            let text = editor.source as NSString
+            let offset = position == source.utf16.count ? text.length : text.rangeOfComposedCharacterSequence(at: position).location
+            editor.select(NSRange(location: offset, length: 0))
+            window.layoutIfNeeded()
+            editor.textView.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+            window.layoutIfNeeded()
+        }
+        #expect(editor.source.utf16.count == source.utf16.count + 3)
         #expect(editor.textView.textLayoutManager != nil)
         window.contentView = nil
     }

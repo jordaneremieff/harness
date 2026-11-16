@@ -50,6 +50,8 @@ public struct EditorSourceAnalysis: Sendable {
     static let spanLimit = 100_000
 
     public let spans: [EditorSemanticSpan]
+    /// Entire code constructs, including delimiters, where prose commands must not operate.
+    public let protectedRanges: [NSRange]
 
     public static func scan(_ source: String) -> Self {
         var builder = Builder(source: source)
@@ -60,7 +62,6 @@ public struct EditorSourceAnalysis: Sendable {
 private struct Builder {
     typealias Node = UnsafeMutablePointer<cmark_node>
 
-    private let source: String
     private let nativeSource: NSString
     private let coordinates: EditorSourceCoordinates
     private let lines: [String]
@@ -71,33 +72,19 @@ private struct Builder {
 
     private var spans: [(span: EditorSemanticSpan, order: Int)] = []
     private var nextOrder = 0
+    private var protectedRanges: [NSRange] = []
     private var excludedLines: Set<Int> = []
 
     init(source: String) {
-        self.source = source
         self.nativeSource = source as NSString
-        let split = SourceStructure.splitLines(source)
-        self.lines = split.lines
+        let lines = source.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" }).map(String.init)
+        self.lines = lines
         self.coordinates = EditorSourceCoordinates(source)
         let (frontMatter, body) = MarkdownRenderer.splitFrontMatter(source)
         self.body = body
         self.lineOffset = SourceStructure.lineFeeds(source) - SourceStructure.lineFeeds(body)
         self.sourceLength = source.utf16.count
-        if frontMatter != nil {
-            var closing: Int?
-            if split.lines.count > 1 {
-                for index in 1..<min(split.lines.count, 400) {
-                    let trimmed = split.lines[index].hasSuffix("\r") ? String(split.lines[index].dropLast()) : split.lines[index]
-                    if trimmed == "---" || trimmed == "..." {
-                        closing = index + 1
-                        break
-                    }
-                }
-            }
-            self.frontMatterClosingLine = closing
-        } else {
-            self.frontMatterClosingLine = nil
-        }
+        self.frontMatterClosingLine = frontMatter.map { SourceStructure.lineFeeds($0) + 3 }
     }
 
     mutating func analyze() -> EditorSourceAnalysis {
@@ -118,7 +105,7 @@ private struct Builder {
             }
             return left.order < right.order
         }
-        return EditorSourceAnalysis(spans: ordered.map(\.span))
+        return EditorSourceAnalysis(spans: ordered.map(\.span), protectedRanges: protectedRanges)
     }
 
     // MARK: - Tree walking
@@ -160,7 +147,16 @@ private struct Builder {
         case CMARK_NODE_STRONG:
             add(.strong, nodeRange(node))
         case CMARK_NODE_CODE:
-            add(.inlineCode, nodeRange(node))
+            if let range = nodeRange(node) {
+                add(.inlineCode, range)
+                var start = range.location
+                var end = NSMaxRange(range)
+                while start > 0, nativeSource.character(at: start - 1) == 0x60 { start -= 1 }
+                while end < nativeSource.length, nativeSource.character(at: end) == 0x60 { end += 1 }
+                protectedRanges.append(NSRange(location: start, length: end - start))
+                if start < range.location { add(.marker, NSRange(location: start, length: range.location - start)) }
+                if end > NSMaxRange(range) { add(.marker, NSRange(location: NSMaxRange(range), length: end - NSMaxRange(range))) }
+            }
         case CMARK_NODE_LINK:
             visitLink(node, image: false)
         case CMARK_NODE_IMAGE:
@@ -202,6 +198,10 @@ private struct Builder {
         let startLine = Int(cmark_node_get_start_line(node)) + lineOffset
         let endLine = Int(cmark_node_get_end_line(node)) + lineOffset
         guard startLine >= 1, startLine <= lines.count, endLine >= startLine else { return }
+        if let range = coordinates.range(startLine: startLine, startColumn: max(1, Int(cmark_node_get_start_column(node))),
+                                         endLine: endLine, endColumn: max(1, Int(cmark_node_get_end_column(node)))) {
+            protectedRanges.append(range)
+        }
         excludeLines(start: startLine, end: endLine)
 
         var fenceLength: Int32 = 0
