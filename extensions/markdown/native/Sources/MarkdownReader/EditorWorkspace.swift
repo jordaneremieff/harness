@@ -18,7 +18,7 @@ final class WorkingDocument: Identifiable {
     let updates = UpdateObserver()
     @ObservationIgnored private var checkTask: Task<Void, Never>?
     @ObservationIgnored private var checkRequested = false
-    @ObservationIgnored private var closed = false
+    @ObservationIgnored private(set) var closed = false
     var mode: EditorMode = .styled
     var presentation = MarkdownEditorPresentation()
     var visible = false
@@ -34,6 +34,8 @@ final class WorkingDocument: Identifiable {
     var findScope: NSRange?
     var findScopeGeneration: UInt64?
     var findSummary = ""
+    var searchBusy = false
+    @ObservationIgnored var findRequested = false
     var goToLineText = ""
     @ObservationIgnored var findTask: Task<Void, Never>?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
@@ -43,7 +45,8 @@ final class WorkingDocument: Identifiable {
         return EditorDraftAssetResolver(base: baseResolver, root: URL(fileURLWithPath: root), images: session.record.stagedAssets ?? [])
     }
     @ObservationIgnored private var composing = false
-    var showsPreview: Bool { mode == .rendered || mode == .split }
+    private(set) var splitAvailable = true
+    var showsPreview: Bool { mode == .rendered || (mode == .split && splitAvailable) }
     var line: Int?
     var column: Int?
     var words: Int?
@@ -90,6 +93,12 @@ final class WorkingDocument: Identifiable {
         text.setPresentation(presentation)
         schedulePreview()
         if next != .rendered { text.focus() }
+    }
+
+    func setSplitAvailable(_ value: Bool) {
+        guard splitAvailable != value else { return }
+        splitAvailable = value
+        if mode == .split { schedulePreview() }
     }
 
     func setVisible(_ value: Bool) {

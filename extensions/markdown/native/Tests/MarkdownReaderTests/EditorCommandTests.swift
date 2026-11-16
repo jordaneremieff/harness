@@ -6,7 +6,7 @@ import Testing
 @MainActor @Suite(.serialized) struct NativeEditorCommands {
     private func workspace(_ source: String) throws -> (EditorWorkspace, NSWindow, URL) {
         _ = NSApplication.shared
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("editor-command-" + UUID().uuidString)
+        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? FileManager.default.temporaryDirectory.path).appendingPathComponent("editor-command-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil)
         workspace.add(DraftRecord(source: source))
@@ -15,6 +15,60 @@ import Testing
         window.isReleasedWhenClosed = false; window.contentView = document.text.scrollView
         window.makeFirstResponder(document.text.textView)
         return (workspace, window, root)
+    }
+
+    @Test func suspendedSearchAndReplacementRejectChangedInputs() async throws {
+        let original = String(repeating: "a", count: 1_000_000) + " a"
+        let (workspace, window, root) = try workspace(original)
+        defer { window.close(); try? FileManager.default.removeItem(at: root) }
+        let document = try #require(workspace.active)
+        document.setMode(.raw)
+        document.findText = "a"; document.findWholeWord = true
+        document.text.select(NSRange(location: 0, length: 0))
+        let search = Task { await document.find() }
+        try await searching(document)
+        #expect(document.text.apply(range: NSRange(location: 0, length: original.utf16.count), replacement: "new", selection: NSRange(location: 0, length: 0), actionName: "Edit"))
+        #expect(!(await search.value))
+        #expect(document.text.source == "new")
+        #expect(document.text.selectedRange == NSRange(location: 0, length: 0))
+
+        let dense = String(repeating: "a " + String(repeating: "b", count: 100) + "\n", count: 5_000)
+        #expect(document.text.apply(range: NSRange(location: 0, length: 3), replacement: dense, selection: NSRange(location: 0, length: 0), actionName: "Edit"))
+        document.replacementText = "replacement"
+        let replacement = Task { await document.replace(all: true) }
+        try await searching(document)
+        document.findText = "different query"
+        await replacement.value
+        #expect(document.text.source == dense)
+        #expect(document.text.selectedRange == NSRange(location: 0, length: 0))
+        await workspace.closeViews()
+    }
+
+    @Test func repeatedCountRequestsRetainOneWorkerAndPublishOnlyCurrentSource() async throws {
+        let (workspace, window, root) = try workspace(String(repeating: "a", count: 1_000_000))
+        defer { window.close(); try? FileManager.default.removeItem(at: root) }
+        let document = try #require(workspace.active)
+        document.setMode(.raw)
+        document.findVisible = true; document.findText = "a"; document.findWholeWord = true
+        document.refreshFind()
+        let worker = try #require(document.findTask)
+        for query in ["aa", "aaa", "aaaa"] {
+            document.findText = query; document.refreshFind()
+            #expect(!worker.isCancelled)
+        }
+        #expect(document.text.apply(range: NSRange(location: 0, length: document.text.source.utf16.count), replacement: "current", selection: NSRange(location: 0, length: 0), actionName: "Edit"))
+        document.findText = "current"; document.refreshFind()
+        await worker.value
+        #expect(!worker.isCancelled)
+        #expect(document.findTask == nil)
+        #expect(document.findSummary == "1 matches")
+        await workspace.closeViews()
+    }
+
+    private func searching(_ document: WorkingDocument) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !document.searchBusy, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(document.searchBusy)
     }
 
     private func analysed(_ document: WorkingDocument) async throws {
@@ -50,27 +104,35 @@ import Testing
         let document = try #require(workspace.active)
         document.findText = "cat"; document.findWholeWord = true
         document.text.select(NSRange(location: 0, length: 0))
-        document.find()
+        await document.find()
         #expect(document.text.selectedRange == NSRange(location: 0, length: 3))
-        document.find()
+        await document.find()
         #expect(document.text.selectedRange == NSRange(location: 4, length: 3))
-        document.find()
+        await document.find()
         #expect(document.text.selectedRange == NSRange(location: 16, length: 3))
-        document.find()
+        await document.find()
+        #expect(document.text.selectedRange == NSRange(location: 0, length: 3))
+        await document.find(backwards: true)
+        #expect(document.text.selectedRange == NSRange(location: 16, length: 3))
+        await document.find()
         #expect(document.text.selectedRange == NSRange(location: 0, length: 3))
         document.text.select(NSRange(location: 0, length: 7))
         document.findInSelection = true; document.captureFindSelection()
         document.replacementText = "dog"
-        document.replace(all: true)
+        await document.replace(all: true)
         #expect(document.text.source == "dog dog scatter\ncat")
         document.text.textView.undoManager?.undo()
         #expect(document.text.source == "Cat cat scatter\ncat")
         #expect(document.literalQuery == nil)
-        document.replace(all: true)
+        await document.replace(all: true)
         #expect(document.text.source == "Cat cat scatter\ncat")
         document.findInSelection = false
         document.goToLineText = "2"; document.goToLine()
         #expect(document.text.selectedRange.location == 16)
+        await document.replace(all: false)
+        #expect(document.text.source == "Cat cat scatter\ndog")
+        document.text.textView.undoManager?.undo()
+        #expect(document.text.source == "Cat cat scatter\ncat")
         await workspace.closeViews()
     }
 }

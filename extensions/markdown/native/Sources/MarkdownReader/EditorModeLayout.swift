@@ -32,6 +32,8 @@ struct EditorDraftPreview: View {
 }
 
 final class EditorModeSplitView: NSSplitView, NSSplitViewDelegate {
+    static let minimumSplitWidth: CGFloat = 640
+    var showsSplit: Bool { mode == .split && bounds.width >= Self.minimumSplitWidth }
     let source: NSScrollView
     let preview: NSHostingView<EditorDraftPreview>
     private(set) var mode: EditorMode
@@ -64,7 +66,9 @@ final class EditorModeSplitView: NSSplitView, NSSplitViewDelegate {
 
     private func applyVisibility() {
         source.isHidden = mode == .rendered
-        preview.isHidden = mode == .styled || mode == .raw
+        preview.isHidden = mode != .rendered && !showsSplit
+        if preview.isHidden, let responder = window?.firstResponder as? NSView,
+           responder === preview || responder.isDescendant(of: preview) { window?.makeFirstResponder(source.documentView) }
         if source.isHidden, let responder = window?.firstResponder as? NSView,
            responder === source || responder.isDescendant(of: source) { window?.makeFirstResponder(nil) }
     }
@@ -73,6 +77,7 @@ final class EditorModeSplitView: NSSplitView, NSSplitViewDelegate {
         arranging = true
         defer { arranging = false }
         let width = max(0, bounds.width), height = max(0, bounds.height)
+        applyVisibility()
         switch mode {
         case .styled, .raw:
             source.frame = NSRect(x: 0, y: 0, width: width, height: height)
@@ -81,6 +86,11 @@ final class EditorModeSplitView: NSSplitView, NSSplitViewDelegate {
             source.frame = .zero
             preview.frame = NSRect(x: 0, y: 0, width: width, height: height)
         case .split:
+            guard showsSplit else {
+                source.frame = NSRect(x: 0, y: 0, width: width, height: height)
+                preview.frame = .zero
+                return
+            }
             let available = max(0, width - dividerThickness)
             let minimum = min(180, available / 2)
             let left = max(minimum, min(available - minimum, available * fraction))
@@ -90,11 +100,11 @@ final class EditorModeSplitView: NSSplitView, NSSplitViewDelegate {
     }
 
     func splitViewDidResizeSubviews(_ notification: Notification) {
-        guard !arranging, mode == .split, bounds.width > dividerThickness else { return }
+        guard !arranging, showsSplit, bounds.width > dividerThickness else { return }
         fraction = min(0.8, max(0.2, source.frame.width / (bounds.width - dividerThickness)))
     }
 
     override func drawDivider(in rect: NSRect) {
-        if mode == .split { super.drawDivider(in: rect) }
+        if showsSplit { super.drawDivider(in: rect) }
     }
 }

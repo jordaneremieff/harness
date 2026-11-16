@@ -51,7 +51,9 @@ only the submitted source as saved; text typed later stays dirty. An unconfirmed
 retains its exact invocation for reconciliation before another publication starts. The pending
 invocation must reach recovery storage before the writer starts; subsequent typing need not stop.
 
-Styled, Raw, Rendered and Split modes retain the same source controller. Preview uses the reader's
+Styled, Raw, Rendered and Split modes retain the same source controller. Below the minimum Split
+width, source fills the workspace and a hint offers Rendered mode for the preview. Widening restores
+the split without replacing source, selection or undo history. Preview uses the reader's
 safe rendering path without a fabricated file or revision identity. Hidden previews stop pending
 work. Mode changes defer while native text composition is active; document changes, saves and
 close actions instead explain that composition must finish first. The workspace contains its
@@ -70,7 +72,11 @@ Command-F opens literal source search with next/previous, case and whole-word co
 and an explicit selection scope. Command-G and Shift-Command-G step through matches. A source edit
 outside a scoped replacement invalidates that scope instead of broadening Replace All. In rendered
 preview, or when the preview has focus in Split, reader Find remains the active action. Go to Line
-uses one-based source lines; the status shows source position and counts.
+uses one-based source lines; the status shows source position and counts. Source search and
+replacement preparation run off the main actor with one explicit operation in flight. Changed
+source, selection, query, composition or a closed view prevents a late operation from applying.
+Counts use one worker with the latest pending request, not a new detached scan for each change.
+Applying a replacement remains one native undo transaction.
 
 **Insert Image**, image paste and file drop copy admitted images into private `EditorAssets/`
 storage before inserting Markdown. The source receives one native undo transaction. If typing,

@@ -337,11 +337,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         withModel { $0.showFind() }
     }
     @objc func findNext(_ sender: Any?) {
-        if let document = editorDocument { document.showFind(); document.find(); return }
+        if let document = editorDocument { document.showFind(); Task { await document.find() }; return }
         withModel { model in model.findVisible = true; await model.find() }
     }
     @objc func findPrevious(_ sender: Any?) {
-        if let document = editorDocument { document.showFind(); document.find(backwards: true); return }
+        if let document = editorDocument { document.showFind(); Task { await document.find(backwards: true) }; return }
         withModel { model in model.findVisible = true; await model.find(backwards: true) }
     }
     @objc func toggleOutline(_ sender: Any?) { withModel { $0.toggleOutline() } }

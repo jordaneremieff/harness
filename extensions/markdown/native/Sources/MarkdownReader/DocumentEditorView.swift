@@ -23,9 +23,19 @@ struct DocumentEditorView: View {
             }.padding(.horizontal, 10).padding(.bottom, 6)
             if document.findVisible { EditorFindBar(document: document) }
             Divider()
-            EditorModeLayout(document: document)
-                .id(document.id)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    if document.mode == .split, geometry.size.width < EditorModeSplitView.minimumSplitWidth {
+                        Text("Split shows source at this width. Select Rendered for the preview.")
+                            .font(.caption).foregroundStyle(.secondary).padding(6)
+                    }
+                    EditorModeLayout(document: document)
+                        .id(document.id)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }.onChange(of: geometry.size.width, initial: true) { _, width in
+                    document.setSplitAvailable(width >= EditorModeSplitView.minimumSplitWidth)
+                }
+            }
         }
         .disabled(document.replacing)
         .onChange(of: document.presentation) { _, _ in document.updatePresentation() }
