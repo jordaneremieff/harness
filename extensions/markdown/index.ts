@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { LoadingView, openOperatorFrame, publishOperatorViews } from "../../operator-ui/registration.ts";
@@ -75,6 +75,25 @@ export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => Abort
 			check(signal);
 			return result;
 		},
+		newScratchpad: async (viewSignal) => {
+			const signal = AbortSignal.any([viewSignal, lifecycle()]);
+			check(signal);
+			if (ctx.mode !== "tui") throw new Error("Open New scratchpad in the Markdown operator view or native app.");
+			const reveal = await import("./reveal.ts");
+			check(signal);
+			return reveal.openScratchpad(signal, { presentation });
+		},
+		edit: async (row, viewSignal, copy = false) => {
+			const signal = AbortSignal.any([viewSignal, lifecycle()]);
+			check(signal);
+			if (ctx.mode !== "tui") throw new Error("Open Edit in the Markdown operator view or native app.");
+			const response = row.kind === "response" ? readOrdinary(source, row.response.entryId, cutoff) : undefined;
+			const reveal = await import("./reveal.ts");
+			check(signal);
+			if (response) return reveal.openEditorResponse(response, signal, { presentation });
+			if (row.kind !== "document") throw new Error("Select a retained response or document.");
+			return reveal.openEditorStored(root, row.document.id, copy ? "copy" : "edit", signal, { presentation, pin: { revision: row.document.revision, digest: row.document.digest } });
+		},
 	};
 }
 function notice(ctx: ExtensionContext, text: string, error = false): void {
@@ -103,11 +122,27 @@ async function openFile(ctx: ExtensionContext, path: string, signal: AbortSignal
 }
 async function readSelection(value: string, ctx: ExtensionContext, signal: AbortSignal, operations: MarkdownOperations, presentation: Presentation): Promise<string> {
 	if (!value) return operations.latest(signal);
+	if (value === "new") return operations.newScratchpad(signal);
+	if (value === "edit" || value === "copy" || value.startsWith("edit ") || value.startsWith("copy ")) return editSelection(value, ctx, signal, presentation);
 	if (value === "file" || value.startsWith("file ")) return openFile(ctx, value.slice(4).trim().replace(/^"(.*)"$/u, "$1"), signal, presentation);
 	if (!/^md-[0-9a-f]{1,20}$/u.test(value)) throw new Error(MARKDOWN_USAGE);
 	const reveal = await import("./reveal.ts");
 	signal.throwIfAborted();
 	return reveal.openStored(localSettings().dir, value, signal, { gui: ctx.mode === "tui", presentation });
+}
+async function editSelection(value: string, ctx: ExtensionContext, signal: AbortSignal, presentation: Presentation): Promise<string> {
+	if (ctx.mode !== "tui") throw new Error("Use the Markdown operator view or native app to edit. No editor was opened.");
+	const copy = value === "copy" || value.startsWith("copy ");
+	const selected = value.slice(4).trim();
+	const reveal = await import("./reveal.ts");
+	signal.throwIfAborted();
+	if (!copy && selected.startsWith("file ")) {
+		const path = selected.slice(5).trim().replace(/^"(.*)"$/u, "$1");
+		if (!path) throw new Error(markdownHelp("edit"));
+		return reveal.openEditorFile(resolve(ctx.cwd, expandHome(path)), signal, { presentation });
+	}
+	if (!/^md-[0-9a-f]{3,20}$/u.test(selected)) throw new Error(markdownHelp(copy ? "copy" : "edit"));
+	return reveal.openEditorStored(localSettings().dir, selected, copy ? "copy" : "edit", signal, { presentation });
 }
 function readPresentation(value: string): { value: string; presentation: Presentation } {
 	if (value === "window" || value.startsWith("window ")) return { value: value.slice(6).trim(), presentation: "window" };
@@ -154,7 +189,7 @@ export default function markdown(pi: ExtensionAPI): void {
 			if (!signal.aborted) notice(ctx, result);
 		} catch (error) { if (!signal.aborted) notice(ctx, clean(error), true); }
 	};
-	pi.registerCommand("markdown", { description: "Read beside this conversation; browse responses or documents; use help for ID, file and separate window forms", getArgumentCompletions: markdownCompletions, handler: action });
+	pi.registerCommand("markdown", { description: "Read or write beside this conversation; use new, edit, copy, recent, published, file, window or help", getArgumentCompletions: markdownCompletions, handler: action });
 	pi.registerShortcut("ctrl+alt+r", { description: "Read the latest assistant response in Markdown", handler: (ctx) => action("", ctx) });
 	pi.registerTool(createPublishTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app }));
 	pi.registerTool(createReadTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app }));

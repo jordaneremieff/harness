@@ -10,11 +10,11 @@ setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 const theme = { fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text, italic: (text: string) => text, underline: (text: string) => text } as Theme;
 const row = (id: string): MarkdownRow => ({ kind: "response", response: { entryId: id, preview: `Preview ${id}`, bytes: id === "substantial" ? 4096 : 100, timestamp: Date.now() - 15 * 60 * 1000, stop: "stop", completeness: { state: "complete" } } });
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
-function fixture(ops: MarkdownOperations) {
+function fixture(ops: Omit<MarkdownOperations, "newScratchpad" | "edit"> & Partial<Pick<MarkdownOperations, "newScratchpad" | "edit">>) {
 	const controller = new AbortController();
 	const notices: string[] = [];
 	const host: ViewHost = { theme, target: { id: "captured", label: "Selected conversation" }, signal: controller.signal, requestRender: () => {}, notify: (message) => notices.push(message), push: () => {}, back: () => {}, close: () => controller.abort() };
-	return { view: markdownView(host, ops), controller, notices };
+	return { view: markdownView(host, { newScratchpad: async () => "new", edit: async () => "edit", ...ops }), controller, notices };
 }
 function action(view: OperatorView, id: string) {
 	const candidate = view.actions?.().find((item) => item.id === id);
@@ -31,7 +31,7 @@ test("the view lists prior responses and exposes matching read, recent and publi
 	assert.match(screen, /4\.0 KB · 15m/u);
 	assert.match(screen, /100 B · 15m/u);
 	assert.match(screen, /Preview only/u);
-	assert.deepEqual(f.view.actions?.().slice(0, 4).map((item) => [item.id, item.key]), [["read", "enter"], ["latest", "l"], ["recent", "n"], ["published", "p"]]);
+	assert.deepEqual(f.view.actions?.().slice(0, 6).map((item) => [item.id, item.key]), [["read", "enter"], ["new", "w"], ["edit", "e"], ["latest", "l"], ["recent", "n"], ["published", "p"]]);
 	assert.equal(read.length, 0, "list, render and initial selection do not reveal");
 	action(f.view, "read");
 	await tick();
@@ -92,5 +92,23 @@ for (const [change, apply] of [
 	assert.equal(received?.aborted, true);
 	finishRead(); await tick();
 	assert.ok(!f.notices.includes("late latest"));
+	f.controller.abort();
+});
+
+test("New and Edit require explicit actions and preserve the response copy label", async () => {
+	const calls: string[] = [];
+	const f = fixture({
+		load: async () => ({ rows: [row("original")], coverage: "one response" }),
+		read: async () => "read", latest: async () => "latest",
+		newScratchpad: async () => { calls.push("new"); return "scratchpad requested"; },
+		edit: async (item) => { calls.push(item.kind === "response" ? item.response.entryId : "document"); return "copy requested"; },
+	});
+	await tick();
+	f.view.render(120, 24);
+	assert.deepEqual(calls, []);
+	assert.equal(f.view.actions?.().find((item) => item.id === "edit")?.label, "Edit a Copy");
+	action(f.view, "new"); await tick();
+	action(f.view, "edit"); await tick();
+	assert.deepEqual(calls, ["new", "original"]);
 	f.controller.abort();
 });

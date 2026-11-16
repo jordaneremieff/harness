@@ -8,6 +8,8 @@ export interface MarkdownOperations {
 	load(scope: MarkdownScope, signal: AbortSignal): Promise<{ rows: MarkdownRow[]; coverage: string }>;
 	read(row: MarkdownRow, signal: AbortSignal): Promise<string>;
 	latest(signal: AbortSignal): Promise<string>;
+	newScratchpad(signal: AbortSignal): Promise<string>;
+	edit(row: MarkdownRow, signal: AbortSignal, copy?: boolean): Promise<string>;
 }
 export interface MarkdownViewState { scope: MarkdownScope; query: string; selected?: string }
 export const createMarkdownViewState = (): MarkdownViewState => ({ scope: "recent", query: "" });
@@ -17,7 +19,7 @@ const errorText = (error: unknown) => plainLine(error instanceof Error ? error.m
 
 export function markdownView(host: ViewHost, operations: MarkdownOperations, state = createMarkdownViewState()): OperatorView {
 	let rows: MarkdownRow[] = [];
-	let status = "Read retained assistant text. Opening a document starts no model turn.";
+	let status = "Read retained text or write in a private scratchpad. These actions start no model turn.";
 	let generation = 0;
 	let effect: AbortController | undefined;
 	let busy = false;
@@ -49,7 +51,7 @@ export function markdownView(host: ViewHost, operations: MarkdownOperations, sta
 		}
 		filter();
 	};
-	const read = async (row?: MarkdownRow) => {
+	const perform = async (operation: (signal: AbortSignal) => Promise<string>) => {
 		cancel();
 		const controller = new AbortController();
 		effect = controller;
@@ -58,7 +60,7 @@ export function markdownView(host: ViewHost, operations: MarkdownOperations, sta
 		host.notify("Preparing the document…", "pending");
 		host.requestRender();
 		try {
-			const notice = await (row ? operations.read(row, signal) : operations.latest(signal));
+			const notice = await operation(signal);
 			if (!signal.aborted) host.notify(notice, "info");
 		} catch (error) {
 			if (!signal.aborted) host.notify(errorText(error), "error");
@@ -66,13 +68,20 @@ export function markdownView(host: ViewHost, operations: MarkdownOperations, sta
 			if (effect === controller) { effect = undefined; busy = false; host.requestRender(); }
 		}
 	};
-	const actions = (row: MarkdownRow | undefined): Action[] => [
-		{ id: "read", label: "Read", key: "enter", primary: true, disabled: busy ? "A document read is in progress" : row ? undefined : "Select a response or document", run: () => { if (row) void read(row); } },
-		{ id: "latest", label: "Read latest", key: "l", primary: true, disabled: busy ? "A document read is in progress" : undefined, run: () => void read() },
+	const actions = (row: MarkdownRow | undefined): Action[] => {
+		const disabled = busy ? "A document action is in progress" : undefined;
+		const needsSelection = disabled ?? (row ? undefined : "Select a response or document");
+		return [
+		{ id: "read", label: "Read", key: "enter", primary: true, disabled: needsSelection, run: () => { if (row) void perform((signal) => operations.read(row, signal)); } },
+		{ id: "new", label: "New scratchpad", short: "new", key: "w", primary: true, disabled, run: () => void perform((signal) => operations.newScratchpad(signal)) },
+		{ id: "edit", label: row?.kind === "response" ? "Edit a Copy" : "Edit", key: "e", primary: true, disabled: needsSelection, run: () => { if (row) void perform((signal) => operations.edit(row, signal)); } },
+		...(row?.kind === "document" ? [{ id: "copy", label: "Edit a Copy", key: "c", disabled, run: () => void perform((signal) => operations.edit(row, signal, true)) }] : []),
+		{ id: "latest", label: "Read latest", key: "l", primary: true, disabled, run: () => void perform((signal) => operations.latest(signal)) },
 		{ id: "recent", label: "Recent responses", short: "recent", key: "n", primary: true, run: () => void load("recent") },
 		{ id: "published", label: "Published documents", short: "published", key: "p", primary: true, run: () => void load("published") },
 		{ id: "refresh", label: "Refresh list", key: "r", run: () => void load(state.scope) },
-	];
+		];
+	};
 	const browser = new Browser<MarkdownRow>({
 		title: "Markdown", host, key: identity,
 		line: (row, _width, theme) => {
@@ -89,10 +98,10 @@ export function markdownView(host: ViewHost, operations: MarkdownOperations, sta
 			return `${theme.fg("dim", `${size}${time}${partial}`)}  ${plainLine(label(row))}`;
 		},
 		detail: (row) => {
-			if (!row) return "Select a response or document. Read opens its complete retained source in the Markdown reader.";
-			if (row.kind === "document") return `${plainLine(row.document.title)}\n${row.document.id} · revision ${row.document.revision} · ${row.document.bytes} bytes\n\nRead opens the saved document. No source preview is loaded here.`;
+			if (!row) return "New scratchpad opens a blank native editor. Select a response or document to read or edit.";
+			if (row.kind === "document") return `${plainLine(row.document.title)}\n${row.document.id} · revision ${row.document.revision} · ${row.document.bytes} bytes\n\nRead opens the saved document. Edit creates a private editing session; Save appends a revision. Edit a Copy leaves this document unchanged.`;
 			const response = row.response;
-			return `Response ${response.entryId} · ${response.bytes} bytes\n${response.completeness.state}${response.completeness.reason ? ` (${response.completeness.reason})` : ""} · response state, not task acceptance\n\nPreview only:\n${plainLine(response.preview)}\n\nRead acquires the complete response by entry identity.`;
+			return `Response ${response.entryId} · ${response.bytes} bytes\n${response.completeness.state}${response.completeness.reason ? ` (${response.completeness.reason})` : ""} · response state, not task acceptance\n\nPreview only:\n${plainLine(response.preview)}\n\nRead acquires the complete response by entry identity. Edit a Copy preserves this captured response.`;
 		}, actions,
 		scopes: [{ id: "recent", label: "Recent responses" }, { id: "published", label: "Published" }],
 		scope: () => state.scope,

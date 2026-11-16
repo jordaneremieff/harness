@@ -6,7 +6,7 @@ import { markdownCompletions, markdownHelp } from "./commands.ts";
 test("every option has individual help in the supported completion description field", () => {
 	const items = markdownCompletions("");
 	assert.ok(items);
-	assert.deepEqual(items.map((item) => item.value.trim()), ["recent", "published", "file", "window", "help"]);
+	assert.deepEqual(items.map((item) => item.value.trim()), ["new", "recent", "published", "edit", "copy", "file", "window", "help"]);
 	assert.equal(new Set(items.map((item) => item.description)).size, items.length);
 	for (const item of items) assert.ok(item.description && item.description.length > 20);
 	assert.deepEqual(markdownCompletions("pub")?.map((item) => item.value), ["published"]);
@@ -14,7 +14,7 @@ test("every option has individual help in the supported completion description f
 });
 
 test("file and ID usage preserve the complete typed argument", () => {
-	for (const prefix of ["file ", 'file "notes and diagrams.md"', "md-012345", 'window file "a b.md"', "window md-012345"]) {
+	for (const prefix of ["file ", 'file "notes and diagrams.md"', "md-012345", 'window file "a b.md"', "window md-012345", "edit md-012345", 'edit file "a b.md"', "copy md-012345", "window copy md-012345"]) {
 		const item = markdownCompletions(prefix)?.[0];
 		assert.ok(item);
 		assert.equal(item.value, prefix);
@@ -22,7 +22,7 @@ test("file and ID usage preserve the complete typed argument", () => {
 	}
 	assert.match(markdownHelp("file"), /session directory; expand a leading ~/u);
 	assert.match(markdownHelp("id"), /unique prefix needs at least six characters/u);
-	assert.throws(() => markdownHelp("missing"), /help recent/u);
+	assert.throws(() => markdownHelp("missing"), /help new \| recent/u);
 });
 
 test("Pi applies only the completion value and retains its individual description", async () => {

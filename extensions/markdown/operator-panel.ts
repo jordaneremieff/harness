@@ -2,7 +2,7 @@ import type { JsonValue, OperatorPanelModule, PanelHost } from "../../operator-u
 import { markdownView, type MarkdownOperations, type MarkdownRow } from "./operator-view.ts";
 import { acquireResponse, readPanelAnswer, type MarkdownAnswer, type MarkdownRequest } from "./panel-protocol.ts";
 
-/** Requests stay on the captured owner route, and the view signal withdraws them; only the explicit Read action imports reveal. */
+/** Requests stay on the captured owner route; only explicit Read, New and Edit actions import the client-local reveal adapter. */
 export function panelOperations(host: PanelHost): MarkdownOperations {
 	const ask = async (request: MarkdownRequest, signal: AbortSignal): Promise<MarkdownAnswer> => {
 		signal.throwIfAborted();
@@ -10,21 +10,21 @@ export function panelOperations(host: PanelHost): MarkdownOperations {
 		signal.throwIfAborted();
 		return readPanelAnswer(request, answer.data);
 	};
-	const read = async (row: MarkdownRow, signal: AbortSignal): Promise<string> => {
+	const read = async (row: MarkdownRow, signal: AbortSignal, editing = false, copy = false): Promise<string> => {
 		if (row.kind === "response") {
 			const entryId = row.response.entryId;
 			const response = await acquireResponse(entryId, (request) => ask(request, signal), signal);
 			signal.throwIfAborted();
 			const reveal = await import("./reveal.ts");
 			signal.throwIfAborted();
-			return reveal.openResponse(response, signal);
+			return editing ? reveal.openEditorResponse(response, signal) : reveal.openResponse(response, signal);
 		}
 		const { id, revision, digest } = row.document;
 		const { root, storeId } = row;
 		if (!root || !storeId) throw new Error("The host did not supply a local store identity.");
 		const reveal = await import("./reveal.ts");
 		signal.throwIfAborted();
-		return reveal.openStored(root, id, signal, { gui: true, storeId, pin: { revision, digest } });
+		return editing ? reveal.openEditorStored(root, id, copy ? "copy" : "edit", signal, { storeId, pin: { revision, digest } }) : reveal.openStored(root, id, signal, { gui: true, storeId, pin: { revision, digest } });
 	};
 	const publishedCoverage = (answer: { rows: unknown[]; limited: boolean; unreadable: number }) => [`${answer.rows.length} published document${answer.rows.length === 1 ? "" : "s"}`, ...(answer.limited ? ["store scan limit reached"] : []), ...(answer.unreadable ? [`${answer.unreadable} unreadable, not listed`] : [])].join(" · ");
 	return {
@@ -39,6 +39,13 @@ export function panelOperations(host: PanelHost): MarkdownOperations {
 			return { rows: answer.rows.map((document) => ({ kind: "document", document, root: answer.root, storeId: answer.storeId })), coverage: publishedCoverage(answer) };
 		},
 		read,
+		edit: (row, signal, copy = false) => read(row, signal, true, copy),
+		newScratchpad: async (signal) => {
+			signal.throwIfAborted();
+			const reveal = await import("./reveal.ts");
+			signal.throwIfAborted();
+			return reveal.openScratchpad(signal);
+		},
 		latest: async (signal) => {
 			const answer = await ask({ op: "recent" }, signal);
 			if (answer.op !== "recent") throw new Error("Unexpected recent answer.");

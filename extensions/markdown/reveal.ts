@@ -1,13 +1,13 @@
 import { execFile } from "node:child_process";
 import { watch } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readSettings } from "./settings.ts";
 import { MarkdownStore, type StoredDocument } from "./store.ts";
 import { responseSnapshotWrite, type ResponseSnapshot } from "./responses.ts";
-import { paneRequestCommand } from "./pane-command.ts";
+import { editorCommand, paneRequestCommand, type EditorOpenIntent } from "./pane-command.ts";
 const PACKAGE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const BUILD_REMEDY = "Run node extensions/markdown/native/build.mts with this client's Markdown app setting.";
 /** `newlySaved` is true only when this action wrote the revision; otherwise the document already existed. */
@@ -123,9 +123,12 @@ export async function revealSaved(saved: SavedDocument, signal: AbortSignal, pro
 async function dispatchPane(app: string, request: string, origin: LaunchOrigin | null, signal: AbortSignal, processRuntime: RevealRuntime): Promise<PaneDispatch> {
 	const command = paneRequestCommand(app, request);
 	if ("showUnavailable" in command) return { version: 1, outcome: "unavailable", detail: command.showUnavailable };
+	return dispatchPaneArgv(command.show, origin, signal, processRuntime);
+}
+async function dispatchPaneArgv(argv: string[], origin: LaunchOrigin | null, signal: AbortSignal, processRuntime: RevealRuntime): Promise<PaneDispatch> {
 	signal.throwIfAborted();
 	try {
-		const output = await processRuntime.run(process.execPath, [join(PACKAGE_ROOT, "extensions", "rex", "terminal-pane.ts"), "split"], { timeout: 7000, maxBuffer: 32768, signal, input: JSON.stringify({ version: 1, origin, argv: command.show, cwd: process.cwd() }) });
+		const output = await processRuntime.run(process.execPath, [join(PACKAGE_ROOT, "extensions", "rex", "terminal-pane.ts"), "split"], { timeout: 7000, maxBuffer: 32768, signal, input: JSON.stringify({ version: 1, origin, argv, cwd: process.cwd() }) });
 		const value = JSON.parse(output.stdout) as PaneDispatch;
 		if (value?.version !== 1 || !["created", "stale", "unavailable", "uncertain"].includes(value.outcome) || typeof value.detail !== "string" || value.detail.length > 256 || /[\p{Cc}\p{Cf}]/u.test(value.detail) || (value.outcome === "created" && !value.receipt)) throw new Error("Invalid pane result.");
 		return value;
@@ -178,6 +181,63 @@ export async function openResponse(response: ResponseSnapshot, signal: AbortSign
 }
 export async function openStored(root: string, id: string, signal: AbortSignal, options: { gui: boolean; storeId?: string; pin?: PinnedRevision; presentation?: Presentation }): Promise<string> {
 	return revealNotice(await materializeAndReveal(() => selectStored(root, id, options.storeId, options.pin), signal, options));
+}
+type EditorRevealOptions = { presentation?: Presentation; runtime?: RevealRuntime };
+async function revealEditor(root: string, intent: EditorOpenIntent, input: string | undefined, signal: AbortSignal, origin: LaunchOrigin | null, options: EditorRevealOptions): Promise<string> {
+	const processRuntime = options.runtime ?? runtime;
+	if (processRuntime.platform !== "darwin") throw new Error("The Markdown editor requires macOS 26 or later.");
+	signal.throwIfAborted();
+	const app = readSettings({ agentDir: getAgentDir() }).values.app;
+	const presentation = options.presentation ?? "pane";
+	const command = editorCommand(app, root, intent, presentation, input, intent === "scratchpad" || intent === "file" ? origin : undefined);
+	if ("showUnavailable" in command) throw new Error(command.showUnavailable);
+	if (presentation === "pane") {
+		const pane = await dispatchPaneArgv(command.show, origin, signal, processRuntime);
+		if (pane.outcome === "uncertain" || signal.aborted) return "Editor pane creation is unconfirmed. Do not retry automatically.";
+		if (pane.outcome !== "created") return `${pane.detail} No separate window was selected.`;
+	} else {
+		await processRuntime.run("/usr/bin/open", ["-n", "-a", app, "--args", ...command.show.slice(1)], { timeout: 5000, maxBuffer: 8192, signal });
+	}
+	return editorLaunchNotice(intent, input, signal, processRuntime, presentation);
+}
+async function editorLaunchNotice(intent: EditorOpenIntent, input: string | undefined, signal: AbortSignal, processRuntime: RevealRuntime, presentation: Presentation): Promise<string> {
+	if ((intent === "edit" || intent === "copy") && input) {
+		const accepted = await waitForAcceptance(input, signal, processRuntime.acceptanceMs ?? 5000).catch(() => false);
+		return accepted ? "The Markdown editor accepted the selected revision. Edits stay private until an explicit save; captured records stay unchanged." : "The editor launch was requested; document acceptance is unconfirmed. Do not retry automatically.";
+	}
+	return presentation === "pane" ? "Rex created the editor pane. Editor focus and readiness are not yet confirmed." : "The editor window launch was requested. Editor focus and readiness are not yet confirmed.";
+}
+/** Explicit client-local editor actions; none starts model work or sends conversation text. */
+export async function openScratchpad(signal: AbortSignal, options: EditorRevealOptions = {}): Promise<string> {
+	signal.throwIfAborted();
+	const root = readSettings({ agentDir: getAgentDir() }).values.dir;
+	const origin = await captureOrigin(signal, options.runtime ?? runtime);
+	return revealEditor(root, "scratchpad", undefined, signal, origin, options);
+}
+export async function openEditorFile(path: string, signal: AbortSignal, options: EditorRevealOptions = {}): Promise<string> {
+	signal.throwIfAborted();
+	if (!isAbsolute(path) || path.length > 4096 || /[\p{Cc}\ud800-\udfff]/u.test(path)) throw new Error("Edit file requires an explicit absolute path without control characters.");
+	const root = readSettings({ agentDir: getAgentDir() }).values.dir;
+	const origin = await captureOrigin(signal, options.runtime ?? runtime);
+	return revealEditor(root, "file", path, signal, origin, options);
+}
+async function openEditorSelection(select: () => Promise<SavedDocument>, intent: "edit" | "copy", signal: AbortSignal, options: EditorRevealOptions): Promise<string> {
+	signal.throwIfAborted();
+	const [saved, origin] = await Promise.all([select(), captureOrigin(signal, options.runtime ?? runtime)]);
+	signal.throwIfAborted();
+	const store = new MarkdownStore(saved.root);
+	if ((await store.identity())?.storeId !== saved.storeId || (await store.get(saved.documentId, saved.revision)).revision.digest !== saved.digest) throw new Error("The selected store or revision changed. No editor was opened.");
+	signal.throwIfAborted();
+	const request = await store.writeOpenRequest(saved.documentId, saved.revision, origin);
+	signal.throwIfAborted();
+	return revealEditor(saved.root, intent, request, signal, origin, options);
+}
+export async function openEditorStored(root: string, id: string, intent: "edit" | "copy", signal: AbortSignal, options: EditorRevealOptions & { storeId?: string; pin?: PinnedRevision } = {}): Promise<string> {
+	return openEditorSelection(() => selectStored(root, id, options.storeId, options.pin), intent, signal, options);
+}
+export async function openEditorResponse(response: ResponseSnapshot, signal: AbortSignal, options: EditorRevealOptions = {}): Promise<string> {
+	const root = readSettings({ agentDir: getAgentDir() }).values.dir;
+	return openEditorSelection(() => saveResponse(response, root), "copy", signal, options);
 }
 export function revealNotice(outcome: RevealOutcome): string {
 	const identity = `${outcome.documentId.slice(0, 11)} revision ${outcome.revision}`;

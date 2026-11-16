@@ -76,18 +76,17 @@ test("headless commands notify without session messages or stdout and resolve bo
 		const snapshot = (await store.list({ kind: "response" })).documents[0];
 		assert.equal((await store.get(snapshot.id)).source, "Exact retained response");
 		const published = await store.create({ title: "Published", source: "Deliberate document", contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() } });
-		for (const id of [snapshot.id, published.document.id]) {
-			for (const lookup of [id, id.slice(0, -1)]) {
-				await handler(lookup, context("json"));
-				assert.equal(notify.mock.calls.at(-1)?.arguments[0], `Selected ${id.slice(0, 11)} revision 1. No window was opened.`);
-			}
+		const lookups = [snapshot.id, published.document.id].flatMap((id) => [[id, id], [id, id.slice(0, -1)]]);
+		for (const [id, lookup] of lookups) {
+			await handler(lookup, context("json"));
+			assert.equal(notify.mock.calls.at(-1)?.arguments[0], `Selected ${id.slice(0, 11)} revision 1. No window was opened.`);
 		}
 		await handler("help file", context("json"));
 		assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", /\/markdown file <path>\nCapture and read/u);
 		assert.equal(notify.mock.calls.at(-1)?.arguments[1], "info");
 		for (const word of ["Recent", "md-xyz"]) {
 			await handler(word, context("json"));
-			assert.deepEqual(notify.mock.calls.at(-1)?.arguments, ["Usage: /markdown recent | published | <id> | file <path> | window [file <path> | <id>] | help [command]", "error"]);
+			assert.deepEqual(notify.mock.calls.at(-1)?.arguments, ["Usage: /markdown new | recent | published | edit <id> | edit file <path> | copy <id> | <id> | file <path> | window [new|edit|copy|file|<id>] | help [command]", "error"]);
 		}
 		for (const argument of ["window", `window ${published.document.id}`]) {
 			await handler(argument, context("json"));
@@ -98,6 +97,13 @@ test("headless commands notify without session messages or stdout and resolve bo
 		await shortcut(context("json"));
 		assert.equal(notify.mock.calls.at(-1)?.arguments[0], `Selected ${snapshot.id.slice(0, 11)} revision 1. No window was opened.`);
 		assert.equal(notify.mock.callCount(), 13);
+		for (const argument of ["new", `edit ${published.document.id}`, `copy ${snapshot.id}`, "edit file notes.md", "window new", `window edit ${published.document.id}`]) {
+			await handler(argument, context("json"));
+			assert.equal(notify.mock.calls.at(-1)?.arguments[1], "error");
+			assert.match(notify.mock.calls.at(-1)?.arguments[0] ?? "", /operator view or native app/u);
+		}
+		assert.equal((await store.list()).documents.length, 1);
+		assert.equal((await store.get(snapshot.id)).source, "Exact retained response");
 		assert.equal(messages.mock.callCount(), 0);
 		assert.equal(stdout.mock.callCount(), 0);
 	} finally {

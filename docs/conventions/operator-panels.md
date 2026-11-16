@@ -316,7 +316,7 @@ Each owner documents its request union and effects in its README:
 | stash | recent and archive views, exact preview, lifecycle and coverage | pickup (optionally with a note) activates the record and submits one follow-up to the bound conversation, keyed by the invocation; close, release, reopen, rotate through the owner's lifecycle rules |
 | policy | registry, fire summary, recent activity, inspection views, exact review artifacts, data list and show | approve, reject, lifecycle, effect, reset; data set, set-file and remove answer first with the complete review and an exact approval that the view sends only after the effect-labelled final action; revisions, file rereads and the view audit are checked again on apply |
 | pillars | inventory and source pages with resource identity, offset, continuation, and digest | none; browsing never starts a judgment run or corpus mutation |
-| markdown | recent assistant responses, exact response pages, published documents with host store identity | Read saves a response snapshot in the client store or opens a locally accessible published document, then requests the fixed native reader reveal; the host command starts no model work and launches no GUI |
+| markdown | recent assistant responses, exact response pages, published documents with host store identity | Read saves a response snapshot in the client store or opens a locally accessible published document. Explicit New, Edit and Edit a Copy actions launch the fixed native editor in the client. The host command stays read-only, starts no model work and launches no GUI |
 
 ## Client-local reveal
 
