@@ -278,10 +278,11 @@ final class EditorWorkspace {
             }
             self.stageImages(document, data: data, extension: suffix)
         }
+        let closedReading = reading != nil && liveIdentity != liveDocumentID ? liveDocumentID : nil
         leaveReading()
         active?.setVisible(false)
         documents.append(document); selected = document.id; liveDocumentID = document.id; libraryVisible = false
-        collaboration?.bind(document: liveDocumentID)
+        collaboration?.bind(document: liveDocumentID, closing: closedReading)
         document.setVisible(true)
         if case .published(let base) = record.destination { loadResolver(base, document: document) }
         if case .copy(let base) = record.destination { loadResolver(base, document: document) }
@@ -378,10 +379,11 @@ final class EditorWorkspace {
 
     func select(_ document: WorkingDocument) {
         guard allowAction("switching documents") else { return }
+        let closedReading = reading == nil ? nil : liveDocumentID
         leaveReading()
         active?.setVisible(false)
         selected = document.id; liveDocumentID = document.id; libraryVisible = false
-        collaboration?.bind(document: liveDocumentID)
+        collaboration?.bind(document: liveDocumentID, closing: closedReading)
         document.setVisible(true)
         focusWhenActive(document)
     }
@@ -452,7 +454,8 @@ final class EditorWorkspace {
             if previous == nil { active?.setVisible(true) }
             await next.close()
         } else {
-            liveDocumentID = UUID(); collaboration?.bind(document: liveDocumentID)
+            let closedReading = previous == nil ? nil : liveDocumentID
+            liveDocumentID = UUID(); collaboration?.bind(document: liveDocumentID, closing: closedReading)
             await previous?.close()
         }
     }
@@ -505,7 +508,7 @@ final class EditorWorkspace {
         guard allowAction("closing this document"), let document = active else { return }
         guard await document.session.persist() else { notice = "The draft was not retained. Keep this document open and retry recovery."; return }
         documents.removeAll { $0.id == document.id }; selected = documents.last?.id
-        liveDocumentID = active?.id ?? UUID(); collaboration?.bind(document: liveDocumentID)
+        liveDocumentID = active?.id ?? UUID(); collaboration?.bind(document: liveDocumentID, closing: document.id)
         active?.setVisible(true)
         await document.close()
         if documents.isEmpty { await library() }

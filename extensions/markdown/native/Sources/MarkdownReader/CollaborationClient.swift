@@ -51,7 +51,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
 @MainActor @Observable final class CollaborationClient {
     struct AgentState: Decodable { var sequence: Int; var status: String; var text: String; var truncated: Bool }
     private struct Poll: Decodable { var ok: Bool; var command: LiveCommand?; var state: AgentState }
-    private struct PromptReceipt: Decodable { var ok: Bool; var status: String }
+    private struct PromptReceipt: Decodable { var ok: Bool; var status: String; var message: String?; var retryable: Bool? }
     private struct Acknowledgement: Decodable { var ok: Bool }
     private enum Failure: Error { case refused, oversized, response }
     private let configuration: CollaborationConfiguration
@@ -62,12 +62,21 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     private var task: Task<Void, Never>?
     private var epoch = 0
     private var closed = false
-    private var pendingPrompt: (operation: String, text: String)?
+    private struct PendingPrompt {
+        var operation: String
+        var text: String
+        var comment: String
+        var quote: String?
+        var retryable = true
+        var status = "Request unconfirmed. Send again to retry the same request."
+    }
+    private var pendingPrompt: PendingPrompt?
+    private var retiring: Set<UUID> = []
     private var requestedActivity = false
     private struct CommentDraft {
         var text: String
         var quote: String?
-        var pending: (operation: String, text: String)?
+        var pending: PendingPrompt?
     }
     private var commentDrafts: [UUID: CommentDraft] = [:]
     var selectionQuote = ""
@@ -76,6 +85,8 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     var annotationPresented = false
     var activityRelevant: Bool { requestedActivity && (sending || hasPendingPrompt || !answer.isEmpty || status != "Agent connected") }
     var hasPendingPrompt: Bool { pendingPrompt != nil }
+    var canRetryPrompt: Bool { pendingPrompt?.retryable != false }
+    var commentFieldEnabled: Bool { !hasPendingPrompt || sending }
     var isClosed: Bool { closed }
     var prompt = ""
     var promptIssue: String?
@@ -132,9 +143,11 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         session = URLSession(configuration: settings, delegate: NoRedirect(), delegateQueue: nil)
     }
 
-    func bind(document: UUID) {
-        guard document != self.document, !closed else { return }
-        if !prompt.isEmpty || pendingPrompt != nil {
+    func bind(document: UUID, closing: UUID? = nil) {
+        guard !closed else { return }
+        if let closing { retiring.insert(closing); commentDrafts[closing] = nil }
+        guard document != self.document else { return }
+        if closing != self.document, !prompt.isEmpty || pendingPrompt != nil {
             commentDrafts[self.document] = CommentDraft(text: prompt, quote: annotationQuote, pending: pendingPrompt)
         } else { commentDrafts[self.document] = nil }
         self.document = document
@@ -142,24 +155,33 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         prompt = draft?.text ?? ""; annotationQuote = draft?.quote; pendingPrompt = draft?.pending
         selectionQuote = ""; selectionTooLarge = false; annotationPresented = false; promptIssue = nil
         answer = ""; requestedActivity = pendingPrompt != nil; sending = false
-        task?.cancel(); task = nil; epoch += 1; start()
+        status = pendingPrompt?.status ?? "Connecting…"
+        let previous = task
+        previous?.cancel(); task = nil; epoch += 1; start(after: previous)
     }
 
-    func start() {
+    func start(after previous: Task<Void, Never>? = nil) {
         guard task == nil, !closed else { return }
         let selected = document, token = epoch
         task = Task { [weak self] in
-            guard let self else { return }
+            await previous?.value
+            guard let self, !Task.isCancelled, self.epoch == token else { return }
             var connected = false, sequence = 0
             var pending: (String, LiveResult)?
             var failures = 0
             while !Task.isCancelled, !self.closed, self.epoch == token {
                 do {
                     if !connected {
+                        for retired in self.retiring {
+                            let ack: Acknowledgement = try await self.post("close", body: self.identity(retired))
+                            guard self.epoch == token, !Task.isCancelled, !self.closed else { return }
+                            guard ack.ok else { throw Failure.response }
+                            self.retiring.remove(retired)
+                        }
                         let ack: Acknowledgement = try await self.post("connect", body: self.identity(selected))
                         guard self.epoch == token, !Task.isCancelled, !self.closed else { return }
                         guard ack.ok else { throw Failure.response }
-                        connected = true; self.status = "Agent connected"
+                        connected = true; self.status = self.pendingPrompt?.status ?? "Agent connected"
                     }
                     if let (request, result) = pending {
                         var body = self.identity(selected)
@@ -201,27 +223,42 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     }
 
     func sendPrompt() async {
-        guard !sending, !closed else { return }
-        let comment = prompt, quote = annotationQuote
-        guard let text = pendingPrompt?.text ?? Self.annotationMessage(comment: comment, quote: quote) else {
-            promptIssue = "Shorten the comment or select a smaller passage."; return
+        guard !sending, !closed, canRetryPrompt else { return }
+        if pendingPrompt == nil {
+            guard let text = Self.annotationMessage(comment: prompt, quote: annotationQuote) else {
+                promptIssue = "Shorten the comment or select a smaller passage."; return
+            }
+            pendingPrompt = PendingPrompt(operation: UUID().uuidString, text: text, comment: prompt, quote: annotationQuote)
         }
+        guard let pending = pendingPrompt else { return }
         promptIssue = nil
-        let operation = pendingPrompt?.operation ?? UUID().uuidString
-        pendingPrompt = (operation, text); sending = true; requestedActivity = true
+        sending = true; requestedActivity = true
         let selected = document, token = epoch
         defer { if token == epoch { sending = false } }
         do {
-            var body = identity(selected); body["operationId"] = operation; body["text"] = text
+            var body = identity(selected); body["operationId"] = pending.operation; body["text"] = pending.text
             let receipt: PromptReceipt = try await post("prompt", body: body)
             guard token == epoch, !closed else { return }
             guard receipt.ok else { throw Failure.response }
-            pendingPrompt = nil
-            if prompt == comment, annotationQuote == quote { prompt = "" }
-            status = receipt.status == "admitted" ? "Agent request admitted" : "Agent request sent"
+            switch receipt.status {
+            case "admitted", "requested":
+                pendingPrompt = nil
+                if prompt.utf8.elementsEqual(pending.comment.utf8), annotationQuote == pending.quote { prompt = "" }
+                status = receipt.status == "admitted" ? "Agent request admitted" : "Agent request sent (admission not confirmed)"
+            case "rejected":
+                pendingPrompt = nil
+                promptIssue = receipt.message ?? "The request was not admitted. Your comment remains here."
+                status = "Agent request rejected"
+            case "uncertain":
+                pendingPrompt?.retryable = receipt.retryable == true
+                status = receipt.message ?? "Admission is unconfirmed. Check the conversation."
+                pendingPrompt?.status = status
+            default: throw Failure.response
+            }
         } catch {
             guard token == epoch, !closed else { return }
             status = "Request unconfirmed. Send again to retry the same request."
+            pendingPrompt?.status = status
         }
     }
 
@@ -321,11 +358,11 @@ private struct AnnotationComment: View {
             // locks the field until its exact retry.
             TextField("Your comment", text: $client.prompt, axis: .vertical)
                 .lineLimit(3...7).textFieldStyle(.roundedBorder).focused($commentFocused)
-                .disabled(client.hasPendingPrompt && !client.sending)
+                .disabled(!client.commentFieldEnabled)
             HStack {
                 Button(client.hasPendingPrompt ? "Retry Request" : "Send Comment") { Task { await client.sendPrompt() } }
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(client.isClosed || client.sending || (!client.hasPendingPrompt && client.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                    .disabled(client.isClosed || client.sending || !client.canRetryPrompt || (!client.hasPendingPrompt && client.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 if client.sending { ProgressView().controlSize(.small) }
                 Spacer()
                 if !client.prompt.isEmpty, !client.hasPendingPrompt, !client.sending {

@@ -91,6 +91,7 @@ export async function nativeConversationConnection(host: MarkdownHost, conversat
 			finally { inputs.delete(submission.id); }
 		};
 		return {
+			retryFailedSubmission: true,
 			submit: async (text, operationId) => {
 				signal.throwIfAborted();
 				const submission = await conversation.submit({ type: "input", content: text, whenBusy: "followUp", requestId: `markdown:${operationId}` }, context);

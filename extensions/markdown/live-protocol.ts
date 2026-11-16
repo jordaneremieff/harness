@@ -4,6 +4,9 @@ export const LIVE_WIRE_BYTES = 32 * 1024 * 1024;
 export const LIVE_PROMPT_BYTES = 32768;
 export interface LiveConfig { version: 1; endpoint: string; token: string }
 export interface LiveBinding { workspace: string; document: string }
+export type LivePromptReceipt = { status: "requested" | "admitted"; submissionId?: string }
+	| { status: "rejected"; message: string }
+	| { status: "uncertain"; message: string; retryable: boolean };
 export interface LiveEdit { start: number; end: number; expected: string; replacement: string }
 export type LiveAction = { op: "read" } | { op: "apply"; operationId: string; baseGeneration: number; baseDigest: string; edits: LiveEdit[] };
 export type LiveCommand = LiveBinding & LiveAction & { requestId: string };

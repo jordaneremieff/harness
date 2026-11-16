@@ -1,10 +1,12 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { isRecord, LIVE_PROMPT_BYTES, LIVE_WIRE_BYTES, liveHandle, liveId, readLiveAction, readLiveBinding, readLiveResult, type LiveAction, type LiveBinding, type LiveCommand, type LiveConfig, type LiveResult, type LiveState } from "./live-protocol.ts";
+import { isRecord, LIVE_PROMPT_BYTES, LIVE_WIRE_BYTES, liveHandle, liveId, readLiveAction, readLiveBinding, readLiveResult, type LiveAction, type LiveBinding, type LiveCommand, type LiveConfig, type LivePromptReceipt, type LiveResult, type LiveState } from "./live-protocol.ts";
 import { validUnicode } from "./responses.ts";
 
 export interface LiveRoute {
-	submit(text: string, operationId: string): Promise<{ status: "requested" | "admitted"; submissionId?: string }>;
+	submit(text: string, operationId: string): Promise<LivePromptReceipt>;
+	/** Only a route with idempotent admission may repeat a failed submission. */
+	retryFailedSubmission?: boolean;
 	observe?(publish: (status: LiveState["status"], text: string, operationId?: string) => void): Promise<() => void>;
 }
 interface Pending {
@@ -32,9 +34,10 @@ export class LiveBridge {
 	private readonly token = randomBytes(32).toString("hex");
 	private readonly bindings = new Map<string, LiveBinding>();
 	private readonly retired = new Set<string>();
+	private readonly documents = new Set<string>();
 	private readonly pending = new Map<string, Pending>();
 	private readonly edits = new Map<string, { fingerprint: string; pending: Pending }>();
-	private readonly prompts = new Map<string, { handle: string; fingerprint: string; promise: Promise<unknown> }>();
+	private readonly prompts = new Map<string, { handle: string; fingerprint: string; promise: Promise<LivePromptReceipt>; result?: LivePromptReceipt }>();
 	private readonly wakes = new Map<string, () => void>();
 	private readonly states = new Map<string, LiveState>();
 	private focused?: string;
@@ -67,7 +70,7 @@ export class LiveBridge {
 	publish(status: LiveState["status"], text: string, operationId?: string): void {
 		if (this.closed) return;
 		const handle = operationId ? this.prompts.get(operationId)?.handle : this.focused;
-		if (!handle || !this.list().some((binding) => binding.handle === handle)) return;
+		if (!handle || this.retired.has(handle)) return;
 		this.states.set(handle, { sequence: ++this.sequence, status, ...boundedText(text) });
 		this.wakes.get(handle)?.();
 	}
@@ -115,7 +118,13 @@ export class LiveBridge {
 				if (!selected.delivered || selected.command.op === "read") this.complete(selected, failure("closed", "The live read or undelivered command was cancelled."));
 				finish(failure("uncertain", "The caller withdrew its wait. Reconcile the same operation ID; do not create a replacement edit."));
 			};
-			const timer = setTimeout(() => finish(failure("uncertain", "The native result is unconfirmed. Retry only the same operation ID and identical edit; do not infer that it failed.")), this.commandTimeoutMs);
+			const timer = setTimeout(() => {
+				if (selected.command.op === "read") {
+					const result: LiveResult = { status: "error", message: "The live read timed out. No edit was requested. Retry the read when the exact pane is available." };
+					this.complete(selected, result);
+					finish(result);
+				} else finish(failure("uncertain", "The native result is unconfirmed. Retry only the same operation ID and identical edit; do not infer that it failed."));
+			}, this.commandTimeoutMs);
 			signal?.addEventListener("abort", abort, { once: true });
 			void selected.promise.then(finish);
 			if (signal?.aborted) abort();
@@ -126,11 +135,17 @@ export class LiveBridge {
 		this.pending.delete(pending.command.requestId);
 		pending.resolve(result);
 	}
-	private disconnect(binding: LiveBinding): void {
-		if (this.bindings.get(binding.workspace)?.document !== binding.document) return;
-		this.bindings.delete(binding.workspace);
-		this.retired.add(liveHandle(binding));
-		this.states.delete(liveHandle(binding));
+	private disconnect(binding: LiveBinding, retire = true): void {
+		if (!this.documents.has(liveHandle(binding))) {
+			if (!retire) return;
+			if (this.documents.size >= 512) throw new Error("The native document capability limit is reached.");
+			this.documents.add(liveHandle(binding));
+		}
+		if (this.bindings.get(binding.workspace)?.document === binding.document) this.bindings.delete(binding.workspace);
+		if (retire) {
+			this.retired.add(liveHandle(binding));
+			this.states.delete(liveHandle(binding));
+		}
 		for (const pending of [...this.pending.values()]) if (liveHandle(pending.command) === liveHandle(binding)) this.complete(pending, failure("closed", "The exact native document disconnected; no replacement target was selected."));
 		this.wakes.get(liveHandle(binding))?.();
 	}
@@ -167,11 +182,12 @@ export class LiveBridge {
 	}
 	private connect(binding: LiveBinding): object {
 		const handle = liveHandle(binding);
-		if (this.retired.has(handle) || this.retired.size >= 512) throw new Error("The native document capability expired. It is not reconnected by document identity.");
+		if (this.retired.has(handle) || (!this.documents.has(handle) && this.documents.size >= 512)) throw new Error("The native document capability expired. It is not reconnected by document identity.");
 		const previous = this.bindings.get(binding.workspace);
-		if (previous && previous.document !== binding.document) this.disconnect(previous);
+		if (previous && previous.document !== binding.document) this.disconnect(previous, false);
 		if (!previous && this.bindings.size >= 8) throw new Error("The native workspace limit is reached.");
 		this.bindings.set(binding.workspace, binding);
+		this.documents.add(handle);
 		return { ok: true, handle };
 	}
 	private async poll(binding: LiveBinding, after: unknown, response: ServerResponse): Promise<object> {
@@ -198,28 +214,37 @@ export class LiveBridge {
 		return { ok: true };
 	}
 	private async prompt(binding: LiveBinding, body: Record<string, unknown>): Promise<object> {
-		if (!liveId(body.operationId) || typeof body.text !== "string" || !body.text.trim() || !validUnicode(body.text) || Buffer.byteLength(body.text) > LIVE_PROMPT_BYTES) throw new Error("Invalid live Markdown prompt.");
+		const rejected = (message: string) => ({ ok: true, status: "rejected", message });
+		if (!liveId(body.operationId) || typeof body.text !== "string" || !body.text.trim() || !validUnicode(body.text) || Buffer.byteLength(body.text) > LIVE_PROMPT_BYTES) return rejected("Invalid live Markdown prompt; this request was not submitted.");
 		const handle = liveHandle(binding);
 		const fingerprint = JSON.stringify({ handle, text: body.text });
 		let prior = this.prompts.get(body.operationId);
-		if (prior && prior.fingerprint !== fingerprint) throw new Error("The prompt ID already names a different request.");
-		if (!prior) {
-			if (this.prompts.size >= 128) throw new Error("The live prompt receipt limit is reached.");
+		if (prior && prior.fingerprint !== fingerprint) return rejected("The prompt ID already names a different request; the changed request was not submitted.");
+		if (!prior || (prior.result?.status === "uncertain" && prior.result.retryable)) {
+			if (!prior && this.prompts.size >= 128) return rejected("The live prompt receipt limit is reached; this request was not submitted.");
 			const text = `This request comes from the live Markdown pane ${handle}. Use markdown_live to read this exact unsaved native buffer before edits. Apply changes through markdown_live with the same handle, base generation/digest and a stable operationId. Do not substitute markdown_read, markdown_publish, file writes or a new pane for live edits.\n\n${body.text}`;
 			this.focused = handle;
 			this.publish("queued", "The pane sent your request to this conversation.");
 			const operationId = body.operationId;
-			const promise = Promise.resolve().then(() => this.route.submit(text, operationId));
-			prior = { handle, fingerprint, promise }; this.prompts.set(operationId, prior);
+			const promise = Promise.resolve().then(() => this.route.submit(text, operationId)).catch((): LivePromptReceipt => ({
+				status: "uncertain", retryable: this.route.retryFailedSubmission === true,
+				message: this.route.retryFailedSubmission ? "Admission is unconfirmed. Retry the same request ID to reconcile it." : "Admission is unconfirmed and this route cannot safely resubmit. Check the conversation before another request.",
+			}));
+			const entry: NonNullable<typeof prior> = { handle, fingerprint, promise };
+			prior = entry; this.prompts.set(operationId, entry);
+			void promise.then((result) => {
+				entry.result = result;
+				if (result.status === "rejected" || result.status === "uncertain") this.publish("error", result.message, operationId);
+			});
 		}
-		return { ok: true, ...await prior.promise as object };
+		return { ok: true, ...await prior.promise };
 	}
 	private async dispatch(path: string, body: Record<string, unknown>, response: ServerResponse): Promise<object> {
 		const binding = readLiveBinding(body);
 		if (path === "/connect") return this.connect(binding);
+		if (path === "/close") { this.disconnect(binding); return { ok: true }; }
 		this.binding(binding);
 		switch (path) {
-			case "/close": this.disconnect(binding); return { ok: true };
 			case "/poll": return this.poll(binding, body.after, response);
 			case "/result": return this.result(binding, body);
 			case "/prompt": return this.prompt(binding, body);

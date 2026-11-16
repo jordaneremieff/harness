@@ -54,7 +54,7 @@ test("ordinary pane prompts use the captured session and session changes revoke 
 		assert.equal(sent.length, 1);
 	} finally { for (const handler of [...handlers.get("session_shutdown") ?? []]) handler(); }
 });
-test("the real Durable contribution receives a pane prompt and edits only its exact live native buffer", { timeout: 15000 }, async () => {
+test("the real Durable contribution reconciles lost admission and edits only its exact live native buffer", { timeout: 15000 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "markdown-live-native-"));
 	const previous = { PI_MARKDOWN_DIR: process.env.PI_MARKDOWN_DIR, PI_MARKDOWN_APP: process.env.PI_MARKDOWN_APP, PI_HARNESS_FILE: process.env.PI_HARNESS_FILE };
 	process.env.PI_MARKDOWN_DIR = join(root, "documents"); process.env.PI_MARKDOWN_APP = join(root, "missing.app"); process.env.PI_HARNESS_FILE = join(root, "harness.json");
@@ -88,8 +88,21 @@ test("the real Durable contribution receives a pane prompt and edits only its ex
 			fauxAssistantMessage(fauxToolCall("markdown_live", { op: "apply", handle, operationId, baseGeneration: 2, baseDigest: responseDigest(source), edits: [{ start: 8, end: 11, expected: "old", replacement: "new" }] }), { stopReason: "toolUse" }),
 			fauxAssistantMessage("The live buffer is corrected."),
 		]);
-		const receipt = await post(config, "/prompt", { ...binding, operationId: randomUUID(), text: "Correct old to new." });
+		const submit = conversation.submit.bind(conversation);
+		const admitted: string[] = [];
+		t.mock.method(conversation, "submit", async (draft: Durable.SubmissionDraft, submitContext: typeof context) => {
+			const submission = await submit(draft, submitContext);
+			admitted.push(String(submission.id));
+			if (admitted.length === 1) throw new Error("The admission receipt was lost.");
+			return submission;
+		});
+		const prompt = { ...binding, operationId: randomUUID(), text: "Correct old to new." };
+		assert.equal((await post(config, "/prompt", prompt)).status, "uncertain");
+		const receipt = await post(config, "/prompt", prompt);
 		assert.equal(receipt.status, "admitted");
+		assert.deepEqual(admitted, [receipt.submissionId, receipt.submissionId]);
+		assert.equal((await post(config, "/prompt", prompt)).submissionId, receipt.submissionId);
+		assert.equal(admitted.length, 2, "an admitted receipt never resubmits");
 		for (const op of ["read", "apply"]) {
 			const command = await nextCommand(config, binding);
 			assert.equal(command.op, op);

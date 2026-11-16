@@ -5,6 +5,90 @@ import SwiftUI
 import EditorFeature
 @testable import MarkdownReader
 
+/// Runs the production bridge on isolated loopback sockets; the proxy controls only receipt delivery.
+@MainActor private final class LiveTestBridge {
+    enum Failure: Error { case response, deadline }
+    private let process = Process()
+    private let input = Pipe()
+    private let output = Pipe()
+    init(mode: String = "normal") throws {
+        let script = #"""
+        import { createServer } from 'node:http';
+        import { createInterface } from 'node:readline';
+        import { pathToFileURL } from 'node:url';
+        const { LiveBridge } = await import(pathToFileURL(process.argv[1]));
+        const mode = process.argv[2];
+        let submissions = 0, release;
+        const gate = new Promise(resolve => { release = resolve; });
+        const prompts = [];
+        const bridge = new LiveBridge({ submit: async () => {
+          submissions++;
+          if (mode === 'rejected') return { status: 'rejected', message: 'This request was not admitted.' };
+          if (mode === 'uncertain') throw new Error('Admission unavailable');
+          return { status: 'admitted', submissionId: 'fixture' };
+        } }, 2000, 100);
+        const config = await bridge.start();
+        const proxy = createServer(async (request, response) => {
+          const chunks = [];
+          for await (const chunk of request) chunks.push(chunk);
+          const body = Buffer.concat(chunks).toString();
+          if (request.url === '/prompt') prompts.push(JSON.parse(body));
+          const upstream = await fetch(config.endpoint + request.url, { method: 'POST',
+            headers: { Authorization: 'Bearer ' + config.token, 'Content-Type': 'application/json' }, body });
+          const text = await upstream.text();
+          if (mode === 'lost-receipt' && request.url === '/prompt' && prompts.length === 1) {
+            await gate;
+            response.writeHead(200); response.end('{');
+          } else { response.writeHead(upstream.status); response.end(text); }
+        });
+        await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+        const write = value => process.stdout.write(JSON.stringify(value) + '\n');
+        write({ ...config, endpoint: 'http://127.0.0.1:' + proxy.address().port });
+        const lines = createInterface({ input: process.stdin });
+        for await (const line of lines) {
+          const command = JSON.parse(line);
+          if (command.op === 'release') { release(); write({ ok: true }); }
+          else if (command.op === 'state') write({ document: bridge.list()[0]?.document, prompts, submissions });
+          else if (command.op === 'read') write(await bridge.execute(bridge.list()[0].handle, { op: 'read' }));
+          else if (command.op === 'connect') {
+            const response = await fetch(config.endpoint + '/connect', { method: 'POST',
+              headers: { Authorization: 'Bearer ' + config.token, 'Content-Type': 'application/json' }, body: JSON.stringify(command) });
+            write({ status: response.status });
+          }
+        }
+        """#
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 { root.deleteLastPathComponent() }
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["node", "--input-type=module", "-e", "setTimeout(() => process.exit(2), 60000).unref();\n" + script, root.appendingPathComponent("live-bridge.ts").path, mode]
+        process.standardInput = input; process.standardOutput = output
+        try process.run()
+    }
+    func stop() {
+        if process.isRunning { process.terminate() }
+        try? input.fileHandleForWriting.close()
+    }
+    func configuration() async throws -> CollaborationConfiguration {
+        try JSONDecoder().decode(CollaborationConfiguration.self, from: await line())
+    }
+    func request(_ value: [String: Any]) async throws -> [String: Any] {
+        var bytes = try JSONSerialization.data(withJSONObject: value); bytes.append(10)
+        try input.fileHandleForWriting.write(contentsOf: bytes)
+        return try #require(JSONSerialization.jsonObject(with: await line()) as? [String: Any])
+    }
+    private func line() async throws -> Data {
+        let handle = output.fileHandleForReading
+        return try await Task.detached {
+            var bytes = Data()
+            while bytes.count < 65536, let next = try handle.read(upToCount: 1), !next.isEmpty {
+                if next[0] == 10 { return bytes }
+                bytes.append(next)
+            }
+            throw Failure.response
+        }.value
+    }
+}
+
 @Suite(.serialized) @MainActor struct LiveDocumentTests {
     private func directory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("live-document-" + UUID().uuidString)
@@ -15,6 +99,108 @@ import EditorFeature
     private func command(_ workspace: EditorWorkspace, source: String, generation: UInt64, edit: LiveTextEdit, operation: String = UUID().uuidString) -> LiveCommand {
         LiveCommand(requestId: UUID().uuidString, workspace: workspace.id.uuidString, document: workspace.liveDocumentID.uuidString,
             op: "apply", operationId: operation, baseGeneration: generation, baseDigest: Digest.sha256(Data(source.utf8)), edits: [edit])
+    }
+
+    @Test func commentRetryPreservesNewTypingAndOriginalRequest() async throws {
+        let server = try LiveTestBridge(mode: "lost-receipt"); defer { server.stop() }
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }
+        defer { client.stop() }
+        client.start()
+        try await eventually { client.status == "Agent connected" }
+        client.beginAnnotation(quote: "Exact quote")
+        client.prompt = "Original comment"
+        let send = Task { await client.sendPrompt() }
+        try await eventually { client.sending }
+        #expect(client.commentFieldEnabled)
+        client.prompt += " plus new unsent text"
+        _ = try await server.request(["op": "release"])
+        await send.value
+        #expect(client.hasPendingPrompt && !client.sending)
+        await client.sendPrompt()
+        #expect(!client.hasPendingPrompt)
+        #expect(client.prompt == "Original comment plus new unsent text")
+        #expect(client.annotationQuote == "Exact quote")
+        let state = try await server.request(["op": "state"])
+        let prompts = try #require(state["prompts"] as? [[String: String]])
+        #expect(prompts.count == 2)
+        #expect(prompts[0] == prompts[1])
+        #expect(prompts[0]["text"] == CollaborationClient.annotationMessage(comment: "Original comment", quote: "Exact quote"))
+        #expect(state["submissions"] as? Int == 1)
+    }
+
+    @Test func rejectedCommentUnlocksDraftAndUncertainAdmissionDoesNotResubmit() async throws {
+        for mode in ["rejected", "uncertain"] {
+            let server = try LiveTestBridge(mode: mode); defer { server.stop() }
+            let document = UUID()
+            let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: document) { _ in LiveResult(status: "closed") }
+            defer { client.stop() }
+            client.start()
+            try await eventually { client.status == "Agent connected" }
+            client.prompt = "Keep this comment"
+            await client.sendPrompt()
+            #expect(client.prompt == "Keep this comment")
+            if mode == "rejected" {
+                #expect(!client.hasPendingPrompt && client.commentFieldEnabled)
+                #expect(client.promptIssue != nil)
+            } else {
+                #expect(client.hasPendingPrompt && !client.canRetryPrompt)
+                let message = client.status, other = UUID()
+                client.bind(document: other)
+                try await connected(server, document: other)
+                client.bind(document: document)
+                try await connected(server, document: document)
+                #expect(!client.canRetryPrompt && client.status == message)
+                await client.sendPrompt()
+                let state = try await server.request(["op": "state"])
+                #expect(state["submissions"] as? Int == 1)
+            }
+        }
+    }
+
+    @Test func nativeSelectionReconnectsOpenDocumentsAndRetiresClosedDocuments() async throws {
+        _ = NSApplication.shared
+        let server = try LiveTestBridge(); defer { server.stop() }
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = EditorWorkspace(directory: root, store: nil)
+        workspace.add(DraftRecord(source: "First document"))
+        let first = try #require(workspace.active)
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: workspace.id, document: workspace.liveDocumentID) { [weak workspace] command in
+            await workspace?.handleLive(command) ?? LiveResult(status: "closed")
+        }
+        workspace.collaboration = client
+        client.start()
+        try await connected(server, document: first.id)
+        workspace.add(DraftRecord(source: "Second document"))
+        let second = try #require(workspace.active)
+        try await connected(server, document: second.id)
+        workspace.select(first)
+        try await connected(server, document: first.id)
+        #expect(!client.isClosed)
+        #expect(try await server.request(["op": "read"])["source"] as? String == "First document")
+        workspace.select(second)
+        try await connected(server, document: second.id)
+        await workspace.closeActive()
+        try await connected(server, document: first.id)
+        #expect(!client.isClosed && workspace.active === first)
+        #expect(try await server.request(["op": "read"])["source"] as? String == "First document")
+        let refused = try await server.request(["op": "connect", "workspace": workspace.id.uuidString, "document": second.id.uuidString])
+        #expect(refused["status"] as? Int == 409)
+        await workspace.closeViews()
+    }
+
+    private func eventually(_ condition: () async throws -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while try await !condition() {
+            guard ContinuousClock.now < deadline else { throw LiveTestBridge.Failure.deadline }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    private func connected(_ server: LiveTestBridge, document: UUID) async throws {
+        try await eventually {
+            let state = try await server.request(["op": "state"])
+            return state["document"] as? String == document.uuidString
+        }
     }
 
     @Test func annotationMessageKeepsExactQuoteAsContext() throws {
