@@ -60,10 +60,10 @@ struct CheckRunner {
         return window
     }
 
-    static func reference(for path: String) throws -> (DocumentReference, Int?) {
+    static func reference(for path: String) throws -> (DocumentReference, Int?, String?) {
         let target = try OpenIntake.classify(URL(fileURLWithPath: path))
-        if case .stored(_, let request, _) = target { return (target.reference, request.revision) }
-        return (target.reference, nil)
+        if case .stored(_, let request, _) = target { return (target.reference, request.revision, request.digest) }
+        return (target.reference, nil, nil)
     }
 
     static func emit(_ object: [String: Any], to output: String?) {
@@ -103,7 +103,7 @@ struct CheckRunner {
                 Self.emit(["window": window.windowNumber, "title": window.title, "width": width, "height": height, "pid": Int(getpid())], to: nil)
                 return
             }
-            let (reference, revision) = try Self.reference(for: input)
+            let (reference, revision, digest) = try Self.reference(for: input)
             let model: ReaderModel
             let window: NSWindow
             if embedded {
@@ -118,10 +118,10 @@ struct CheckRunner {
                 model.followsLatest = true
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate()
-                await model.open(revision: revision, origin: nil)
+                await model.open(revision: revision, digest: digest, origin: nil)
                 window.title = model.displayTitle
             } else {
-                model = windows.open(reference, revision: revision, origin: nil)
+                model = windows.open(reference, revision: revision, digest: digest, origin: nil)
                 guard let shown = NSApp.windows.first(where: { $0.isVisible && $0.title != "" && $0.delegate === windows }) else { return }
                 window = shown
             }
@@ -178,7 +178,7 @@ struct CheckRunner {
             let model = ReaderModel(reference: target.reference, platform: MacPlatform.operations(), state: windows.state)
             let window = Self.offscreenWindow(page: model.page, width: 800)
             defer { window.close() }
-            await model.open(revision: openRequest.revision, origin: openRequest.launchOrigin)
+            await model.open(revision: openRequest.revision, digest: openRequest.digest, origin: openRequest.launchOrigin)
             guard model.returnLabel != nil else {
                 Self.emit(["ok": false, "error": "the request carries no usable launch origin"], to: nil)
                 return 1
@@ -206,12 +206,12 @@ struct CheckRunner {
             NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua)
         }
         do {
-            let (reference, revision) = try Self.reference(for: input)
+            let (reference, revision, digest) = try Self.reference(for: input)
             let model = ReaderModel(reference: reference, platform: windows.platform, state: windows.state)
             if let textSize { model.settings = PageSettings(textSize: textSize, wrapCode: false) }
             let window = Self.offscreenWindow(page: model.page, width: width)
             defer { window.close() }
-            await model.open(revision: revision, origin: nil)
+            await model.open(revision: revision, digest: digest, origin: nil)
             if case .failed(let message) = model.phase {
                 Self.emit(["ok": false, "error": message], to: nil)
                 return 1

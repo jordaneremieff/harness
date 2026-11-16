@@ -15,6 +15,19 @@ function fixture(t: TestContext) {
 	return { root, destination: join(root, "Reader.app"), bundle: join(root, "staged.app"), abandoned: join(root, ".old-012345abcdef"), put, version };
 }
 
+test("the native test command runs Swift suites without parallel scheduling", (t) => {
+	const f = fixture(t);
+	const argumentsPath = join(f.root, "swift-arguments");
+	writeFileSync(join(f.root, "xcode-select"), '#!/bin/sh\nprintf "%s\\n" "$DEVELOPER_DIR"\n', { mode: 0o755 });
+	writeFileSync(join(f.root, "swift"), '#!/bin/sh\nprintf "%s\\n" "$@" > "$SWIFT_ARGUMENTS"\n', { mode: 0o755 });
+	const result = spawnSync(process.execPath, [fileURLToPath(new URL("./native/build.mts", import.meta.url)), "test"], {
+		env: { ...process.env, PATH: `${f.root}:${process.env.PATH ?? ""}`, DEVELOPER_DIR: f.root, SWIFT_ARGUMENTS: argumentsPath },
+		encoding: "utf8",
+	});
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(readFileSync(argumentsPath, "utf8").trim().split("\n"), ["test", "--no-parallel"]);
+});
+
 test("an install replaces the app and removes the previous bundle", (t) => {
 	const f = fixture(t);
 	f.put(f.destination, "previous"); f.put(f.bundle, "new");

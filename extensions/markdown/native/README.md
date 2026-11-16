@@ -46,6 +46,8 @@ positions. They do not expire or enter the publication store automatically. Reco
 immutable snapshots in the background and exposes pending, current and failed state.
 Closing a document or workspace requires a current recovery snapshot; a failure keeps it open.
 The workspace freezes input during its final recovery write, then restores input if closing fails.
+Quit applies the recovery deadline to every workspace, including an editor opened from a reader
+window. If recovery remains unconfirmed at the deadline, all workspaces stay open with input restored.
 
 Edits save automatically to an opened file or through the bundled library writer. Captured responses
 and file snapshots start a separate editable copy. **Save** remains available for an explicit save;
@@ -86,12 +88,13 @@ The **Format** menu provides headings, emphasis, code, quotes, lists, tasks, lin
 indentation and line movement/duplication. Commands recognise CR, LF and CRLF as line breaks and
 preserve their original endings. Bold, italic and strikethrough keep selection-edge whitespace
 outside their markers; inline code keeps the selected literal's spaces. Native formatting shortcuts
-operate only when the source text view is the first responder: Command-B, Command-I, Command-K and
-Command-[ / Command-].
+operate only when the visible Visual or Source text view is the first responder: Command-B,
+Command-I, Command-K and Command-[ / Command-]. A comment field or Find field never formats the
+document.
 Command-F opens literal source search with next/previous, case and whole-word controls, replacement
 and an explicit selection scope. Command-G and Shift-Command-G step through matches. A source edit
 outside a scoped replacement invalidates that scope instead of broadening Replace All. In rendered
-preview, or when the preview has focus in Split, reader Find remains the active action. Go to Line
+preview, in Read mode, or when the preview has focus in Split, reader Find remains the active action. Go to Line
 uses one-based source lines; the status shows source position and counts. Source search and
 replacement preparation run off the main actor with one explicit operation in flight. Changed
 source, selection, query, composition or a closed view prevents a late operation from applying.
@@ -180,7 +183,13 @@ Build output stays in `.build/` (ignored by Git).
 node extensions/markdown/native/build.mts test
 ```
 
-This runs the swift-testing suites: `MarkdownCoreTests` (GFM rendering and heading anchors, raw
+This runs the swift-testing suites serially because the AppKit and WebKit tests share process-wide
+resources. Pane process tests select the reader executable beside the running test product, including
+when Swift uses a custom build path, and report a missing executable before process launch. The
+native-focus test records a known issue when its test host cannot become the active application;
+when activation succeeds, it checks the complete focus and first-character contract.
+
+The suites cover: `MarkdownCoreTests` (GFM rendering and heading anchors, raw
 HTML and unsafe links, images and asset containment, store reading against a fixture in the store
 format including symbolic links and scan bounds, open requests and their removal, the pinned
 digest, the reference inventory, the blocks and line ranges of a source, the bounded comparison
@@ -544,7 +553,8 @@ APP="<app>/Contents/MacOS/MarkdownReader"
   presentation waits for its native did-show event before it prints the capture window numbers.
 - `--return-check` reads an open request without accepting it, opens its document offscreen with
   the request's origin and runs Return to Rex once with the real platform operations.
-- An open request given to `--export-image` or `--present` is read, not accepted.
+- An open request given to `--export-image` or `--present` is read, not accepted. Its pinned digest
+  remains mandatory, as in normal intake and `--return-check`.
 
 The app logs open, render, update, recovery and return events under the subsystem
 `local.harness.markdown-reader` (`log show --predicate 'subsystem == "local.harness.markdown-reader"'`).
@@ -564,7 +574,8 @@ file that it read. A refused request stays in place. The model checks the pinned
 when it loads the page, and receives the request's launch origin. A request for an older revision
 shows that revision and announces a newer pointer; it does not automatically follow it. An
 explicit `:open <document ID>` selects latest and follows revisions, as with the store/document
-input. Neither input creates or selects a terminal pane or tab; the caller owns that placement.
+input. This policy also applies after navigation inside a connected workspace, including an explicit
+open of the shown document. Neither input creates or selects a terminal pane or tab; the caller owns that placement.
 
 The process uses accessory activation: no Dock icon and no visible menu bar. Its menu supplies
 the key equivalents of the reader (copy, select all, find, text size, outline, source, code
@@ -574,7 +585,8 @@ library and no other window, and it ignores open events.
 The terminal shows a placeholder on the alternate screen with the hidden cursor: the title, a
 line with the shown document ID, its revision (and a newer revision when one is available) and
 the first twelve digits of the bundle's `sourceDigest`, the reader's state, the keys and an open
-command line. Document text and error lines reach the terminal only through
+command line. Navigation in a workspace updates this identity to its current reader; an editable
+draft instead reports its draft identity and generation. Document text and error lines reach the terminal only through
 `TerminalText`, which removes control, format and separator characters and bounds an error line.
 The first row holds a random marker in concealed text; the placeholder replaces its rows in
 place, so the first row shows a marker at every moment. `TerminalAnchor` searches the

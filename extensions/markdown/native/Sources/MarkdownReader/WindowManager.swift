@@ -88,15 +88,32 @@ final class WindowManager: NSObject, NSWindowDelegate {
         editorWindow = window; editor = workspace
     }
 
+    private var editorWorkspaces: [EditorWorkspace] {
+        (editor.map { [$0] } ?? []) + readers.values.compactMap(\.workspace)
+    }
+
+    func resumeEditors() {
+        for workspace in editorWorkspaces { workspace.resumeEdits() }
+    }
+
+    /// A deadline must not release any window while its recovery remains unconfirmed.
+    func refuseQuitBeforeRecovery(retained: Bool) -> Bool {
+        guard !retained, !editorWorkspaces.isEmpty else { return false }
+        for workspace in editorWorkspaces {
+            workspace.resumeEdits()
+            workspace.notice = "Recovery did not finish before the quit deadline. The workspace remains open."
+        }
+        return true
+    }
+
     func retainEditors() async -> Bool {
-        var retained = await editor?.prepareToClose() ?? true
-        for workspace in readers.values.compactMap(\.workspace) {
+        var retained = true
+        for workspace in editorWorkspaces {
+            guard !Task.isCancelled else { resumeEditors(); return false }
             if !(await workspace.prepareToClose()) { retained = false }
         }
-        if !retained {
-            editor?.resumeEdits()
-            for workspace in readers.values.compactMap(\.workspace) { workspace.resumeEdits() }
-        }
+        if Task.isCancelled { retained = false }
+        if !retained { resumeEditors() }
         return retained
     }
 
@@ -167,8 +184,8 @@ final class WindowManager: NSObject, NSWindowDelegate {
 
     /// Lists a window that another owner created and closes, such as the pane reader's window, so
     /// that menu actions reach its model.
-    func adopt(_ window: NSWindow, model: ReaderModel) {
-        readers[model.reference.key] = Reader(window: window, model: model)
+    func adopt(_ window: NSWindow, model: ReaderModel, workspace: EditorWorkspace? = nil) {
+        readers[model.reference.key] = Reader(window: window, model: model, workspace: workspace)
     }
 
     /// Moves an adopted window to another model, as when a pane reader shows another document.
@@ -243,7 +260,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
                   current.model === model, current.workspace == nil else {
                 workspace.reading = nil; await workspace.closeViews(); return
             }
-            readers[model.reference.key]?.workspace = workspace
+            adopt(reader.window, model: model, workspace: workspace)
             workspace.onClose = { [weak window = reader.window] in window?.performClose(nil) }
             workspace.onEditorFocus = { [weak window = reader.window, weak workspace] in
                 guard let window, let workspace else { return }

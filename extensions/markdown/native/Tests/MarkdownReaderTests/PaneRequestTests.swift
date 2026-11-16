@@ -31,20 +31,21 @@ struct PaneLaunchInput {
         try JSONSerialization.data(withJSONObject: value).write(to: url, options: .atomic)
     }
 
-    private func newerPointer(_ run: PaneRun) throws {
+    private func newerPointer(_ run: PaneRun, number: Int = 2, document: String? = nil) throws {
+        let document = document ?? run.document
         let store = URL(fileURLWithPath: run.store)
-        let revision = store.appendingPathComponent("documents/\(run.document)/revisions/2")
+        let revision = store.appendingPathComponent("documents/\(document)/revisions/\(number)")
         try FileManager.default.createDirectory(at: revision, withIntermediateDirectories: true)
         let source = Data("# New pointer\n\nThe current revision is newer than the selected revision.\n".utf8)
         let digest = "sha256:" + SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined()
         try source.write(to: revision.appendingPathComponent("source.md"))
         let date = "2026-11-15T00:00:00Z"
-        try write(["version": 1, "document": run.document, "revision": 2, "title": "New pointer", "createdAt": date,
+        try write(["version": 1, "document": document, "revision": number, "title": "New pointer", "createdAt": date,
                    "digest": digest, "bytes": source.count, "completeness": ["state": "complete"]],
                   to: revision.appendingPathComponent("revision.json"))
-        try write(["version": 1, "id": run.document, "kind": "published", "title": "New pointer", "createdAt": date,
-                   "updatedAt": date, "revision": 2, "digest": digest, "bytes": source.count],
-                  to: store.appendingPathComponent("documents/\(run.document)/document.json"))
+        try write(["version": 1, "id": document, "kind": "published", "title": "New pointer", "createdAt": date,
+                   "updatedAt": date, "revision": number, "digest": digest, "bytes": source.count],
+                  to: store.appendingPathComponent("documents/\(document)/document.json"))
     }
 
     private func request(_ run: PaneRun, invalid: String? = nil) throws -> URL {
@@ -78,6 +79,28 @@ struct PaneLaunchInput {
         type(":open \(run.document)\r", into: process)
         #expect(process.read(until: "\(run.document) · revision 2 of 2", seconds: 10))
         #expect(process.read(until: "New pointer", seconds: 5))
+        type("q", into: process)
+        #expect(process.exit(within: 5).status == 0)
+    }
+
+    @Test(arguments: [false, true])
+    func liveConfiguredPaneOpenTracksTheShownDocumentAndLaterRevision(_ anotherDocument: Bool) throws {
+        let run = try PaneRun()
+        defer { run.remove() }
+        try newerPointer(run)
+        let target = anotherDocument ? "md-abcdef0123456789abcd" : run.document
+        if anotherDocument { try newerPointer(run, number: 1, document: target) }
+        let selected = anotherDocument ? 1 : 2
+        let file = try request(run)
+        // An unavailable bridge retains the connected workspace route without a network server.
+        let configuration = run.root.appendingPathComponent("unavailable-live.json")
+        let process = try run.start(arguments: ["--pane", file.path, "--live", configuration.path])
+        defer { close(process.primary) }
+        #expect(process.read(until: "\(run.document) · revision 1; revision 2 is available", seconds: 15), "placeholder: \(process.text)")
+        type(":open \(target)\r", into: process)
+        #expect(process.read(until: "\(target) · revision \(selected) of \(selected)", seconds: 15), "placeholder: \(process.text)")
+        try newerPointer(run, number: selected + 1, document: target)
+        #expect(process.read(until: "\(target) · revision \(selected + 1) of \(selected + 1)", seconds: 15), "placeholder: \(process.text)")
         type("q", into: process)
         #expect(process.exit(within: 5).status == 0)
     }

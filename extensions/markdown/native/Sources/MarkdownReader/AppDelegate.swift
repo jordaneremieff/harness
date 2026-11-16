@@ -6,6 +6,45 @@ import MarkdownCore
 import ReaderFeature
 import UniformTypeIdentifiers
 
+/// Routes commands to the displayed document without treating Find or comment fields as source input.
+@MainActor
+struct EditorMenuTarget {
+    let workspace: EditorWorkspace?
+    let reader: ReaderModel?
+
+    var document: WorkingDocument? {
+        guard let workspace, !workspace.libraryVisible, workspace.publishedLibrary == nil, workspace.reading == nil,
+              let document = workspace.active, !document.readingDraft, !document.previewHasFocus else { return nil }
+        return document
+    }
+
+    var canFormat: Bool {
+        guard let document else { return false }
+        let text = document.text.activeTextView
+        return !document.text.hasMarkedText && !document.replacing && text.window?.firstResponder === text
+    }
+
+    func format(_ command: MarkdownCommand) {
+        guard canFormat else { return }
+        document?.perform(command)
+    }
+
+    func showFind() {
+        if let document { document.showFind() }
+        else { reader?.showFind() }
+    }
+
+    func find(backwards: Bool = false) {
+        if let document {
+            document.showFind()
+            Task { await document.find(backwards: backwards) }
+        } else if let reader {
+            reader.findVisible = true
+            Task { await reader.find(backwards: backwards) }
+        }
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     let mode: LaunchMode
@@ -104,9 +143,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             sender.reply(toApplicationShouldTerminate: true)
         }
         let deadline = DispatchTime.now() + PaneHost.saveAllowance
+        let retention = Task { await windows.retainEditors() }
         Task { @MainActor in
-            let retained = await windows.retainEditors()
-            guard !answered.value else { windows.editor?.resumeEdits(); return }
+            let retained = await retention.value
+            guard !answered.value else { windows.resumeEditors(); return }
             guard retained else {
                 answered.value = true
                 sender.reply(toApplicationShouldTerminate: false)
@@ -125,10 +165,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         DispatchQueue.main.asyncAfter(deadline: deadline + PaneHost.outputAllowance) {
             MainActor.assumeIsolated {
-                if self.windows.editor != nil, !editorRetained.value, !answered.value {
+                if !answered.value, self.windows.refuseQuitBeforeRecovery(retained: editorRetained.value) {
+                    retention.cancel()
                     answered.value = true
-                    self.windows.editor?.resumeEdits()
-                    self.windows.editor?.notice = "Recovery did not finish before the quit deadline. The workspace remains open."
                     sender.reply(toApplicationShouldTerminate: false)
                 } else { finish(.unconfirmed(reason: "The quit deadline passed before the save settled.")) }
             }
@@ -355,30 +394,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc func copyMarkdown(_ sender: Any?) { withModel { $0.copyMarkdown() } }
     @objc func copyPassage(_ sender: Any?) { withModel { await $0.copyPassageWithSource() } }
-    private var editorDocument: WorkingDocument? {
-        guard let workspace = paneHost?.workspace ?? windows.keyEditor, !workspace.libraryVisible, workspace.publishedLibrary == nil, workspace.reading == nil else { return nil }
-        guard let document = workspace.active, !document.previewHasFocus else { return nil }
-        return document
+    private var editorMenu: EditorMenuTarget {
+        EditorMenuTarget(workspace: paneHost?.workspace ?? windows.keyEditor, reader: windows.keyModel)
     }
 
     @objc func formatEditor(_ sender: NSMenuItem) {
-        guard let command = sender.representedObject as? MarkdownCommand, let document = editorDocument,
-              document.text.textView.window?.firstResponder === document.text.textView else { return }
-        document.perform(command)
+        guard let command = sender.representedObject as? MarkdownCommand else { return }
+        editorMenu.format(command)
     }
 
-    @objc func showFind(_ sender: Any?) {
-        if let document = editorDocument { document.showFind(); return }
-        withModel { $0.showFind() }
-    }
-    @objc func findNext(_ sender: Any?) {
-        if let document = editorDocument { document.showFind(); Task { await document.find() }; return }
-        withModel { model in model.findVisible = true; await model.find() }
-    }
-    @objc func findPrevious(_ sender: Any?) {
-        if let document = editorDocument { document.showFind(); Task { await document.find(backwards: true) }; return }
-        withModel { model in model.findVisible = true; await model.find(backwards: true) }
-    }
+    @objc func showFind(_ sender: Any?) { editorMenu.showFind() }
+    @objc func findNext(_ sender: Any?) { editorMenu.find() }
+    @objc func findPrevious(_ sender: Any?) { editorMenu.find(backwards: true) }
     @objc func toggleOutline(_ sender: Any?) { withModel { $0.toggleOutline() } }
     @objc func goBack(_ sender: Any?) { withModel { await $0.goBack() } }
     @objc func toggleSource(_ sender: Any?) { withModel { await $0.toggleSource() } }
@@ -409,8 +436,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         if [#selector(newScratchpad(_:)), #selector(showDrafts(_:)), #selector(showLibrary(_:)), #selector(openDocument(_:)), #selector(openStore(_:)), #selector(openRecent(_:))].contains(action) { return true }
         if [#selector(saveEditor(_:)), #selector(saveEditorAs(_:))].contains(action) { return windows.keyEditor?.active != nil }
-        if action == #selector(formatEditor(_:)) { return editorDocument.map { !$0.text.hasMarkedText && !$0.replacing && $0.text.textView.window?.firstResponder === $0.text.textView } ?? false }
-        if [#selector(showFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:))].contains(action), editorDocument != nil { return true }
+        if action == #selector(formatEditor(_:)) { return editorMenu.canFormat }
+        if [#selector(showFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:))].contains(action), editorMenu.document != nil { return true }
         guard let model = windows.keyModel else { return false }
         switch action {
         case #selector(toggleOutline(_:)):

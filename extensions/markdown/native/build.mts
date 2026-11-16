@@ -271,7 +271,8 @@ function run(command: string, args: string[]): string {
 function test(): void {
 	const developer = run("xcode-select", ["-p"]).trim();
 	const frameworks = join(developer, "Library", "Developer", "Frameworks");
-	const args = ["test"];
+	// WebKit and AppKit tests share process-wide resources and run without suite overlap.
+	const args = ["test", "--no-parallel"];
 	if (existsSync(join(frameworks, "Testing.framework"))) {
 		args.push(
 			"-Xswiftc",

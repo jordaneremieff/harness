@@ -1,6 +1,7 @@
+import Testing
 import AppKit
 import EditorFeature
-import Testing
+@testable import MarkdownCore
 @testable import MarkdownReader
 
 @MainActor @Suite(.serialized) struct NativeEditorCommands {
@@ -15,6 +16,67 @@ import Testing
         window.isReleasedWhenClosed = false; window.contentView = document.text.scrollView
         window.makeFirstResponder(document.text.textView)
         return (workspace, window, root)
+    }
+
+    @Test(arguments: [EditorMode.visual, .raw])
+    func formatMenuUsesOnlyTheVisibleNativeEditor(_ mode: EditorMode) async throws {
+        let (workspace, window, root) = try workspace("hello")
+        defer { window.close(); try? FileManager.default.removeItem(at: root) }
+        let document = try #require(workspace.active)
+        document.setMode(mode)
+        let menu = EditorMenuTarget(workspace: workspace, reader: document.preview)
+        try #require(window.makeFirstResponder(document.text.activeTextView))
+        document.text.select(NSRange(location: 0, length: 5))
+        try await analysed(document)
+        #expect(menu.canFormat)
+        menu.format(.bold)
+        #expect(document.text.source == "**hello**")
+        let comment = NSTextField(string: "comment")
+        window.contentView?.addSubview(comment)
+        try #require(window.makeFirstResponder(comment))
+        #expect(window.firstResponder !== document.text.activeTextView)
+        #expect(!menu.canFormat)
+        menu.format(.bold)
+        #expect(document.text.source == "**hello**")
+        #expect(comment.stringValue == "comment")
+        let find = NSTextField(string: "Find")
+        window.contentView?.addSubview(find)
+        try #require(window.makeFirstResponder(find))
+        #expect(window.firstResponder !== document.text.activeTextView)
+        #expect(!menu.canFormat)
+        menu.format(.bold)
+        #expect(document.text.source == "**hello**")
+        await workspace.closeViews()
+    }
+
+    @Test func findMenuFollowsReadAndEditTransitions() async throws {
+        let (workspace, window, root) = try workspace("hello")
+        defer { window.close(); try? FileManager.default.removeItem(at: root) }
+        let document = try #require(workspace.active)
+        let menu = EditorMenuTarget(workspace: workspace, reader: document.preview)
+        menu.showFind()
+        #expect(document.findVisible)
+        #expect(!document.preview.findVisible)
+        document.findVisible = false
+        workspace.readActive()
+        #expect(document.readingDraft)
+        menu.showFind()
+        #expect(document.preview.findVisible)
+        #expect(!document.findVisible)
+        document.preview.findVisible = false
+        menu.find()
+        #expect(document.preview.findVisible)
+        #expect(!document.findVisible)
+        workspace.editActive()
+        document.preview.findVisible = false
+        menu.showFind()
+        #expect(document.findVisible)
+        #expect(!document.preview.findVisible)
+        document.findVisible = false
+        menu.find()
+        #expect(document.findVisible)
+        #expect(!document.preview.findVisible)
+        await workspace.closeViews()
     }
 
     @Test func suspendedSearchAndReplacementRejectChangedInputs() async throws {

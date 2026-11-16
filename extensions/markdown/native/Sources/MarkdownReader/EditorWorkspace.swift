@@ -433,19 +433,20 @@ final class EditorWorkspace {
         }
     }
 
-    func readStored(_ document: String) async {
+    func readStored(_ document: String, followsLatest: Bool = false) async {
         guard let root = selectedStore else { notice = "Choose a library store first."; return }
         do {
             let identity = try await Task.detached { try DirectoryStore(root: URL(fileURLWithPath: root)).storeId }.value
-            await openReading(.stored(root: root, storeId: identity, document: document))
+            await openReading(.stored(root: root, storeId: identity, document: document), followsLatest: followsLatest)
         } catch { notice = "Document not opened: \(error)" }
     }
 
-    func openReading(_ reference: DocumentReference, revision: Int? = nil, digest: String? = nil, origin: LaunchOrigin? = nil) async {
+    func openReading(_ reference: DocumentReference, revision: Int? = nil, digest: String? = nil, origin: LaunchOrigin? = nil, followsLatest: Bool = false) async {
         guard allowAction("opening another document") else { return }
         navigationGeneration &+= 1
         let previous = reading
         let next = ReaderModel(reference: reference, platform: MacPlatform.operations(), state: readingState)
+        next.followsLatest = followsLatest
         publishedLibrary = nil; libraryVisible = false; active?.setVisible(false); reading = next
         await next.open(revision: revision, digest: digest, origin: origin ?? launchOrigin)
         guard reading === next else { await next.close(); return }

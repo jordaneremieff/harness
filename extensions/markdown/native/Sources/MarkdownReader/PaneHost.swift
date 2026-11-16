@@ -306,7 +306,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
             return
         }
         if let workspace {
-            Task { await workspace.readStored(document) }
+            Task { await workspace.readStored(document, followsLatest: true) }
             return
         }
         guard case .stored(let root, let storeId, let shown) = model.reference else { return }
@@ -360,18 +360,29 @@ final class PaneHost: NSObject, NSWindowDelegate {
         }
     }
 
+    private var displayedDraft: WorkingDocument? {
+        guard let workspace, workspace.reading == nil, !workspace.libraryVisible, workspace.publishedLibrary == nil else { return nil }
+        return workspace.active
+    }
+
+    private var displayedReader: ReaderModel? {
+        guard let workspace else { return model }
+        guard !workspace.libraryVisible, workspace.publishedLibrary == nil else { return nil }
+        return workspace.reading ?? displayedDraft?.preview
+    }
+
     /// Redraws the placeholder whenever the shown model's phase or revision changes. A model that
     /// the pane no longer shows ends its observation.
     private func observePhase() {
         observation += 1
         let current = observation
         withObservationTracking {
-            _ = workspace?.active?.session.record.generation
-            _ = workspace?.active?.session.record.title
+            _ = displayedDraft?.session.record.generation
+            _ = displayedDraft?.session.record.title
             _ = workspace?.notice
-            _ = model.phase
-            _ = model.snapshot?.revision
-            _ = model.latestRevision
+            _ = displayedReader?.phase
+            _ = displayedReader?.snapshot?.revision
+            _ = displayedReader?.latestRevision
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self, self.observation == current else { return }
@@ -383,7 +394,8 @@ final class PaneHost: NSObject, NSWindowDelegate {
     }
 
     private func draw() {
-        let title = workspace?.active?.session.record.displayTitle ?? (workspace != nil ? "Markdown Workspace" : model.snapshot.map { _ in model.displayTitle } ?? "Opening the document")
+        let shown = displayedReader
+        let title = displayedDraft?.session.record.displayTitle ?? shown?.displayTitle ?? (workspace != nil ? "Markdown Workspace" : "Opening the document")
         var status: String
         switch anchor.status {
         case .placed(let shown) where !shown.coveredEntirely: status = "Shown in the reader window over this pane."
@@ -391,7 +403,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
         case .searching: status = "Looking for this pane on screen."
         case .untrusted: status = "This terminal cannot place the reader over its pane: the program has no accessibility access."
         }
-        if case .failed(let reason) = model.phase { status = "The document could not be opened: \(reason)" }
+        if case .failed(let reason) = shown?.phase { status = "The document could not be opened: \(reason)" }
         if let notice = workspace?.notice { status = notice + " " + status }
         if let message { status = message + " " + status }
         terminal.draw(title: title, identity: identity(), status: status, keys: "q closes the reader. :open <document ID> shows another document here. Another key moves the keyboard to the reader.", command: commandLine, marker: anchor.marker)
@@ -401,10 +413,15 @@ final class PaneHost: NSObject, NSWindowDelegate {
     /// what it shows.
     private func identity() -> String {
         var parts: [String] = []
-        if case .stored(_, _, let document) = model.reference { parts.append(document) }
-        if let revision = model.snapshot?.revision {
-            let latest = model.latestRevision ?? revision
-            parts.append(latest > revision ? "revision \(revision); revision \(latest) is available" : "revision \(revision) of \(latest)")
+        if let document = displayedDraft {
+            parts.append("draft \(document.session.record.id.uuidString)")
+            parts.append("generation \(document.session.record.generation)")
+        } else if let shown = displayedReader {
+            if case .stored(_, _, let document) = shown.reference { parts.append(document) }
+            if let revision = shown.snapshot?.revision {
+                let latest = shown.latestRevision ?? revision
+                parts.append(latest > revision ? "revision \(revision); revision \(latest) is available" : "revision \(revision) of \(latest)")
+            }
         }
         if let build { parts.append("reader build \(build)") }
         return parts.joined(separator: " · ")

@@ -2,7 +2,15 @@ import Testing
 import AppKit
 import SwiftUI
 import EditorFeature
+import ReaderFeature
 @testable import MarkdownReader
+
+private extension DraftStore {
+    func holdWrites(_ started: AsyncStream<Void>.Continuation, until release: DispatchSemaphore) {
+        started.yield(())
+        release.wait()
+    }
+}
 
 @MainActor @Suite(.serialized) struct EditorWorkspaceLifecycle {
     private func directory() throws -> URL {
@@ -11,6 +19,80 @@ import EditorFeature
         let root = temporary.appendingPathComponent("editor-workspace-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    @Test func quitDeadlineKeepsAConvertedReaderOpenWhileRecoveryIsHeld() async throws {
+        _ = NSApplication.shared
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil)
+        workspace.add(DraftRecord(source: "Retain this text"))
+        let document = try #require(workspace.active)
+        let manager = WindowManager(state: ReadingStateStore(directory: nil), platform: CheckRunner.platform(), defaultRoots: [])
+        let model = ReaderModel(reference: .file(path: root.appendingPathComponent("reader.md").path), platform: CheckRunner.platform(), state: manager.state)
+        let window = NSWindow()
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        manager.adopt(window, model: model, workspace: workspace)
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let (started, continuation) = AsyncStream<Void>.makeStream()
+        let drafts = workspace.drafts
+        let held = Task.detached { await drafts.holdWrites(continuation, until: release) }
+        for await _ in started { break }
+        continuation.finish()
+        let retaining = Task { await manager.retainEditors() }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !workspace.closing, ContinuousClock.now < deadline { await Task.yield() }
+        #expect(workspace.closing)
+        #expect(!document.text.activeTextView.isEditable)
+        #expect(manager.editor == nil)
+        #expect(manager.refuseQuitBeforeRecovery(retained: false))
+        retaining.cancel()
+        #expect(!workspace.closing)
+        #expect(document.text.activeTextView.isEditable)
+        release.signal()
+        await held.value
+        #expect(!(await retaining.value))
+        #expect(!workspace.closing)
+        #expect(document.text.activeTextView.isEditable)
+        let saved = try await drafts.load(id: document.session.record.id, branch: document.session.record.branch)
+        #expect(saved.source == "Retain this text")
+        await workspace.closeViews()
+    }
+
+    @Test func quitDeadlineResumesConvertedReaderWorkspacesWithoutADedicatedEditor() async throws {
+        _ = NSApplication.shared
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = WindowManager(state: ReadingStateStore(directory: nil), platform: CheckRunner.platform(), defaultRoots: [])
+        var workspaces: [EditorWorkspace] = []
+        var windows: [NSWindow] = []
+        for index in 0..<2 {
+            let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts-\(index)"), store: nil)
+            workspace.newScratchpad()
+            let document = try #require(workspace.active)
+            workspace.closing = true
+            document.text.textView.isEditable = false
+            document.text.activeTextView.isEditable = false
+            let window = NSWindow()
+            window.isReleasedWhenClosed = false
+            let model = ReaderModel(reference: .file(path: root.appendingPathComponent("reader-\(index).md").path), platform: CheckRunner.platform(), state: manager.state)
+            manager.adopt(window, model: model, workspace: workspace)
+            workspaces.append(workspace); windows.append(window)
+        }
+        defer { for window in windows { window.close() } }
+        #expect(manager.editor == nil)
+        #expect(!manager.refuseQuitBeforeRecovery(retained: true))
+        #expect(workspaces.allSatisfy { $0.closing })
+        #expect(manager.refuseQuitBeforeRecovery(retained: false))
+        for workspace in workspaces {
+            #expect(!workspace.closing)
+            #expect(workspace.active?.text.activeTextView.isEditable == true)
+            #expect(workspace.active?.text.textView.isEditable == true)
+            #expect(workspace.notice?.contains("quit deadline") == true)
+            await workspace.closeViews()
+        }
     }
 
     @Test func nativeInputUndoAndRecoveryKeepOneBuffer() async throws {
@@ -144,6 +226,13 @@ import EditorFeature
                 focused = PaneHost.focusEditor(workspace, in: window)
                 if focused { break }
             }
+        }
+        guard NSApp.isActive else {
+            withKnownIssue("The test host could not become the active app; native focus requires app activation.") {
+                #expect(NSApp.isActive)
+            }
+            await workspace.closeViews()
+            return
         }
         #expect(focused)
         #expect(NSApp.isActive)

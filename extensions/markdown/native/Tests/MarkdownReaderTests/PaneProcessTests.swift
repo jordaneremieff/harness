@@ -5,6 +5,8 @@ import CryptoKit
 /// The built reader binary in pane mode on a pseudo-terminal: how it ends, what it leaves on the
 /// terminal, and its exit status. Each run uses its own document store and its own home folder for
 /// the reading state.
+private final class PaneTestProduct: NSObject {}
+
 struct PaneRun {
     let root: URL
     let home: URL
@@ -12,8 +14,13 @@ struct PaneRun {
     private let storeId = "0123456789abcdef0123456789abcdef"
 
     static var binary: URL {
-        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent(".build/debug/MarkdownReader")
+        Bundle(for: PaneTestProduct.self).bundleURL.deletingLastPathComponent().appendingPathComponent("MarkdownReader")
+    }
+
+    static func requireBinary(_ binary: URL) throws {
+        guard FileManager.default.isExecutableFile(atPath: binary.path) else {
+            throw NSError(domain: "MarkdownReaderTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "The MarkdownReader executable is missing beside the running test product: \(binary.path). Build the package products before testing."])
+        }
     }
 
     init(storeId: String? = nil) throws {
@@ -108,6 +115,7 @@ struct PaneRun {
 
     /// Starts the reader on a new pseudo-terminal. `errors` replaces standard error.
     func start(arguments: [String]? = nil, errors: Int32? = nil, prepare: (Int32) -> Void = { _ in }) throws -> Process {
+        try Self.requireBinary(Self.binary)
         var primary: Int32 = 0
         var secondary: Int32 = 0
         var size = winsize(ws_row: 30, ws_col: 100, ws_xpixel: 0, ws_ypixel: 0)
@@ -181,6 +189,19 @@ let restore = "\u{1B}[?1049l"
 let notSaved = "Markdown Reader: the reading position was not saved."
 
 @Suite(.serialized) struct PaneProcessEnd {
+    @Test func processBinaryBelongsToTheRunningTestProduct() throws {
+        #expect(PaneRun.binary.deletingLastPathComponent() == Bundle(for: PaneTestProduct.self).bundleURL.deletingLastPathComponent())
+        try PaneRun.requireBinary(PaneRun.binary)
+        let absent = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("MarkdownReader")
+        do {
+            try PaneRun.requireBinary(absent)
+            Issue.record("A missing reader executable was accepted")
+        } catch {
+            #expect(error.localizedDescription.contains(absent.path))
+            #expect(error.localizedDescription.contains("running test product"))
+        }
+    }
+
     func started(_ run: PaneRun, errors: Int32? = nil) throws -> PaneRun.Process {
         #expect(FileManager.default.isExecutableFile(atPath: PaneRun.binary.path), "build the package before its tests")
         let process = try run.start(errors: errors)
