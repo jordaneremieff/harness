@@ -44,6 +44,37 @@ import Testing
         await workspace.closeViews()
     }
 
+    @Test(arguments: ["source", "query", "selection"])
+    func singleReplacementValidationRejectsChangedInputs(_ change: String) async throws {
+        let original = String(repeating: "a", count: 1_000_000) + " a"
+        let (workspace, window, root) = try workspace(original)
+        defer { window.close(); try? FileManager.default.removeItem(at: root) }
+        let document = try #require(workspace.active)
+        document.setMode(.raw)
+        document.findText = "a"; document.findWholeWord = true; document.replacementText = "replacement"
+        let entireSource = NSRange(location: 0, length: original.utf16.count)
+        document.text.select(entireSource)
+        let operation = Task { await document.replace(all: false) }
+        try await searching(document)
+        await document.replace(all: false)
+        #expect(document.searchBusy)
+        var expectedSource = original, expectedSelection = entireSource
+        switch change {
+        case "source":
+            expectedSource = "typed"; expectedSelection = NSRange(location: 0, length: 0)
+            #expect(document.text.apply(range: entireSource, replacement: expectedSource, selection: expectedSelection, actionName: "Edit"))
+        case "query": document.findText = "different query"
+        default:
+            expectedSelection = NSRange(location: 2, length: 0)
+            document.text.select(expectedSelection)
+        }
+        await operation.value
+        #expect(document.text.source == expectedSource)
+        #expect(document.text.selectedRange == expectedSelection)
+        #expect(!document.searchBusy)
+        await workspace.closeViews()
+    }
+
     @Test func repeatedCountRequestsRetainOneWorkerAndPublishOnlyCurrentSource() async throws {
         let (workspace, window, root) = try workspace(String(repeating: "a", count: 1_000_000))
         defer { window.close(); try? FileManager.default.removeItem(at: root) }

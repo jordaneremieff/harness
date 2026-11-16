@@ -2,6 +2,12 @@ import AppKit
 import MarkdownCore
 import SwiftUI
 
+private enum PreparedReplacement: Sendable {
+    case edit(MarkdownEdit, MarkdownCommand)
+    case noMatch
+    case refused
+}
+
 extension WorkingDocument {
     var previewHasFocus: Bool {
         if mode == .rendered { return true }
@@ -140,28 +146,32 @@ extension WorkingDocument {
         guard !closed, !searchBusy, !replacing, !text.hasMarkedText, mode != .rendered,
               let query = literalQuery, !query.text.isEmpty else { refreshFind(); return }
         let replacement = replacementText, findWasVisible = findVisible
-        var exact = query; exact.scope = text.selectedRange
-        if !all {
-            if MarkdownCommands.matches(exact, in: text.source, limit: 1).first?.range != text.selectedRange {
-                guard await find(), literalQuery == query, replacementText == replacement else { return }
-                exact.scope = text.selectedRange
-            }
-            if let scope = query.scope {
-                guard text.selectedRange.location >= scope.location, NSMaxRange(text.selectedRange) <= NSMaxRange(scope) else { return }
-            }
-        }
         searchBusy = true
         defer { searchBusy = false }
         let snapshot = text.snapshot
-        let command: MarkdownCommand = all ? .replaceAll(query, with: replacement) : .replace(exact, with: replacement)
-        let edit = await Task.detached {
-            MarkdownCommands.apply(command: command, to: snapshot.source, selection: snapshot.selectedRange, protectedRanges: [])
+        let prepared = await Task.detached { () -> PreparedReplacement in
+            var exact = query; exact.scope = snapshot.selectedRange
+            if !all {
+                if MarkdownCommands.matches(exact, in: snapshot.source, limit: 1).first?.range != snapshot.selectedRange {
+                    guard let match = Self.findRange(query, source: snapshot.source, selected: snapshot.selectedRange, backwards: false) else { return .noMatch }
+                    exact.scope = match
+                }
+                if let scope = query.scope, let selected = exact.scope {
+                    guard selected.location >= scope.location, NSMaxRange(selected) <= NSMaxRange(scope) else { return .noMatch }
+                }
+            }
+            let command: MarkdownCommand = all ? .replaceAll(query, with: replacement) : .replace(exact, with: replacement)
+            guard let edit = MarkdownCommands.apply(command: command, to: snapshot.source, selection: snapshot.selectedRange, protectedRanges: []) else { return .refused }
+            return .edit(edit, command)
         }.value
         guard !Task.isCancelled, !closed, visible, !replacing, !text.hasMarkedText, mode != .rendered,
               text.generation == snapshot.generation, text.selectedRange == snapshot.selectedRange,
               literalQuery == query, replacementText == replacement, findVisible == findWasVisible else { return }
-        guard let edit else { session.setError("The replacement has no safe edit, or exceeds its bound."); return }
-        _ = applyPrepared(edit, command: command, generation: snapshot.generation)
+        switch prepared {
+        case .noMatch: findSummary = "No matching text."
+        case .refused: session.setError("The replacement has no safe edit, or exceeds its bound.")
+        case .edit(let edit, let command): _ = applyPrepared(edit, command: command, generation: snapshot.generation)
+        }
     }
 
     func goToLine() {
