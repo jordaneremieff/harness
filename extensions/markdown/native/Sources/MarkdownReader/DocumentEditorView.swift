@@ -14,11 +14,20 @@ struct DocumentEditorView: View {
             if let pending = document.pendingMode {
                 Text("\(pending.rawValue) mode will open after text composition finishes.").font(.caption).foregroundStyle(.secondary)
             }
+            HStack {
+                EditorCommandMenu(document: document)
+                Button("Find") { document.showFind() }
+                TextField("Line", text: $document.goToLineText).frame(width: 65).onSubmit { document.goToLine() }
+                Button("Go") { document.goToLine() }
+                Spacer()
+            }.padding(.horizontal, 10).padding(.bottom, 6)
+            if document.findVisible { EditorFindBar(document: document) }
             Divider()
             EditorModeLayout(document: document)
                 .id(document.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .disabled(document.replacing)
         .onChange(of: document.presentation) { _, _ in document.updatePresentation() }
         .preferredColorScheme(document.presentation.appearance == .system ? nil : document.presentation.appearance == .dark ? .dark : .light)
     }

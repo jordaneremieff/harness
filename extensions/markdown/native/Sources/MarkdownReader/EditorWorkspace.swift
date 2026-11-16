@@ -24,8 +24,24 @@ final class WorkingDocument: Identifiable {
     var visible = false
     var pendingMode: EditorMode?
     var replacing = false
+    var stagingImages = false
+    var findVisible = false
+    var findText = ""
+    var replacementText = ""
+    var findCaseSensitive = false
+    var findWholeWord = false
+    var findInSelection = false
+    var findScope: NSRange?
+    var findScopeGeneration: UInt64?
+    var findSummary = ""
+    var goToLineText = ""
+    @ObservationIgnored var findTask: Task<Void, Never>?
     @ObservationIgnored private var previewTask: Task<Void, Never>?
-    @ObservationIgnored private var resolver: any AssetResolving = NoAssetResolver()
+    @ObservationIgnored private var baseResolver: any AssetResolving = NoAssetResolver()
+    var assetResolver: any AssetResolving {
+        guard let root = session.record.assetRoot else { return baseResolver }
+        return EditorDraftAssetResolver(base: baseResolver, root: URL(fileURLWithPath: root), images: session.record.stagedAssets ?? [])
+    }
     @ObservationIgnored private var composing = false
     var showsPreview: Bool { mode == .rendered || mode == .split }
     var line: Int?
@@ -37,7 +53,7 @@ final class WorkingDocument: Identifiable {
         text = MarkdownEditorTextController(source: record.source, initialGeneration: record.generation)
         preview = ReaderModel(reference: .file(path: "draft:" + record.id.uuidString), platform: MacPlatform.operations(), state: ReadingStateStore(directory: nil))
         preview.outlineVisible = false
-        if case .file(let base) = record.destination { resolver = DirectoryAssetResolver(directory: URL(fileURLWithPath: base.path).deletingLastPathComponent()) }
+        if case .file(let base) = record.destination { baseResolver = DirectoryAssetResolver(directory: URL(fileURLWithPath: base.path).deletingLastPathComponent()) }
         text.select(NSRange(location: record.selection.location, length: record.selection.length))
         text.onChange = { [weak self] snapshot in
             guard let self else { return }
@@ -47,12 +63,23 @@ final class WorkingDocument: Identifiable {
             self.session.receive(source: snapshot.source, generation: snapshot.generation,
                                  selection: .init(location: snapshot.selectedRange.location, length: snapshot.selectedRange.length), markedText: snapshot.hasMarkedText)
             self.updateAnalysis()
-            if changed { self.preview.invalidateDraftPreview(); self.schedulePreview() }
+            if changed {
+                self.preview.invalidateDraftPreview(); self.schedulePreview()
+                if self.findVisible { self.refreshFind() }
+            }
             if !snapshot.hasMarkedText, let pending = self.pendingMode { self.setMode(pending) }
             if compositionEnded, self.showsPreview { self.schedulePreview() }
         }
         text.onAnalysis = { [weak self] in self?.updateAnalysis() }
         text.onError = { [weak session] message in session?.setError(message) }
+        text.onCommand = { [weak self] selector in
+            guard let self else { return false }
+            switch NSStringFromSelector(selector) {
+            case "insertNewline:": return self.text.continueList()
+            case "insertBacktab:": return self.perform(.outdent, reportRefusal: false)
+            default: return false
+            }
+        }
         observeBase()
     }
 
@@ -78,12 +105,12 @@ final class WorkingDocument: Identifiable {
         }
     }
 
-    func setResolver(_ value: any AssetResolving) { resolver = value; schedulePreview(force: true) }
+    func setResolver(_ value: any AssetResolving) { baseResolver = value; schedulePreview(force: true) }
 
     func schedulePreview(force: Bool = false) {
         previewTask?.cancel()
         guard visible, showsPreview, !text.hasMarkedText else { preview.invalidateDraftPreview(); return }
-        let snapshot = text.snapshot, title = session.record.displayTitle, resolver = resolver
+        let snapshot = text.snapshot, title = session.record.displayTitle, resolver = assetResolver
         guard force || preview.draftGeneration != snapshot.generation else { return }
         previewTask = Task { [weak self] in
             do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
@@ -133,7 +160,7 @@ final class WorkingDocument: Identifiable {
     }
 
     func close() async {
-        closed = true; checkTask?.cancel(); updates.stop()
+        closed = true; checkTask?.cancel(); findTask?.cancel(); updates.stop()
         previewTask?.cancel()
         await preview.close()
     }
@@ -147,6 +174,7 @@ final class WorkingDocument: Identifiable {
 @MainActor @Observable
 final class EditorWorkspace {
     let drafts: DraftStore
+    let assetDirectory: URL
     var documents: [WorkingDocument] = []
     var selected: UUID?
     var libraryVisible = false
@@ -166,13 +194,17 @@ final class EditorWorkspace {
     var active: WorkingDocument? { documents.first { $0.id == selected } }
     var selectedStore: String?
 
-    init(directory: URL, store: String?) { drafts = DraftStore(directory: directory); selectedStore = store }
+    init(directory: URL, store: String?) {
+        drafts = DraftStore(directory: directory); selectedStore = store
+        assetDirectory = directory.deletingLastPathComponent().appendingPathComponent("EditorAssets")
+    }
 
     @discardableResult func allowAction(_ action: String, document: WorkingDocument? = nil) -> Bool {
         guard (document ?? active)?.text.hasMarkedText != true else {
             notice = "Finish composing text before \(action)."
             return false
         }
+        guard (document ?? active)?.stagingImages != true else { notice = "Wait for the image to reach private storage."; return false }
         guard (document ?? active)?.replacing != true else { notice = "The document replacement is in progress."; return false }
         return !closing
     }
@@ -180,6 +212,20 @@ final class EditorWorkspace {
     func add(_ record: DraftRecord) {
         guard allowAction("opening another document") else { return }
         let document = WorkingDocument(record: record, drafts: drafts)
+        document.text.onImageFiles = { [weak self, weak document] files in
+            guard let self, let document else { return }
+            self.stageImages(document, files: files)
+        }
+        document.text.onImageData = { [weak self, weak document] data, mediaType in
+            guard let self, let document else { return }
+            let suffix: String
+            switch mediaType {
+            case "image/png": suffix = "png"
+            case "image/tiff": suffix = "tiff"
+            default: document.session.setError("This pasted image type is unsupported."); return
+            }
+            self.stageImages(document, data: data, extension: suffix)
+        }
         leaveReading()
         active?.setVisible(false)
         documents.append(document); selected = document.id; libraryVisible = false
@@ -335,6 +381,10 @@ final class EditorWorkspace {
     }
 
     func prepareToClose() async -> Bool {
+        guard !documents.contains(where: \.stagingImages) else {
+            notice = "Wait for the image to reach private storage before closing."
+            return false
+        }
         guard !documents.contains(where: \.replacing) else {
             notice = "Wait for the document replacement before closing the workspace."
             return false
@@ -384,26 +434,34 @@ final class EditorWorkspace {
         panel.nameFieldStringValue = document.session.record.displayTitle + ".md"
         panel.begin { [weak self, weak document] response in
             guard response == .OK, let url = panel.url, let document, let self else { return }
-            Task { await self.saveFile(document, to: url) }
+            do {
+                let existing = FileManager.default.fileExists(atPath: url.path) ? try LocalFileSave.open(url).base : nil
+                Task { await self.saveFile(document, to: url, replacing: existing) }
+            } catch { document.session.setError("The chosen destination changed: \(error)") }
         }
     }
 
-    func saveFile(_ document: WorkingDocument, to url: URL? = nil) async {
+    func saveFile(_ document: WorkingDocument, to url: URL? = nil, replacing existing: FileEditBase? = nil) async {
         guard allowAction("saving", document: document) else { return }
         guard let snapshot = document.session.beginSave() else { return }
         do {
-            let base = try await Task.detached {
+            let (base, images) = try await Task.detached {
+                let resolver = try DraftAssets.resolver(for: snapshot)
                 if let url {
-                    if FileManager.default.fileExists(atPath: url.path) {
-                        let explicit = try LocalFileSave.open(url)
-                        return try LocalFileSave.save(source: snapshot.source, base: explicit.base)
-                    }
-                    return try LocalFileSave.saveAs(source: snapshot.source, url: url)
+                    guard existing == nil || existing?.requestedPath == url.standardizedFileURL.path else { throw FileSaveError.changed }
+                    let images = try FileAssetTransfer.copy(source: snapshot.source, resolver: resolver, beside: url)
+                    let saved = try existing.map { try LocalFileSave.save(source: snapshot.source, base: $0) }
+                        ?? LocalFileSave.saveAs(source: snapshot.source, url: url)
+                    return (saved, images)
                 }
                 guard case .file(let base) = snapshot.destination else { throw FileSaveError.invalid("Choose a file destination.") }
-                return try LocalFileSave.save(source: snapshot.source, base: base)
+                let images = try FileAssetTransfer.copy(source: snapshot.source, resolver: resolver, beside: URL(fileURLWithPath: base.path))
+                return (try LocalFileSave.save(source: snapshot.source, base: base), images)
             }.value
             document.session.finishSave(source: snapshot.source, destination: .file(base))
+            if images.unavailable > 0 || images.external > 0 {
+                document.session.setError("The file was saved. \(images.unavailable) image references remain unavailable; \(images.external) external image references remain external.")
+            }
             document.setResolver(DirectoryAssetResolver(directory: URL(fileURLWithPath: base.path).deletingLastPathComponent()))
             document.observeBase()
         } catch {
@@ -441,6 +499,9 @@ final class EditorWorkspace {
                     root = selectedStore; identity = try await writer.identity(root: root)
                 }
                 request = PublicationRequest(record: snapshot, root: root, storeId: identity)
+                let assetRoot = try imageRoot(for: snapshot)
+                request.stagedAssets = try await Task.detached { try DraftAssets.stageReferenced(in: snapshot, root: assetRoot) }.value
+                if request.stagedAssets?.isEmpty == false { request.assetRoot = assetRoot.path }
                 let pending = try JSONEncoder().encode(request)
                 document.session.setPendingPublication(pending)
                 guard await document.session.persistPendingPublication(pending) else { throw FileSaveError.invalid("Recovery failed. The library save did not start.") }
@@ -487,7 +548,8 @@ struct EditorWorkspaceView: View {
                     Button("Save") { workspace.save() }.keyboardShortcut("s")
                     Menu {
                         Button("Save As…") { workspace.saveAs() }
-                        Button("Duplicate") { if let record = workspace.active?.session.duplicate() { workspace.add(record) } }
+                        Button("Duplicate") { if let document = workspace.active { Task { await workspace.duplicate(document) } } }
+                        Button("Insert Image…") { workspace.chooseImage() }
                         Button("Review / Revert to Saved Version…") {
                             if let document = workspace.active { Task { await workspace.reviewSavedVersion(document) } }
                         }
@@ -516,6 +578,9 @@ struct EditorWorkspaceView: View {
                 ReaderView(model: reading, chrome: .embedded(close: { Task { await workspace.showPublishedLibrary() } }, release: { workspace.onRelease?() }))
             } else if workspace.libraryVisible { draftLibrary }
             else if let document = workspace.active {
+                if let pending = document.session.record.pendingImageReferences, !pending.isEmpty {
+                    Button("Insert \(pending.count) Retained Images") { Task { await workspace.insertImages(document) } }.padding(6)
+                }
                 DocumentEditorView(document: document)
                 Divider()
                 status(document)
@@ -554,7 +619,7 @@ struct EditorWorkspaceView: View {
                 HStack {
                     Label(conflict.message, systemImage: "exclamationmark.triangle")
                     Button("Review Saved Version") { Task { await workspace.reviewSavedVersion(document) } }
-                    Button("Save a Separate Copy") { workspace.add(document.session.duplicate()) }
+                    Button("Save a Separate Copy") { Task { await workspace.duplicate(document) } }
                 }.foregroundStyle(.orange)
             }
             if let error = document.session.error { Text(error).foregroundStyle(.red) }

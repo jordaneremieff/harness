@@ -113,6 +113,11 @@ final class WindowManager: NSObject, NSWindowDelegate {
 
     var keyModel: ReaderModel? {
         guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return nil }
+        if window === editorWindow {
+            if let reading = editor?.reading { return reading }
+            guard let document = editor?.active, document.previewHasFocus else { return nil }
+            return document.preview
+        }
         return readers.values.first { $0.window === window }?.model
     }
 

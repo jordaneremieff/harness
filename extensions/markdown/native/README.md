@@ -58,8 +58,34 @@ close actions instead explain that composition must finish first. The workspace 
 own library browser and read view, with explicit Edit or Edit Copy actions for stored documents.
 Captured files and responses require a copy. An editor observes external changes without
 replacing its buffer or advancing its expected revision. **Review / Revert to Saved Version**
-shows the exact draft and saved source side by side. Explicit replacement first retains the old
-draft as an independent recovery version; failed recovery leaves the live source and undo intact.
+distinguishes the pinned edit base, the live draft and the current saved source. Its pair selector
+compares those sources without an automatic merge; stored base/current comparisons also show
+bounded revision-diff results. Explicit replacement first retains the old draft as an independent
+recovery version; failed recovery leaves the live source and undo intact.
+
+The **Format** menu provides headings, emphasis, code, quotes, lists, tasks, links, table insertion,
+indentation and line movement/duplication. Native formatting shortcuts operate only when the source
+text view is the first responder: Command-B, Command-I, Command-K and Command-[ / Command-].
+Command-F opens literal source search with next/previous, case and whole-word controls, replacement
+and an explicit selection scope. Command-G and Shift-Command-G step through matches. A source edit
+outside a scoped replacement invalidates that scope instead of broadening Replace All. In rendered
+preview, or when the preview has focus in Split, reader Find remains the active action. Go to Line
+uses one-based source lines; the status shows source position and counts.
+
+**Insert Image**, image paste and file drop copy admitted images into private `EditorAssets/`
+storage before inserting Markdown. The source receives one native undo transaction. If typing,
+selection or composition changes during staging, the image remains recoverable and **Insert Retained
+Images** lets the operator choose its insertion point. File/draft copies and Save As carry referenced
+local images without rewriting Markdown. An existing image destination with different bytes causes
+refusal, not overwrite. Private image storage refuses additional assets at its capacity rather than
+evicting older work. Unavailable and external image references remain explicit; insertion does not
+fetch remote content. Library saves pass exact staged identities to the existing writer before
+publication. Revert clears the live draft's staged admissions only after retaining its old recovery
+branch.
+
+Save As captures an existing destination's identity when the file dialog completes. The later write
+must match that identity; a destination that appears or changes during the save is not silently
+replaced. Native file coordination does not exclude uncooperative external writers.
 
 The explicit editor launch is:
 

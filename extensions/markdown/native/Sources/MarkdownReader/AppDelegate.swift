@@ -320,9 +320,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc func copyMarkdown(_ sender: Any?) { withModel { $0.copyMarkdown() } }
     @objc func copyPassage(_ sender: Any?) { withModel { await $0.copyPassageWithSource() } }
-    @objc func showFind(_ sender: Any?) { withModel { $0.showFind() } }
-    @objc func findNext(_ sender: Any?) { withModel { model in model.findVisible = true; await model.find() } }
-    @objc func findPrevious(_ sender: Any?) { withModel { model in model.findVisible = true; await model.find(backwards: true) } }
+    private var editorDocument: WorkingDocument? {
+        guard let workspace = paneHost?.workspace ?? windows.keyEditor, !workspace.libraryVisible, workspace.publishedLibrary == nil, workspace.reading == nil else { return nil }
+        guard let document = workspace.active, !document.previewHasFocus else { return nil }
+        return document
+    }
+
+    @objc func formatEditor(_ sender: NSMenuItem) {
+        guard let command = sender.representedObject as? MarkdownCommand, let document = editorDocument,
+              document.text.textView.window?.firstResponder === document.text.textView else { return }
+        document.perform(command)
+    }
+
+    @objc func showFind(_ sender: Any?) {
+        if let document = editorDocument { document.showFind(); return }
+        withModel { $0.showFind() }
+    }
+    @objc func findNext(_ sender: Any?) {
+        if let document = editorDocument { document.showFind(); document.find(); return }
+        withModel { model in model.findVisible = true; await model.find() }
+    }
+    @objc func findPrevious(_ sender: Any?) {
+        if let document = editorDocument { document.showFind(); document.find(backwards: true); return }
+        withModel { model in model.findVisible = true; await model.find(backwards: true) }
+    }
     @objc func toggleOutline(_ sender: Any?) { withModel { $0.toggleOutline() } }
     @objc func goBack(_ sender: Any?) { withModel { await $0.goBack() } }
     @objc func toggleSource(_ sender: Any?) { withModel { await $0.toggleSource() } }
@@ -349,6 +370,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         guard let action = item.action else { return true }
         if [#selector(newScratchpad(_:)), #selector(showDrafts(_:)), #selector(showLibrary(_:)), #selector(openDocument(_:)), #selector(openStore(_:)), #selector(openRecent(_:))].contains(action) { return true }
         if [#selector(saveEditor(_:)), #selector(saveEditorAs(_:))].contains(action) { return windows.keyEditor?.active != nil }
+        if action == #selector(formatEditor(_:)) { return editorDocument.map { !$0.text.hasMarkedText && !$0.replacing && $0.text.textView.window?.firstResponder === $0.text.textView } ?? false }
+        if [#selector(showFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:))].contains(action), editorDocument != nil { return true }
         guard let model = windows.keyModel else { return false }
         switch action {
         case #selector(toggleOutline(_:)):
@@ -444,7 +467,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let name = "Markdown Reader"
         if pane {
             main.addItem(submenu(name, [standard("Close Reader", #selector(NSWindow.performClose(_:)), "q")]))
-            main.addItem(submenu("File", [standard("Close", #selector(NSWindow.performClose(_:)), "w")]))
+            main.addItem(submenu("File", [
+                item("New Scratchpad", #selector(newScratchpad(_:)), "n"),
+                item("Open…", #selector(openDocument(_:)), "o"),
+                item("Save", #selector(saveEditor(_:)), "s"),
+                item("Save As…", #selector(saveEditorAs(_:)), "s", [.command, .shift]),
+                item("Recoverable Drafts", #selector(showDrafts(_:)), "d", [.command, .shift]),
+                item("Library", #selector(showLibrary(_:)), "l", [.command, .shift]),
+                standard("Close", #selector(NSWindow.performClose(_:)), "w"),
+            ]))
             main.addItem(editMenu())
             main.addItem(viewMenu(fullScreen: false))
             main.addItem(documentMenu(returnItem: false))
@@ -490,6 +521,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         return main
     }
 
+    private func formatItem(_ title: String, _ command: MarkdownCommand, _ key: String) -> NSMenuItem {
+        let result = item(title, #selector(formatEditor(_:)), key)
+        result.representedObject = command
+        return result
+    }
+
     private func editMenu() -> NSMenuItem {
         submenu("Edit", [
             standard("Undo", Selector(("undo:")), "z"),
@@ -502,6 +539,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             item("Copy Markdown", #selector(copyMarkdown(_:)), "c", [.command, .shift]),
             standard("Select All", #selector(NSText.selectAll(_:)), "a"),
             .separator(),
+            submenu("Format", [
+                formatItem("Bold", .bold, "b"),
+                formatItem("Italic", .italic, "i"),
+                formatItem("Link", .link, "k"),
+                formatItem("Indent", .indent, "]"),
+                formatItem("Outdent", .outdent, "["),
+            ]),
             submenu("Find", [
                 item("Find…", #selector(showFind(_:)), "f"),
                 item("Find Next", #selector(findNext(_:)), "g"),

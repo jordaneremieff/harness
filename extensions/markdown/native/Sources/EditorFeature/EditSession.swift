@@ -50,6 +50,9 @@ public struct DraftRecord: Codable, Sendable, Identifiable {
     public var savedSource: String?
     public var conflict: EditConflict?
     public var pendingPublication: Data?
+    public var assetRoot: String?
+    public var stagedAssets: [StagedImage]?
+    public var pendingImageReferences: [String]?
     public var updatedAt: Date
 
     public init(title: String = "Untitled", source: String = "", destination: EditDestination = .scratchpad, savedSource: String? = nil) {
@@ -112,6 +115,25 @@ public final class EditSession {
     public func setConflict(_ conflict: EditConflict) { record.conflict = conflict; changed() }
     public func setError(_ message: String?) { error = message }
 
+    public func retainImages(root: String, images: [StagedImage]) {
+        record.assetRoot = root
+        var retained = record.stagedAssets ?? []
+        var pending = record.pendingImageReferences ?? []
+        for image in images {
+            retained.removeAll { $0.reference == image.reference }
+            retained.append(image)
+            if !pending.contains(image.reference) { pending.append(image.reference) }
+        }
+        record.stagedAssets = retained; record.pendingImageReferences = pending
+        changed()
+    }
+
+    public func consumeImages(_ references: [String]) {
+        let used = Set(references)
+        record.pendingImageReferences = record.pendingImageReferences?.filter { !used.contains($0) }
+        changed()
+    }
+
     public func beginSave() -> DraftRecord? {
         guard !saving, record.pendingPublication == nil else { return nil }
         saving = true; error = nil
@@ -134,6 +156,7 @@ public final class EditSession {
     }
 
     public func finishRevert(source: String, destination: EditDestination) {
+        record.assetRoot = nil; record.stagedAssets = nil; record.pendingImageReferences = nil
         finishSave(source: source, destination: destination)
         if case .copy = destination { record.savedSource = nil; changed() }
     }
@@ -149,6 +172,8 @@ public final class EditSession {
     public func duplicate() -> DraftRecord {
         var copy = DraftRecord(title: record.displayTitle + " Copy", source: record.source)
         copy.selection = record.selection
+        copy.assetRoot = record.assetRoot; copy.stagedAssets = record.stagedAssets
+        copy.pendingImageReferences = record.pendingImageReferences
         if case .published(let base) = record.destination { copy.destination = .copy(base) }
         if case .copy(let base) = record.destination { copy.destination = .copy(base) }
         return copy

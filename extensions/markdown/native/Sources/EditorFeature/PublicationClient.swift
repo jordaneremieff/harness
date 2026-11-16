@@ -8,7 +8,7 @@ public struct PublicationBase: Codable, Sendable {
     public init(_ base: StoredEditBase) { document = base.document; revision = base.revision; digest = base.digest }
 }
 
-public struct StagedImage: Codable, Sendable {
+public struct StagedImage: Codable, Equatable, Sendable {
     public var reference: String
     public var relativePath: String
     public var digest: String

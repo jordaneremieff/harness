@@ -10,18 +10,27 @@ struct EditorRevisionCandidate: Sendable {
     let destination: EditDestination
     let resolver: any AssetResolving
     let label: String
+    let baseSource: String
+    let baseLabel: String
+    let storedComparison: RevisionComparison?
 
     static func load(_ record: DraftRecord) throws -> Self {
         switch record.destination {
         case .file(let base):
             let file = try LocalFileSave.open(URL(fileURLWithPath: base.requestedPath))
-            return Self(source: file.source, title: record.title, destination: .file(file.base), resolver: DirectoryAssetResolver(directory: URL(fileURLWithPath: file.base.path).deletingLastPathComponent()), label: "File on disk")
+            guard let baseSource = record.savedSource else { throw FileSaveError.invalid("The edit base is unavailable.") }
+            return Self(source: file.source, title: record.title, destination: .file(file.base), resolver: DirectoryAssetResolver(directory: URL(fileURLWithPath: file.base.path).deletingLastPathComponent()), label: "Current file on disk", baseSource: baseSource, baseLabel: "Edit base · last saved source", storedComparison: nil)
         case .published(let base), .copy(let base):
             let copy: Bool = if case .copy = record.destination { true } else { false }
             let snapshot = try DocumentLoader.load(.stored(root: base.root, storeId: base.storeId, document: base.document), revision: copy ? base.revision : nil, pinnedDigest: copy ? base.digest : nil)
             guard let revision = snapshot.revision else { throw FileSaveError.invalid("The stored revision is unavailable.") }
             let selected = StoredEditBase(root: base.root, storeId: base.storeId, document: base.document, revision: revision, digest: snapshot.digest)
-            return Self(source: snapshot.source, title: snapshot.title, destination: copy ? .copy(selected) : .published(selected), resolver: snapshot.resolver, label: "Library revision \(revision)")
+            let original = try DocumentLoader.load(.stored(root: base.root, storeId: base.storeId, document: base.document), revision: base.revision, pinnedDigest: base.digest)
+            let comparison: RevisionComparison?
+            if let before = original.record, let after = snapshot.record {
+                comparison = RevisionDiff.compare(base: (before, original.source), target: (after, snapshot.source))
+            } else { comparison = nil }
+            return Self(source: snapshot.source, title: snapshot.title, destination: copy ? .copy(selected) : .published(selected), resolver: snapshot.resolver, label: copy ? "Copy source · pinned revision \(revision)" : "Current library revision \(revision)", baseSource: original.source, baseLabel: "Edit base · pinned revision \(base.revision)", storedComparison: comparison)
         case .scratchpad:
             throw FileSaveError.invalid("This scratchpad has no saved version. Its current text remains in recovery.")
         }
@@ -33,14 +42,16 @@ struct EditorRevisionCandidate: Sendable {
     let document: WorkingDocument
     let generation: UInt64
     let candidate: EditorRevisionCandidate
+    let base: MarkdownEditorTextController
     let draft: MarkdownEditorTextController
     let latest: MarkdownEditorTextController
 
     init(document: WorkingDocument, candidate: EditorRevisionCandidate) {
         self.document = document; generation = document.text.generation; self.candidate = candidate
+        base = MarkdownEditorTextController(source: candidate.baseSource)
         draft = MarkdownEditorTextController(source: document.text.source)
         latest = MarkdownEditorTextController(source: candidate.source)
-        for controller in [draft, latest] {
+        for controller in [base, draft, latest] {
             var presentation = document.presentation; presentation.mode = .raw
             controller.setPresentation(presentation)
             controller.textView.isEditable = false
@@ -49,20 +60,29 @@ struct EditorRevisionCandidate: Sendable {
 }
 
 struct EditorRevisionReviewView: View {
+    enum Pair: String, CaseIterable { case baseDraft = "Base / Your Draft", baseCurrent = "Base / Current", draftCurrent = "Your Draft / Current" }
+    @State private var pair = Pair.baseDraft
     let review: EditorRevisionReview
     let workspace: EditorWorkspace
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Review Saved Version").font(.title2)
             Text("Use Saved Version replaces the draft and resets undo. The previous draft stays as a separate recovery version.")
+            Picker("Compare", selection: $pair) {
+                ForEach(Pair.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented)
+            if let comparison = review.candidate.storedComparison {
+                Text("Base to current: \(comparison.addedLines) added lines, \(comparison.removedLines) removed lines.").font(.caption)
+                ForEach(Array(comparison.limits.enumerated()), id: \.offset) { _, limit in Text(limit.description).font(.caption).foregroundStyle(.orange) }
+            }
             HSplitView {
                 VStack(alignment: .leading) {
-                    Text("Your draft · generation \(review.generation)").font(.headline)
-                    MarkdownEditorTextSurface(controller: review.draft)
+                    Text(pair == .draftCurrent ? "Your draft · generation \(review.generation)" : review.candidate.baseLabel).font(.headline)
+                    MarkdownEditorTextSurface(controller: pair == .draftCurrent ? review.draft : review.base)
                 }.frame(minWidth: 240)
                 VStack(alignment: .leading) {
-                    Text(review.candidate.label).font(.headline)
-                    MarkdownEditorTextSurface(controller: review.latest)
+                    Text(pair == .baseDraft ? "Your draft · generation \(review.generation)" : review.candidate.label).font(.headline)
+                    MarkdownEditorTextSurface(controller: pair == .baseDraft ? review.draft : review.latest)
                 }.frame(minWidth: 240)
             }.frame(minHeight: 300)
             HStack {
@@ -70,7 +90,7 @@ struct EditorRevisionReviewView: View {
                 Spacer()
                 Button("Save a Separate Copy") {
                     workspace.revisionReview = nil
-                    workspace.add(review.document.session.duplicate())
+                    Task { await workspace.duplicate(review.document) }
                 }
                 Button("Use Saved Version") { Task { await workspace.acceptRevision(review) } }
             }
