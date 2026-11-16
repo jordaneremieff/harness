@@ -1,5 +1,8 @@
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord/context";
+import type { LiveConfig } from "./live-protocol.ts";
+import { withLiveShow } from "./live-launch.ts";
 import { arr, bool, int, lit, obj, opt, str, union, type Static } from "@earendil-works/pi-schema";
 import { toolDisplay } from "./display.ts";
 import { paneCommand } from "./pane-command.ts";
@@ -41,7 +44,7 @@ export const ReadOutcomeSchema = union([
 	obj({ ok: lit(false), error: obj({ code: union([lit("invalid"), lit("not-found"), lit("store-failure")]), message: str() }) }),
 ]);
 
-const DESCRIPTION = "Find and read stored Markdown documents exactly, without opening a window. Without document, list the newest documents of one collection, optionally matching query against titles and IDs and contains against the current source (a bounded search that reports its coverage). With document, read the exact source of its current revision, or of a named revision, in pages of at most 64 KiB; continue with the returned offset and the same revision. The result names the current revision, the source digest and the reference coverage. To correct a published document, read its current revision, then call markdown_publish with document and expectedRevision set to that revision. After a conflict, read the revision that the conflict names before you publish again. Reading starts no work and changes nothing.";
+const DESCRIPTION = "Find and read stored Markdown documents exactly, without opening a window. Without document, list the newest documents of one collection, optionally matching query against titles and IDs and contains against the current source (a bounded search that reports its coverage). With document, read the exact source of its current revision, or of a named revision, in pages of at most 64 KiB; continue with the returned offset and the same revision. The result names the current revision, the source digest and the reference coverage. For a connected pane, use markdown_live to read or edit its actual buffer. To correct a stored publication instead, read its current revision, then call markdown_publish with document and expectedRevision set to that revision. After a conflict, read the revision that the conflict names before you publish again. Reading starts no model work and leaves stored document content unchanged.";
 
 function validate(params: ReadInput): void {
 	if (!params || typeof params !== "object") throw new StoreError("invalid", "Supply a document, or omit it to find documents.");
@@ -179,16 +182,20 @@ function content(outcome: ReadOutcome): { type: "text"; text: string }[] {
 	return [{ type: "text", text: header }, ...(source === undefined ? [] : [{ type: "text" as const, text: source }])];
 }
 
-export function createReadTool(options: { store: MarkdownStore; app?: string }): ToolDefinition<typeof ReadParameters, ReadOutcome> {
+export function createReadTool(options: { store: MarkdownStore; app?: string; connection?: (context: ExtensionContext) => Promise<LiveConfig> }): ToolDefinition<typeof ReadParameters, ReadOutcome> {
 	const presentation = toolDisplay().tools.find((tool) => tool.name === "markdown_read");
-	return { ...presentation, name: "markdown_read", label: "Markdown Read", description: DESCRIPTION, promptSnippet: "Find stored Markdown documents and read an exact revision in pages, for example before an update.", parameters: ReadParameters, outputSchema: ReadOutcomeSchema, async execute(_id, params) {
-		const outcome = await readStored(options.store, params as ReadInput, options.app);
+	return { ...presentation, name: "markdown_read", label: "Markdown Read", description: DESCRIPTION, promptSnippet: "Find stored Markdown documents and read an exact revision in pages, for example before an update.", parameters: ReadParameters, outputSchema: ReadOutcomeSchema, async execute(_id, params, _signal, _update, context) {
+		let outcome = await readStored(options.store, params as ReadInput, options.app);
+		const connection = options.connection;
+		if (outcome.ok && outcome.op === "read") outcome = await withLiveShow(outcome, options.app, connection ? () => connection(context) : undefined, _signal);
 		return { content: content(outcome), details: outcome, structuredContent: outcome, isError: !outcome.ok };
 	} };
 }
-export function createNativeReadTool(durable: typeof Durable, options: { store: MarkdownStore; app?: string }): Durable.ToolRegistration<typeof ReadParameters, Durable.JsonObject> {
-	return durable.defineTool({ name: "markdown_read", description: DESCRIPTION, parameters: ReadParameters, structuredOutputSchema: ReadOutcomeSchema, replay: "safe", async execute(params) {
-		const outcome = await readStored(options.store, params as ReadInput, options.app);
+export function createNativeReadTool(durable: typeof Durable, options: { store: MarkdownStore; app?: string; connection?: (conversation: Durable.ConversationId, context: Context) => Promise<LiveConfig> }): Durable.ToolRegistration<typeof ReadParameters, Durable.JsonObject> {
+	return durable.defineTool({ name: "markdown_read", description: DESCRIPTION, parameters: ReadParameters, structuredOutputSchema: ReadOutcomeSchema, replay: "safe", async execute(params, api, context) {
+		let outcome = await readStored(options.store, params as ReadInput, options.app);
+		const connection = options.connection;
+		if (outcome.ok && outcome.op === "read") outcome = await withLiveShow(outcome, options.app, connection ? () => connection(api.conversationId, context) : undefined, context.abortSignal);
 		return { output: content(outcome), structuredOutput: outcome, details: outcome, isError: !outcome.ok };
 	} });
 }

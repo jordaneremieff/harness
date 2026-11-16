@@ -3,7 +3,8 @@
 A native reader for Markdown documents that the Markdown extension saves: agent responses,
 published documents and file snapshots. It also opens plain `.md` files in place. Reading never
 changes document source; its only store mutation is removal of an accepted open request.
-The editor provides explicit file saves and delegates library saves to the bundled store writer.
+The editor coalesces edits into automatic saves and delegates library saves to the bundled store writer.
+Read is the default; Edit uses the same pane and document buffer.
 Its own reading state (positions, recent documents, known store
 folders, text size) lives in `~/Library/Application Support/Markdown Reader/` and is bounded;
 trimming it never touches a stored document. The application and every [pane mode](#pane-mode)
@@ -43,7 +44,8 @@ immutable snapshots in the background and exposes pending, current and failed st
 Closing a document or workspace requires a current recovery snapshot; a failure keeps it open.
 The workspace freezes input during its final recovery write, then restores input if closing fails.
 
-**Save** writes an opened file, or asks the bundled library writer to publish a snapshot.
+Edits save automatically to an opened file or through the bundled library writer. Captured responses
+and file snapshots start a separate editable copy. **Save** remains available for an explicit save;
 **Save As** chooses a local file. A file save checks the original file identity and content;
 external replacements leave the buffer intact and report a conflict. A no-op file save preserves
 its bytes and inode, including a UTF-8 BOM and mixed line endings. A save acknowledgement marks
@@ -51,19 +53,31 @@ only the submitted source as saved; text typed later stays dirty. An unconfirmed
 retains its exact invocation for reconciliation before another publication starts. The pending
 invocation must reach recovery storage before the writer starts; subsequent typing need not stop.
 
-Styled, Raw, Rendered and Split modes retain the same source controller. Below the minimum Split
-width, source fills the workspace and a hint offers Rendered mode for the preview. Widening restores
-the split without replacing source, selection or undo history. Preview uses the reader's
-safe rendering path without a fabricated file or revision identity. Hidden previews stop pending
-work. Mode changes defer while native text composition is active; document changes, saves and
-close actions instead explain that composition must finish first. The workspace contains its
-own library browser and read view, with explicit Edit or Edit Copy actions for stored documents.
-Captured files and responses require a copy. An editor observes external changes without
-replacing its buffer or advancing its expected revision. **Review / Revert to Saved Version**
-distinguishes the pinned edit base, the live draft and the current saved source. Its pair selector
-compares those sources without an automatic merge; stored base/current comparisons also show
-bounded revision-diff results. Explicit replacement first retains the old draft as an independent
-recovery version; failed recovery leaves the live source and undo intact.
+Read and Edit retain the same source controller, selection and native Undo history. Edit opens
+in Visual mode. Its compact toolbar contains Format and View; View holds Source mode, Find,
+appearance and zoom. Visual mode uses cmark source ranges to show editable headings, prose,
+emphasis, links and exact inline code without their delimiters. Unsupported blocks remain editable
+source, and front matter keeps the document in source form. A visual edit across hidden syntax
+refuses rather than rewriting unrelated markup; Source mode handles such changes. Zoom changes
+presentation, not source or selection.
+
+Select a passage in Read or Edit, then use **Comment on Selection** to comment directly to the
+pane's Pi conversation. The small comment box stays inside the pane window, so using it neither
+activates the application nor opens another window; it retains the displayed quote as context,
+not an edit range. Hover exposes the margin controls without changing focus. **Ask about Document** is a
+secondary action; there is no permanent prompt or idle status strip. See
+[live collaboration](../README.md#live-collaboration) for keyboard actions and delivery boundaries.
+
+Mode changes defer while native text composition is active; document changes, saves and close
+actions explain that composition must finish first. Preview uses the reader's safe rendering path
+without a fabricated file or revision identity. Hidden previews stop pending work. The workspace
+also contains its library browser and read view.
+
+External updates merge only when the local and remote source changes do not overlap. Conflicting
+passages or image replacements preserve the local draft and report the conflict. Secondary
+**Review / Revert to Saved Version** controls distinguish the pinned base, live draft and saved
+source. Explicit replacement first retains the old draft as an independent recovery version;
+failed recovery leaves the live source and Undo intact.
 
 The **Format** menu provides headings, emphasis, code, quotes, lists, tasks, links, table insertion,
 indentation and line movement/duplication. Native formatting shortcuts operate only when the source
@@ -124,7 +138,7 @@ if that restoration also fails, the error reports both failures and the previous
 The bundle carries `Contents/Resources/build.json`:
 
 ```json
-{"contract": 1, "pane": 1, "paneOpen": 1, "paneOpenRequest": 1, "sourceDigest": "sha256:…", "builtAt": "…", "swift": "…",
+{"contract": 1, "pane": 1, "paneOpen": 1, "paneOpenRequest": 1, "editorOpen": 1, "live": 1, "sourceDigest": "sha256:…", "builtAt": "…", "swift": "…",
  "store": "/…/markdown", "terminalOrigin": {"helper": "terminal-origin.ts", "node": "/opt/homebrew/bin/node"}}
 ```
 
@@ -278,15 +292,16 @@ and never modify the original document, records, reading position or history.
 
 ## Reading
 
-The outline uses a sidebar from 680 points width and a native popover below it. The same
-heading list and filter field serve both presentations. The current section has an indicator;
+The contents outline uses a proportional sidebar from 640 points width and a native popover below
+it. Drag the divider to change its width, double-click to reset it, or use its accessibility
+adjustment. The layout keeps room for the document and retains the chosen proportion through
+resizes. Contents shows or hides the outline. The same heading list and filter field serve both
+presentations. The current section has an indicator;
 a heading or footnote jump records the previous reading position. Go Back After Jump restores
 that position, with a window-local history bounded to 20 entries and cleared on revision loads.
-The embedded header keeps the document title, outline, back, find and close controls visible;
-its More Actions menu holds revision selection, Review Changes, view options, copying, details
-and terminal return.
-A separate status line names the selected revision, whether the reader follows latest or defers
-an update, and source versus rendered view.
+The embedded header keeps the title, Contents, Edit and Close visible. More Actions holds Find,
+back navigation, revision selection, Review Changes, view options, copying, details and terminal
+return. Revision and source details do not occupy a permanent status row.
 
 Find has next and previous actions and a not-found state. Other controls include text size,
 code wrapping, Copy for each code block (the parsed code without its
@@ -312,10 +327,9 @@ Code copy keeps CRLF between lines when every line ending in the document source
 Sources with mixed line endings copy with LF. Markdown container indentation is not part of the
 copied code.
 
-A table cell that holds a sentence keeps a minimum width, and inline code in a cell stays
-whole. A table that these rules make wider than the page scrolls sideways in its own region;
-every other table shares the page width between its columns. Short cells stay compact, and a
-row copies as one line.
+Tables share the available page width between their columns. Sentences, long links and inline
+code wrap inside their cells instead of forcing horizontal scrolling. Narrow panes use smaller
+cell padding, not smaller text or hidden columns. Rows grow in height as needed and copy as one line.
 
 A normal window watches the open document's pointer (or a plain file's folder) and shows
 "Revision n is available" without rendering by itself, so a selection or the scroll position never changes
@@ -498,8 +512,8 @@ APP="<app>/Contents/MacOS/MarkdownReader"
   and the position survives the refresh; the position survives a reopen through a reading-state
   file that a second state store reads from disk; each explicit open sets or clears the window's
   origin and supersedes pending loads; pure-CRLF code copy retains its internal line endings;
-  a table that scrolls keeps its sentence width, its compact short cells and its one-line
-  rows, and a table that fits uses the page width; the page recovers after its web content
+  tables and their cells fit the page width at narrow and wide sizes, with long inline code
+  wrapped without changing its text or the table's font size; the page recovers after its web content
   process is killed.
 - `--measure` builds documents of the given sizes from the corpus and reports read, render and
   display times for two opens (each taken right after its open, so the second is a warm open),
@@ -622,8 +636,8 @@ and behind a locked screen. A changed title of the host window or of the frontmo
 the next round at once; otherwise rounds repeat four times a second at first, then every second
 while the host runs and every three seconds while no host is known.
 
-The window shows `ReaderView` with embedded chrome: the title, outline, back, find and close
-controls, a separate revision/mode status line, and More Actions for secondary controls.
+The window starts with `ReaderView` and a compact title, Contents, Edit and Close header.
+More Actions holds secondary controls; revision details stay out of the normal reading view.
 The outline opens in a popover in narrow panes. More Actions includes a control that returns
 the keyboard to the host. Escape outside a text field first ends an image inspection or a
 comparison that lies over the document, and otherwise returns the keyboard to the host. Pane

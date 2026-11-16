@@ -13,6 +13,10 @@ import { readOrdinary, recentOrdinary, type ResponseSnapshot } from "./responses
 import type { Presentation } from "./reveal.ts";
 import type { MarkdownOperations, MarkdownScope, MarkdownViewState } from "./operator-view.ts";
 import { MARKDOWN_USAGE, markdownHelp, markdownCompletions } from "./commands.ts";
+import { ordinaryLive } from "./live-host.ts";
+import { createLiveTool } from "./live-tool.ts";
+import type { LiveConfig } from "./live-protocol.ts";
+type Connection = () => Promise<LiveConfig | undefined>;
 export { markdownCompletions } from "./commands.ts";
 
 const OWNER = fileURLToPath(import.meta.url);
@@ -34,7 +38,7 @@ export function ordinaryLifecycle(pi: Pick<ExtensionAPI, "on">): () => AbortSign
 	return () => controller.signal;
 }
 /** Every ordinary entry point uses the same action functions as the view. */
-export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => AbortSignal, presentation: Presentation = "pane"): MarkdownOperations {
+export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => AbortSignal, presentation: Presentation = "pane", connection?: Connection): MarkdownOperations {
 	const source = ctx.sessionManager;
 	const sessionId = source.getSessionId();
 	const root = localSettings().dir;
@@ -61,7 +65,9 @@ export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => Abort
 			const id = row.kind === "document" ? row.document.id : undefined;
 			const reveal = await import("./reveal.ts");
 			check(signal);
-			const result = await (response ? reveal.openResponse(response, signal, ctx.mode === "tui", presentation) : reveal.openStored(root, id ?? "", signal, { gui: ctx.mode === "tui", presentation, ...(row.kind === "document" ? { pin: { revision: row.document.revision, digest: row.document.digest } } : {}) }));
+			const live = await connection?.();
+			check(signal);
+			const result = await (response ? reveal.openResponse(response, signal, ctx.mode === "tui", presentation, live) : reveal.openStored(root, id ?? "", signal, { gui: ctx.mode === "tui", presentation, live, ...(row.kind === "document" ? { pin: { revision: row.document.revision, digest: row.document.digest } } : {}) }));
 			check(signal);
 			return result;
 		},
@@ -71,7 +77,9 @@ export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => Abort
 			const response = latest(ctx);
 			const reveal = await import("./reveal.ts");
 			check(signal);
-			const result = await reveal.openResponse(response, signal, ctx.mode === "tui", presentation);
+			const live = await connection?.();
+			check(signal);
+			const result = await reveal.openResponse(response, signal, ctx.mode === "tui", presentation, live);
 			check(signal);
 			return result;
 		},
@@ -81,7 +89,9 @@ export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => Abort
 			if (ctx.mode !== "tui") throw new Error("Open New scratchpad in the Markdown operator view or native app.");
 			const reveal = await import("./reveal.ts");
 			check(signal);
-			return reveal.openScratchpad(signal, { presentation });
+			const live = await connection?.();
+			check(signal);
+			return reveal.openScratchpad(signal, { presentation, live });
 		},
 		edit: async (row, viewSignal, copy = false) => {
 			const signal = AbortSignal.any([viewSignal, lifecycle()]);
@@ -90,9 +100,11 @@ export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => Abort
 			const response = row.kind === "response" ? readOrdinary(source, row.response.entryId, cutoff) : undefined;
 			const reveal = await import("./reveal.ts");
 			check(signal);
-			if (response) return reveal.openEditorResponse(response, signal, { presentation });
+			const live = await connection?.();
+			check(signal);
+			if (response) return reveal.openEditorResponse(response, signal, { presentation, live });
 			if (row.kind !== "document") throw new Error("Select a retained response or document.");
-			return reveal.openEditorStored(root, row.document.id, copy ? "copy" : "edit", signal, { presentation, pin: { revision: row.document.revision, digest: row.document.digest } });
+			return reveal.openEditorStored(root, row.document.id, copy ? "copy" : "edit", signal, { presentation, live, pin: { revision: row.document.revision, digest: row.document.digest } });
 		},
 	};
 }
@@ -101,12 +113,14 @@ function notice(ctx: ExtensionContext, text: string, error = false): void {
 }
 /** A leading `~` names the home directory, as in a shell path. */
 const expandHome = (path: string) => path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
-async function openFile(ctx: ExtensionContext, path: string, signal: AbortSignal, presentation: Presentation): Promise<string> {
+async function openFile(ctx: ExtensionContext, path: string, signal: AbortSignal, presentation: Presentation, connection?: Connection): Promise<string> {
 	if (!path) throw new Error(markdownHelp("file"));
 	const settings = localSettings();
 	const input = await fileSnapshotInput(expandHome(path), { cwd: ctx.cwd, app: settings.app });
 	signal.throwIfAborted();
 	const reveal = await import("./reveal.ts");
+	signal.throwIfAborted();
+	const live = await connection?.();
 	signal.throwIfAborted();
 	let coverage: string | undefined;
 	const notice = reveal.revealNotice(await reveal.materializeAndReveal(async () => {
@@ -117,32 +131,35 @@ async function openFile(ctx: ExtensionContext, path: string, signal: AbortSignal
 		const identity = await store.initialise();
 		signal.throwIfAborted();
 		return { root: settings.dir, storeId: identity.storeId, documentId: result.document.id, revision: result.revision.revision, digest: result.revision.digest, newlySaved: !result.replayed };
-	}, signal, { gui: ctx.mode === "tui", presentation }));
+	}, signal, { gui: ctx.mode === "tui", presentation, live }));
 	return coverage ? `${notice} ${coverage}` : notice;
 }
-async function readSelection(value: string, ctx: ExtensionContext, signal: AbortSignal, operations: MarkdownOperations, presentation: Presentation): Promise<string> {
+async function readSelection(value: string, ctx: ExtensionContext, signal: AbortSignal, operations: MarkdownOperations, presentation: Presentation, connection?: Connection): Promise<string> {
 	if (!value) return operations.latest(signal);
 	if (value === "new") return operations.newScratchpad(signal);
-	if (value === "edit" || value === "copy" || value.startsWith("edit ") || value.startsWith("copy ")) return editSelection(value, ctx, signal, presentation);
-	if (value === "file" || value.startsWith("file ")) return openFile(ctx, value.slice(4).trim().replace(/^"(.*)"$/u, "$1"), signal, presentation);
+	if (value === "edit" || value === "copy" || value.startsWith("edit ") || value.startsWith("copy ")) return editSelection(value, ctx, signal, presentation, connection);
+	if (value === "file" || value.startsWith("file ")) return openFile(ctx, value.slice(4).trim().replace(/^"(.*)"$/u, "$1"), signal, presentation, connection);
 	if (!/^md-[0-9a-f]{1,20}$/u.test(value)) throw new Error(MARKDOWN_USAGE);
 	const reveal = await import("./reveal.ts");
 	signal.throwIfAborted();
-	return reveal.openStored(localSettings().dir, value, signal, { gui: ctx.mode === "tui", presentation });
+	const live = await connection?.();
+	signal.throwIfAborted();
+	return reveal.openStored(localSettings().dir, value, signal, { gui: ctx.mode === "tui", presentation, live });
 }
-async function editSelection(value: string, ctx: ExtensionContext, signal: AbortSignal, presentation: Presentation): Promise<string> {
+async function editSelection(value: string, ctx: ExtensionContext, signal: AbortSignal, presentation: Presentation, connection?: Connection): Promise<string> {
 	if (ctx.mode !== "tui") throw new Error("Use the Markdown operator view or native app to edit. No editor was opened.");
 	const copy = value === "copy" || value.startsWith("copy ");
 	const selected = value.slice(4).trim();
 	const reveal = await import("./reveal.ts");
+	const live = await connection?.();
 	signal.throwIfAborted();
 	if (!copy && selected.startsWith("file ")) {
 		const path = selected.slice(5).trim().replace(/^"(.*)"$/u, "$1");
 		if (!path) throw new Error(markdownHelp("edit"));
-		return reveal.openEditorFile(resolve(ctx.cwd, expandHome(path)), signal, { presentation });
+		return reveal.openEditorFile(resolve(ctx.cwd, expandHome(path)), signal, { presentation, live });
 	}
 	if (!/^md-[0-9a-f]{3,20}$/u.test(selected)) throw new Error(markdownHelp(copy ? "copy" : "edit"));
-	return reveal.openEditorStored(localSettings().dir, selected, copy ? "copy" : "edit", signal, { presentation });
+	return reveal.openEditorStored(localSettings().dir, selected, copy ? "copy" : "edit", signal, { presentation, live });
 }
 function readPresentation(value: string): { value: string; presentation: Presentation } {
 	if (value === "window" || value.startsWith("window ")) return { value: value.slice(6).trim(), presentation: "window" };
@@ -151,6 +168,8 @@ function readPresentation(value: string): { value: string; presentation: Present
 export default function markdown(pi: ExtensionAPI): void {
 	const states = new Map<string, MarkdownViewState>();
 	const lifecycle = ordinaryLifecycle(pi);
+	const live = ordinaryLive(pi, lifecycle);
+	const connectionFor = (ctx: ExtensionContext, presentation: Presentation = "pane"): Connection | undefined => ctx.mode === "tui" && presentation === "pane" ? () => live.connection(ctx) : undefined;
 	const stopSettings = publishSettings(pi.events, { agentDir: getAgentDir() });
 	pi.on("session_shutdown", stopSettings);
 	pi.events.emit("durable:contribution", markdownContribution(OWNER, pi.events, stopSettings));
@@ -163,7 +182,7 @@ export default function markdown(pi: ExtensionAPI): void {
 	publishOperatorViews(pi, { version: 2, owner: OWNER, views: [{ id: "markdown", label: "Markdown", command: { name: "markdown", args: "recent" }, order: 25,
 		view: (ctx, host) => new LoadingView("Markdown", host, async () => {
 			const module = await import("./operator-view.ts");
-			return module.markdownView(host, ordinaryOperations(ctx, lifecycle), stateFor(ctx));
+			return module.markdownView(host, ordinaryOperations(ctx, lifecycle, "pane", connectionFor(ctx)), stateFor(ctx));
 		}),
 	}] });
 	const browse = async (scope: MarkdownScope, ctx: ExtensionContext, operations: MarkdownOperations, signal: AbortSignal) => {
@@ -180,19 +199,21 @@ export default function markdown(pi: ExtensionAPI): void {
 			const input = args.trim();
 			if (input === "help" || input.startsWith("help ")) { notice(ctx, markdownHelp(input.slice(4).trim())); return; }
 			const { value, presentation } = readPresentation(input);
-			const operations = ordinaryOperations(ctx, lifecycle, presentation);
+			const connection = connectionFor(ctx, presentation);
+			const operations = ordinaryOperations(ctx, lifecycle, presentation, connection);
 			if (presentation === "pane" && ["recent", "published"].includes(value)) {
 				await browse(value as MarkdownScope, ctx, operations, signal);
 				return;
 			}
-			const result = await readSelection(value, ctx, signal, operations, presentation);
+			const result = await readSelection(value, ctx, signal, operations, presentation, connection);
 			if (!signal.aborted) notice(ctx, result);
 		} catch (error) { if (!signal.aborted) notice(ctx, clean(error), true); }
 	};
 	pi.registerCommand("markdown", { description: "Read or write beside this conversation; use new, edit, copy, recent, published, file, window or help", getArgumentCompletions: markdownCompletions, handler: action });
 	pi.registerShortcut("ctrl+alt+r", { description: "Read the latest assistant response in Markdown", handler: (ctx) => action("", ctx) });
-	pi.registerTool(createPublishTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app }));
-	pi.registerTool(createReadTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app }));
+	pi.registerTool(createPublishTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app, connection: live.connection }));
+	pi.registerTool(createReadTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app, connection: live.connection }));
+	pi.registerTool(createLiveTool(live.find));
 	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
 	pi.events.on("harness:tool-display:request", (request) => { if (typeof request === "object" && request !== null && "version" in request && request.version === 1) publishDisplay(); });
 	publishDisplay();

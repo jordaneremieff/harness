@@ -376,6 +376,7 @@ function main(): void {
 			paneOpen: PANE_OPEN,
 			paneOpenRequest: PANE_OPEN_REQUEST,
 			editorOpen: EDITOR_OPEN,
+			live: 1,
 			sourceDigest: digest,
 			builtAt: new Date().toISOString(),
 			swift: swiftVersion,

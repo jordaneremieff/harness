@@ -52,7 +52,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
         self.state = state
         self.terminal = terminal
         self.workspace = workspace
-        editorFocusPending = workspace != nil
+        editorFocusPending = workspace?.active != nil
     }
 
     func start(revision: Int? = nil, digest: String? = nil, origin: LaunchOrigin? = nil) -> NSWindow {
@@ -77,20 +77,57 @@ final class PaneHost: NSObject, NSWindowDelegate {
         })
         observePhase()
         if let workspace { connect(workspace) }
-        else { Task { await model.open(revision: revision, digest: digest, origin: origin) } }
+        if workspace == nil || workspace?.reading === model {
+            Task { await model.open(revision: revision, digest: digest, origin: origin) }
+        }
         return window
     }
 
     // MARK: - Window
 
     private func view(_ model: ReaderModel) -> AnyView {
-        if let workspace { return AnyView(EditorWorkspaceView(workspace: workspace)) }
-        return AnyView(ReaderView(model: model, chrome: .embedded(close: { [weak self] in self?.end(status: 0) }, release: { [weak self] in self?.releaseFocus() })))
+        if let workspace { return AnyView(EditorWorkspaceView(workspace: workspace).onAppear { [weak self] in self?.focusPendingEditor() }) }
+        let captured = model.snapshot?.document.map { $0.kind != .published } ?? false
+        return AnyView(ReaderView(model: model, chrome: .embedded(close: { [weak self] in self?.end(status: 0) }, release: { [weak self] in self?.releaseFocus() }), editActions: ReaderEditActions(
+            edit: captured ? nil : { [weak self] in self?.editShown(copy: false) },
+            editCopy: captured ? { [weak self] in self?.editShown(copy: true) } : nil,
+            isEnabled: model.snapshot != nil)))
     }
 
     private func connect(_ workspace: EditorWorkspace) {
         workspace.onClose = { [weak self] in self?.end(status: 0) }
         workspace.onRelease = { [weak self] in self?.releaseFocus() }
+        workspace.onEditorFocus = { [weak self] in
+            guard let self else { return }
+            self.editorFocusPending = true
+            self.focusPendingEditor()
+        }
+    }
+
+    func editShown(copy: Bool) {
+        guard !ending, !opening, workspace == nil else { return }
+        opening = true
+        let previous = model
+        let root: String? = if case .stored(let root, _, _) = model.reference { root } else { state.selectedStoreRoot }
+        let candidate = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: root, automaticallySaves: true)
+        candidate.launchOrigin = previous.launchOrigin
+        candidate.reading = previous
+        Task { @MainActor in
+            defer { opening = false; draw() }
+            guard await candidate.editReading(copy: copy), !ending, model === previous else {
+                message = candidate.notice
+                candidate.reading = nil
+                await candidate.closeViews()
+                return
+            }
+            workspace = candidate
+            connect(candidate)
+            editorFocusPending = true
+            hosting?.rootView = view(previous)
+            onWorkspaceChange?(window, candidate)
+            observePhase()
+            Task { @MainActor [weak self] in self?.focusPendingEditor() }
+        }
     }
 
     func newScratchpad(showDrafts: Bool = false, showLibrary: Bool = false) {
@@ -100,7 +137,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
             return
         }
         let root: String? = if case .stored(let root, _, _) = model.reference { root } else { state.selectedStoreRoot }
-        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: root)
+        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: root, automaticallySaves: true)
         self.workspace = workspace
         editorFocusPending = true
         workspace.launchOrigin = model.launchOrigin
@@ -135,9 +172,16 @@ final class PaneHost: NSObject, NSWindowDelegate {
         window.delegate = self
         window.onClose = { [weak self] in self?.end(status: 0) }
         window.onCancel = { [weak self] in
-            // Escape first ends an image inspection or a comparison; otherwise it gives the
-            // keyboard back.
-            guard let self, !self.model.dismissOverlay() else { return }
+            // Escape first ends an image inspection, a comparison or an open comment box;
+            // otherwise it gives the keyboard back.
+            guard let self else { return }
+            let shown = self.workspace?.reading ?? (self.workspace?.active?.readingDraft == true ? self.workspace?.active?.preview : nil) ?? self.model
+            guard !shown.dismissOverlay() else { return }
+            if let workspace = self.workspace, let client = workspace.collaboration, client.annotationPresented {
+                client.finishAnnotation()
+                workspace.restoreEditorFocus()
+                return
+            }
             guard self.workspace?.allowAction("releasing keyboard focus") != false else { return }
             self.releaseFocus()
         }
@@ -198,9 +242,9 @@ final class PaneHost: NSObject, NSWindowDelegate {
 
     /// Focus follows real attachment and app activation, not a text view's local focus flag.
     @discardableResult static func focusEditor(_ workspace: EditorWorkspace, in window: NSWindow) -> Bool {
-        guard let document = workspace.active, !workspace.libraryVisible, workspace.reading == nil, workspace.publishedLibrary == nil else { return false }
+        guard let document = workspace.active, !document.readingDraft, !workspace.libraryVisible, workspace.reading == nil, workspace.publishedLibrary == nil else { return false }
         window.contentView?.layoutSubtreeIfNeeded()
-        guard document.text.textView.window === window else { return false }
+        guard document.text.activeTextView.window === window else { return false }
         if !window.isVisible { window.orderFrontRegardless() }
         // AppKit completes activation asynchronously. The delegate resumes the pending focus.
         if !NSApp.isActive { NSApp.activate() }
@@ -209,7 +253,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
         window.makeMain()
         document.text.focus()
         return NSApp.keyWindow === window && window.isKeyWindow && window.isMainWindow
-            && window.firstResponder === document.text.textView
+            && window.firstResponder === document.text.activeTextView
     }
 
     /// Gives the keyboard back to the application that shows the pane.
@@ -331,6 +375,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self, self.observation == current else { return }
+                if self.workspace == nil { self.hosting?.rootView = self.view(self.model) }
                 self.draw()
                 self.observePhase()
             }

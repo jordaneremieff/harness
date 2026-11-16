@@ -7,11 +7,11 @@ import ReaderFeature
 import SwiftUI
 import UniformTypeIdentifiers
 
-enum EditorMode: String, CaseIterable { case styled = "Styled", raw = "Raw", rendered = "Rendered", split = "Split" }
+enum EditorMode: String, CaseIterable { case visual = "Visual", styled = "Styled", raw = "Source", rendered = "Rendered", split = "Split" }
 
 @MainActor @Observable
 final class WorkingDocument: Identifiable {
-    let id = UUID()
+    let id: UUID
     let session: EditSession
     let text: MarkdownEditorTextController
     let preview: ReaderModel
@@ -19,12 +19,20 @@ final class WorkingDocument: Identifiable {
     @ObservationIgnored private var checkTask: Task<Void, Never>?
     @ObservationIgnored private var checkRequested = false
     @ObservationIgnored private(set) var closed = false
-    var mode: EditorMode = .styled
+    var mode: EditorMode = .visual
+    var readingDraft = false
+    var annotationsEnabled = false
+    @ObservationIgnored var onPersistenceNeeded: (() -> Void)?
+    @ObservationIgnored var onAnnotationSelection: ((String?) -> Void)?
+    @ObservationIgnored var onCommentSelection: ((String) -> Void)?
+    @ObservationIgnored var onExternalChange: (() async -> Void)?
+    @ObservationIgnored var persistenceTask: Task<Void, Never>?
+    @ObservationIgnored var persistenceRequested = false
     var presentation = MarkdownEditorPresentation()
     var visible = false
     var pendingMode: EditorMode?
-    var replacing = false
-    var stagingImages = false
+    var replacing = false { didSet { if !replacing { onPersistenceNeeded?() } } }
+    var stagingImages = false { didSet { if !stagingImages { onPersistenceNeeded?() } } }
     var findVisible = false
     var findText = ""
     var replacementText = ""
@@ -46,12 +54,13 @@ final class WorkingDocument: Identifiable {
     }
     @ObservationIgnored private var composing = false
     private(set) var splitAvailable = true
-    var showsPreview: Bool { mode == .rendered || (mode == .split && splitAvailable) }
+    var showsPreview: Bool { readingDraft || mode == .rendered || (mode == .split && splitAvailable) }
     var line: Int?
     var column: Int?
     var words: Int?
     var characters: Int?
-    init(record: DraftRecord, drafts: DraftStore) {
+    init(record: DraftRecord, drafts: DraftStore, id: UUID = UUID()) {
+        self.id = id
         session = EditSession(record: record, drafts: drafts)
         text = MarkdownEditorTextController(source: record.source, initialGeneration: record.generation)
         preview = ReaderModel(reference: .file(path: "draft:" + record.id.uuidString), platform: MacPlatform.operations(), state: ReadingStateStore(directory: nil))
@@ -67,11 +76,15 @@ final class WorkingDocument: Identifiable {
                                  selection: .init(location: snapshot.selectedRange.location, length: snapshot.selectedRange.length), markedText: snapshot.hasMarkedText)
             self.updateAnalysis()
             if changed {
+                self.onPersistenceNeeded?()
                 self.preview.invalidateDraftPreview(); self.schedulePreview()
                 if self.findVisible { self.refreshFind() }
             }
             if !snapshot.hasMarkedText, let pending = self.pendingMode { self.setMode(pending) }
-            if compositionEnded, self.showsPreview { self.schedulePreview() }
+            if compositionEnded {
+                self.onPersistenceNeeded?()
+                if self.showsPreview { self.schedulePreview() }
+            }
         }
         text.onAnalysis = { [weak self] in self?.updateAnalysis() }
         text.onError = { [weak session] message in session?.setError(message) }
@@ -83,13 +96,15 @@ final class WorkingDocument: Identifiable {
             default: return false
             }
         }
+        presentation.mode = .visual
+        text.setPresentation(presentation)
         observeBase()
     }
 
     func setMode(_ next: EditorMode) {
         guard !text.hasMarkedText else { pendingMode = next; return }
         pendingMode = nil; mode = next
-        presentation.mode = next == .raw ? .raw : .styled
+        presentation.mode = next == .raw ? .raw : next == .visual ? .visual : .styled
         text.setPresentation(presentation)
         schedulePreview()
         if next != .rendered { text.focus() }
@@ -158,6 +173,7 @@ final class WorkingDocument: Identifiable {
                 }
                 let marker = await self.updates.readMarker(reference)
                 guard !self.closed, self.session.record.destination == destination, !self.session.saving, let marker, marker != expected else { continue }
+                if let onExternalChange = self.onExternalChange { await onExternalChange(); continue }
                 let conflict: EditConflict
                 switch destination {
                 case .published: conflict = .init(message: "A newer library revision exists. Your draft and expected revision remain unchanged.", revision: Int(marker))
@@ -169,7 +185,7 @@ final class WorkingDocument: Identifiable {
     }
 
     func close() async {
-        closed = true; checkTask?.cancel(); findTask?.cancel(); updates.stop()
+        closed = true; checkTask?.cancel(); findTask?.cancel(); persistenceTask?.cancel(); updates.stop()
         previewTask?.cancel()
         await preview.close()
     }
@@ -182,6 +198,11 @@ final class WorkingDocument: Identifiable {
 
 @MainActor @Observable
 final class EditorWorkspace {
+    let id = UUID()
+    var liveDocumentID = UUID()
+    var collaboration: CollaborationClient? {
+        didSet { for document in documents { document.annotationsEnabled = collaboration != nil } }
+    }
     let drafts: DraftStore
     let assetDirectory: URL
     var documents: [WorkingDocument] = []
@@ -200,10 +221,13 @@ final class EditorWorkspace {
     private var navigationGeneration: UInt64 = 0
     @ObservationIgnored var onClose: (() -> Void)?
     @ObservationIgnored var onRelease: (() -> Void)?
+    @ObservationIgnored var onEditorFocus: (() -> Void)?
+    let automaticallySaves: Bool
     var active: WorkingDocument? { documents.first { $0.id == selected } }
     var selectedStore: String?
 
-    init(directory: URL, store: String?) {
+    init(directory: URL, store: String?, automaticallySaves: Bool = false) {
+        self.automaticallySaves = automaticallySaves
         drafts = DraftStore(directory: directory); selectedStore = store
         assetDirectory = directory.deletingLastPathComponent().appendingPathComponent("EditorAssets")
     }
@@ -218,9 +242,28 @@ final class EditorWorkspace {
         return !closing
     }
 
-    func add(_ record: DraftRecord) {
+    func add(_ record: DraftRecord, liveIdentity: UUID? = nil) {
         guard allowAction("opening another document") else { return }
-        let document = WorkingDocument(record: record, drafts: drafts)
+        let document = WorkingDocument(record: record, drafts: drafts, id: liveIdentity ?? UUID())
+        document.annotationsEnabled = collaboration != nil
+        document.onAnnotationSelection = { [weak self, weak document] quote in
+            guard let self, let document, self.annotationReader === document.preview else { return }
+            self.collaboration?.selectQuote(quote)
+        }
+        document.onCommentSelection = { [weak self, weak document] quote in
+            guard let self, let document, self.annotationReader === document.preview else { return }
+            self.collaboration?.beginAnnotation(quote: quote)
+        }
+        document.onPersistenceNeeded = { [weak self, weak document] in
+            guard let self, let document else { return }
+            self.schedulePersistence(document)
+        }
+        if automaticallySaves {
+            document.onExternalChange = { [weak self, weak document] in
+                guard let self, let document else { return }
+                await self.receiveExternalChange(document)
+            }
+        }
         document.text.onImageFiles = { [weak self, weak document] files in
             guard let self, let document else { return }
             self.stageImages(document, files: files)
@@ -237,14 +280,74 @@ final class EditorWorkspace {
         }
         leaveReading()
         active?.setVisible(false)
-        documents.append(document); selected = document.id; libraryVisible = false
+        documents.append(document); selected = document.id; liveDocumentID = document.id; libraryVisible = false
+        collaboration?.bind(document: liveDocumentID)
         document.setVisible(true)
         if case .published(let base) = record.destination { loadResolver(base, document: document) }
         if case .copy(let base) = record.destination { loadResolver(base, document: document) }
         focusWhenActive(document)
     }
 
-    private func loadResolver(_ base: StoredEditBase, document: WorkingDocument) {
+    func readActive() {
+        guard allowAction("reading this document"), let document = active else { return }
+        document.readingDraft = true
+        collaboration?.selectQuote("")
+        document.findVisible = false
+        document.findTask?.cancel()
+        document.schedulePreview(force: true)
+    }
+
+    func editActive() {
+        guard allowAction("editing this document"), let document = active else { return }
+        document.readingDraft = false
+        collaboration?.selectQuote("")
+        document.setMode(document.mode == .rendered ? .visual : document.mode)
+        onEditorFocus?()
+    }
+
+    var annotationReader: ReaderModel? {
+        guard !closing, !libraryVisible, publishedLibrary == nil else { return nil }
+        if let reading { return reading }
+        guard let active, active.readingDraft || active.previewHasFocus else { return nil }
+        return active.preview
+    }
+
+    func nativeAnnotationSelection() -> String? {
+        guard !closing, !libraryVisible, publishedLibrary == nil, reading == nil,
+              let document = active, !document.readingDraft, !document.previewHasFocus,
+              !document.text.hasMarkedText else { return "" }
+        let view = document.text.activeTextView, range = document.text.activeTextView.selectedRange()
+        guard range.length > 0, let selected = Range(range, in: view.string) else { return "" }
+        let quote = String(view.string[selected])
+        return quote.utf8.count <= 8192 ? quote : nil
+    }
+
+    func nativeSelectionChanged(_ notification: Notification) {
+        guard let view = notification.object as? NSTextView, view === active?.text.activeTextView,
+              annotationReader == nil else { return }
+        collaboration?.selectQuote(nativeAnnotationSelection())
+    }
+
+    /// Returns the keyboard to the visible native text after the comment box closes.
+    func restoreEditorFocus() {
+        guard !closing, reading == nil, let document = active, !document.readingDraft, !document.previewHasFocus else { return }
+        document.text.focus()
+    }
+
+    func annotateSelection() async {
+        guard let client = collaboration, !closing, !libraryVisible, publishedLibrary == nil else { return }
+        let identity = liveDocumentID
+        let quote: String?
+        if let reader = annotationReader {
+            quote = await reader.annotationSelection()
+            guard liveDocumentID == identity, annotationReader === reader else { return }
+        } else { quote = nativeAnnotationSelection() }
+        client.selectQuote(quote)
+        guard let quote, !quote.isEmpty else { return }
+        client.beginAnnotation(quote: quote)
+    }
+
+    func loadResolver(_ base: StoredEditBase, document: WorkingDocument) {
         Task { @MainActor in
             do {
                 let resolver = try await Task.detached {
@@ -258,12 +361,15 @@ final class EditorWorkspace {
 
     private func focusWhenActive(_ document: WorkingDocument) {
         Task { @MainActor [weak self, weak document] in
-            guard let self, let document, self.active === document, !self.libraryVisible, self.reading == nil, self.publishedLibrary == nil else { return }
+            guard let self, let document, self.active === document, !document.readingDraft, !self.libraryVisible, self.reading == nil, self.publishedLibrary == nil else { return }
             document.text.focus()
+            self.onEditorFocus?()
         }
     }
 
     func closeViews() async {
+        closing = true
+        collaboration?.stop()
         for document in documents { document.setVisible(false); await document.close() }
         await reading?.close()
     }
@@ -274,7 +380,8 @@ final class EditorWorkspace {
         guard allowAction("switching documents") else { return }
         leaveReading()
         active?.setVisible(false)
-        selected = document.id; libraryVisible = false
+        selected = document.id; liveDocumentID = document.id; libraryVisible = false
+        collaboration?.bind(document: liveDocumentID)
         document.setVisible(true)
         focusWhenActive(document)
     }
@@ -332,36 +439,50 @@ final class EditorWorkspace {
         } catch { notice = "Document not opened: \(error)" }
     }
 
-    func openReading(_ reference: DocumentReference) async {
+    func openReading(_ reference: DocumentReference, revision: Int? = nil, digest: String? = nil, origin: LaunchOrigin? = nil) async {
         guard allowAction("opening another document") else { return }
         navigationGeneration &+= 1
         let previous = reading
         let next = ReaderModel(reference: reference, platform: MacPlatform.operations(), state: readingState)
         publishedLibrary = nil; libraryVisible = false; active?.setVisible(false); reading = next
-        await next.open(origin: launchOrigin)
+        await next.open(revision: revision, digest: digest, origin: origin ?? launchOrigin)
         guard reading === next else { await next.close(); return }
         if case .failed(let error) = next.phase {
             reading = previous; notice = "Document not opened: \(error)"
             if previous == nil { active?.setVisible(true) }
             await next.close()
-        } else { await previous?.close() }
+        } else {
+            liveDocumentID = UUID(); collaboration?.bind(document: liveDocumentID)
+            await previous?.close()
+        }
     }
 
-    func editReading(copy: Bool) {
-        guard allowAction("opening an edit") else { return }
-        guard let model = reading, let snapshot = model.snapshot else { return }
-        if case .stored(let root, let storeId, let id) = model.reference, let revision = snapshot.revision {
-            guard copy || snapshot.document?.kind == .published else { notice = "This capture is read-only. Choose Edit Copy."; return }
-            let base = StoredEditBase(root: root, storeId: storeId, document: id, revision: revision, digest: snapshot.digest)
-            add(DraftRecord(title: snapshot.title, source: snapshot.source, destination: copy ? .copy(base) : .published(base), savedSource: copy ? nil : snapshot.source))
-        } else if case .file(let path) = model.reference {
-            Task {
-                do {
-                    let file = try await Task.detached { try LocalFileSave.open(URL(fileURLWithPath: path)) }.value
-                    add(DraftRecord(title: snapshot.title, source: file.source, destination: copy ? .scratchpad : .file(file.base), savedSource: copy ? nil : file.source))
-                } catch { notice = "File not opened for editing: \(error)" }
-            }
-        }
+    @discardableResult func editReading(copy: Bool) async -> Bool {
+        guard allowAction("opening an edit"), let model = reading, model.phase == .ready, let snapshot = model.snapshot else { return false }
+        let navigation = navigationGeneration
+        do {
+            let record: DraftRecord
+            if case .stored(let root, let storeId, let id) = model.reference, let revision = snapshot.revision {
+                let makeCopy = copy || snapshot.document?.kind != .published
+                let base = StoredEditBase(root: root, storeId: storeId, document: id, revision: revision, digest: snapshot.digest)
+                let reference = model.reference
+                _ = try await Task.detached {
+                    try DocumentLoader.load(reference, revision: revision, pinnedDigest: snapshot.digest)
+                }.value
+                record = DraftRecord(title: snapshot.title, source: snapshot.source, destination: makeCopy ? .copy(base) : .published(base), savedSource: makeCopy ? nil : snapshot.source)
+            } else if case .file(let path) = model.reference {
+                let file = try await Task.detached { try LocalFileSave.open(URL(fileURLWithPath: path)) }.value
+                guard file.source == snapshot.source else { throw FileSaveError.changed }
+                record = DraftRecord(title: snapshot.title, source: file.source, destination: .file(file.base), savedSource: file.source)
+            } else { return false }
+            guard navigation == navigationGeneration, reading === model, model.phase == .ready,
+                  model.snapshot?.digest == snapshot.digest, model.snapshot?.revision == snapshot.revision,
+                  allowAction("opening an edit") else { return false }
+            if case .stored(let root, _, _) = model.reference { selectedStore = root }
+            add(record, liveIdentity: liveDocumentID)
+            if let document = active, case .copy = record.destination { schedulePersistence(document) }
+            return true
+        } catch { notice = "Edit not opened: \(error). The document remains readable."; return false }
     }
 
     func returnToTerminal() async {
@@ -384,6 +505,7 @@ final class EditorWorkspace {
         guard allowAction("closing this document"), let document = active else { return }
         guard await document.session.persist() else { notice = "The draft was not retained. Keep this document open and retry recovery."; return }
         documents.removeAll { $0.id == document.id }; selected = documents.last?.id
+        liveDocumentID = active?.id ?? UUID(); collaboration?.bind(document: liveDocumentID)
         active?.setVisible(true)
         await document.close()
         if documents.isEmpty { await library() }
@@ -403,7 +525,10 @@ final class EditorWorkspace {
             return false
         }
         closing = true
-        for document in documents { document.text.textView.isEditable = false }
+        for document in documents {
+            document.text.textView.isEditable = false
+            document.text.activeTextView.isEditable = false
+        }
         let retained = await retainAll()
         if !retained { resumeEdits() }
         return retained
@@ -411,7 +536,10 @@ final class EditorWorkspace {
 
     func resumeEdits() {
         closing = false
-        for document in documents { document.text.textView.isEditable = true }
+        for document in documents {
+            document.text.textView.isEditable = true
+            document.text.activeTextView.isEditable = true
+        }
     }
 
     func retainAll() async -> Bool {
@@ -477,6 +605,7 @@ final class EditorWorkspace {
             if case FileSaveError.changed = error { document.session.setConflict(.init(message: String(describing: error))) }
             document.session.failSave(String(describing: error))
         }
+        if automaticallySaves, document.session.record.conflict != nil { await receiveExternalChange(document) }
     }
 
     func save() {
@@ -525,6 +654,7 @@ final class EditorWorkspace {
                 document.session.failSave(outcome.error?.message ?? "The save is unconfirmed. Retry Save to reconcile this invocation.")
             }
         } catch { document.session.failSave(String(describing: error)) }
+        if automaticallySaves, document.session.record.conflict != nil { await receiveExternalChange(document) }
     }
 
     private func acknowledge(_ outcome: PublicationOutcome, request: PublicationRequest, document: WorkingDocument) {
@@ -538,24 +668,22 @@ final class EditorWorkspace {
 
 struct EditorWorkspaceView: View {
     @Bindable var workspace: EditorWorkspace
+    @State private var hovered = false
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Button("New", systemImage: "square.and.pencil") { workspace.newScratchpad() }.help("New Scratchpad")
-                Button("Open", systemImage: "folder") { workspace.openFile() }.help("Open Markdown File for Editing")
-                Button("Drafts", systemImage: "tray.full") { Task { await workspace.library() } }
-                Button("Library") { Task { await workspace.showPublishedLibrary() } }
+            if workspace.reading == nil, workspace.active?.readingDraft != true {
+              HStack {
+                Text(workspace.active?.session.record.displayTitle ?? "Documents").lineLimit(1).font(.headline)
                 Spacer()
-                if workspace.launchOrigin != nil {
-                    Button("Return to Rex") { Task { await workspace.returnToTerminal() } }
+                if workspace.active != nil, workspace.publishedLibrary == nil {
+                    Button("Read", systemImage: "doc.text") { workspace.readActive() }
                 }
-                if let close = workspace.onClose { Button("Close Workspace", systemImage: "xmark", action: close).labelStyle(.iconOnly) }
-                if let reading = workspace.reading {
-                    if reading.snapshot?.document?.kind == .published { Button("Edit") { workspace.editReading(copy: false) } }
-                    Button("Edit Copy") { workspace.editReading(copy: true) }.disabled(reading.snapshot == nil)
-                } else if workspace.active != nil, workspace.publishedLibrary == nil {
-                    Button("Save") { workspace.save() }.keyboardShortcut("s")
-                    Menu {
+                Menu {
+                        Button("New Scratchpad") { workspace.newScratchpad() }
+                        Button("Open File…") { workspace.openFile() }
+                        Button("Recoverable Drafts") { Task { await workspace.library() } }
+                        Button("Library") { Task { await workspace.showPublishedLibrary() } }
+                        Divider()
                         Button("Save As…") { workspace.saveAs() }
                         Button("Duplicate") { if let document = workspace.active { Task { await workspace.duplicate(document) } } }
                         Button("Insert Image…") { workspace.chooseImage() }
@@ -563,10 +691,12 @@ struct EditorWorkspaceView: View {
                             if let document = workspace.active { Task { await workspace.reviewSavedVersion(document) } }
                         }
                         Button("Close Document") { Task { await workspace.closeActive() } }
+                        if workspace.launchOrigin != nil { Button("Return to Rex") { Task { await workspace.returnToTerminal() } } }
                     } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).fixedSize()
-                }
-            }.padding(10)
-            if !workspace.documents.isEmpty {
+                if let close = workspace.onClose { Button("Close", systemImage: "xmark", action: close).labelStyle(.iconOnly) }
+              }.padding(10)
+            }
+            if workspace.documents.count > 1 {
                 ScrollView(.horizontal) {
                     HStack(spacing: 5) {
                         ForEach(workspace.documents) { document in
@@ -584,26 +714,49 @@ struct EditorWorkspaceView: View {
             if let library = workspace.publishedLibrary {
                 LibraryView(model: library, open: { reference in Task { await workspace.openReading(reference) } }, openFile: { workspace.openFile() }, openStore: { workspace.chooseStore() })
             } else if let reading = workspace.reading {
-                ReaderView(model: reading, chrome: .embedded(close: { Task { await workspace.showPublishedLibrary() } }, release: { workspace.onRelease?() }))
+                ReaderView(model: reading, chrome: .embedded(close: { if let close = workspace.onClose { close() } else { Task { await workspace.showPublishedLibrary() } } }, release: { workspace.onRelease?() }), editActions: ReaderEditActions(
+                    edit: reading.snapshot?.document?.kind == .published || reading.snapshot?.document == nil ? { Task { await workspace.editReading(copy: false) } } : nil,
+                    editCopy: reading.snapshot?.document?.kind != .published && reading.snapshot?.document != nil ? { Task { await workspace.editReading(copy: true) } } : nil,
+                    isEnabled: reading.snapshot != nil),
+                    selectionChanged: workspace.collaboration == nil ? nil : { quote in
+                        guard workspace.annotationReader === reading else { return }
+                        workspace.collaboration?.selectQuote(quote)
+                    }, commentSelection: workspace.collaboration == nil ? nil : { quote in
+                        guard workspace.annotationReader === reading else { return }
+                        workspace.collaboration?.beginAnnotation(quote: quote)
+                    })
             } else if workspace.libraryVisible { draftLibrary }
             else if let document = workspace.active {
                 if let pending = document.session.record.pendingImageReferences, !pending.isEmpty {
                     Button("Insert \(pending.count) Retained Images") { Task { await workspace.insertImages(document) } }.padding(6)
                 }
-                DocumentEditorView(document: document)
+                DocumentEditorView(document: document,
+                    readingChrome: .embedded(close: { workspace.onClose?() }, release: { workspace.onRelease?() }),
+                    editActions: ReaderEditActions(edit: { workspace.editActive() }))
                 Divider()
                 status(document)
             } else {
                 ContentUnavailableView("Write Markdown", systemImage: "square.and.pencil", description: Text("Start a scratchpad or open a Markdown file."))
             }
         }.frame(minWidth: 360, minHeight: 300).disabled(workspace.closing)
+            .onHover { hovered = $0 }
+            .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { workspace.nativeSelectionChanged($0) }
+            .onReceive(NotificationCenter.default.publisher(for: NSText.didChangeNotification)) { workspace.nativeSelectionChanged($0) }
+            .overlay(alignment: .bottomTrailing) {
+                if let client = workspace.collaboration, !workspace.libraryVisible, workspace.publishedLibrary == nil {
+                    AnnotationControls(client: client, hovered: hovered,
+                        commentOnSelection: { Task { await workspace.annotateSelection() } },
+                        restoreFocus: { workspace.restoreEditorFocus() })
+                        .padding(.trailing, 14).padding(.bottom, 42)
+                }
+            }
             .sheet(item: $workspace.revisionReview) { review in EditorRevisionReviewView(review: review, workspace: workspace) }
     }
 
     private var draftLibrary: some View {
         List {
             Section("Private recoverable drafts") {
-                Text("Draft recovery is private. Save commits to the library; Save As writes a chosen file.").font(.callout).foregroundStyle(.secondary)
+                Text("Draft recovery is private. Open documents save automatically to their destination.").font(.callout).foregroundStyle(.secondary)
                 ForEach(workspace.recovered, id: \.branch) { record in
                     Button { workspace.add(record.resumed()) } label: {
                         VStack(alignment: .leading, spacing: 4) {
@@ -641,12 +794,12 @@ struct EditorWorkspaceView: View {
                 }
             }
             HStack {
-                Text(document.session.saving ? "Save in progress" : document.session.isDirty ? "Uncommitted draft" : "Saved")
+                Text(document.session.saving ? "Syncing…" : document.session.isDirty ? "Changes retained locally" : "Saved")
                 Text("·")
                 switch document.session.recovery {
-                case .current: Text("Recovery current")
-                case .pending: Text("Recovery pending")
-                case .failed(let reason): Button("Recovery failed: \(reason). Retry") { Task { await document.session.persist() } }
+                case .current: EmptyView()
+                case .pending: Text("Retaining…")
+                case .failed(let reason): Button("Recovery failed: \(reason). Retry") { Task { await document.session.persist(); workspace.schedulePersistence(document) } }
                 }
                 Spacer()
                 if let line = document.line, let column = document.column { Text("Line \(line), column \(column)") }

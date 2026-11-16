@@ -15,6 +15,15 @@ final class ReaderWindow: NSWindow {
     }
 }
 
+private struct StandaloneReaderView: View {
+    @Bindable var model: ReaderModel
+    let edit: (Bool) -> Void
+    var body: some View {
+        let captured = model.snapshot?.document.map { $0.kind != .published } ?? false
+        ReaderView(model: model, editActions: ReaderEditActions(edit: captured ? nil : { edit(false) }, editCopy: captured ? { edit(true) } : nil, isEnabled: model.snapshot != nil))
+    }
+}
+
 /// One window per document. A repeated open of a document brings its window forward and passes
 /// the open's launch origin to it.
 @MainActor
@@ -22,6 +31,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
     private struct Reader {
         let window: NSWindow
         let model: ReaderModel
+        var workspace: EditorWorkspace? = nil
     }
 
     let state: ReadingStateStore
@@ -34,10 +44,13 @@ final class WindowManager: NSObject, NSWindowDelegate {
     private var editorWindow: NSWindow?
     private(set) var editor: EditorWorkspace?
     private var editorCloseAllowed = false
+    private var workspaceCloseAllowed: Set<ObjectIdentifier> = []
+    private var editingReaders: Set<ObjectIdentifier> = []
 
     var keyEditor: EditorWorkspace? {
-        guard let window = NSApp.keyWindow, window === editorWindow else { return nil }
-        return editor
+        guard let window = NSApp.keyWindow else { return nil }
+        if window === editorWindow { return editor }
+        return readers.values.first { $0.window === window }?.workspace
     }
 
     @discardableResult func showEditor(newScratchpad: Bool = true, record: DraftRecord? = nil, store: String? = nil, origin: LaunchOrigin? = nil) -> EditorWorkspace {
@@ -51,7 +64,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
             NSApp.activate()
             return editor
         }
-        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: store ?? state.selectedStoreRoot ?? defaultRoots.first)
+        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: store ?? state.selectedStoreRoot ?? defaultRoots.first, automaticallySaves: true)
         let host = NSHostingController(rootView: EditorWorkspaceView(workspace: workspace))
         host.sizingOptions = []
         let window = ReaderWindow(contentViewController: host)
@@ -75,9 +88,27 @@ final class WindowManager: NSObject, NSWindowDelegate {
         editorWindow = window; editor = workspace
     }
 
-    func retainEditors() async -> Bool { await editor?.prepareToClose() ?? true }
+    func retainEditors() async -> Bool {
+        var retained = await editor?.prepareToClose() ?? true
+        for workspace in readers.values.compactMap(\.workspace) {
+            if !(await workspace.prepareToClose()) { retained = false }
+        }
+        if !retained {
+            editor?.resumeEdits()
+            for workspace in readers.values.compactMap(\.workspace) { workspace.resumeEdits() }
+        }
+        return retained
+    }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if let workspace = readers.values.first(where: { $0.window === sender })?.workspace {
+            guard !workspaceCloseAllowed.contains(ObjectIdentifier(sender)) else { return true }
+            Task {
+                guard await workspace.prepareToClose() else { return }
+                workspaceCloseAllowed.insert(ObjectIdentifier(sender)); sender.close()
+            }
+            return false
+        }
         guard sender === editorWindow, !editorCloseAllowed, let editor else { return true }
         Task {
             guard await editor.prepareToClose() else {
@@ -106,6 +137,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
 
     func closeReaders() async {
         await editor?.closeViews()
+        for workspace in readers.values.compactMap(\.workspace) { await workspace.closeViews() }
         let models = readers.values.map(\.model)
         for model in models { await model.close() }
         for task in Array(closing.values) { await task.value }
@@ -115,10 +147,18 @@ final class WindowManager: NSObject, NSWindowDelegate {
         guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return nil }
         if window === editorWindow {
             if let reading = editor?.reading { return reading }
-            guard let document = editor?.active, document.previewHasFocus else { return nil }
+            guard let document = editor?.active, document.readingDraft || document.previewHasFocus else { return nil }
             return document.preview
         }
-        return readers.values.first { $0.window === window }?.model
+        if let reader = readers.values.first(where: { $0.window === window }) {
+            if let workspace = reader.workspace {
+                if let reading = workspace.reading { return reading }
+                if let document = workspace.active, document.readingDraft || document.previewHasFocus { return document.preview }
+                return nil
+            }
+            return reader.model
+        }
+        return nil
     }
 
     func model(for reference: DocumentReference) -> ReaderModel? {
@@ -144,7 +184,8 @@ final class WindowManager: NSObject, NSWindowDelegate {
         if let reader = readers[reference.key] {
             reader.window.makeKeyAndOrderFront(nil)
             NSApp.activate()
-            Task { await reader.model.open(revision: revision, digest: digest, origin: origin) }
+            if let workspace = reader.workspace { Task { await workspace.openReading(reference, revision: revision, digest: digest, origin: origin) } }
+            else { Task { await reader.model.open(revision: revision, digest: digest, origin: origin) } }
             return reader.model
         }
         let model = ReaderModel(reference: reference, platform: platform, state: state)
@@ -157,7 +198,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
     }
 
     private func makeWindow(model: ReaderModel) -> NSWindow {
-        let host = NSHostingController(rootView: ReaderView(model: model))
+        let host = NSHostingController(rootView: readerView(model))
         host.sizingOptions = []
         host.sceneBridgingOptions = [.toolbars]
         let window = ReaderWindow(contentViewController: host)
@@ -179,6 +220,41 @@ final class WindowManager: NSObject, NSWindowDelegate {
         window.delegate = self
         trackTitle(window: window, model: model)
         return window
+    }
+
+    private func readerView(_ model: ReaderModel) -> some View {
+        StandaloneReaderView(model: model, edit: { [weak self, weak model] copy in
+            guard let self, let model else { return }
+            self.edit(model, copy: copy)
+        })
+    }
+
+    private func edit(_ model: ReaderModel, copy: Bool) {
+        guard let reader = readers[model.reference.key], reader.workspace == nil else { return }
+        let windowID = ObjectIdentifier(reader.window)
+        guard editingReaders.insert(windowID).inserted else { return }
+        let root: String? = if case .stored(let root, _, _) = model.reference { root } else { state.selectedStoreRoot }
+        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: root, automaticallySaves: true)
+        workspace.launchOrigin = model.launchOrigin; workspace.reading = model
+        Task {
+            defer { editingReaders.remove(windowID) }
+            guard await workspace.editReading(copy: copy),
+                  let current = readers[model.reference.key], current.window === reader.window,
+                  current.model === model, current.workspace == nil else {
+                workspace.reading = nil; await workspace.closeViews(); return
+            }
+            readers[model.reference.key]?.workspace = workspace
+            workspace.onClose = { [weak window = reader.window] in window?.performClose(nil) }
+            workspace.onEditorFocus = { [weak window = reader.window, weak workspace] in
+                guard let window, let workspace else { return }
+                _ = PaneHost.focusEditor(workspace, in: window)
+            }
+            reader.window.contentViewController = NSHostingController(rootView: EditorWorkspaceView(workspace: workspace))
+            (reader.window as? ReaderWindow)?.onCancel = { [weak workspace] in
+                (workspace?.reading ?? workspace?.active?.preview)?.dismissOverlay() ?? false
+            }
+            workspace.onEditorFocus?()
+        }
     }
 
     private func trackTitle(window: NSWindow, model: ReaderModel) {
@@ -214,6 +290,8 @@ final class WindowManager: NSObject, NSWindowDelegate {
         }
         guard let entry = readers.first(where: { $0.value.window === window }) else { return }
         readers.removeValue(forKey: entry.key)
+        workspaceCloseAllowed.remove(ObjectIdentifier(window))
+        if let workspace = entry.value.workspace { Task { await workspace.closeViews() } }
         let model = entry.value.model
         let id = UUID()
         closing[id] = Task { [weak self] in

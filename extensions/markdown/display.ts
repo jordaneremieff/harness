@@ -1,34 +1,88 @@
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import type { AgentToolResult, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Text, type Component } from "@earendil-works/pi-tui";
 
 type Publication = { version: 1; tools: Array<Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">> };
-function plain(value: unknown): string { return typeof value === "string" ? [...value.replace(/[\p{Cc}\p{Zl}\p{Zp}\u202a-\u202e\u2066-\u2069]/gu, " ")].slice(0, 240).join("") : ""; }
-function record(value: unknown): Record<string, unknown> { return typeof value === "object" && value !== null ? value as Record<string, unknown> : {}; }
-function count(value: unknown): number { return typeof value === "number" && Number.isSafeInteger(value) ? value : 0; }
-const renderCall: NonNullable<ToolDefinition["renderCall"]> = (args, theme) => {
-	const title = plain(record(args).title);
-	return new Text(`${theme.fg("toolTitle", "Markdown publish")} ${title}`, 0, 0);
-};
-const renderResult: NonNullable<ToolDefinition["renderResult"]> = (result, _options, theme) => {
-	const details = record(result.details);
-	if (details.ok === false) return new Text(theme.fg("error", plain(record(details.error).message) || "Publication failed."), 0, 0);
-	const id = plain(details.documentId);
-	// An attached agent terminal sends slash text to the conversation, so the card names the view first.
-	return new Text(id ? `Saved ${id} · revision ${details.revision} · ${details.bytes} bytes\nNo window opened. Open it from the Markdown view under Published (Owner views in the agent view). In an ordinary Pi session: /markdown ${id}` : "Publication result unavailable.", 0, 0);
-};
-const renderReadCall: NonNullable<ToolDefinition["renderCall"]> = (args, theme) => {
-	const input = record(args);
-	const subject = input.document === undefined ? `find ${plain(input.kind) || "published"}${input.query === undefined ? "" : ` ${JSON.stringify(plain(input.query))}`}` : `${plain(input.document)}${input.revision === undefined ? "" : ` revision ${count(input.revision)}`}`;
-	return new Text(`${theme.fg("toolTitle", "Markdown read")} ${subject}`, 0, 0);
-};
-const renderReadResult: NonNullable<ToolDefinition["renderResult"]> = (result, _options, theme) => {
-	const details = record(result.details);
-	if (details.ok === false) return new Text(theme.fg("error", plain(record(details.error).message) || "Read failed."), 0, 0);
-	if (details.op === "find") return new Text(`${count(details.matched)} matching of ${count(details.scanned)} scanned${details.bounded === true ? " · scan stopped early" : ""}${count(details.unreadable) ? ` · ${count(details.unreadable)} unreadable` : ""}`, 0, 0);
-	if (details.op !== "read") return new Text("Read result unavailable.", 0, 0);
-	const start = count(details.offset); const end = start + (typeof details.text === "string" ? details.text.length : 0);
-	return new Text(`Read ${plain(details.documentId)} · revision ${count(details.revision)} of ${count(details.currentRevision)} · characters ${start}\u2013${end} of ${count(details.chars)}`, 0, 0);
-};
-export function toolDisplay(): Publication {
-	return { version: 1, tools: [{ name: "markdown_publish", renderCall, renderResult }, { name: "markdown_read", renderCall: renderReadCall, renderResult: renderReadResult }] };
+type Call = NonNullable<ToolDefinition["renderCall"]>;
+type Result = NonNullable<ToolDefinition["renderResult"]>;
+type ToolName = "markdown_publish" | "markdown_read" | "markdown_live";
+const DISPLAY_LIMIT = 32_000;
+function record(value: unknown): Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
+function string(value: unknown): string { return typeof value === "string" ? value : ""; }
+function number(value: unknown): number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0; }
+function prefix(value: string, limit: number): string {
+	let end = Math.min(value.length, limit);
+	if (/[\uD800-\uDBFF]/u.test(value[end - 1] ?? "")) end--;
+	return value.slice(0, end);
 }
+function escaped(value: string): string {
+	return value.replace(/[\p{Cc}\p{Cf}]/gu, (char) => char === "\n" ? char : char === "\t" ? "\\t" : `\\u{${char.codePointAt(0)?.toString(16)}}`);
+}
+function row(value: string): string { return escaped(prefix(value, 240)).replace(/\s+/gu, " ").trim(); }
+function body(value: string): string {
+	const safe = escaped(prefix(value, DISPLAY_LIMIT));
+	return prefix(safe, DISPLAY_LIMIT) + (safe.length > DISPLAY_LIMIT || value.length > DISPLAY_LIMIT ? "\n[Display limit. Full content remains in tool history.]" : "");
+}
+function json(value: unknown): string { try { return JSON.stringify(value, null, 2) ?? ""; } catch { return "Details unavailable."; } }
+function component(value: string, previous?: Component): Text {
+	const text = previous instanceof Text ? previous : new Text("", 0, 0);
+	text.setText(value); return text;
+}
+function hint(context: Parameters<Call>[2], subject: string): string {
+	const key = context.keyText?.("app.tools.expand");
+	return key ? `${key} to expand ${subject}` : `Expand for ${subject}`;
+}
+function retained(result: AgentToolResult<unknown>): string {
+	let text = "";
+	for (const block of result.content) {
+		if (block.type === "text") text += prefix(block.text, DISPLAY_LIMIT - text.length);
+		if (text.length >= DISPLAY_LIMIT) break;
+	}
+	return text;
+}
+function details(result: AgentToolResult<unknown>): Record<string, unknown> {
+	if (Object.keys(record(result.details)).length) return record(result.details);
+	try { return record(JSON.parse(retained(result))); } catch { return {}; }
+}
+function subject(name: ToolName, args: Record<string, unknown>): string {
+	if (name === "markdown_publish") return string(args.title) || string(args.file) || (args.response === "previous" ? "previous response" : string(args.document));
+	if (name === "markdown_live") return `${string(args.op)}${args.handle ? ` ${string(args.handle)}` : ""}`;
+	if (args.document) return `${string(args.document)}${args.revision === undefined ? "" : ` · revision ${number(args.revision)}`}`;
+	return `find ${string(args.kind) || "published"}${args.query ? ` · ${string(args.query)}` : ""}`;
+}
+function call(name: ToolName): Call {
+	return (args, theme, context) => {
+		const input = record(args), selected = row(subject(name, input));
+		const heading = theme.fg("toolTitle", theme.bold(name)) + (selected ? theme.fg("accent", ` · ${selected}`) : "");
+		const qualifier = context.expanded ? theme.fg("toolOutput", body(json(input)))
+			: theme.fg("dim", `${context.argsComplete === false ? "Arguments pending · " : ""}${hint(context, "arguments")}`);
+		return component(`${heading}\n${qualifier}`, context.lastComponent);
+	};
+}
+function publishedSummary(value: Record<string, unknown>): string {
+	return value.ok === true ? `${value.replayed ? "Already saved" : "Saved"} ${string(value.documentId)} · revision ${number(value.revision)} · ${number(value.bytes)} bytes` : "Publication result available";
+}
+function storedSummary(value: Record<string, unknown>): string {
+	if (value.op === "find") return `${number(value.matched)} matched · ${number(value.scanned)} scanned${value.bounded === true ? " · scan bounded" : ""}${number(value.unreadable) ? ` · ${number(value.unreadable)} unreadable` : ""}`;
+	if (value.op === "read") return `Read ${string(value.documentId)} · revision ${number(value.revision)} of ${number(value.currentRevision)} · offset ${number(value.offset)}`;
+	return "Read result available";
+}
+function liveSummary(value: Record<string, unknown>): string {
+	if (Array.isArray(value.panes)) return `${value.panes.length} connected ${value.panes.length === 1 ? "pane" : "panes"}`;
+	if (value.status === "ok") return `Read live source · generation ${number(value.generation)} · offset ${number(value.offset)}${typeof value.nextOffset === "number" ? ` · next ${value.nextOffset}` : ""}`;
+	if (value.status === "applied") return `Applied · generation ${number(value.generation)}${value.retained === true ? " · recovery retained" : ""}`;
+	return typeof value.status === "string" ? `${value.status}: ${string(value.message)}` : "Live result available";
+}
+const summaries = { markdown_publish: publishedSummary, markdown_read: storedSummary, markdown_live: liveSummary };
+function result(name: ToolName): Result {
+	return (output, options, theme: Theme, context) => {
+		const value = details(output);
+		const failed = context.isError || value.ok === false || value.status === "error";
+		const warning = ["stale", "busy", "closed", "uncertain"].includes(string(value.status));
+		const message = failed ? string(record(value.error).message) || string(value.message) || retained(output).split("\n", 1)[0] || "Operation failed" : summaries[name](value);
+		const heading = theme.fg(failed ? "error" : warning ? "warning" : "muted", row(message));
+		const evidence = options.expanded ? theme.fg("toolOutput", body(Object.keys(value).length ? json(value) : retained(output))) : theme.fg("dim", hint(context, "result"));
+		return component(`\n${heading}\n${evidence}`, context.lastComponent);
+	};
+}
+const cards = (["markdown_publish", "markdown_read", "markdown_live"] as const).map((name) => ({ name, renderCall: call(name), renderResult: result(name) }));
+export function toolDisplay(): Publication { return { version: 1, tools: cards.map((card) => ({ ...card })) }; }

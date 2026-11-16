@@ -603,7 +603,7 @@ struct Context {
             try Data(source.utf8).write(to: url)
             var pass = true
             var details: [String] = []
-            for width in [600.0, 900.0] {
+            for width in [320.0, 600.0, 900.0] {
                 let model = ReaderModel(reference: .file(path: url.path), platform: windows.platform, state: windows.state)
                 keep.append(CheckRunner.offscreenWindow(page: model.page, width: width, height: 700))
                 await model.open(origin: nil)
@@ -618,13 +618,13 @@ struct Context {
                     const em = parseFloat(getComputedStyle(wide.rows[1].cells[1]).fontSize);
                     const w = widths(wide), f = widths(fitting);
                     const code = wide.rows[1].cells[2].querySelector('code');
-                    const selection = getSelection();
-                    selection.selectAllChildren(wide.rows[1]);
-                    const row = String(selection).trim();
-                    selection.removeAllRanges();
-                    const scrolls = wide.scrollWidth > wide.clientWidth && w[0] < 6 * em && w[1] >= 12 * em && w[1] <= 16 * em && w[2] > 30 * em && getComputedStyle(code).whiteSpace === 'nowrap';
-                    const fits = fitting.scrollWidth <= fitting.clientWidth && f[1] > 18 * em;
-                    return {pass: scrolls && fits && !row.includes('\\n'), detail: JSON.stringify({viewport: innerWidth, em, wide: {client: wide.clientWidth, scroll: wide.scrollWidth, cells: w}, fitting: {client: fitting.clientWidth, scroll: fitting.scrollWidth, cells: f}, rowLines: row.split('\\n').length})};
+                    const tables = [wide, fitting];
+                    const fits = tables.every(t => t.scrollWidth <= t.clientWidth + 1 && t.getBoundingClientRect().right <= innerWidth + 1 && getComputedStyle(t).tableLayout === 'fixed');
+                    const cellsFit = tables.every(t => [...t.querySelectorAll('th,td')].every(c => c.scrollWidth <= c.clientWidth + 1));
+                    const wraps = getComputedStyle(code).whiteSpace === 'normal' && code.getClientRects().length > 1;
+                    const unchanged = code.textContent === 'long_identifier_'.repeat(5) && Math.abs(em - parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.93) < 0.1;
+                    const pageFits = document.scrollingElement.scrollWidth <= innerWidth + 1;
+                    return {pass: fits && cellsFit && wraps && unchanged && pageFits, detail: JSON.stringify({viewport: innerWidth, em, wide: {client: wide.clientWidth, scroll: wide.scrollWidth, cells: w}, fitting: {client: fitting.clientWidth, scroll: fitting.scrollWidth, cells: f}, codeLines: code.getClientRects().length, fits, cellsFit, unchanged, pageFits})};
                     """) as? [String: Any]
                     pass = pass && result?["pass"] as? Bool == true
                     details.append("text \(textSize): \(result?["detail"] as? String ?? "no geometry")")

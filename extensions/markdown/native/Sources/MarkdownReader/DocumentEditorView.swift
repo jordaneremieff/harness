@@ -5,31 +5,29 @@ import SwiftUI
 
 struct DocumentEditorView: View {
     @Bindable var document: WorkingDocument
+    var readingChrome: ReaderChrome = .preview
+    var editActions: ReaderEditActions?
     var body: some View {
         VStack(spacing: 0) {
-            ViewThatFits(in: .horizontal) {
-                HStack { modePicker; Spacer(); settings }
-                VStack(alignment: .leading) { modePicker; settings }
-            }.padding(.horizontal, 10).padding(.vertical, 6)
-            if let pending = document.pendingMode {
-                Text("\(pending.rawValue) mode will open after text composition finishes.").font(.caption).foregroundStyle(.secondary)
+            if !document.readingDraft {
+                HStack(spacing: 12) {
+                    EditorCommandMenu(document: document)
+                    viewMenu
+                    Spacer(minLength: 0)
+                }.padding(.horizontal, 10).padding(.vertical, 6)
+                if let pending = document.pendingMode {
+                    Text("\(pending.rawValue) mode will open after text composition finishes.").font(.caption).foregroundStyle(.secondary)
+                }
+                if document.findVisible { EditorFindBar(document: document) }
+                Divider()
             }
-            HStack {
-                EditorCommandMenu(document: document)
-                Button("Find") { document.showFind() }
-                TextField("Line", text: $document.goToLineText).frame(width: 65).onSubmit { document.goToLine() }
-                Button("Go") { document.goToLine() }
-                Spacer()
-            }.padding(.horizontal, 10).padding(.bottom, 6)
-            if document.findVisible { EditorFindBar(document: document) }
-            Divider()
             GeometryReader { geometry in
                 VStack(spacing: 0) {
-                    if document.mode == .split, geometry.size.width < EditorModeSplitView.minimumSplitWidth {
+                    if !document.readingDraft, document.mode == .split, geometry.size.width < EditorModeSplitView.minimumSplitWidth {
                         Text("Split shows source at this width. Select Rendered for the preview.")
                             .font(.caption).foregroundStyle(.secondary).padding(6)
                     }
-                    EditorModeLayout(document: document)
+                    EditorModeLayout(document: document, readingChrome: readingChrome, editActions: editActions)
                         .id(document.id)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }.onChange(of: geometry.size.width, initial: true) { _, width in
@@ -42,14 +40,17 @@ struct DocumentEditorView: View {
         .preferredColorScheme(document.presentation.appearance == .system ? nil : document.presentation.appearance == .dark ? .dark : .light)
     }
 
-    private var modePicker: some View {
-        Picker("Mode", selection: Binding(get: { document.mode }, set: { document.setMode($0) })) {
-            ForEach(EditorMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-        }.pickerStyle(.segmented).frame(maxWidth: 360)
-    }
-
-    private var settings: some View {
+    private var viewMenu: some View {
         Menu {
+            Picker("Mode", selection: Binding(get: { document.mode }, set: { document.setMode($0) })) {
+                ForEach([EditorMode.visual, .raw], id: \.self) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.inline)
+            Divider()
+            Button("Find…") { document.showFind() }
+            Button("Zoom Out") { document.text.setZoom(document.text.zoom - 0.1) }
+            Button("Actual Size") { document.text.setZoom(1) }
+            Button("Zoom In") { document.text.setZoom(document.text.zoom + 0.1) }
+            Divider()
             Picker("Appearance", selection: $document.presentation.appearance) {
                 ForEach(MarkdownThemeAppearance.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
             }
@@ -60,8 +61,9 @@ struct DocumentEditorView: View {
                 ForEach(PageSettings.textSizes, id: \.self) { Text("\($0) pt").tag(CGFloat($0)) }
             }
             Toggle("Wrap Lines", isOn: $document.presentation.wrapsLines)
-        } label: { Label("Appearance", systemImage: "textformat.size") }
+        } label: { Label("View", systemImage: "eye") }
         .menuStyle(.borderlessButton).fixedSize()
+        .help("Visual edits headings, prose, emphasis and link labels. Other blocks remain editable source; use Source for selections across hidden markup.")
     }
 
 }

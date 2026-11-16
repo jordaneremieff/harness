@@ -6,6 +6,8 @@ import { recentNative, readNative, type NativeSource } from "./native-responses.
 import { readPanelRequest, responsePage, type MarkdownAnswer } from "./panel-protocol.ts";
 import { createNativePublishTool } from "./publish.ts";
 import { createNativeReadTool } from "./read.ts";
+import { nativeConnection, nativeConversationConnection, nativeLive } from "./live-host.ts";
+import { createNativeLiveTool } from "./live-tool.ts";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export interface MarkdownHost {
@@ -36,7 +38,7 @@ async function published(store: MarkdownStore): Promise<Extract<MarkdownAnswer, 
 	const result = await store.list({ kind: "published" });
 	return { op: "published", rows: result.documents, root: store.root, storeId: identity.storeId, limited: result.bounded, unreadable: result.unreadable };
 }
-/** Both text and structured command routes only read; origin grants no additional effect. */
+/** Source requests only read. A local operator separately acquires an exact-conversation live capability. */
 export async function runMarkdownCommand(call: MarkdownCommandCall): Promise<string | { text: string; data: JsonValue }> {
 	const source = nativeSource(call);
 	const store = new MarkdownStore(readSettings({ agentDir: call.host.agentDir }).values.dir);
@@ -56,6 +58,7 @@ export async function runMarkdownCommand(call: MarkdownCommandCall): Promise<str
 		case "recent": answer = { op: "recent", ...await recentNative(source, call.context) }; break;
 		case "response": answer = responsePage(await readNative(source, request.entryId, call.context), request.offset); break;
 		case "published": answer = await published(store); break;
+		case "live": answer = { op: "live", connection: await nativeConnection(call) }; break;
 	}
 	return { text: `Markdown ${answer.op}: bounded source data; no window or model turn started.`, data: json(answer) };
 }
@@ -70,9 +73,15 @@ export function markdownContribution(source: string, bus: SettingsBus, stopFacto
 			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));
 			const settings = readSettings({ agentDir: host.agentDir }).values;
 			const store = new MarkdownStore(settings.dir);
+			const live = nativeLive(host);
+			const connection = async (id: Durable.ConversationId, context: Context) => {
+				const conversation = await host.harness.conversation(id, context);
+				if (!conversation) throw new Error("The exact invoking conversation is unavailable.");
+				return nativeConversationConnection(host, conversation);
+			};
 			return host.durable.defineExtension({
 				name: "markdown",
-				tools: [createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store, app: settings.app }), createNativeReadTool(host.durable, { store, app: settings.app })],
+				tools: [createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store, app: settings.app, connection }), createNativeReadTool(host.durable, { store, app: settings.app, connection }), createNativeLiveTool(host.durable, (conversation) => live.bridges.find(conversation))],
 				sections: [host.durable.section("markdown", () => "Use markdown_publish for an explicitly requested document or a deliverable meant for sustained reading. Publication saves silently. Existing assistant responses are already readable through the operator's Markdown view; do not publish every reply. Use markdown_read to find a stored document and read an exact revision before you correct it.")],
 			});
 		},

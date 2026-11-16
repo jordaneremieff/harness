@@ -5,6 +5,8 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readSettings } from "./settings.ts";
+import type { LiveConfig } from "./live-protocol.ts";
+import { liveArguments } from "./live-launch.ts";
 import { MarkdownStore, type StoredDocument } from "./store.ts";
 import { responseSnapshotWrite, type ResponseSnapshot } from "./responses.ts";
 import { editorCommand, paneRequestCommand, type EditorOpenIntent } from "./pane-command.ts";
@@ -96,22 +98,23 @@ export async function saveResponse(response: ResponseSnapshot, root: string): Pr
 	return savedDocument(root, await storeIdentity(root), result, !result.replayed);
 }
 /** Saving and origin capture overlap; only their completed results reach the open request. */
-export async function materializeAndReveal(save: () => Promise<SavedDocument>, signal: AbortSignal, options: { gui: boolean; runtime?: RevealRuntime; presentation?: Presentation }): Promise<RevealOutcome> {
+export async function materializeAndReveal(save: () => Promise<SavedDocument>, signal: AbortSignal, options: { gui: boolean; runtime?: RevealRuntime; presentation?: Presentation; live?: LiveConfig }): Promise<RevealOutcome> {
 	signal.throwIfAborted();
 	const processRuntime = options.runtime ?? runtime;
 	const origin = options.gui ? captureOrigin(signal, processRuntime) : Promise.resolve(null);
 	const [saved, launchOrigin] = await Promise.all([save(), origin]);
 	signal.throwIfAborted();
 	if (!options.gui) return { ...saved, state: "saved" };
-	return revealWithOrigin(saved, signal, processRuntime, launchOrigin, options.presentation ?? "pane");
+	return revealWithOrigin(saved, signal, processRuntime, launchOrigin, options.presentation ?? "pane", options.live);
 }
-async function appStatus(app: string, presentation: Presentation): Promise<"app-missing" | "app-incompatible" | undefined> {
+async function appStatus(app: string, presentation: Presentation, live = false): Promise<"app-missing" | "app-incompatible" | undefined> {
 	try {
 		const manifest = join(app, "Contents", "Resources", "build.json");
 		const stat = await lstat(manifest);
 		if (!stat.isFile() || stat.size > 8192) return "app-incompatible";
 		const build: unknown = JSON.parse(await readFile(manifest, "utf8"));
 		if (typeof build !== "object" || build === null || !("contract" in build) || build.contract !== 1) return "app-incompatible";
+		if (live && (!("live" in build) || build.live !== 1)) return "app-incompatible";
 		if (presentation === "pane" && (!("pane" in build) || build.pane !== 1 || !("paneOpenRequest" in build) || build.paneOpenRequest !== 1)) return "app-incompatible";
 		return undefined;
 	} catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "app-missing" : "app-incompatible"; }
@@ -120,10 +123,13 @@ export async function revealSaved(saved: SavedDocument, signal: AbortSignal, pro
 	signal.throwIfAborted();
 	return revealWithOrigin(saved, signal, processRuntime, await captureOrigin(signal, processRuntime), presentation);
 }
-async function dispatchPane(app: string, request: string, origin: LaunchOrigin | null, signal: AbortSignal, processRuntime: RevealRuntime): Promise<PaneDispatch> {
+async function dispatchPane(app: string, request: string, origin: LaunchOrigin | null, signal: AbortSignal, processRuntime: RevealRuntime, live?: LiveConfig): Promise<PaneDispatch> {
 	const command = paneRequestCommand(app, request);
 	if ("showUnavailable" in command) return { version: 1, outcome: "unavailable", detail: command.showUnavailable };
-	return dispatchPaneArgv(command.show, origin, signal, processRuntime);
+	const launch = await liveArguments(command.show, live);
+	const result = await dispatchPaneArgv(launch.argv, origin, signal, processRuntime);
+	if (result.outcome === "unavailable" || result.outcome === "stale") await launch.remove();
+	return result;
 }
 async function dispatchPaneArgv(argv: string[], origin: LaunchOrigin | null, signal: AbortSignal, processRuntime: RevealRuntime): Promise<PaneDispatch> {
 	signal.throwIfAborted();
@@ -151,12 +157,12 @@ async function acceptanceOutcome(saved: SavedDocument, request: string, signal: 
 		return { ...saved, state: "not-confirmed", request, pane };
 	}
 }
-async function revealWithOrigin(saved: SavedDocument, signal: AbortSignal, processRuntime: RevealRuntime, launchOrigin: LaunchOrigin | null, presentation: Presentation): Promise<RevealOutcome> {
+async function revealWithOrigin(saved: SavedDocument, signal: AbortSignal, processRuntime: RevealRuntime, launchOrigin: LaunchOrigin | null, presentation: Presentation, live?: LiveConfig): Promise<RevealOutcome> {
 	signal.throwIfAborted();
 	const failed = (reason: "app-missing" | "app-incompatible" | "unsupported-platform" | "launch-failed", remedy: string): RevealOutcome => ({ ...saved, state: "reveal-failed", reason, remedy });
 	if (processRuntime.platform !== "darwin") return failed("unsupported-platform", "Open the saved document on macOS 26 or later.");
 	const app = readSettings({ agentDir: getAgentDir() }).values.app;
-	const status = await appStatus(app, presentation);
+	const status = await appStatus(app, presentation, live !== undefined);
 	signal.throwIfAborted();
 	if (status) return failed(status, BUILD_REMEDY);
 	const identity = await storeIdentity(saved.root);
@@ -169,41 +175,49 @@ async function revealWithOrigin(saved: SavedDocument, signal: AbortSignal, proce
 	const request = await store.writeOpenRequest(saved.documentId, saved.revision, launchOrigin);
 	let pane: PaneDispatch | undefined;
 	if (presentation === "pane") {
-		pane = await dispatchPane(app, request, launchOrigin, signal, processRuntime);
+		pane = await dispatchPane(app, request, launchOrigin, signal, processRuntime, live);
 		if (pane.outcome !== "created") return { ...saved, state: pane.outcome === "uncertain" ? "pane-uncertain" : "pane-unavailable", request, pane };
 		if (signal.aborted) return { ...saved, state: "pane-uncertain", request, pane };
 	} else if (!await launchWindow(app, request, signal, processRuntime)) return failed("launch-failed", `Use /markdown window ${saved.documentId}; if the app is unavailable, run node extensions/markdown/native/build.mts.`);
 	return acceptanceOutcome(saved, request, signal, processRuntime, pane);
 }
-export async function openResponse(response: ResponseSnapshot, signal: AbortSignal, gui = true, presentation: Presentation = "pane"): Promise<string> {
+export async function openResponse(response: ResponseSnapshot, signal: AbortSignal, gui = true, presentation: Presentation = "pane", live?: LiveConfig): Promise<string> {
 	const root = readSettings({ agentDir: getAgentDir() }).values.dir;
-	return revealNotice(await materializeAndReveal(() => saveResponse(response, root), signal, { gui, presentation }));
+	return revealNotice(await materializeAndReveal(() => saveResponse(response, root), signal, { gui, presentation, live }));
 }
-export async function openStored(root: string, id: string, signal: AbortSignal, options: { gui: boolean; storeId?: string; pin?: PinnedRevision; presentation?: Presentation }): Promise<string> {
+export async function openStored(root: string, id: string, signal: AbortSignal, options: { gui: boolean; storeId?: string; pin?: PinnedRevision; presentation?: Presentation; live?: LiveConfig }): Promise<string> {
 	return revealNotice(await materializeAndReveal(() => selectStored(root, id, options.storeId, options.pin), signal, options));
 }
-type EditorRevealOptions = { presentation?: Presentation; runtime?: RevealRuntime };
+type EditorRevealOptions = { presentation?: Presentation; runtime?: RevealRuntime; live?: LiveConfig };
+async function launchEditorPane(argv: string[], origin: LaunchOrigin | null, signal: AbortSignal, processRuntime: RevealRuntime, live?: LiveConfig): Promise<string | undefined> {
+	const launch = await liveArguments(argv, live);
+	const pane = await dispatchPaneArgv(launch.argv, origin, signal, processRuntime);
+	if (pane.outcome === "unavailable" || pane.outcome === "stale") await launch.remove();
+	if (pane.outcome === "uncertain" || signal.aborted) return "Editor pane creation is unconfirmed. Do not retry automatically.";
+	return pane.outcome === "created" ? undefined : `${pane.detail} No separate window was selected.`;
+}
 async function revealEditor(root: string, intent: EditorOpenIntent, input: string | undefined, signal: AbortSignal, origin: LaunchOrigin | null, options: EditorRevealOptions): Promise<string> {
 	const processRuntime = options.runtime ?? runtime;
 	if (processRuntime.platform !== "darwin") throw new Error("The Markdown editor requires macOS 26 or later.");
 	signal.throwIfAborted();
 	const app = readSettings({ agentDir: getAgentDir() }).values.app;
 	const presentation = options.presentation ?? "pane";
+	if (options.live && await appStatus(app, presentation, true)) throw new Error(`The installed app cannot connect to the invoking conversation. ${BUILD_REMEDY}`);
 	const command = editorCommand(app, root, intent, presentation, input, intent === "scratchpad" || intent === "file" ? origin : undefined);
 	if ("showUnavailable" in command) throw new Error(command.showUnavailable);
 	if (presentation === "pane") {
-		const pane = await dispatchPaneArgv(command.show, origin, signal, processRuntime);
-		if (pane.outcome === "uncertain" || signal.aborted) return "Editor pane creation is unconfirmed. Do not retry automatically.";
-		if (pane.outcome !== "created") return `${pane.detail} No separate window was selected.`;
+		const notice = await launchEditorPane(command.show, origin, signal, processRuntime, options.live);
+		if (notice) return notice;
 	} else {
-		await processRuntime.run("/usr/bin/open", ["-n", "-a", app, "--args", ...command.show.slice(1)], { timeout: 5000, maxBuffer: 8192, signal });
+		const launch = await liveArguments(command.show, options.live);
+		await processRuntime.run("/usr/bin/open", ["-n", "-a", app, "--args", ...launch.argv.slice(1)], { timeout: 5000, maxBuffer: 8192, signal });
 	}
 	return editorLaunchNotice(intent, input, signal, processRuntime, presentation);
 }
 async function editorLaunchNotice(intent: EditorOpenIntent, input: string | undefined, signal: AbortSignal, processRuntime: RevealRuntime, presentation: Presentation): Promise<string> {
 	if ((intent === "edit" || intent === "copy") && input) {
 		const accepted = await waitForAcceptance(input, signal, processRuntime.acceptanceMs ?? 5000).catch(() => false);
-		return accepted ? "The Markdown editor accepted the selected revision. Edits stay private until an explicit save; captured records stay unchanged." : "The editor launch was requested; document acceptance is unconfirmed. Do not retry automatically.";
+		return accepted ? "The Markdown editor accepted the selected revision. Native edits retain private recovery; captured records stay unchanged." : "The editor launch was requested; document acceptance is unconfirmed. Do not retry automatically.";
 	}
 	return presentation === "pane" ? "Rex created the editor pane. Editor focus and readiness are not yet confirmed." : "The editor window launch was requested. Editor focus and readiness are not yet confirmed.";
 }

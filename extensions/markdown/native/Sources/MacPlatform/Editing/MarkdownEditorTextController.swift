@@ -19,10 +19,10 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
     public var onAnalysis: (() -> Void)?
     public var onCommand: ((Selector) -> Bool)?
     public var onImageFiles: (([URL]) -> Void)? {
-        didSet { textView.onImageFiles = onImageFiles }
+        didSet { textView.onImageFiles = onImageFiles; visualEditor?.textView.onImageFiles = onImageFiles }
     }
     public var onImageData: ((Data, String) -> Void)? {
-        didSet { textView.onImageData = onImageData }
+        didSet { textView.onImageData = onImageData; visualEditor?.textView.onImageData = onImageData }
     }
     private var replacingDocument = false
     private var sourceBytes: Int
@@ -34,6 +34,17 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
     private var styling: MarkdownEditorStyling!
     public private(set) var presentation = MarkdownEditorPresentation()
     private var pendingPresentation: MarkdownEditorPresentation?
+    private var visualEditor: MarkdownVisualEditor?
+    public var activeTextView: MarkdownSourceTextView {
+        presentation.mode == .visual ? (visualEditor?.textView ?? textView) : textView
+    }
+    public var zoom: CGFloat { scrollView.magnification }
+
+    public func setZoom(_ value: CGFloat) {
+        guard value.isFinite else { return }
+        let visible = activeTextView.visibleRect
+        scrollView.setMagnification(min(2.5, max(0.5, value)), centeredAt: NSPoint(x: visible.midX, y: visible.midY))
+    }
 
     /// Nil means analysis is stale; formatting must wait rather than ignore code context.
     public var protectedRanges: [NSRange]? { styling.protectedRanges }
@@ -42,7 +53,7 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
 
     public var source: String { textView.string }
     public var selectedRange: NSRange { textView.selectedRange() }
-    public var hasMarkedText: Bool { textView.hasMarkedText() }
+    public var hasMarkedText: Bool { textView.hasMarkedText() || visualEditor?.hasMarkedText == true }
     public var snapshot: MarkdownEditorSnapshot {
         MarkdownEditorSnapshot(source: source, generation: generation, selectedRange: selectedRange, hasMarkedText: hasMarkedText)
     }
@@ -51,7 +62,7 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
         generation = initialGeneration
         sourceBytes = source.utf8.count
         textView = MarkdownSourceTextView(usingTextLayoutManager: true)
-        scrollView = NSScrollView()
+        scrollView = MarkdownEditorScrollView()
         super.init()
         precondition(textView.textLayoutManager != nil, "The editor requires TextKit 2")
         textView.registerForDraggedTypes(textView.registeredDraggedTypes + [.fileURL])
@@ -81,6 +92,9 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
         textView.setSelectedRange(NSRange(location: 0, length: 0))
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
+        scrollView.allowsMagnification = true
+        scrollView.minMagnification = 0.5
+        scrollView.maxMagnification = 2.5
         scrollView.documentView = textView
         textView.delegate = self
         styling = MarkdownEditorStyling(controller: self)
@@ -164,10 +178,20 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
     public func textViewDidChangeSelection(_ notification: Notification) {
         guard !replacingDocument else { return }
         textView.needsDisplay = true
+        if presentation.mode == .visual { visualEditor?.select(source: selectedRange) }
         notify()
     }
 
-    private func notify() { onChange?(snapshot) }
+    private func notify() {
+        visualEditor?.synchronise()
+        onChange?(snapshot)
+    }
+
+    func visualCompositionEnded() {
+        if let pending = pendingPresentation { setPresentation(pending) }
+        styling.changed()
+        notify()
+    }
 
     private func continuationContext(at offset: Int) -> MarkdownListContinuation? {
         if let context = listContinuation, context.contains(NSRange(location: offset, length: 0), source: source, generation: generation) {
@@ -201,7 +225,16 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
 
     /// One explicit command, one native undo unit. Input methods retain their own transactions.
     @discardableResult public func apply(range: NSRange, replacement: String, selection: NSRange, actionName: String) -> Bool {
-        guard !hasMarkedText, Self.validSelection(range, in: source) else { return false }
+        guard !hasMarkedText else { return false }
+        return applySource(range: range, replacement: replacement, selection: selection, actionName: actionName)
+    }
+
+    func applyVisual(range: NSRange, replacement: String, selection: NSRange) -> Bool {
+        applySource(range: range, replacement: replacement, selection: selection, actionName: "Edit Text")
+    }
+
+    private func applySource(range: NSRange, replacement: String, selection: NSRange, actionName: String) -> Bool {
+        guard !textView.hasMarkedText(), Self.validSelection(range, in: source) else { return false }
         let result = (source as NSString).replacingCharacters(in: range, with: replacement)
         guard Self.validSelection(selection, in: result) else { return false }
         listContinuation = nil
@@ -222,6 +255,40 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
         textView.setSelectedRange(selection)
         undo?.setActionName(actionName)
         return true
+    }
+
+    /// Applies a validated patch set as one native Undo unit, with no partial writes.
+    @discardableResult public func apply(edits: [MarkdownSourceEdit], expectedGeneration: UInt64,
+                                        selection: NSRange? = nil, actionName: String) -> Bool {
+        guard generation == expectedGeneration, !hasMarkedText, !edits.isEmpty else { return false }
+        let ordered = edits.sorted { $0.range.location < $1.range.location }
+        let original = source as NSString
+        var end = -1
+        for edit in ordered {
+            guard Self.validSelection(edit.range, in: source), edit.range.location > end,
+                  original.substring(with: edit.range).utf16.elementsEqual(edit.expected.utf16) else { return false }
+            end = NSMaxRange(edit.range) - (edit.range.length > 0 ? 1 : 0)
+        }
+        guard let first = ordered.first, let last = ordered.last else { return false }
+        let envelope = NSRange(location: first.range.location, length: NSMaxRange(last.range) - first.range.location)
+        var replacement = "", offset = envelope.location
+        for edit in ordered {
+            replacement += original.substring(with: NSRange(location: offset, length: edit.range.location - offset))
+            replacement += edit.replacement
+            offset = NSMaxRange(edit.range)
+        }
+        func mapped(_ position: Int) -> Int {
+            var delta = 0
+            for edit in ordered {
+                if position < edit.range.location { break }
+                if position <= NSMaxRange(edit.range) { return edit.range.location + delta + edit.replacement.utf16.count }
+                delta += edit.replacement.utf16.count - edit.range.length
+            }
+            return position + delta
+        }
+        let start = mapped(selectedRange.location), finish = mapped(NSMaxRange(selectedRange))
+        let nextSelection = selection ?? NSRange(location: start, length: max(0, finish - start))
+        return apply(range: envelope, replacement: replacement, selection: nextSelection, actionName: actionName)
     }
 
     /// Only deliberate document replacement clears history. Mode changes never call this.
@@ -249,7 +316,8 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
     public func select(_ range: NSRange) {
         guard Self.validSelection(range, in: source) else { return }
         textView.setSelectedRange(range)
-        textView.scrollRangeToVisible(range)
+        if presentation.mode == .visual { visualEditor?.select(source: range) }
+        else { textView.scrollRangeToVisible(range) }
     }
 
     @discardableResult public func goToLine(_ line: Int) -> Bool {
@@ -278,13 +346,21 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
         return text.rangeOfComposedCharacterSequences(for: range) == range
     }
 
-    public func focus() { textView.requestFocus() }
+    public func focus() { activeTextView.requestFocus() }
 
     public func setPresentation(_ value: MarkdownEditorPresentation) {
         guard !hasMarkedText else { pendingPresentation = value; return }
         pendingPresentation = nil
         presentation = value
         styling.presentation = value
+        if value.mode == .visual, visualEditor == nil { visualEditor = MarkdownVisualEditor(controller: self) }
+        let active = activeTextView
+        if scrollView.documentView !== active {
+            let hadFocus = scrollView.window?.firstResponder === scrollView.documentView
+            active.frame = NSRect(origin: .zero, size: scrollView.contentSize)
+            scrollView.documentView = active
+            if hadFocus { active.requestFocus() }
+        }
         switch value.appearance {
         case .system: scrollView.appearance = nil
         case .light: scrollView.appearance = NSAppearance(named: .aqua)
@@ -300,6 +376,7 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
             height: CGFloat.greatestFiniteMagnitude)
         scrollView.hasHorizontalScroller = !value.wrapsLines
         refreshColours()
+        visualEditor?.synchronise(force: true)
         styling.changed()
     }
 

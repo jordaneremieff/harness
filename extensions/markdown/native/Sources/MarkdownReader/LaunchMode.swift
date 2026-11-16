@@ -1,5 +1,25 @@
 import Foundation
 
+struct NativeLaunch {
+    let mode: LaunchMode
+    let livePath: String?
+
+    static func parse(_ input: [String]) -> Self {
+        var arguments = input
+        var livePath: String?
+        if let index = arguments.firstIndex(of: "--live") {
+            guard index + 1 < arguments.count, arguments[index + 1].hasPrefix("/"),
+                  arguments.filter({ $0 == "--live" }).count == 1,
+                  arguments.first == "--pane" || arguments.first == "--editor" else {
+                return Self(mode: .usage("--live requires one private absolute configuration path with --pane or --editor"), livePath: nil)
+            }
+            livePath = arguments[index + 1]
+            arguments.removeSubrange(index...index + 1)
+        }
+        return Self(mode: LaunchMode.parse(arguments), livePath: livePath)
+    }
+}
+
 enum LaunchMode {
     case application
     case editor(EditorLaunch)

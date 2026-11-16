@@ -69,6 +69,7 @@ public final class ReaderModel {
     public private(set) var lastRestore: PositionRestore = .none
     public private(set) var recoveries = 0
     public var outlineVisible = true
+    public var outlineLayout = OutlineLayout()
     public var outlineCompact = false
     public var outlinePopoverVisible = false
     public var outlineQuery = ""
@@ -579,6 +580,19 @@ public final class ReaderModel {
 
     public func selectedText() async -> String {
         (try? await page.callJavaScript(PageScript.selectionText, contentWorld: PageScript.world) as? String) ?? ""
+    }
+
+    /// A bounded display quote, never a source range. Nil means the selection exceeds the bound.
+    public func annotationSelection() async -> String? {
+        guard phase == .ready, review.shown == nil, !inspection.isOpen else { return "" }
+        let digest = snapshot?.digest, draft = draftGeneration, token = generation
+        do {
+            let value = try await page.callJavaScript("const text = String(window.getSelection()); return text.length > 8192 ? null : text;", contentWorld: PageScript.world)
+            guard generation == token, phase == .ready, snapshot?.digest == digest, draftGeneration == draft,
+                  review.shown == nil, !inspection.isOpen else { return "" }
+            guard let text = value as? String, text.utf8.count <= 8192 else { return nil }
+            return text
+        } catch { return "" }
     }
 
     /// Whether the reader is in the middle of something that a page replacement would undo: a

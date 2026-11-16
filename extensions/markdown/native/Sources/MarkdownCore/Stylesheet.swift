@@ -141,20 +141,19 @@ public enum Stylesheet {
     html[data-wrap="1"] pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 
     table {
-      display: block;
-      width: fit-content;
-      max-width: 100%;
-      overflow-x: auto;
+      width: 100%;
+      table-layout: fixed;
       border-collapse: collapse;
       font-size: 0.93em;
       line-height: 1.45;
     }
-    th, td { border: 1px solid var(--border); padding: 0.4em 0.7em; vertical-align: top; min-width: 3em; }
-    /* A cell with a sentence never gets narrower than this measure; with room, its column takes
-       a share of the page. Inline layout keeps a copied row on one line. */
-    .cell-prose { display: inline-block; min-width: min(12em, 40vw); vertical-align: top; }
-    /* A column never splits a code token; a table that grows too wide scrolls in its own region. */
-    th code, td code { overflow-wrap: normal; white-space: nowrap; }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 0.4em clamp(0.2em, 1vw, 0.7em);
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    th code, td code { white-space: normal; }
     th { background: var(--surface-strong); font-weight: 600; text-align: left; }
     tr:nth-child(even) td { background: var(--surface); }
     th[align="center"], td[align="center"] { text-align: center; }

@@ -13,9 +13,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var openedAtLaunch = false
     private let recentMenu = NSMenu(title: "Open Recent")
     private var paneHost: PaneHost?
+    private let livePath: String?
+    private var liveConfiguration: CollaborationConfiguration?
+    private var liveUnavailable: String?
 
-    init(mode: LaunchMode) {
-        self.mode = mode
+    init(mode: LaunchMode, livePath: String? = nil) {
+        self.mode = mode; self.livePath = livePath
     }
 
     /// The reader's own state lives outside every document store. The `ReaderStateDirectory`
@@ -55,6 +58,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let livePath {
+            do { liveConfiguration = try CollaborationConfiguration.consume(livePath) }
+            catch {
+                liveUnavailable = "Agent connection unavailable. The saved document remains readable."
+                FileHandle.standardError.write(Data("Markdown Reader: agent connection unavailable; document access is unchanged.\n".utf8))
+            }
+        }
         if case .editor(let launch) = mode { startEditor(launch); return }
         if case .pane(let target) = mode {
             startPane(target)
@@ -185,14 +195,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             do {
                 let (record, origin) = try await Task.detached { try launch.load() }.value
                 if let terminal {
-                    let workspace = EditorWorkspace(directory: Self.stateDirectory().appendingPathComponent("Drafts"), store: launch.store)
+                    let workspace = EditorWorkspace(directory: Self.stateDirectory().appendingPathComponent("Drafts"), store: launch.store, automaticallySaves: true)
                     workspace.launchOrigin = origin; workspace.add(record)
+                    workspace.notice = liveUnavailable
+                    if let liveConfiguration { workspace.startCollaboration(liveConfiguration) }
                     let model = ReaderModel(reference: .file(path: "draft:" + record.id.uuidString), platform: windows.platform, state: windows.state)
                     let host = PaneHost(model: model, platform: windows.platform, state: windows.state, terminal: terminal, workspace: workspace)
                     paneHost = host
                     windows.adoptEditor(host.start(), workspace: workspace)
                 } else {
-                    windows.showEditor(record: record, store: launch.store, origin: origin)
+                    let workspace = windows.showEditor(record: record, store: launch.store, origin: origin)
+                    workspace.notice = liveUnavailable
+                    if let liveConfiguration { workspace.startCollaboration(liveConfiguration) }
                 }
             } catch {
                 if launch.surface == .pane {
@@ -240,11 +254,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             switch outcome {
             case .success(let (reference, revision, digest, origin)):
                 let model = ReaderModel(reference: reference, platform: windows.platform, state: windows.state)
-                let host = PaneHost(model: model, platform: windows.platform, state: windows.state, terminal: terminal)
+                let workspace: EditorWorkspace?
+                if livePath != nil {
+                    let root: String? = if case .stored(let root, _, _) = reference { root } else { windows.state.selectedStoreRoot }
+                    let live = EditorWorkspace(directory: Self.stateDirectory().appendingPathComponent("Drafts"), store: root, automaticallySaves: true)
+                    live.reading = model; live.launchOrigin = origin; live.notice = liveUnavailable
+                    if let liveConfiguration { live.startCollaboration(liveConfiguration) }
+                    workspace = live
+                } else { workspace = nil }
+                let host = PaneHost(model: model, platform: windows.platform, state: windows.state, terminal: terminal, workspace: workspace)
                 host.onModelChange = { [weak self] previous, next in self?.windows.replace(previous, with: next) }
                 host.onWorkspaceChange = { [weak self] window, workspace in self?.windows.adoptEditor(window, workspace: workspace) }
                 paneHost = host
-                windows.adopt(host.start(revision: revision, digest: digest, origin: origin), model: model)
+                let window = host.start(revision: revision, digest: digest, origin: origin)
+                if let workspace { windows.adoptEditor(window, workspace: workspace) }
+                else { windows.adopt(window, model: model) }
             case .failure(let error):
                 // Command and store text must not control the terminal.
                 FileHandle.standardError.write(Data(TerminalText.line("Markdown Reader: \(label) cannot be shown: \(error)").utf8))
@@ -322,6 +346,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         Task { await action(model) }
     }
 
+    @objc func commentOnSelection(_ sender: Any?) {
+        guard let workspace = windows.keyEditor else { return }
+        Task { await workspace.annotateSelection() }
+    }
+
+    @objc func askAboutDocument(_ sender: Any?) { windows.keyEditor?.collaboration?.beginAnnotation(quote: nil) }
+
     @objc func copyMarkdown(_ sender: Any?) { withModel { $0.copyMarkdown() } }
     @objc func copyPassage(_ sender: Any?) { withModel { await $0.copyPassageWithSource() } }
     private var editorDocument: WorkingDocument? {
@@ -372,6 +403,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let action = item.action else { return true }
+        if [#selector(commentOnSelection(_:)), #selector(askAboutDocument(_:))].contains(action) {
+            guard let workspace = windows.keyEditor, let client = workspace.collaboration else { return false }
+            return !client.isClosed && !workspace.closing && !workspace.libraryVisible && workspace.publishedLibrary == nil && workspace.active?.text.hasMarkedText != true
+        }
         if [#selector(newScratchpad(_:)), #selector(showDrafts(_:)), #selector(showLibrary(_:)), #selector(openDocument(_:)), #selector(openStore(_:)), #selector(openRecent(_:))].contains(action) { return true }
         if [#selector(saveEditor(_:)), #selector(saveEditorAs(_:))].contains(action) { return windows.keyEditor?.active != nil }
         if action == #selector(formatEditor(_:)) { return editorDocument.map { !$0.text.hasMarkedText && !$0.replacing && $0.text.textView.window?.firstResponder === $0.text.textView } ?? false }
@@ -542,6 +577,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             item("Copy Passage with Source", #selector(copyPassage(_:)), "c", [.command, .option]),
             item("Copy Markdown", #selector(copyMarkdown(_:)), "c", [.command, .shift]),
             standard("Select All", #selector(NSText.selectAll(_:)), "a"),
+            .separator(),
+            item("Comment on Selection…", #selector(commentOnSelection(_:)), "m", [.command, .shift]),
+            item("Ask about Document…", #selector(askAboutDocument(_:)), "m", [.command, .option]),
             .separator(),
             submenu("Format", [
                 formatItem("Bold", .bold, "b"),

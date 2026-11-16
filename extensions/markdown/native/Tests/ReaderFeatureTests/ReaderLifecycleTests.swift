@@ -85,6 +85,18 @@ private final class LifecycleGate {
         return await condition()
     }
 
+    @Test func annotationReadsBoundedWebPageSelectionWithoutAWindow() async throws {
+        _ = NSApplication.shared
+        let reader = model(reference: .file(path: "annotation-draft"), state: ReadingStateStore(directory: nil))
+        await reader.openDraft(source: "# Title\n\nExact **bold** 日本語\n", generation: 1, title: "Annotation", resolver: NoAssetResolver())
+        #expect(reader.phase == .ready)
+        _ = try await reader.page.callJavaScript("const range = document.createRange(); range.selectNodeContents(document.querySelector('p')); const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);", contentWorld: PageScript.world)
+        #expect(await reader.annotationSelection() == "Exact bold 日本語")
+        _ = try await reader.page.callJavaScript("const node = document.querySelector('p'); node.textContent = 'x'.repeat(8193); const range = document.createRange(); range.selectNodeContents(node); const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);", contentWorld: PageScript.world)
+        #expect(await reader.annotationSelection() == nil)
+        await reader.close()
+    }
+
     private func window(_ model: ReaderModel) -> NSWindow {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 800, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)

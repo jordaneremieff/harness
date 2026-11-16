@@ -1,13 +1,15 @@
 import { open, realpath } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { hostname } from "node:os";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import { arr, obj, str, opt, int, bool, lit, union, type Static } from "@earendil-works/pi-schema";
 import { toolDisplay } from "./display.ts";
 import type { Context } from "@earendil-works/chord/context";
 import { previousNative } from "./native-responses.ts";
 import { paneCommand } from "./pane-command.ts";
+import { withLiveShow } from "./live-launch.ts";
+import type { LiveConfig } from "./live-protocol.ts";
 import { previousOrdinary, responseSnapshotWrite, type ResponseSnapshot } from "./responses.ts";
 import { digest, INSPECTION_FAILURES, LIMITS, type MarkdownStore, StoreError, validateInput, type AssetRecord, type ContentOrigin, type ErrorCode, type InspectionFailure, type PublicationPlan, type ReferenceInventory, type StoredDocument, type WriteInput, type WriteResult } from "./store.ts";
 
@@ -42,7 +44,7 @@ const INSPECTION_TEXT: Record<InspectionFailure, string> = {
 	"tool-timeout": "the reference tool timed out after 10 seconds; retry",
 	"output-invalid": `the reference tool returned invalid or oversized output; rebuild the reader app with ${BUILD}`,
 };
-const DESCRIPTION = "Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Publish requested documents or long deliverables, not every reply. When the operator should read a document now, run the result's show command as the program of one new split pane beside the pane where the operator reads your conversation, in the terminal window where you yourself run, not in whichever window has focus, in a pane that closes when its program ends: the native reader window then sits over that pane, with real selection, copying, find, links and scrolling, and your conversation stays visible beside it. Do not float the reader over your conversation. An open reader follows new revisions of its document, so publish a correction as an update to the same document instead of opening another pane; to show a different document while a reader pane that you opened is still open, type the result's paneInput into that pane (:open, the document ID and Enter) instead of opening another pane: the pane keeps its place and saves the earlier document's reading position. Type into or close only reader panes that you opened yourself, never the operator's or another session's panes. To show a stored document again later, run the same command with that document's ID: the reader returns to the saved reading position. To show an earlier answer exactly, use response \"previous\" instead of retyping it. To explain something visually, write an SVG or PNG diagram beside a Markdown file, reference it with a relative image link, and publish the file: the revision keeps the image. Before you update a document whose current text you do not hold, read it with markdown_read; after a conflict, read the current revision that the conflict names. The operator can also open a published document from the Markdown view under Published, or with the result's open command in an ordinary Pi session.";
+const DESCRIPTION = "Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Publish requested documents or long deliverables, not every reply. When the operator should read a document now, run the result's show command as the program of one new split pane beside the pane where the operator reads your conversation, in the terminal window where you yourself run, not in whichever window has focus, in a pane that closes when its program ends: the native reader window then sits over that pane, with real selection, copying, find, links and scrolling, and your conversation stays visible beside it. Do not float the reader over your conversation. Use markdown_live to change a connected pane's actual buffer; reserve document/expectedRevision updates for stored publications rather than live collaboration. To show a different document while a reader pane that you opened is still open, type the result's paneInput into that pane (:open, the document ID and Enter) instead of opening another pane: the pane keeps its place and saves the earlier document's reading position. Type into or close only reader panes that you opened yourself, never the operator's or another session's panes. To show a stored document again later, run the same command with that document's ID: the reader returns to the saved reading position. To show an earlier answer exactly, use response \"previous\" instead of retyping it. To explain something visually, write an SVG or PNG diagram beside a Markdown file, reference it with a relative image link, and publish the file: the revision keeps the image. Before you update a document whose current text you do not hold, read it with markdown_read; after a conflict, read the current revision that the conflict names. The operator can also open a published document from the Markdown view under Published, or with the result's open command in an ordinary Pi session.";
 export { captureReferences, inspectReferences } from "./reference-capture.ts";
 export type { ReferenceRunner, InspectionOptions, ReferenceInspection, InspectionResult, KeptImages } from "./reference-capture.ts";
 import { boundedFile, captureReferences, inspectReferences, type InspectionOptions, type KeptImages } from "./reference-capture.ts";
@@ -220,19 +222,23 @@ function failureText(error: Extract<PublishOutcome, { ok: false }>["error"]): st
 	if (error.code === "replay-conflict") return `${text} This reuseKey already names other input; use a new reuseKey for new input.`;
 	return text;
 }
-export function createPublishTool(options: Omit<PublishOptions, "cwd"> & { cwd?: string }): ToolDefinition<typeof PublishParameters, PublishOutcome> {
+export function createPublishTool(options: Omit<PublishOptions, "cwd"> & { cwd?: string; connection?: (context: ExtensionContext) => Promise<LiveConfig> }): ToolDefinition<typeof PublishParameters, PublishOutcome> {
 	const presentation = toolDisplay().tools.find((tool) => tool.name === "markdown_publish");
 	return { ...presentation, name: "markdown_publish", label: "Markdown Publish", description: DESCRIPTION, promptSnippet: "Save an exact Markdown document for the native reader; its show command puts the reader over a terminal pane.", parameters: PublishParameters, outputSchema: PublishOutcomeSchema, async execute(_id, params, _signal, _update, context) {
-		const outcome = await publish(params as PublishInput, { ...options, cwd: context.cwd, provenance: { ...options.provenance, session: context.sessionManager.getSessionId(), ...(context.model ? { model: `${context.model.provider}/${context.model.id}` } : {}) }, previousResponse: async () => previousOrdinary(context.sessionManager) });
+		let outcome = await publish(params as PublishInput, { ...options, cwd: context.cwd, provenance: { ...options.provenance, session: context.sessionManager.getSessionId(), ...(context.model ? { model: `${context.model.provider}/${context.model.id}` } : {}) }, previousResponse: async () => previousOrdinary(context.sessionManager) });
+		const connection = options.connection;
+		if (outcome.ok) outcome = await withLiveShow(outcome, options.app, connection ? () => connection(context) : undefined, _signal);
 		return { content: [{ type: "text", text: publicationText(outcome) }], details: outcome, structuredContent: outcome, isError: !outcome.ok };
 	} };
 }
 type NativeHost = { durable: typeof Durable; cwd: string; storageId?: string; harness?: Pick<Durable.Harness, "conversation"> };
-export function createNativePublishTool(host: NativeHost, options: Omit<PublishOptions, "cwd" | "plan">): Durable.ToolRegistration<typeof PublishParameters, Durable.JsonObject> {
+export function createNativePublishTool(host: NativeHost, options: Omit<PublishOptions, "cwd" | "plan"> & { connection?: (conversation: Durable.ConversationId, context: Context) => Promise<LiveConfig> }): Durable.ToolRegistration<typeof PublishParameters, Durable.JsonObject> {
 	return host.durable.defineTool({ name: "markdown_publish", description: DESCRIPTION, parameters: PublishParameters, structuredOutputSchema: PublishOutcomeSchema, replay: "safe", async execute(params, api, context) {
 		try {
-			if (params?.response !== undefined) return nativeResult(await snapshotPrevious(params, { ...options, cwd: api.env?.cwd ?? host.cwd, previousResponse: () => nativePrevious(host, api, context) }));
-			return nativeResult(await nativePublication(params, api, context, host, options));
+			let outcome = params?.response !== undefined ? await snapshotPrevious(params, { ...options, cwd: api.env?.cwd ?? host.cwd, previousResponse: () => nativePrevious(host, api, context) }) : await nativePublication(params, api, context, host, options);
+			const connection = options.connection;
+			if (outcome.ok) outcome = await withLiveShow(outcome, options.app, connection ? () => connection(api.conversationId, context) : undefined, context.abortSignal);
+			return nativeResult(outcome);
 		} catch (error) { return nativeResult(failure(error)); }
 	} });
 }

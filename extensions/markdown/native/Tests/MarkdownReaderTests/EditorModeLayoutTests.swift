@@ -20,32 +20,33 @@ import Testing
         try await settled(document, window: window)
         let owner = try #require(document.text.scrollView.superview)
         let text = document.text.textView
-        window.makeFirstResponder(text)
-        text.insertText("# Exact\n日本語 café 👨‍👩‍👧‍👦\n", replacementRange: NSRange(location: 0, length: 0))
+        window.makeFirstResponder(document.text.activeTextView)
+        document.text.activeTextView.insertText("# Exact\n日本語 café 👨‍👩‍👧‍👦\n", replacementRange: NSRange(location: 0, length: 0))
         text.breakUndoCoalescing()
         let source = document.text.source, selection = document.text.selectedRange
-        for mode in [EditorMode.raw, .rendered, .split, .styled, .split, .raw, .rendered, .styled] {
+        for mode in [EditorMode.raw, .visual, .rendered, .split, .styled, .visual, .split, .raw, .rendered, .styled] {
             document.setMode(mode)
             try await settled(document, window: window)
             #expect(document.text.scrollView.superview === owner)
-            #expect(text.window === window)
+            let active = document.text.activeTextView
+            #expect(active.window === window)
             #expect(document.text.source == source)
             #expect(document.text.selectedRange == selection)
             if mode != .rendered {
-                #expect(!text.isHiddenOrHasHiddenAncestor)
+                #expect(!active.isHiddenOrHasHiddenAncestor)
                 #expect(document.text.scrollView.frame.width > 180)
                 #expect(document.text.scrollView.frame.height > 100)
-                #expect(text.visibleRect.width > 100)
-                #expect(text.visibleRect.height > 0)
-                #expect(window.firstResponder === text)
+                #expect(active.visibleRect.width > 100)
+                #expect(active.visibleRect.height > 0)
+                #expect(window.firstResponder === active)
                 (window.firstResponder as? NSTextView)?.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
                 text.breakUndoCoalescing()
                 #expect(document.text.source == source + "x")
                 text.undoManager?.undo()
                 #expect(document.text.source == source)
             } else {
-                #expect(text.isHiddenOrHasHiddenAncestor)
-                #expect(window.firstResponder !== text)
+                #expect(active.isHiddenOrHasHiddenAncestor)
+                #expect(window.firstResponder !== active)
             }
         }
         document.setMode(.split)
@@ -81,8 +82,8 @@ import Testing
         let second = try #require(workspace.active)
         try await settled(second, window: window)
         #expect(second.text.source.isEmpty)
-        #expect(second.text.textView.window === window)
-        #expect(window.firstResponder === second.text.textView)
+        #expect(second.text.activeTextView.window === window)
+        #expect(window.firstResponder === second.text.activeTextView)
         (window.firstResponder as? NSTextView)?.insertText("Second", replacementRange: NSRange(location: 0, length: 0))
         #expect(second.text.source == "Second")
         workspace.select(document)

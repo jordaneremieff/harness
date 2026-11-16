@@ -35,6 +35,17 @@ public struct EditConflict: Codable, Equatable, Sendable {
     }
 }
 
+public struct LiveEditReceipt: Codable, Equatable, Sendable {
+    public var operationId: String
+    public var inputDigest: String
+    public var generation: UInt64
+    public var digest: String
+    public init(operationId: String, inputDigest: String, generation: UInt64, digest: String) {
+        self.operationId = operationId; self.inputDigest = inputDigest
+        self.generation = generation; self.digest = digest
+    }
+}
+
 /// A private recovery snapshot, not a document-store revision or reading-position cache entry.
 public struct DraftRecord: Codable, Sendable, Identifiable {
     public var version = 1
@@ -53,6 +64,7 @@ public struct DraftRecord: Codable, Sendable, Identifiable {
     public var assetRoot: String?
     public var stagedAssets: [StagedImage]?
     public var pendingImageReferences: [String]?
+    public var liveReceipts: [LiveEditReceipt]?
     public var updatedAt: Date
 
     public init(title: String = "Untitled", source: String = "", destination: EditDestination = .scratchpad, savedSource: String? = nil) {
@@ -114,6 +126,17 @@ public final class EditSession {
 
     public func setConflict(_ conflict: EditConflict) { record.conflict = conflict; changed() }
     public func setError(_ message: String?) { error = message }
+    public func retainLiveReceipt(_ receipt: LiveEditReceipt) {
+        var receipts = record.liveReceipts ?? []
+        receipts.append(receipt); record.liveReceipts = receipts
+        changed()
+    }
+
+    public func advanceBase(source: String, destination: EditDestination) {
+        guard !saving, record.pendingPublication == nil else { return }
+        record.savedSource = source; record.destination = destination; record.conflict = nil
+        changed()
+    }
 
     public func retainImages(root: String, images: [StagedImage]) {
         record.assetRoot = root
@@ -205,6 +228,21 @@ public final class EditSession {
             recoveredRevision = max(recoveredRevision ?? 0, receipt.mutation)
             recovery = recoveredRevision == revision ? .current : .pending
             return receipt.pendingPublication == exact
+        } catch {
+            recovery = .failed(String(describing: error))
+            return false
+        }
+    }
+
+    /// A live edit receipt acknowledges its retained snapshot even when the human keeps typing.
+    public func persistLiveReceipt(_ exact: LiveEditReceipt) async -> Bool {
+        guard record.liveReceipts?.contains(exact) == true else { return false }
+        let snapshot = record
+        do {
+            let receipt = try await drafts.save(snapshot)
+            recoveredRevision = max(recoveredRevision ?? 0, receipt.mutation)
+            recovery = recoveredRevision == revision ? .current : .pending
+            return receipt.mutation >= snapshot.mutation
         } catch {
             recovery = .failed(String(describing: error))
             return false

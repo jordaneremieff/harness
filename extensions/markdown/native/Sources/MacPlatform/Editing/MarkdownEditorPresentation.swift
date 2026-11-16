@@ -1,7 +1,7 @@
 import AppKit
 import MarkdownCore
 
-public enum MarkdownSourceMode: String, Sendable, CaseIterable { case styled, raw }
+public enum MarkdownSourceMode: String, Sendable, CaseIterable { case visual, styled, raw }
 public enum MarkdownSourceFont: String, Sendable, CaseIterable { case system, serif, monospaced }
 
 public struct MarkdownEditorPresentation: Equatable, Sendable {

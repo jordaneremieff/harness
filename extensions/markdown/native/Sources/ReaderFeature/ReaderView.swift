@@ -1,3 +1,4 @@
+import AppKit
 import MarkdownCore
 import SwiftUI
 import WebKit
@@ -13,45 +14,65 @@ public enum ReaderChrome {
     case embedded(close: () -> Void, release: () -> Void)
 }
 
+/// The host supplies the permitted transition without exposing its editor state to the reader.
+public struct ReaderEditActions {
+    public let edit: (() -> Void)?
+    public let editCopy: (() -> Void)?
+    public let isEnabled: Bool
+
+    public init(edit: (() -> Void)? = nil, editCopy: (() -> Void)? = nil, isEnabled: Bool = true) {
+        self.edit = edit
+        self.editCopy = editCopy
+        self.isEnabled = isEnabled
+    }
+}
+
 /// The reader for one document. It holds no global state and can be placed in any window.
 public struct ReaderView: View {
     @Bindable var model: ReaderModel
     let chrome: ReaderChrome
+    let editActions: ReaderEditActions?
+    let selectionChanged: ((String?) -> Void)?
+    let commentSelection: ((String) -> Void)?
     @FocusState private var findFocused: Bool
     @State private var width: CGFloat = 900
+    @State private var dragStart: CGFloat?
 
-    public init(model: ReaderModel, chrome: ReaderChrome = .window) {
+    public init(model: ReaderModel, chrome: ReaderChrome = .window, editActions: ReaderEditActions? = nil,
+                selectionChanged: ((String?) -> Void)? = nil, commentSelection: ((String) -> Void)? = nil) {
         self.model = model
         self.chrome = chrome
+        self.editActions = editActions
+        self.selectionChanged = selectionChanged
+        self.commentSelection = commentSelection
     }
 
     private var outlineShown: Bool {
-        model.outlineVisible && width >= 680 && !(model.rendered?.outline.isEmpty ?? true)
+        model.outlineVisible && !model.outlineLayout.isCompact(in: width) && !(model.rendered?.outline.isEmpty ?? true)
     }
 
     public var body: some View {
-        HStack(spacing: 0) {
-            if outlineShown {
-                OutlineList(model: model)
-                    .frame(width: min(280, max(190, width * 0.24)))
-                Divider()
+        VStack(spacing: 0) {
+            if case .embedded(let close, let release) = chrome {
+                EmbeddedHeader(model: model, editActions: editActions, close: close, release: release)
             }
-            VStack(spacing: 0) {
-                switch chrome {
-                case .window: DocumentHeader(model: model)
-                case .preview: EmptyView()
-                case .embedded(let close, let release): EmbeddedHeader(model: model, close: close, release: release)
+            banners
+            if model.findVisible { findBar }
+            HStack(spacing: 0) {
+                if outlineShown {
+                    OutlineList(model: model)
+                        .frame(width: model.outlineLayout.outlineWidth(in: width))
+                    outlineDivider
                 }
-                banners
-                if model.findVisible { findBar }
-                content
+                content.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: {
             width = $0
-            model.outlineCompact = $0 < 680
+            model.outlineCompact = model.outlineLayout.isCompact(in: $0)
             if !model.outlineCompact { model.outlinePopoverVisible = false }
         })
+        .onChange(of: outlineShown) { _, _ in dragStart = nil }
         .overlay(alignment: .bottom) { noticeView }
         .confirmationDialog(
             "Open this address in your browser?",
@@ -65,6 +86,30 @@ public struct ReaderView: View {
         }
         .toolbar { if case .window = chrome { toolbarContent } }
         .onChange(of: model.findVisible) { _, visible in findFocused = visible }
+    }
+
+    private var outlineDivider: some View {
+        Rectangle()
+            .fill(.clear)
+            .frame(width: OutlineLayout.dividerWidth)
+            .overlay { Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: 1) }
+            .contentShape(Rectangle())
+            .onHover { inside in (inside ? NSCursor.resizeLeftRight : NSCursor.arrow).set() }
+            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { value in
+                    if dragStart == nil { dragStart = model.outlineLayout.outlineWidth(in: width) }
+                    model.outlineLayout.resize(to: (dragStart ?? 0) + value.translation.width, in: width)
+                }
+                .onEnded { _ in dragStart = nil })
+            .onTapGesture(count: 2) { model.outlineLayout.reset() }
+            .help("Drag to resize contents. Double-click to reset.")
+            .accessibilityElement()
+            .accessibilityLabel("Contents width")
+            .accessibilityValue("\(Int(model.outlineLayout.outlineWidth(in: width))) points")
+            .accessibilityAdjustableAction { direction in
+                let step: CGFloat = direction == .increment ? 40 : -40
+                model.outlineLayout.resize(to: model.outlineLayout.outlineWidth(in: width) + step, in: width)
+            }
     }
 
     @ViewBuilder private var content: some View {
@@ -91,10 +136,27 @@ public struct ReaderView: View {
                 .accessibilityHidden(model.review.shown != nil || model.inspection.isOpen)
                 .overlay(alignment: .top) { RevisionReviewLayer(model: model) }
                 .overlay { ImageInspectionLayer(model: model) }
+                .background {
+                    if selectionChanged != nil {
+                        ReaderSelectionEvents {
+                            Task { @MainActor in selectionChanged?(await model.annotationSelection()) }
+                        }
+                    }
+                }
         }
     }
 
     @ViewBuilder private func contextMenu(_ info: WebView.ActivatedElementInfo) -> some View {
+        if let commentSelection {
+            Button("Comment on Selection…") {
+                Task { @MainActor in
+                    let quote = await model.annotationSelection()
+                    selectionChanged?(quote)
+                    if let quote, !quote.isEmpty { commentSelection(quote) }
+                }
+            }
+            Divider()
+        }
         if let url = info.linkURL, ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
             Button("Open Link in Browser…") { model.pendingExternalURL = url }
             Button("Copy Link") { model.platform.copyText(url.absoluteString) }
@@ -210,17 +272,21 @@ public struct ReaderView: View {
                 .disabled(!model.canGoBack)
         }
         ToolbarItemGroup(placement: .primaryAction) {
-            RevisionMenu(model: model)
-            ViewOptionsMenu(model: model)
-            Button { model.showFind() } label: { Label("Find", systemImage: "magnifyingglass") }
-                .help("Find (⌘F)")
-            Button { model.copyMarkdown() } label: { Label("Copy Markdown", systemImage: "doc.on.doc") }
-                .help("Copy the Markdown source (⇧⌘C)")
-                .disabled(model.snapshot == nil)
-            if let label = model.returnLabel {
-                Button { Task { await model.returnToTerminal() } } label: { Label(label, systemImage: "terminal") }
-                    .help("\(label) (⇧⌘R). Activates the terminal application.")
-            }
+            ReaderEditControl(actions: editActions, hasDocument: model.snapshot != nil)
+            Menu {
+                Button("Find…") { model.showFind() }
+                ViewOptionsMenu(model: model)
+                Divider()
+                Button("Copy Markdown") { model.copyMarkdown() }.disabled(model.snapshot == nil)
+                ReaderCopyAction(actions: editActions)
+                Button("Document Details") { model.detailsVisible.toggle() }
+                RevisionMenu(model: model)
+                if let label = model.returnLabel {
+                    Divider()
+                    Button(label) { Task { await model.returnToTerminal() } }
+                }
+            } label: { Label("More Actions", systemImage: "ellipsis.circle") }
+                .popover(isPresented: $model.detailsVisible, arrowEdge: .bottom) { DetailsView(model: model) }
         }
     }
 
@@ -282,10 +348,10 @@ struct ViewOptionsMenu: View {
     }
 }
 
-/// The embedded reader keeps identity and primary actions visible, with secondary controls in
-/// a menu and revision/mode status on its own line.
+/// The document title and primary actions stay visible; details live in the secondary menu.
 struct EmbeddedHeader: View {
     @Bindable var model: ReaderModel
+    let editActions: ReaderEditActions?
     let close: () -> Void
     let release: () -> Void
 
@@ -299,22 +365,22 @@ struct EmbeddedHeader: View {
                     .truncationMode(.tail)
                     .padding(.leading, 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Button { Task { await model.goBack() } } label: { Label("Go Back", systemImage: "arrow.left") }
-                    .help("Return after a section jump (⌘[)")
-                    .disabled(!model.canGoBack)
-                Button { model.showFind() } label: { Label("Find", systemImage: "magnifyingglass") }
-                    .help("Find (⌘F)")
+                ReaderEditControl(actions: editActions, hasDocument: model.snapshot != nil)
                 Menu {
+                    Button("Find…") { model.showFind() }
+                    Button("Go Back") { Task { await model.goBack() } }.disabled(!model.canGoBack)
+                    ViewOptionsMenu(model: model)
+                    Divider()
                     RevisionMenu(model: model, showsReviewActions: false)
                     if (model.snapshot?.revisions.count ?? 0) > 1 {
                         Button("Go to Revision…") { model.review.entry = .show }
                         Button(model.review.shown == nil ? "Review Changes" : "Close Comparison") { Task { await model.reviewChanges() } }
                     }
                     Button("Show Latest Revision") { Task { await model.refresh() } }
-                    ViewOptionsMenu(model: model)
                     Divider()
                     Button("Copy Markdown") { model.copyMarkdown() }
                         .disabled(model.snapshot == nil)
+                    ReaderCopyAction(actions: editActions)
                     Button("Document Details") { model.detailsVisible.toggle() }
                     Divider()
                     Button("Return to Terminal", action: release)
@@ -326,13 +392,6 @@ struct EmbeddedHeader: View {
                 Button { close() } label: { Label("Close", systemImage: "xmark") }
                     .help("Close the reader (⌘W)")
             }
-            if model.snapshot != nil {
-                Text(model.readingStatus)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
         }
         .labelStyle(.iconOnly)
         .buttonStyle(.borderless)
@@ -343,6 +402,30 @@ struct EmbeddedHeader: View {
         .padding(.vertical, 6)
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
+    }
+}
+
+private struct ReaderEditControl: View {
+    let actions: ReaderEditActions?
+    let hasDocument: Bool
+
+    var body: some View {
+        if let action = actions?.edit ?? actions?.editCopy {
+            let label = actions?.edit != nil ? "Edit" : "Edit Copy"
+            Button(action: action) { Label(label, systemImage: "square.and.pencil") }
+                .disabled(!hasDocument || actions?.isEnabled != true)
+                .help(label == "Edit" ? "Edit this document" : "Edit a copy; keep the captured source unchanged")
+        }
+    }
+}
+
+private struct ReaderCopyAction: View {
+    let actions: ReaderEditActions?
+
+    var body: some View {
+        if actions?.edit != nil, let copy = actions?.editCopy {
+            Button("Edit a Copy", action: copy).disabled(actions?.isEnabled != true)
+        }
     }
 }
 
@@ -366,40 +449,12 @@ struct Banner<Message: View, Action: View>: View {
     }
 }
 
-struct DocumentHeader: View {
-    @Bindable var model: ReaderModel
-
-    var body: some View {
-        if let snapshot = model.snapshot {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(model.readingStatus + " · " + Provenance.summary(snapshot, rendered: model.rendered, latestRevision: model.latestRevision))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                Button { model.detailsVisible.toggle() } label: { Image(systemName: "info.circle") }
-                    .buttonStyle(.borderless)
-                    .help("Show document details (⌘I)")
-                    .accessibilityLabel("Document details")
-                    .popover(isPresented: $model.detailsVisible, arrowEdge: .bottom) {
-                        DetailsView(model: model)
-                    }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 5)
-            .overlay(alignment: .bottom) { Divider() }
-        }
-    }
-}
-
 struct OutlineControl: View {
     @Bindable var model: ReaderModel
 
     var body: some View {
-        Button { model.toggleOutline() } label: { Label("Outline", systemImage: "sidebar.left") }
-            .help("Show or hide the outline (⌃⌘S)")
+        Button { model.toggleOutline() } label: { Label("Contents", systemImage: "sidebar.left") }
+            .help("Show or hide contents (⌃⌘S)")
             .disabled(model.rendered?.outline.isEmpty ?? true)
             .popover(isPresented: $model.outlinePopoverVisible, arrowEdge: .bottom) {
                 OutlineList(model: model)
@@ -487,5 +542,46 @@ struct DetailsView: View {
         .padding(16)
         .frame(width: 520)
         .task { model.imageEvidence = await model.inspectImages() }
+    }
+}
+
+/// Observes completed native selection gestures without consuming input or changing focus.
+private struct ReaderSelectionEvents: NSViewRepresentable {
+    let changed: () -> Void
+    func makeNSView(context: Context) -> SelectionEventView { SelectionEventView() }
+    func updateNSView(_ view: SelectionEventView, context: Context) { view.changed = changed }
+    static func dismantleNSView(_ view: SelectionEventView, coordinator: ()) { view.stop() }
+}
+
+private final class SelectionEventView: NSView {
+    var changed: (() -> Void)?
+    private var monitor: Any?
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        stop()
+        guard window != nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .keyUp]) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self, let window = self.window, event.window === window,
+                      !self.isHiddenOrHasHiddenAncestor else { return }
+                let area = self.convert(self.bounds, to: nil)
+                if event.type == .leftMouseUp {
+                    guard area.contains(event.locationInWindow) else { return }
+                } else {
+                    guard let responder = window.firstResponder as? NSView,
+                          area.intersects(responder.convert(responder.bounds, to: nil)) else { return }
+                }
+                DispatchQueue.main.async { [weak self, weak window] in
+                    guard let self, self.window === window, !self.isHiddenOrHasHiddenAncestor else { return }
+                    self.changed?()
+                }
+            }
+            return event
+        }
+    }
+    func stop() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
     }
 }

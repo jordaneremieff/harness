@@ -77,6 +77,29 @@ private final class DraftWriteGate: @unchecked Sendable {
     gate.release.signal()
 }
 
+@Test @MainActor func liveReceiptBecomesDurableWhileTypingContinues() async throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let gate = DraftWriteGate()
+    let store = DraftStore(directory: root, beforeWriteForCheck: { gate.hold() })
+    let session = EditSession(drafts: store)
+    session.receive(source: "agent edit", generation: 1, selection: .init(), markedText: false)
+    let exact = LiveEditReceipt(operationId: UUID().uuidString, inputDigest: "input", generation: 1, digest: "source")
+    session.retainLiveReceipt(exact)
+    let writing = Task { await session.persistLiveReceipt(exact) }
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while !gate.started, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+    #expect(gate.started)
+    session.receive(source: "agent edit plus human text", generation: 2, selection: .init(), markedText: false)
+    gate.release.signal()
+    #expect(await writing.value)
+    #expect(session.record.source == "agent edit plus human text")
+    #expect(session.recovery == .pending)
+    let retained = try await store.load(id: session.record.id, branch: session.record.branch)
+    #expect(retained.liveReceipts?.contains(exact) == true)
+    #expect(retained.source == "agent edit")
+}
+
 @Test func draftListingSelectsNewestBeforePaging() async throws {
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }

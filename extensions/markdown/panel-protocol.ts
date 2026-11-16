@@ -1,8 +1,9 @@
 import { isAbsolute } from "node:path";
+import { readLiveConfig, type LiveConfig } from "./live-protocol.ts";
 import { SOURCE_BYTES, type Completeness, type RecentResponses, type ResponseOrigin, type ResponseSnapshot, responseDigest, responseText, validUnicode } from "./responses.ts";
 
 export const PAGE_BYTES = 256 * 1024;
-export type MarkdownRequest = { op: "recent" } | { op: "response"; entryId: string; offset: number } | { op: "published" };
+export type MarkdownRequest = { op: "recent" } | { op: "response"; entryId: string; offset: number } | { op: "published" } | { op: "live" };
 export interface DocumentRow { id: string; title: string; revision: number; bytes: number; kind: "published" | "response" | "file"; digest: string; updatedAt: string }
 export interface ResponsePage {
 	op: "response";
@@ -19,7 +20,7 @@ export interface ResponsePage {
 	completeness: Completeness;
 	provenance: ResponseOrigin;
 }
-export type MarkdownAnswer = ({ op: "recent" } & RecentResponses) | ResponsePage | { op: "published"; rows: DocumentRow[]; root: string; storeId?: string; limited: boolean; unreadable: number };
+export type MarkdownAnswer = ({ op: "recent" } & RecentResponses) | ResponsePage | { op: "published"; rows: DocumentRow[]; root: string; storeId?: string; limited: boolean; unreadable: number } | { op: "live"; connection: LiveConfig };
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const integer = (value: unknown, max = SOURCE_BYTES): value is number => Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= max;
 const timestamp = (value: unknown): boolean => value === undefined || (typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= 8.64e15);
@@ -32,6 +33,7 @@ export function readPanelRequest(value: unknown): MarkdownRequest {
 	if (record(value)) {
 		if (value.op === "recent" && keys(value, ["op"])) return { op: "recent" };
 		if (value.op === "published" && keys(value, ["op"])) return { op: "published" };
+		if (value.op === "live" && keys(value, ["op"])) return { op: "live" };
 		if (value.op === "response" && keys(value, ["op", "entryId", "offset"]) && text(value.entryId, 200) && /^[1-9]\d*$/u.test(value.entryId) && Number.isSafeInteger(Number(value.entryId)) && integer(value.offset)) return { op: "response", entryId: value.entryId, offset: value.offset };
 	}
 	throw new Error("Invalid Markdown request; expected recent, response with entryId and offset, or published.");
@@ -43,6 +45,7 @@ function readListingAnswer(value: Record<string, unknown>): MarkdownAnswer | und
 }
 export function readPanelAnswer(request: MarkdownRequest, value: unknown): MarkdownAnswer {
 	if (!record(value) || value.op !== request.op) throw new Error("The host returned a different Markdown operation.");
+	if (request.op === "live") return { op: "live", connection: readLiveConfig(value.connection) };
 	const listing = readListingAnswer(value);
 	if (listing) return listing;
 	if (value.op === "response" && request.op === "response" && value.entryId === request.entryId && value.offset === request.offset && timestamp(value.timestamp) && integer(value.chars) && integer(value.bytes) && typeof value.text === "string" && validUnicode(value.text) && Buffer.byteLength(value.text) <= PAGE_BYTES && (value.nextOffset === null || integer(value.nextOffset)) && digest(value.digest) && Array.isArray(value.parts) && value.parts.length > 0 && value.parts.every((size) => integer(size) && size > 0) && text(value.stop, 100) && complete(value.completeness) && origin(value.provenance)) {

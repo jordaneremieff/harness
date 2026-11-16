@@ -2,22 +2,29 @@ import AppKit
 import ReaderFeature
 import SwiftUI
 
-/// One mounted owner for the native source view. Modes change layout, never the source view's
-/// parent: outgoing SwiftUI branches must not reclaim the editor from an incoming branch.
+/// Read and edit presentations share one mounted source owner and one WebPage view provider.
+/// Replacing either presentation must not attach the retained WebPage to overlapping hosts.
 struct EditorModeLayout: NSViewRepresentable {
     let document: WorkingDocument
+    var readingChrome: ReaderChrome = .preview
+    var editActions: ReaderEditActions?
+    private var displayedMode: EditorMode { document.readingDraft ? .rendered : document.mode }
 
     func makeNSView(context: NSViewRepresentableContext<Self>) -> EditorModeSplitView {
-        EditorModeSplitView(source: document.text.scrollView, preview: EditorDraftPreview(document: document), mode: document.mode)
+        EditorModeSplitView(source: document.text.scrollView,
+            preview: EditorDraftPreview(document: document, readingChrome: readingChrome, editActions: editActions),
+            mode: displayedMode)
     }
 
     func updateNSView(_ view: EditorModeSplitView, context: NSViewRepresentableContext<Self>) {
-        view.setMode(document.mode)
+        view.setMode(displayedMode)
     }
 }
 
 struct EditorDraftPreview: View {
     @Bindable var document: WorkingDocument
+    var readingChrome: ReaderChrome = .preview
+    var editActions: ReaderEditActions?
     var body: some View {
         VStack(spacing: 0) {
             if document.preview.draftGeneration != document.session.record.generation {
@@ -26,7 +33,10 @@ struct EditorDraftPreview: View {
                     Spacer()
                 }.padding(6)
             }
-            ReaderView(model: document.preview, chrome: .preview)
+            ReaderView(model: document.preview, chrome: document.readingDraft ? readingChrome : .preview,
+                editActions: document.readingDraft ? editActions : nil,
+                selectionChanged: document.annotationsEnabled ? document.onAnnotationSelection : nil,
+                commentSelection: document.annotationsEnabled ? document.onCommentSelection : nil)
         }
     }
 }
@@ -79,7 +89,7 @@ final class EditorModeSplitView: NSSplitView, NSSplitViewDelegate {
         let width = max(0, bounds.width), height = max(0, bounds.height)
         applyVisibility()
         switch mode {
-        case .styled, .raw:
+        case .visual, .styled, .raw:
             source.frame = NSRect(x: 0, y: 0, width: width, height: height)
             preview.frame = .zero
         case .rendered:

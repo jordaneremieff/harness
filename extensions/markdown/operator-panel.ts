@@ -10,6 +10,11 @@ export function panelOperations(host: PanelHost): MarkdownOperations {
 		signal.throwIfAborted();
 		return readPanelAnswer(request, answer.data);
 	};
+	const connection = async (signal: AbortSignal) => {
+		const answer = await ask({ op: "live" }, signal);
+		if (answer.op !== "live") throw new Error("The host did not supply an exact-conversation connection.");
+		return answer.connection;
+	};
 	const read = async (row: MarkdownRow, signal: AbortSignal, editing = false, copy = false): Promise<string> => {
 		if (row.kind === "response") {
 			const entryId = row.response.entryId;
@@ -17,14 +22,18 @@ export function panelOperations(host: PanelHost): MarkdownOperations {
 			signal.throwIfAborted();
 			const reveal = await import("./reveal.ts");
 			signal.throwIfAborted();
-			return editing ? reveal.openEditorResponse(response, signal) : reveal.openResponse(response, signal);
+			const live = await connection(signal);
+			signal.throwIfAborted();
+			return editing ? reveal.openEditorResponse(response, signal, { live }) : reveal.openResponse(response, signal, true, "pane", live);
 		}
 		const { id, revision, digest } = row.document;
 		const { root, storeId } = row;
 		if (!root || !storeId) throw new Error("The host did not supply a local store identity.");
 		const reveal = await import("./reveal.ts");
 		signal.throwIfAborted();
-		return editing ? reveal.openEditorStored(root, id, copy ? "copy" : "edit", signal, { storeId, pin: { revision, digest } }) : reveal.openStored(root, id, signal, { gui: true, storeId, pin: { revision, digest } });
+		const live = await connection(signal);
+		signal.throwIfAborted();
+		return editing ? reveal.openEditorStored(root, id, copy ? "copy" : "edit", signal, { storeId, pin: { revision, digest }, live }) : reveal.openStored(root, id, signal, { gui: true, storeId, pin: { revision, digest }, live });
 	};
 	const publishedCoverage = (answer: { rows: unknown[]; limited: boolean; unreadable: number }) => [`${answer.rows.length} published document${answer.rows.length === 1 ? "" : "s"}`, ...(answer.limited ? ["store scan limit reached"] : []), ...(answer.unreadable ? [`${answer.unreadable} unreadable, not listed`] : [])].join(" · ");
 	return {
@@ -44,7 +53,9 @@ export function panelOperations(host: PanelHost): MarkdownOperations {
 			signal.throwIfAborted();
 			const reveal = await import("./reveal.ts");
 			signal.throwIfAborted();
-			return reveal.openScratchpad(signal);
+			const live = await connection(signal);
+			signal.throwIfAborted();
+			return reveal.openScratchpad(signal, { live });
 		},
 		latest: async (signal) => {
 			const answer = await ask({ op: "recent" }, signal);
