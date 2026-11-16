@@ -3,6 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { runToolCall, type AgentTool } from "@earendil-works/pi-agent-core";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { publish, publicationText, type PublishOutcome } from "./publish.ts";
 import { createReadTool, READ_PAGE_BYTES, readStored, readText, SEARCH_LIMITS, sourcePage, type ReadOutcome } from "./read.ts";
 import { MarkdownStore } from "./store.ts";
@@ -62,6 +64,39 @@ test("a source search finds text in current revisions within stated bounds", () 
 	assert.equal(SEARCH_LIMITS.documents, 200);
 }));
 
+test("source search pins candidate revisions across a concurrent publication", (t) => fixture(async (root, store) => {
+	const options = { cwd: root, store };
+	const first = saved(await publish({ title: "Search document", text: "# Original\n\nneedle original.\n" }, options));
+	const list = store.list.bind(store);
+	t.mock.method(store, "list", async (params: Parameters<MarkdownStore["list"]>[0]) => {
+		const candidates = await list(params);
+		saved(await publish({ title: "Replacement title", text: `# Replacement\n\nneedle replacement.\n${"x".repeat(READ_PAGE_BYTES)}`, document: first.documentId, expectedRevision: 1 }, options));
+		return candidates;
+	});
+	const outcome = found(await readStored(store, { contains: "needle" }));
+	assert.equal(outcome.matched, 1); assert.equal(outcome.search?.bytes, first.bytes);
+	assert.deepEqual(outcome.rows.map(({ id, title, revision, bytes, digest, excerpt }) => ({ id, title, revision, bytes, digest, excerpt })), [{ id: first.documentId, title: first.title, revision: 1, bytes: first.bytes, digest: first.digest, excerpt: { line: 3, text: "needle original." } }]);
+	assert.equal(outcome.search?.complete, true); assert.equal(outcome.search?.unreadable, 0);
+	assert.equal((await store.get(first.documentId)).document.revision, 2);
+}));
+
+test("historical read guidance requires the current source before a correction", () => fixture(async (root, store) => {
+	const options = { cwd: root, store };
+	const first = saved(await publish({ title: "Plan", text: "# Plan\n\nOriginal.\n" }, options));
+	const newer = "# Plan\n\nOriginal.\nNewer work.\n";
+	saved(await publish({ title: "Plan", text: newer, document: first.documentId, expectedRevision: 1 }, options));
+	const historical = read(await readStored(store, { document: first.documentId, revision: 1 }));
+	const header = readText(historical).header;
+	assert.doesNotMatch(header, /expectedRevision/u);
+	assert.ok(header.includes(`read the current revision with markdown_read ${JSON.stringify({ document: first.documentId, revision: 2 })}`));
+	assert.match(header, /This historical text is not the update base/u);
+	const current = read(await readStored(store, { document: first.documentId, revision: historical.currentRevision }));
+	assert.match(readText(current).header, /expectedRevision 2/u);
+	saved(await publish({ title: "Plan", text: `${current.text}Correction.\n`, document: first.documentId, expectedRevision: current.revision }, options));
+	assert.equal((await store.get(first.documentId)).source, `${newer}Correction.\n`);
+	assert.equal((await store.get(first.documentId, 1)).source, historical.text);
+}));
+
 test("reading returns exact pages of a named revision and the steps to correct it", () => fixture(async (root, store) => {
 	const options = { cwd: root, store };
 	const emoji = "\u{1F998}";
@@ -113,6 +148,25 @@ test("a read lists retained and unavailable images on its first page", () => fix
 	assert.equal(result.content.length, 2);
 	assert.equal(result.content[1]?.type === "text" ? result.content[1].text : "", "![diagram](diagram.svg)\n![gone](gone.png)\n");
 	assert.deepEqual(result.structuredContent, result.details);
+}));
+
+test("the ordinary tool pipeline retains long lines and paged source exactly", () => fixture(async (_root, store) => {
+	const source = `${"x".repeat(60000)}\n${"y\n".repeat(5000)}🦘end`;
+	const saved = await store.create({ title: "Exact source", source, contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() } });
+	const tool = createReadTool({ store });
+	const adapted: AgentTool<typeof tool.parameters, ReadOutcome> = { name: tool.name, label: tool.label, description: tool.description, parameters: tool.parameters, outputSchema: tool.outputSchema, execute: (id, params, signal, update) => tool.execute(id, params, signal, update, {} as never) };
+	let offset: number | null = 0; let acquired = "";
+	do {
+		const args = { document: saved.document.id, revision: 1, offset };
+		const call = fauxToolCall("markdown_read", args);
+		const assistantMessage = fauxAssistantMessage(call, { stopReason: "toolUse" });
+		const outcome = await runToolCall(call, { tools: [adapted], assistantMessage, context: { messages: [assistantMessage], tools: [adapted] } });
+		assert.equal(outcome.isError, false);
+		const page = read(outcome.result.details); const text = readText(page);
+		assert.deepEqual(outcome.result.content, [{ type: "text", text: text.header }, { type: "text", text: text.source }]);
+		acquired += page.text; offset = page.nextOffset;
+	} while (offset !== null);
+	assert.ok(acquired === source, "the ordinary pipeline retains every source code unit");
 }));
 
 test("source pages count UTF-16 offsets and refuse a split pair", () => {

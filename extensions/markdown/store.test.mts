@@ -111,7 +111,7 @@ test("the writer lock stays inside the root and UTF-8 byte order marks remain ex
 }));
 test("collections isolate snapshots and recent listing applies its result limit after sorting", () => fixture(async (store, root) => {
 	const first = await store.create(input("first")); const second = await store.create(input("second")); const third = await store.create(input("third"));
-	for (const [saved, updatedAt] of [[first, "2026-01-03"], [second, "2026-01-01"], [third, "2026-01-02"]] as const) await writeFile(join(root, "documents", saved.document.id, "document.json"), JSON.stringify({ ...saved.document, updatedAt }));
+	for (const [saved, updatedAt] of [[first, "2026-01-03T00:00:00.000Z"], [second, "2026-01-01T00:00:00.000Z"], [third, "2026-01-02T00:00:00.000Z"]] as const) await writeFile(join(root, "documents", saved.document.id, "document.json"), JSON.stringify({ ...saved.document, updatedAt }));
 	const recent = await store.list({ limit: 1 }); assert.equal(recent.documents[0]?.id, first.document.id); assert.equal(recent.bounded, false); assert.equal(recent.scanned, 3);
 	const snapshot = await store.snapshot("response", "response", input());
 	assert.equal((await store.get(snapshot.document.id)).document.kind, "response");
@@ -122,6 +122,33 @@ test("collections isolate snapshots and recent listing applies its result limit 
 	await assert.rejects(store.get(snapshot.document.id), code("store-failure"));
 	const namesOnly = "md-eeeeeeeeeeeeeeeeeeee"; await mkdir(join(root, "snapshots", namesOnly)); assert.equal(await store.resolve("md-eeeeee"), namesOnly);
 	await assert.rejects(store.list({ limit: Number.NaN }), code("invalid"));
+}));
+test("listing isolates malformed pointer fields before filtering and sorting", () => fixture(async (store, root) => {
+	const healthy = await store.create(input());
+	const missing = ["version", "id", "kind", "title", "createdAt", "updatedAt", "revision", "digest", "bytes"].map((key) => {
+		const record: Record<string, unknown> = { ...healthy.document }; delete record[key]; return record;
+	});
+	const changes = [
+		{ version: 2 }, { id: "wrong" }, { kind: "other" }, { revision: 0 }, { revision: 1.5 }, { revision: "1" },
+		{ title: null }, { title: {} }, { title: "" }, { title: " " }, { title: "x\nline" }, { title: "x\u202e" }, { title: "\ud800" }, { title: "🦘".repeat(LIMITS.titleChars + 1) },
+		{ createdAt: null }, { createdAt: 1 }, { createdAt: "invalid" }, { createdAt: "2026-02-30T00:00:00.000Z" },
+		{ updatedAt: null }, { updatedAt: 1 }, { updatedAt: "invalid" }, { updatedAt: "2026-02-30T00:00:00.000Z" },
+		{ digest: null }, { digest: 1 }, { digest: "sha256:wrong" },
+		{ bytes: null }, { bytes: "1" }, { bytes: -1 }, { bytes: 1.5 }, { bytes: LIMITS.sourceBytes + 1 },
+	].map((change) => ({ ...healthy.document, ...change }));
+	const malformed: unknown[] = [...missing, ...changes, null, [], 1];
+	for (const [index, record] of malformed.entries()) {
+		const id = `md-${index.toString(16).padStart(20, "0")}`;
+		const value = record && !Array.isArray(record) && typeof record === "object" && "id" in record && record.id === healthy.document.id ? { ...record, id } : record;
+		const path = join(root, "documents", id); await mkdir(path); await writeFile(join(path, "document.json"), JSON.stringify(value));
+	}
+	for (const match of [undefined, (record: { title: string }) => record.title.toLowerCase().includes("unicode")]) {
+		const listed = await store.list({ match });
+		assert.deepEqual(listed.documents, [healthy.document]);
+		assert.equal(listed.unreadable, malformed.length); assert.equal(listed.scanned, malformed.length + 1);
+		assert.equal(listed.matched, 1); assert.equal(listed.bounded, false);
+	}
+	assert.equal((await store.get(healthy.document.id)).source, healthy.source);
 }));
 test("a failed write removes its own staging directory and keeps the committed document", () => fixture(async (store, root) => {
 	const staging = async (path: string) => (await readdir(path)).filter((name) => name.startsWith(".tmp-"));

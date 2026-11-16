@@ -12,6 +12,7 @@ import * as Durable from "@earendil-works/pi-durable";
 import { markdownContribution, type MarkdownCommandCall, type MarkdownHost } from "./durable.ts";
 import { acquireResponse, PAGE_BYTES, readPanelAnswer } from "./panel-protocol.ts";
 import { MarkdownStore } from "./store.ts";
+import { createNativeReadTool, READ_PAGE_BYTES, readStored, readText, type ReadInput } from "./read.ts";
 
 test("a native agent reads an exact revision and recovers from a stale update through the model tools", { timeout: 20000 }, async () => {
 	const root = await mkdtemp(join(tmpdir(), "markdown-native-read-"));
@@ -60,6 +61,44 @@ test("a native agent reads an exact revision and recovers from a stale update th
 		for (const [key, value] of Object.entries({ PI_MARKDOWN_DIR: previous.dir, PI_MARKDOWN_APP: previous.app, PI_HARNESS_FILE: previous.file })) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+for (const [name, source] of [
+	["one line above the default byte limit", "x".repeat(READ_PAGE_BYTES)],
+	["short lines above the default line limit", "x\n".repeat(2500)],
+	["a page filled with newlines", `${"\n".repeat(READ_PAGE_BYTES - 1)}x`],
+	["multiple pages with Unicode boundaries", `${"a".repeat(READ_PAGE_BYTES - 1)}🦘${"b\n".repeat(READ_PAGE_BYTES)}end`],
+]) test(`native stored reads retain exact headers and source for ${name}`, { timeout: 20000 }, async () => {
+	const root = await mkdtemp(join(tmpdir(), "markdown-native-page-"));
+	const store = new MarkdownStore(root);
+	const faux = fauxProvider(); const models = createModels(); models.setProvider(faux.provider);
+	const registry = Durable.createRegistry();
+	registry.install(Durable.defineExtension({ name: "markdown", tools: [createNativeReadTool(Durable, { store })] }));
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
+	try {
+		const saved = await store.create({ title: "Exact source", source, contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() } });
+		const inputs: ReadInput[] = []; const expected: { header: string; source?: string }[] = [];
+		let offset: number | null = 0;
+		do {
+			const input: ReadInput = { document: saved.document.id, revision: 1, offset };
+			const page = await readStored(store, input);
+			assert.ok(page.ok && page.op === "read");
+			inputs.push(input); expected.push(readText(page)); offset = page.nextOffset;
+		} while (offset !== null);
+		const conversation = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+		faux.setResponses([...inputs.map((input) => fauxAssistantMessage(fauxToolCall("markdown_read", input), { stopReason: "toolUse" })), fauxAssistantMessage("Read complete.")]);
+		assert.equal((await (await conversation.submit({ type: "input", content: "Read every exact page." }, context)).wait(context)).status, "done");
+		const entries = (await conversation.entries({}, 100, undefined, context)).items.filter(Durable.ToolResultEntry.is).sort((a, b) => Number(a.id) - Number(b.id));
+		assert.equal(entries.length, expected.length);
+		let acquired = "";
+		for (const [index, entry] of entries.entries()) {
+			assert.deepEqual(entry.data.diagnostics, []);
+			const message = entry.model?.[0]; assert.ok(message?.role === "toolResult" && !message.isError);
+			assert.deepEqual(message.content, [{ type: "text", text: expected[index].header }, { type: "text", text: expected[index].source }]);
+			acquired += expected[index].source;
+		}
+		assert.ok(acquired === source, "the model-visible pages retain the complete source");
+	} finally { await harness.close(context); await rm(root, { recursive: true, force: true }); }
 });
 
 // Native calls use the open host Harness; the contribution never opens storage itself.

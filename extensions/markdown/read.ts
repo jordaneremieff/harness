@@ -12,7 +12,7 @@ import { type AssetRecord, type Completeness, type ContentOrigin, type DocumentK
 /** UTF-8 bytes of source text in one page. */
 export const READ_PAGE_BYTES = 64 * 1024;
 const FIND_ROWS = 20;
-/** A source search reads at most this many current revisions, newest first, and at most this many bytes. */
+/** A source search reads the listed revisions, newest first, up to these document and byte bounds. */
 export const SEARCH_LIMITS = { documents: 200, bytes: 32 * 1024 * 1024 } as const;
 const EXCERPT_CHARS = 160;
 const LISTED_IMAGES = 32;
@@ -67,7 +67,7 @@ async function find(store: MarkdownStore, params: ReadInput): Promise<ReadOutcom
 	return { ...base, search: found.search, rows: found.rows.slice(0, FIND_ROWS), matched: found.rows.length };
 }
 /**
- * Reads current revisions newest first until the bounds stop it, and keeps those whose source
+ * Reads the listed revisions newest first until the bounds stop it, and keeps those whose source
  * contains the text, with the first matching line. Case folding can change a string's length,
  * so the excerpt is the original line at the line number found in the folded text.
  */
@@ -79,7 +79,7 @@ async function searchSources(store: MarkdownStore, candidates: DocumentRecord[],
 		if (searched >= SEARCH_LIMITS.documents || bytes + candidate.bytes > SEARCH_LIMITS.bytes) break;
 		searched++; bytes += candidate.bytes;
 		let source: string;
-		try { source = (await store.get(candidate.id)).source; } catch { unreadable++; continue; }
+		try { source = (await store.get(candidate.id, candidate.revision)).source; } catch { unreadable++; continue; }
 		const at = source.toLowerCase().indexOf(needle);
 		if (at < 0) continue;
 		const line = source.toLowerCase().slice(0, at).split("\n").length;
@@ -168,7 +168,9 @@ function readHeader(outcome: Extract<ReadOutcome, { op: "read" }>): string {
 	const coverage = coverageText(outcome.references, outcome.provenance.kind);
 	const newer = outcome.revision === outcome.currentRevision ? "" : ` Revision ${outcome.currentRevision} is current.`;
 	const partial = outcome.completeness.state === "partial" ? ` The captured response is partial (${outcome.completeness.reason ?? "unknown reason"}).` : "";
-	const update = outcome.kind === "published" ? ` To correct it, publish with document ${outcome.documentId} and expectedRevision ${outcome.currentRevision}.` : "";
+	const update = outcome.kind !== "published" ? "" : outcome.revision === outcome.currentRevision
+		? ` To correct it, publish with document ${outcome.documentId} and expectedRevision ${outcome.revision}.`
+		: ` Before a correction, read the current revision with markdown_read ${JSON.stringify({ document: outcome.documentId, revision: outcome.currentRevision })}. This historical text is not the update base.`;
 	const show = outcome.show ? [`To show it, type ${JSON.stringify(`:open ${outcome.documentId}`)} and Enter into a reader pane that you opened${outcome.paneInput ? "" : " (this reader build cannot)"}, or run ${JSON.stringify(outcome.show)} as the program of a new pane.`] : [];
 	return [`${outcome.documentId} revision ${outcome.revision} of ${outcome.currentRevision} · ${outcome.kind} · ${JSON.stringify(line(outcome.revisionTitle))} · ${outcome.bytes} bytes · ${outcome.digest}.${newer}${partial}${update}`, ...(coverage ? [coverage] : []), ...show, position].join("\n");
 }
@@ -192,7 +194,9 @@ export function createReadTool(options: { store: MarkdownStore; app?: string; co
 	} };
 }
 export function createNativeReadTool(durable: typeof Durable, options: { store: MarkdownStore; app?: string; connection?: (conversation: Durable.ConversationId, context: Context) => Promise<LiveConfig> }): Durable.ToolRegistration<typeof ReadParameters, Durable.JsonObject> {
-	return durable.defineTool({ name: "markdown_read", description: DESCRIPTION, parameters: ReadParameters, structuredOutputSchema: ReadOutcomeSchema, replay: "safe", async execute(params, api, context) {
+	return durable.defineTool({ name: "markdown_read", description: DESCRIPTION, parameters: ReadParameters, structuredOutputSchema: ReadOutcomeSchema, replay: "safe",
+		// A source page can be all newlines; both limits also reserve room for the header and launch guidance.
+		outputLimits: { maxBytes: READ_PAGE_BYTES * 2, maxLines: READ_PAGE_BYTES + 128 }, async execute(params, api, context) {
 		let outcome = await readStored(options.store, params as ReadInput, options.app);
 		const connection = options.connection;
 		if (outcome.ok && outcome.op === "read") outcome = await withLiveShow(outcome, options.app, connection ? () => connection(api.conversationId, context) : undefined, context.abortSignal);

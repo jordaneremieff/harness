@@ -30,10 +30,13 @@ export class StoreError extends Error {
 export function digest(source: string | Uint8Array): string { return `sha256:${createHash("sha256").update(source).digest("hex")}`; }
 function hash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 function validId(value: string): boolean { return /^md-[0-9a-f]{20}$/.test(value); }
+function validTitle(value: unknown): value is string {
+	return typeof value === "string" && !!value.trim() && [...value].length <= LIMITS.titleChars && !/[\p{Cc}\p{Zl}\p{Zp}\u202a-\u202e\u2066-\u2069\ud800-\udfff]/u.test(value);
+}
 export function validateInput(input: WriteInput): void {
 	if (typeof input.source !== "string" || /[\ud800-\udfff]/u.test(input.source)) throw new StoreError("invalid", "Source must contain valid Unicode text.");
 	if (Buffer.byteLength(input.source) > LIMITS.sourceBytes) throw new StoreError("too-large", "Source exceeds 2 MiB.");
-	if (typeof input.title !== "string" || !input.title.trim() || [...input.title].length > LIMITS.titleChars || /[\p{Cc}\p{Zl}\p{Zp}\u202a-\u202e\u2066-\u2069\ud800-\udfff]/u.test(input.title)) throw new StoreError("invalid", "Title must contain one nonempty line of at most 200 characters.");
+	if (!validTitle(input.title)) throw new StoreError("invalid", "Title must contain one nonempty line of at most 200 characters.");
 	validateAssets(input.assets ?? []);
 	validateReferences(input.references);
 }
@@ -96,7 +99,18 @@ export type StoreIdentity = { version: 1; storeId: string };
 function validIdentity(value: StoreIdentity): boolean { return value?.version === 1 && typeof value.storeId === "string" && /^[0-9a-f]{32}$/.test(value.storeId); }
 function listingRecord(record: DocumentRecord, name: string, kind: DocumentKind): boolean { return validPointer(record, name) && record.kind === kind; }
 function collection(kind: DocumentKind): "documents" | "snapshots" { return kind === "published" ? "documents" : "snapshots"; }
-function validPointer(record: DocumentRecord, id: string): boolean { return record.version === 1 && record.id === id && ["published", "response", "file"].includes(record.kind) && Number.isSafeInteger(record.revision) && record.revision > 0; }
+function validTimestamp(value: unknown): boolean {
+	return typeof value === "string" && value.length === 24 && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+function validPointer(value: unknown, id: string): value is DocumentRecord {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const record = value as DocumentRecord;
+	return record.version === 1 && record.id === id && ["published", "response", "file"].includes(record.kind)
+		&& Number.isSafeInteger(record.revision) && record.revision > 0 && validTitle(record.title)
+		&& validTimestamp(record.createdAt) && validTimestamp(record.updatedAt)
+		&& typeof record.digest === "string" && /^sha256:[0-9a-f]{64}$/.test(record.digest)
+		&& Number.isSafeInteger(record.bytes) && record.bytes >= 0 && record.bytes <= LIMITS.sourceBytes;
+}
 function pointerMatches(document: DocumentRecord, record: RevisionRecord): boolean { return document.digest === record.digest && document.bytes === record.bytes && document.title === record.title; }
 function listLimit(limit?: number): number { if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) throw new StoreError("invalid", "Listing limit must be a positive integer."); return Math.min(LIMITS.listing, limit ?? LIMITS.listing); }
 function absent(error: unknown): boolean { return (error as NodeJS.ErrnoException)?.code === "ENOENT"; }
