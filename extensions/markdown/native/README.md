@@ -48,7 +48,28 @@ The workspace freezes input during its final recovery write, then restores input
 external replacements leave the buffer intact and report a conflict. A no-op file save preserves
 its bytes and inode, including a UTF-8 BOM and mixed line endings. A save acknowledgement marks
 only the submitted source as saved; text typed later stays dirty. An unconfirmed library save
-retains its exact invocation for reconciliation before another publication starts.
+retains its exact invocation for reconciliation before another publication starts. The pending
+invocation must reach recovery storage before the writer starts; subsequent typing need not stop.
+
+Styled, Raw, Rendered and Split modes retain the same source controller. Preview uses the reader's
+safe rendering path without a fabricated file or revision identity. Hidden previews stop pending
+work. Mode changes defer while native text composition is active; document changes, saves and
+close actions instead explain that composition must finish first. The workspace contains its
+own library browser and read view, with explicit Edit or Edit Copy actions for stored documents.
+Captured files and responses require a copy.
+
+The explicit editor launch is:
+
+```text
+MarkdownReader --editor --surface pane|window --store <absolute directory> --intent scratchpad|file|edit|copy [--origin <JSON>] [absolute input path]
+```
+
+Scratchpad takes no input. File takes a local Markdown path. Edit and Copy take a validated pinned
+open request belonging to the selected store; its origin remains navigation context, not write
+authority. Scratchpad and File optionally accept the bounded origin JSON. Callers require the
+`editorOpen: 1` build capability independently of the bundled writer capability. A pane uses the
+existing terminal anchor and retains drafts before it exits. Failed recovery keeps an available
+pane open; terminal loss makes one bounded recovery attempt before exit.
 
 ## Build and install
 

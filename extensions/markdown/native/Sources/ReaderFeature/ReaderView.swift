@@ -6,6 +6,8 @@ import WebKit
 public enum ReaderChrome {
     /// A titled window: the controls sit in the window toolbar.
     case window
+    /// The editor owns the surrounding title, source mode and save controls.
+    case preview
     /// A borderless window inside another application's layout: the controls sit in a compact
     /// header. `close` ends the reader; `release` gives the keyboard back to that application.
     case embedded(close: () -> Void, release: () -> Void)
@@ -37,6 +39,7 @@ public struct ReaderView: View {
             VStack(spacing: 0) {
                 switch chrome {
                 case .window: DocumentHeader(model: model)
+                case .preview: EmptyView()
                 case .embedded(let close, let release): EmbeddedHeader(model: model, close: close, release: release)
                 }
                 banners
@@ -107,10 +110,12 @@ public struct ReaderView: View {
                 if !text.isEmpty { model.platform.copyText(text) }
             }
         }
-        Button("Copy Passage with Source") { Task { await model.copyPassageWithSource() } }
+        if !model.isDraft { Button("Copy Passage with Source") { Task { await model.copyPassageWithSource() } } }
         Button("Copy Markdown") { model.copyMarkdown() }
-        Divider()
-        Button(model.showingSource ? "Show Document" : "Show Source") { Task { await model.toggleSource() } }
+        if !model.isDraft {
+            Divider()
+            Button(model.showingSource ? "Show Document" : "Show Source") { Task { await model.toggleSource() } }
+        }
     }
 
     @ViewBuilder private var banners: some View {

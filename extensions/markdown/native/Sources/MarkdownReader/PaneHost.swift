@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import EditorFeature
 import MacPlatform
 import OSLog
 import MarkdownCore
@@ -22,6 +23,10 @@ let paneLog = Logger(subsystem: "local.harness.markdown-reader", category: "pane
 @MainActor
 final class PaneHost: NSObject, NSWindowDelegate {
     private(set) var model: ReaderModel
+    private(set) var workspace: EditorWorkspace?
+    var onWorkspaceChange: ((NSWindow, EditorWorkspace) -> Void)?
+    private var retaining = false
+    private var lostTerminal = false
     let state: ReadingStateStore
     private let platform: ReaderPlatform
     private let terminal: PaneTerminal
@@ -35,16 +40,17 @@ final class PaneHost: NSObject, NSWindowDelegate {
     private let anchor = TerminalAnchor()
     private var window: PaneWindow!
     private var content: PaneContentView!
-    private var hosting: NSHostingController<ReaderView>?
+    private var hosting: NSHostingController<AnyView>?
     private var placement: TerminalAnchor.Placement?
     private var ending = false
     private var observers: [NSObjectProtocol] = []
 
-    init(model: ReaderModel, platform: ReaderPlatform, state: ReadingStateStore, terminal: PaneTerminal) {
+    init(model: ReaderModel, platform: ReaderPlatform, state: ReadingStateStore, terminal: PaneTerminal, workspace: EditorWorkspace? = nil) {
         self.model = model
         self.platform = platform
         self.state = state
         self.terminal = terminal
+        self.workspace = workspace
     }
 
     func start(revision: Int? = nil, digest: String? = nil, origin: LaunchOrigin? = nil) -> NSWindow {
@@ -68,14 +74,38 @@ final class PaneHost: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated { self?.order() }
         })
         observePhase()
-        Task { await model.open(revision: revision, digest: digest, origin: origin) }
+        if let workspace { connect(workspace) }
+        else { Task { await model.open(revision: revision, digest: digest, origin: origin) } }
         return window
     }
 
     // MARK: - Window
 
-    private func view(_ model: ReaderModel) -> ReaderView {
-        ReaderView(model: model, chrome: .embedded(close: { [weak self] in self?.end(status: 0) }, release: { [weak self] in self?.releaseFocus() }))
+    private func view(_ model: ReaderModel) -> AnyView {
+        if let workspace { return AnyView(EditorWorkspaceView(workspace: workspace)) }
+        return AnyView(ReaderView(model: model, chrome: .embedded(close: { [weak self] in self?.end(status: 0) }, release: { [weak self] in self?.releaseFocus() })))
+    }
+
+    private func connect(_ workspace: EditorWorkspace) {
+        workspace.onClose = { [weak self] in self?.end(status: 0) }
+        workspace.onRelease = { [weak self] in self?.releaseFocus() }
+    }
+
+    func newScratchpad(showDrafts: Bool = false) {
+        if let workspace {
+            if showDrafts { Task { await workspace.library() } } else { workspace.newScratchpad() }
+            return
+        }
+        let root: String? = if case .stored(let root, _, _) = model.reference { root } else { state.selectedStoreRoot }
+        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: root)
+        self.workspace = workspace
+        workspace.launchOrigin = model.launchOrigin
+        connect(workspace)
+        if showDrafts { Task { await workspace.library() } } else { workspace.newScratchpad() }
+        hosting?.rootView = view(model)
+        onWorkspaceChange?(window, workspace)
+        Task { await model.close() }
+        observePhase(); draw()
     }
 
     private func makeWindow() -> PaneWindow {
@@ -98,10 +128,12 @@ final class PaneHost: NSObject, NSWindowDelegate {
         window.isMovable = false
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .ignoresCycle]
         window.delegate = self
+        window.onClose = { [weak self] in self?.end(status: 0) }
         window.onCancel = { [weak self] in
             // Escape first ends an image inspection or a comparison; otherwise it gives the
             // keyboard back.
             guard let self, !self.model.dismissOverlay() else { return }
+            guard self.workspace?.allowAction("releasing keyboard focus") != false else { return }
             self.releaseFocus()
         }
         return window
@@ -197,6 +229,10 @@ final class PaneHost: NSObject, NSWindowDelegate {
             message = "\(document) is not a document ID (md- and 20 hexadecimal digits)."
             return
         }
+        if let workspace {
+            Task { await workspace.readStored(document) }
+            return
+        }
         guard case .stored(let root, let storeId, let shown) = model.reference else { return }
         if document == shown {
             message = nil
@@ -227,17 +263,24 @@ final class PaneHost: NSObject, NSWindowDelegate {
                 return
             }
             let previous = model
-            await previous.close()
             guard !ending else { return }
             let next = ReaderModel(reference: .stored(root: root, storeId: storeId, document: document), platform: platform, state: state)
             next.followsLatest = true
             model = next
             hosting?.rootView = view(next)
-            onModelChange?(previous, next)
             message = nil
             observePhase()
-            paneLog.notice("pane opened \(document, privacy: .public) after \(shown, privacy: .public)")
             await next.open(revision: nil, origin: nil)
+            guard !ending else { await previous.close(); return }
+            if case .failed(let error) = next.phase {
+                model = previous; hosting?.rootView = view(previous)
+                message = "\(document) cannot be shown: \(error)"
+                await next.close(); observePhase()
+                return
+            }
+            onModelChange?(previous, next)
+            await previous.close()
+            paneLog.notice("pane opened \(document, privacy: .public) after \(shown, privacy: .public)")
         }
     }
 
@@ -247,6 +290,9 @@ final class PaneHost: NSObject, NSWindowDelegate {
         observation += 1
         let current = observation
         withObservationTracking {
+            _ = workspace?.active?.session.record.generation
+            _ = workspace?.active?.session.record.title
+            _ = workspace?.notice
             _ = model.phase
             _ = model.snapshot?.revision
             _ = model.latestRevision
@@ -260,7 +306,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
     }
 
     private func draw() {
-        let title = model.snapshot.map { _ in model.displayTitle } ?? "Opening the document"
+        let title = workspace?.active?.session.record.displayTitle ?? (workspace != nil ? "Markdown Workspace" : model.snapshot.map { _ in model.displayTitle } ?? "Opening the document")
         var status: String
         switch anchor.status {
         case .placed(let shown) where !shown.coveredEntirely: status = "Shown in the reader window over this pane."
@@ -269,6 +315,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
         case .untrusted: status = "This terminal cannot place the reader over its pane: the program has no accessibility access."
         }
         if case .failed(let reason) = model.phase { status = "The document could not be opened: \(reason)" }
+        if let notice = workspace?.notice { status = notice + " " + status }
         if let message { status = message + " " + status }
         terminal.draw(title: title, identity: identity(), status: status, keys: "q closes the reader. :open <document ID> shows another document here. Another key moves the keyboard to the reader.", command: commandLine, marker: anchor.marker)
     }
@@ -306,6 +353,25 @@ final class PaneHost: NSObject, NSWindowDelegate {
     /// at least 1 otherwise, with one line on standard error that says whether the position was
     /// not saved or may not have been saved. A terminal that hung up is not written to.
     func end(status: Int32, terminalGone: Bool = false) {
+        lostTerminal = lostTerminal || terminalGone
+        guard !ending, !retaining else { return }
+        guard let workspace else { finishEnd(status: status, terminalGone: lostTerminal); return }
+        retaining = true
+        Task { @MainActor in
+            let saved = Flag()
+            let completed = await Self.run(until: .now() + Self.saveAllowance) { saved.value = await workspace.prepareToClose() }
+            retaining = false
+            guard completed, saved.value else {
+                workspace.resumeEdits()
+                workspace.notice = "Draft recovery failed or timed out. The workspace remains open; retry Close after recovery succeeds."
+                if lostTerminal { finishEnd(status: max(status, 1), terminalGone: true) }
+                return
+            }
+            finishEnd(status: status, terminalGone: lostTerminal)
+        }
+    }
+
+    private func finishEnd(status: Int32, terminalGone: Bool) {
         guard !ending else { return }
         ending = true
         anchor.stop()
@@ -449,6 +515,7 @@ final class PaneContentView: NSView {
 /// the terminal application.
 final class PaneWindow: NSPanel {
     var onCancel: (() -> Void)?
+    var onClose: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -463,7 +530,7 @@ final class PaneWindow: NSPanel {
     }
 
     override func performClose(_ sender: Any?) {
-        close()
+        if let onClose { onClose() } else { close() }
     }
 
     /// A window without a close button disables Close in the menu; this one closes by its own

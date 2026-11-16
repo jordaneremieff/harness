@@ -2,6 +2,7 @@ import Foundation
 
 enum LaunchMode {
     case application
+    case editor(EditorLaunch)
     /// Shows one stored document in a reader window over the terminal pane that runs the
     /// program, for as long as the pane and the reader stay open.
     case pane(PaneTarget)
@@ -32,19 +33,30 @@ enum LaunchMode {
     var isAccessory: Bool {
         switch self {
         case .application, .present: false
+        case .editor(let launch): launch.surface == .pane
         default: true
         }
     }
 
     var isCheck: Bool {
         switch self {
-        case .application, .pane: false
+        case .application, .pane, .editor: false
         default: true
         }
     }
 
+    var isPane: Bool {
+        if case .pane = self { return true }
+        if case .editor(let launch) = self { return launch.surface == .pane }
+        return false
+    }
+
     static func parse(_ arguments: [String]) -> LaunchMode {
         guard let first = arguments.first, first.hasPrefix("--") else { return .application }
+        if first == "--editor" {
+            do { return .editor(try EditorLaunch.parse(Array(arguments.dropFirst()))) }
+            catch { return .usage(String(describing: error)) }
+        }
         var options: [String: String] = [:]
         var positional: [String] = []
         var index = 1

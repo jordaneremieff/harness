@@ -166,12 +166,27 @@ public final class EditSession {
         }
     }
 
-    @discardableResult public func persist() async -> Bool {
-        let snapshot = record, covered = revision
+    /// Publication needs its immutable invocation retained, not a pause in subsequent typing.
+    public func persistPendingPublication(_ exact: Data) async -> Bool {
+        guard record.pendingPublication == exact else { return false }
+        let snapshot = record
         do {
-            try await drafts.save(snapshot)
+            let receipt = try await drafts.save(snapshot)
+            recoveredRevision = max(recoveredRevision ?? 0, receipt.mutation)
+            recovery = recoveredRevision == revision ? .current : .pending
+            return receipt.pendingPublication == exact
+        } catch {
+            recovery = .failed(String(describing: error))
+            return false
+        }
+    }
+
+    @discardableResult public func persist() async -> Bool {
+        let snapshot = record
+        do {
+            let receipt = try await drafts.save(snapshot)
             // A concurrent flush can finish after a newer snapshot. Never move the receipt back.
-            recoveredRevision = max(recoveredRevision ?? 0, covered)
+            recoveredRevision = max(recoveredRevision ?? 0, receipt.mutation)
             recovery = recoveredRevision == revision ? .current : .pending
             return recoveredRevision == revision
         } catch {

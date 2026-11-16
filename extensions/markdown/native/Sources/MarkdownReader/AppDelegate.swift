@@ -1,4 +1,5 @@
 import AppKit
+import EditorFeature
 import MacPlatform
 import OSLog
 import MarkdownCore
@@ -46,8 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             platform.savePDF = { try await ExportPanel.pdf($0, name: $1) }
         }
         windows = WindowManager(state: state, platform: platform, defaultRoots: mode.isCheck ? [] : Self.defaultRoots())
-        windows.onOpenStore = { [weak self] in self?.openStore(nil) }
-        if case .pane = mode {
+        if mode.isPane {
             NSApp.mainMenu = buildMenu(pane: true)
         } else if !mode.isAccessory {
             NSApp.mainMenu = buildMenu(pane: false)
@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if case .editor(let launch) = mode { startEditor(launch); return }
         if case .pane(let target) = mode {
             startPane(target)
             return
@@ -75,11 +76,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // A quit request to a pane reader, such as a scripted quit or a logout, ends it like its
         // close control: the position is saved and the terminal restored before the exit.
-        if case .pane = mode, let paneHost {
+        if mode.isPane, let paneHost {
             paneHost.end(status: 0)
             return .terminateCancel
         }
-        guard case .application = mode else { return .terminateNow }
+        guard !mode.isCheck else { return .terminateNow }
         let answered = Flag()
         let editorRetained = Flag()
         let finish: (ReadingStateFlushResult) -> Void = { result in
@@ -122,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if case .pane = mode { return false }
+        if mode.isPane { return false }
         if !flag { showLibrary(nil) }
         return true
     }
@@ -132,7 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        if case .pane = mode { return }
+        if mode.isPane { return }
         guard !mode.isCheck else { return }
         openedAtLaunch = true
         for url in urls { intake(url) }
@@ -166,6 +167,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             case .failure(let error):
                 log.error("refused \(url.lastPathComponent, privacy: .public): \(error.description, privacy: .public)")
                 showError("The reader could not open \(url.lastPathComponent).", detail: error.description)
+            }
+        }
+    }
+
+    private func startEditor(_ launch: EditorLaunch) {
+        let terminal = launch.surface == .pane ? PaneTerminal() : nil
+        if launch.surface == .pane, terminal == nil {
+            FileHandle.standardError.write(Data("Markdown Reader: the editor pane needs terminal input and output.\n".utf8))
+            exit(2)
+        }
+        Task { @MainActor in
+            do {
+                let (record, origin) = try await Task.detached { try launch.load() }.value
+                if let terminal {
+                    let workspace = EditorWorkspace(directory: Self.stateDirectory().appendingPathComponent("Drafts"), store: launch.store)
+                    workspace.launchOrigin = origin; workspace.add(record)
+                    let model = ReaderModel(reference: .file(path: "draft:" + record.id.uuidString), platform: windows.platform, state: windows.state)
+                    let host = PaneHost(model: model, platform: windows.platform, state: windows.state, terminal: terminal, workspace: workspace)
+                    paneHost = host
+                    windows.adoptEditor(host.start(), workspace: workspace)
+                } else {
+                    windows.showEditor(record: record, store: launch.store, origin: origin)
+                }
+            } catch {
+                if launch.surface == .pane {
+                    FileHandle.standardError.write(Data(TerminalText.line("Markdown Reader: editor not opened: \(error)").utf8)); exit(1)
+                }
+                showError("The editor could not open this document.", detail: String(describing: error))
             }
         }
     }
@@ -209,6 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 let model = ReaderModel(reference: reference, platform: windows.platform, state: windows.state)
                 let host = PaneHost(model: model, platform: windows.platform, state: windows.state, terminal: terminal)
                 host.onModelChange = { [weak self] previous, next in self?.windows.replace(previous, with: next) }
+                host.onWorkspaceChange = { [weak self] window, workspace in self?.windows.adoptEditor(window, workspace: workspace) }
                 paneHost = host
                 windows.adopt(host.start(revision: revision, digest: digest, origin: origin), model: model)
             case .failure(let error):
@@ -234,12 +264,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     // MARK: - Menu actions
 
-    @objc func newScratchpad(_ sender: Any?) { windows.showEditor() }
-    @objc func showDrafts(_ sender: Any?) { windows.showEditor(newScratchpad: false) }
+    @objc func newScratchpad(_ sender: Any?) {
+        if let paneHost { paneHost.newScratchpad() } else { windows.showEditor() }
+    }
+    @objc func showDrafts(_ sender: Any?) {
+        if let paneHost { paneHost.newScratchpad(showDrafts: true) } else { windows.showEditor(newScratchpad: false) }
+    }
     @objc func saveEditor(_ sender: Any?) { windows.keyEditor?.save() }
     @objc func saveEditorAs(_ sender: Any?) { windows.keyEditor?.saveAs() }
 
     @objc func showLibrary(_ sender: Any?) {
+        if let workspace = paneHost?.workspace ?? windows.keyEditor { Task { await workspace.showPublishedLibrary() }; return }
         windows.showLibrary(openFile: { [weak self] in self?.openDocument(nil) },
                             openStore: { [weak self] in self?.openStore(nil) })
     }
@@ -259,6 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc func openDocument(_ sender: Any?) {
+        if let workspace = paneHost?.workspace ?? windows.keyEditor { workspace.openFile(); return }
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false

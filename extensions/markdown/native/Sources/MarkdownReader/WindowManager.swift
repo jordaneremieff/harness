@@ -1,4 +1,5 @@
 import AppKit
+import EditorFeature
 import MarkdownCore
 import ReaderFeature
 import SwiftUI
@@ -33,25 +34,24 @@ final class WindowManager: NSObject, NSWindowDelegate {
     private var editorWindow: NSWindow?
     private(set) var editor: EditorWorkspace?
     private var editorCloseAllowed = false
-    var onOpenStore: (() -> Void)?
 
     var keyEditor: EditorWorkspace? {
         guard let window = NSApp.keyWindow, window === editorWindow else { return nil }
         return editor
     }
 
-    func showEditor(newScratchpad: Bool = true) {
+    @discardableResult func showEditor(newScratchpad: Bool = true, record: DraftRecord? = nil, store: String? = nil, origin: LaunchOrigin? = nil) -> EditorWorkspace {
         if let editorWindow, let editor {
-            if newScratchpad { editor.newScratchpad() }
+            if let store { editor.selectedStore = store }
+            if let origin { editor.launchOrigin = origin }
+            if let record { editor.add(record) }
+            else if newScratchpad { editor.newScratchpad() }
             else { Task { await editor.library() } }
             editorWindow.makeKeyAndOrderFront(nil)
             NSApp.activate()
-            return
+            return editor
         }
-        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: state.selectedStoreRoot ?? defaultRoots.first)
-        workspace.onReadLibrary = { [weak self] in
-            self?.showLibrary(openFile: { workspace.openFile() }, openStore: { [weak self] in self?.onOpenStore?() })
-        }
+        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: store ?? state.selectedStoreRoot ?? defaultRoots.first)
         let host = NSHostingController(rootView: EditorWorkspaceView(workspace: workspace))
         host.sizingOptions = []
         let window = ReaderWindow(contentViewController: host)
@@ -62,9 +62,17 @@ final class WindowManager: NSObject, NSWindowDelegate {
         window.setContentSize(NSSize(width: 960, height: 800))
         window.center(); window.delegate = self
         editor = workspace; editorWindow = window
-        if newScratchpad { workspace.newScratchpad() }
+        workspace.launchOrigin = origin
+        if let record { workspace.add(record) }
+        else if newScratchpad { workspace.newScratchpad() }
         else { Task { await workspace.library() } }
         window.makeKeyAndOrderFront(nil); NSApp.activate()
+        return workspace
+    }
+
+    func adoptEditor(_ window: NSWindow, workspace: EditorWorkspace) {
+        readers = readers.filter { $0.value.window !== window }
+        editorWindow = window; editor = workspace
     }
 
     func retainEditors() async -> Bool { await editor?.prepareToClose() ?? true }

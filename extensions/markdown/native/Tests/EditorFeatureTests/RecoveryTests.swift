@@ -46,6 +46,55 @@ private func temporaryDirectory() throws -> URL {
     #expect(restored.selection.location == 13)
 }
 
+private final class DraftWriteGate: @unchecked Sendable {
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var began = false
+    var started: Bool { lock.withLock { began } }
+    func hold() {
+        let first = lock.withLock { if began { return false }; began = true; return true }
+        if first { _ = release.wait(timeout: .now() + 3) }
+    }
+}
+
+@Test @MainActor func pendingInvocationBecomesDurableWhileLaterTypingStaysPending() async throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let gate = DraftWriteGate()
+    let session = EditSession(drafts: DraftStore(directory: root, beforeWriteForCheck: { gate.hold() }))
+    let exact = Data("exact save invocation".utf8)
+    session.setPendingPublication(exact)
+    let writing = Task { await session.persistPendingPublication(exact) }
+    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    while !gate.started, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+    #expect(gate.started)
+    session.receive(source: "typed during persistence", generation: 1, selection: .init(), markedText: false)
+    gate.release.signal()
+    #expect(await writing.value)
+    #expect(session.recovery == .pending)
+    #expect(session.record.source == "typed during persistence")
+    #expect(session.isDirty)
+    gate.release.signal()
+}
+
+@Test func draftListingSelectsNewestBeforePaging() async throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = DraftStore(directory: root)
+    let older = DraftRecord(source: "older"), newer = DraftRecord(source: "newer")
+    try await store.save(newer)
+    try await store.save(older)
+    for (record, date) in [(older, Date(timeIntervalSince1970: 100)), (newer, Date(timeIntervalSince1970: 200))] {
+        let file = root.appendingPathComponent(record.id.uuidString).appendingPathComponent(record.branch.uuidString + ".json")
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
+    }
+    let first = try await store.list(limit: 1)
+    #expect(first.records.first?.branch == newer.branch)
+    let second = try await store.list(offset: try #require(first.nextOffset), limit: 1)
+    #expect(second.records.first?.branch == older.branch)
+    #expect(second.nextOffset == nil)
+}
+
 @Test func recoveryRejectsLateOlderSnapshotsWithoutUsingWallClockOrder() async throws {
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }
