@@ -47,6 +47,10 @@ A publication plan contains `publicationId`, `documentId`, `revision` and `input
 
 An open request contains `{version:1, storeId, document, revision, digest, requestedAt, launchOrigin}`. It pins one existing revision. Terminal return context belongs only to this request and the resulting window, never document metadata. The reader verifies the store identity and digest, then removes an accepted request. The writer prunes leftover requests older than one day, within a bounded scan.
 
+## Native editor writer
+
+The [native editor writer contract](editor-writer.md) exposes a short-lived JSON helper over the same TypeScript store. It accepts exact store and base identities, retains checked images, distinguishes editor authorship and copy derivation, and reconciles lost save responses through the existing replay index. Blank editor source is valid. Draft recovery and explicit local-file saves are separate from committed document revisions. The publication tool's capture and nonempty-source rules do not change.
+
 ## Publication tool
 
 `markdown_publish` requires `title` and exactly one of `text` or `file`, or `response: "previous"` alone. A file path is explicit, absolute or relative to the working directory; the operation never modifies that file. Images that a file links by relative path are retained with the revision, so an agent explains something visually by writing an SVG or PNG diagram beside a Markdown file and publishing the file. Updates supply `document` and `expectedRevision` together. A text publication reads no image files. In a text update, an image reference that the revision named by `expectedRevision` retained keeps that revision's retained bytes, after their digest and size check; reference coverage then carries `kept` (that revision and the number of images), and the text result says that a file publication changes an image. Other local image references of a text publication stay unavailable with reason `no-base`. Optional `reuseKey` requests explicit reuse. Separate identical creates without a key remain separate documents.

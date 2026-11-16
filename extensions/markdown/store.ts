@@ -7,7 +7,7 @@ import lockfile from "proper-lockfile";
 export const LIMITS = { sourceBytes: 2 * 1024 * 1024, titleChars: 200, assetCount: 64, assetBytes: 8 * 1024 * 1024, totalAssetBytes: 32 * 1024 * 1024, listing: 2000, recordBytes: 256 * 1024, stagingAgeMs: 86400000 } as const;
 export type DocumentKind = "published" | "response" | "file";
 export type Completeness = { state: "complete" | "partial"; reason?: "length" | "aborted" | "error" | "tool-use"; note?: string };
-export type ContentOrigin = { kind: "ordinary-response" | "native-response" | "file" | "tool"; host?: string; session?: string; conversation?: string; entry?: string; model?: string; path?: string; cwd?: string; capturedAt: string; parts?: { chars: number }[] };
+export type ContentOrigin = { kind: "ordinary-response" | "native-response" | "file" | "tool" | "editor"; host?: string; session?: string; conversation?: string; entry?: string; model?: string; path?: string; cwd?: string; capturedAt: string; parts?: { chars: number }[]; derivedFrom?: { storeId: string; document: string; revision: number; digest: string } };
 export type AssetRecord = { kind: "image" | "link"; reference: string; state: "retained" | "external" | "embedded" | "unavailable" | "local-only"; file?: string; mediaType?: string; bytes?: number; digest?: string; reason?: "outside-root" | "missing" | "too-large" | "unsupported-type" | "unsupported-scheme" | "invalid" | "no-base" | "limit" };
 /** Why a publication that asked for reference inspection holds an uninspected inventory. */
 export type InspectionFailure = "app-missing" | "app-incompatible" | "tool-failed" | "tool-timeout" | "output-invalid";
@@ -109,7 +109,7 @@ function publicationDigest(input: WriteInput, document?: string, expectedRevisio
 	return input.invocationDigest ?? digest(JSON.stringify({ title: input.title, source: input.source, document, expectedRevision }));
 }
 
-type WriteOptions = { id?: string; expectedRevision?: number; kind?: DocumentKind; plan?: PublicationPlan; reuseKey?: string };
+type WriteOptions = { id?: string; expectedRevision?: number; kind?: DocumentKind; plan?: PublicationPlan; reuseKey?: string; expectedStoreId?: string };
 function records(input: WriteInput, plan: PublicationPlan, previous?: DocumentRecord, kind?: DocumentKind): { document: DocumentRecord; revision: RevisionRecord } {
 	const now = new Date().toISOString();
 	const documentKind = previous?.kind ?? kind ?? "published";
@@ -282,14 +282,14 @@ export class MarkdownStore {
 		validateInput(input);
 		return this.locked(() => this.publicationPlan(input, { id: options.document, expectedRevision: options.expectedRevision, reuseKey: options.reuseKey }));
 	}
-	async create(input: WriteInput, options: { kind?: DocumentKind; plan?: PublicationPlan; reuseKey?: string } = {}): Promise<WriteResult> {
+	async create(input: WriteInput, options: { kind?: DocumentKind; plan?: PublicationPlan; reuseKey?: string; expectedStoreId?: string } = {}): Promise<WriteResult> {
 		validateInput(input);
-		return this.locked(() => this.write(input, { kind: options.kind ?? "published", plan: options.plan, reuseKey: options.reuseKey }));
+		return this.locked(() => this.write(input, { kind: options.kind ?? "published", plan: options.plan, reuseKey: options.reuseKey, expectedStoreId: options.expectedStoreId }));
 	}
-	async update(id: string, expectedRevision: number, input: WriteInput, options: { plan?: PublicationPlan; reuseKey?: string } = {}): Promise<WriteResult> {
+	async update(id: string, expectedRevision: number, input: WriteInput, options: { plan?: PublicationPlan; reuseKey?: string; expectedStoreId?: string } = {}): Promise<WriteResult> {
 		validateInput(input);
 		if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new StoreError("invalid", "Expected revision must be a positive integer.");
-		return this.locked(() => this.write(input, { id, expectedRevision, plan: options.plan, reuseKey: options.reuseKey }));
+		return this.locked(() => this.write(input, { id, expectedRevision, plan: options.plan, reuseKey: options.reuseKey, expectedStoreId: options.expectedStoreId }));
 	}
 	async snapshot(sourceKey: string, kind: "response" | "file", input: WriteInput): Promise<WriteResult> {
 		validateInput(input);
@@ -348,6 +348,7 @@ export class MarkdownStore {
 		return previous;
 	}
 	private async write(input: WriteInput, options: WriteOptions): Promise<WriteResult> {
+		if (options.expectedStoreId !== undefined && (await this.identity())?.storeId !== options.expectedStoreId) throw new StoreError("store-failure", "The selected store identity changed. Keep the draft and select the store again.");
 		const plan = await this.publicationPlan(input, options);
 		const saved = await this.savedPublication(plan);
 		if (saved) return saved;
