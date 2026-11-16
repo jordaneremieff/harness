@@ -54,6 +54,12 @@ final class EditorModeSplitView: NSSplitView, NSSplitViewDelegate {
         mode = value
         applyVisibility()
         adjustSubviews()
+        if mode != .rendered { window?.makeFirstResponder(source.documentView) }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if mode != .rendered { window?.makeFirstResponder(source.documentView) }
     }
 
     private func applyVisibility() {
