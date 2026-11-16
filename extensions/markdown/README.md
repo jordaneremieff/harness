@@ -1,6 +1,8 @@
-# Markdown reader
+# Markdown reader and editor
 
-The Markdown slice retains exact agent responses, file snapshots and deliberately published documents in a private local store. Publication saves silently; the operator chooses when to open a document in the native Mac reader. An agent puts a document in front of the operator by running the publication's `show` command as the program of a terminal pane beside them: the native reader window then sits over that pane. Ordinary Pi and native Durable tools share the same publication operation and structured result.
+The Markdown slice retains exact agent responses, file snapshots and deliberately published documents in a private local store. Publication saves silently; the operator chooses when to open a document in the native Mac app. An agent puts a document in front of the operator by running the publication's `show` command as the program of a terminal pane beside them: the native reader window then sits over that pane. Ordinary Pi and native Durable tools share the same publication operation and structured result.
+
+The same app provides private scratchpads and explicit editing of local files or published documents. Captured responses and file snapshots remain read-only; editing them starts a separate copy. Draft recovery does not publish source or expose it through agent document reads. See [scratchpads and private recovery](native/README.md#scratchpads-and-private-recovery) for modes, save behaviour and recovery boundaries.
 
 <!-- harness:settings:start -->
 | Key | Environment | Type | Default | Constraints | Description |
