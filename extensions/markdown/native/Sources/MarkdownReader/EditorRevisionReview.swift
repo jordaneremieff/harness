@@ -88,7 +88,7 @@ struct EditorRevisionReviewView: View {
             HStack {
                 Button("Keep Draft") { workspace.revisionReview = nil }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Save a Separate Copy") {
+                Button("Create a Separate Copy") {
                     workspace.revisionReview = nil
                     Task { await workspace.duplicate(review.document) }
                 }

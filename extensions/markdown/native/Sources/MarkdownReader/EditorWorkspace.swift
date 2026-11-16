@@ -628,10 +628,12 @@ struct EditorWorkspaceView: View {
                 HStack {
                     Label(conflict.message, systemImage: "exclamationmark.triangle")
                     Button("Review Saved Version") { Task { await workspace.reviewSavedVersion(document) } }
-                    Button("Save a Separate Copy") { Task { await workspace.duplicate(document) } }
+                    Button("Create a Separate Copy") { Task { await workspace.duplicate(document) } }
                 }.foregroundStyle(.orange)
             }
-            if let error = document.session.error { Text(error).foregroundStyle(.red) }
+            if let error = document.session.error, error != document.session.record.conflict?.message {
+                Text(error).foregroundStyle(.red)
+            }
             if case .failed(let reason) = document.updates.state {
                 HStack {
                     Text("External updates are not observed: \(reason)").foregroundStyle(.orange)

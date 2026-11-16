@@ -546,10 +546,9 @@ final class PaneContentView: NSView {
     }
 }
 
-/// A borderless panel that takes the keyboard without activating the reader: the terminal
-/// application stays the active application, as when one of its own panes takes the keyboard,
-/// and the first click reaches the page. Escape outside a text field gives the keyboard back to
-/// the terminal application.
+/// A borderless panel whose first click reaches the content. Reader-only panes keep the
+/// terminal application active; editor panes explicitly activate before taking source focus.
+/// Escape outside a text field gives the keyboard back to the terminal application.
 final class PaneWindow: NSPanel {
     var onCancel: (() -> Void)?
     var onClose: (() -> Void)?
