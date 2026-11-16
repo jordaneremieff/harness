@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
-import { installBundle } from "./native/build.mts";
+import { EDITOR_WRITER_HELPER, EDITOR_WRITER_SOURCES, editorWriterMetadata, installBundle, sourceDigest, stageEditorWriter } from "./native/build.mts";
 
 function fixture(t: TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "markdown-install-"));
@@ -68,4 +70,144 @@ test("an existing app never gives way to a bundle that an earlier install moved 
 	installBundle(f.bundle, f.destination);
 	assert.equal(f.version(f.destination), "new");
 	assert.equal(f.version(f.abandoned), "abandoned");
+});
+
+function editorFixture(t: TestContext) {
+	const root = mkdtempSync(join(tmpdir(), "markdown-editor-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const app = join(root, "Reader.app");
+	const resources = join(app, "Contents", "Resources");
+	const store = join(root, "store");
+	mkdirSync(resources, { recursive: true });
+	mkdirSync(store);
+	return { root, app, resources, store, helper: join(resources, EDITOR_WRITER_HELPER) };
+}
+
+function manifest(path: string): { name: string; version: string; license: string; main: string } {
+	return JSON.parse(readFileSync(path, "utf8"));
+}
+
+test("staging ships the writer as stripped modules with the resolved lockfile closure", (t) => {
+	const f = editorFixture(t);
+	stageEditorWriter(f.resources);
+	const helper = readFileSync(f.helper, "utf8");
+	assert.ok(helper.includes(`from "./editor-write.mjs"`), "the helper imports the shipped write module");
+	assert.ok(!helper.includes(".ts"), "no local .ts import survives staging");
+	const nodeModules = join(f.resources, "editor-writer", "node_modules");
+	assert.deepEqual(readdirSync(nodeModules), ["graceful-fs", "proper-lockfile", "signal-exit"]);
+	assert.deepEqual(readdirSync(join(nodeModules, "proper-lockfile", "node_modules")), ["retry"], "proper-lockfile resolves its own retry version");
+	const lockfile = manifest(join(nodeModules, "proper-lockfile", "package.json"));
+	assert.equal(lockfile.version, "4.1.2");
+	assert.equal(lockfile.license, "MIT");
+	assert.equal(manifest(join(nodeModules, "proper-lockfile", "node_modules", "retry", "package.json")).version, "0.12.0");
+	assert.equal(manifest(join(nodeModules, "graceful-fs", "package.json")).license, "ISC");
+	assert.equal(manifest(join(nodeModules, "signal-exit", "package.json")).license, "ISC");
+	for (const licence of ["proper-lockfile/LICENSE", "proper-lockfile/node_modules/retry/License", "graceful-fs/LICENSE", "signal-exit/LICENSE.txt"]) {
+		assert.ok(existsSync(join(nodeModules, ...licence.split("/"))), `licence shipped: ${licence}`);
+	}
+});
+
+test("the staged helper runs the identity operation without the checkout", (t) => {
+	const f = editorFixture(t);
+	stageEditorWriter(f.resources);
+	const result = spawnSync(process.execPath, [realpathSync(f.helper)], {
+		cwd: f.root,
+		input: `${JSON.stringify({ version: 1, operation: "identity", storeRoot: f.store })}\n`,
+		encoding: "utf8",
+	});
+	assert.equal(result.status, 0, result.stderr);
+	const receipt = JSON.parse(result.stdout);
+	assert.deepEqual(
+		{ ok: receipt.ok, status: receipt.status, version: receipt.version },
+		{ ok: true, status: "identity", version: 1 },
+	);
+	assert.match(receipt.storeId, /^[0-9a-f]{32}$/u);
+	assert.equal(JSON.parse(readFileSync(join(f.store, "store.json"), "utf8")).storeId, receipt.storeId);
+});
+
+test("the shipped writer saves and reconciles with a parser protocol fixture outside the checkout", (t) => {
+	const f = editorFixture(t);
+	stageEditorWriter(f.resources);
+	const bin = join(f.app, "Contents", "MacOS");
+	mkdirSync(bin);
+	writeFileSync(join(f.resources, "build.json"), JSON.stringify({ contract: 1 }));
+	writeFileSync(join(bin, "markdown-core"), `#!/bin/sh\nprintf '%s\\n' '{"version":1,"images":[],"links":[],"truncated":false}'\n`, { mode: 0o755 });
+	const invoke = (request: unknown) => {
+		const result = spawnSync(process.execPath, [realpathSync(f.helper)], {
+			cwd: f.root, input: JSON.stringify(request), encoding: "utf8",
+			env: { PATH: "/usr/bin:/bin" }, timeout: 5000, maxBuffer: 1024 * 1024,
+		});
+		assert.equal(result.status, 0, result.stderr);
+		return JSON.parse(result.stdout);
+	};
+	const identity = invoke({ version: 1, operation: "identity", storeRoot: f.store });
+	const request = {
+		version: 1, operation: "save", storeRoot: f.store, storeId: identity.storeId,
+		invocationId: "standalone-save", generation: 7, title: "Private draft", source: "# Exact draft\r\n",
+	};
+	const saved = invoke(request);
+	assert.equal(saved.status, "saved", JSON.stringify(saved));
+	assert.equal(saved.generation, 7);
+	assert.equal(saved.revision, 1);
+	const reconciled = invoke({ ...request, operation: "reconcile" });
+	assert.equal(reconciled.status, "saved");
+	assert.equal(reconciled.document, saved.document);
+	assert.equal(reconciled.digest, saved.digest);
+	assert.equal(reconciled.revision, 1);
+	const replayed = invoke(request);
+	assert.equal(replayed.replayed, true);
+	assert.equal(replayed.revision, 1);
+});
+
+test("the writer helper has one fixed identity record naming the bundled helper and the installer's Node", () => {
+	assert.deepEqual(editorWriterMetadata("/opt/homebrew/bin/node"), { version: 1, node: "/opt/homebrew/bin/node", helper: "editor-writer/editor-helper.mjs" });
+	const metadata = editorWriterMetadata();
+	assert.ok(isAbsolute(metadata.node), "the recorded Node executable is absolute");
+});
+
+function digestFixture(t: TestContext) {
+	const root = mkdtempSync(join(tmpdir(), "markdown-digest-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const sourceDir = join(root, "extensions", "markdown");
+	const native = join(sourceDir, "native");
+	mkdirSync(join(native, "Sources"), { recursive: true });
+	mkdirSync(join(native, "Licenses"));
+	writeFileSync(join(native, "Package.swift"), "// package");
+	writeFileSync(join(native, "Package.resolved"), "{}");
+	writeFileSync(join(native, "build.mts"), "// build");
+	writeFileSync(join(root, "package-lock.json"), "{}");
+	writeFileSync(join(sourceDir, "pane-command.ts"), "// contract");
+	for (const name of EDITOR_WRITER_SOURCES) writeFileSync(join(sourceDir, name), "// original");
+	return { root, native, write: (name: string, content: string) => writeFileSync(join(sourceDir, name), content) };
+}
+
+test("writer sources and build.mts are part of the build identity", (t) => {
+	const f = digestFixture(t);
+	const before = sourceDigest(f.native);
+	f.write("editor-write.ts", "// changed writer source");
+	assert.notEqual(sourceDigest(f.native), before, "a writer source change changes the build identity");
+	f.write("editor-write.ts", "// original");
+	f.write("reference-capture.ts", "// changed writer source");
+	assert.notEqual(sourceDigest(f.native), before, "a capture source change changes the build identity");
+	f.write("reference-capture.ts", "// original");
+	writeFileSync(join(f.native, "build.mts"), "// changed build");
+	assert.notEqual(sourceDigest(f.native), before, "a build.mts change changes the build identity");
+	writeFileSync(join(f.native, "build.mts"), "// build");
+	f.write("pane-command.ts", "// changed contract");
+	assert.notEqual(sourceDigest(f.native), before, "the pane contract changes the build identity");
+	f.write("pane-command.ts", "// contract");
+	writeFileSync(join(f.root, "package-lock.json"), "{\"lockfileVersion\":3}");
+	assert.notEqual(sourceDigest(f.native), before, "the runtime dependency lock changes the build identity");
+});
+
+test("staging copies the real writer sources of this checkout", (t) => {
+	const f = editorFixture(t);
+	const sourceDir = dirname(fileURLToPath(import.meta.url));
+	stageEditorWriter(f.resources, sourceDir);
+	const shipped = readFileSync(join(f.resources, "editor-writer", "store.mjs"), "utf8");
+	assert.ok(shipped.includes("proper-lockfile"), "the shipped store module keeps its lockfile dependency");
+	assert.ok(shipped.includes("MarkdownStore"), "the shipped store module is the checkout's source");
+	for (const name of EDITOR_WRITER_SOURCES) {
+		assert.ok(existsSync(join(f.resources, "editor-writer", name.replace(/\.ts$/, ".mjs"))), `shipped: ${name}`);
+	}
 });

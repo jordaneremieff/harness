@@ -18,14 +18,17 @@ import {
 	existsSync,
 	lstatSync,
 	mkdirSync,
+	opendirSync,
 	readdirSync,
+	realpathSync,
 	readFileSync,
 	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { createRequire, stripTypeScriptTypes } from "node:module";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PANE_MODE, PANE_OPEN } from "../pane-command.ts";
 import { readSettings } from "../settings.ts";
@@ -52,7 +55,7 @@ function settingValues(env: NodeJS.ProcessEnv = process.env): { app: string; dir
 /** Digest of the files that define the build: manifest, lockfile, sources, licence notices and the embedded helper. */
 export function sourceDigest(root: string = packageDir): string {
 	const hash = createHash("sha256");
-	const files: string[] = ["Package.swift", "Package.resolved"];
+	const files: string[] = ["Package.swift", "Package.resolved", "build.mts", "../pane-command.ts", "../../../package-lock.json"];
 	const walk = (dir: string): void => {
 		for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
 			if (entry.name.startsWith(".")) continue;
@@ -64,6 +67,7 @@ export function sourceDigest(root: string = packageDir): string {
 	for (const dir of ["Sources", "Licenses"]) walk(dir);
 	const helper = join("..", "..", "rex", "terminal-origin.ts");
 	if (existsSync(join(root, helper))) files.push(helper);
+	for (const name of EDITOR_WRITER_SOURCES) files.push(join("..", name));
 	for (const file of files.sort()) {
 		hash.update(`${file}\0`);
 		hash.update(readFileSync(join(root, file)));
@@ -132,6 +136,128 @@ function embedTerminalOrigin(resources: string): { helper: string; node: string 
 	const node = ["/opt/homebrew/bin/node", "/usr/local/bin/node"].find((path) => existsSync(path)) ?? process.execPath;
 	console.log(`Pane return helper embedded; Node: ${node}`);
 	return { helper: "terminal-origin.ts", node };
+}
+
+/** The Markdown-owned editor writer sources, shipped beside the helper as stripped .mjs modules. */
+export const EDITOR_WRITER_SOURCES = ["editor-helper.ts", "editor-write.ts", "reference-capture.ts", "store.ts"];
+/** The bundled helper path recorded in build.json. */
+export const EDITOR_WRITER_HELPER = "editor-writer/editor-helper.mjs";
+/** Visit, file and byte limits for the dependency closure copied into the helper's node_modules. */
+const EDITOR_WRITER_LIMITS = {
+	packages: 16,
+	files: 128,
+	fileBytes: 1024 * 1024,
+	packageBytes: 4 * 1024 * 1024,
+} as const;
+const installedNodeModules = join(packageDir, "..", "..", "..", "node_modules");
+
+/**
+ * build.json's editorWriter record: the writer contract version, the absolute Node executable that
+ * the installer runs under, and the fixed bundled helper path. No content-supplied executable or
+ * helper path exists.
+ */
+export function editorWriterMetadata(node: string = process.execPath): { version: 1; node: string; helper: string } {
+	return { version: 1, node: resolve(node), helper: EDITOR_WRITER_HELPER };
+}
+
+/**
+ * Ships the editor writer as stripped .mjs modules, rewriting only its explicit local `.ts` imports
+ * to the shipped `.mjs` names; bare package specifiers stay and resolve from the staged
+ * node_modules.
+ */
+function shippedModule(name: string, writerSourceDir: string): string {
+	const stripped = stripTypeScriptTypes(readFileSync(join(writerSourceDir, name), "utf8"), { mode: "strip", sourceMap: false });
+	const rewritten = stripped.replace(/(\.\.?\/[A-Za-z0-9._/-]*)\.ts(?=["'])/gu, "$1.mjs");
+	if (rewritten.includes(".ts")) throw new Error(`${name} still names a .ts module after stripping.`);
+	return rewritten;
+}
+
+/** Copies the installed proper-lockfile package and its resolved runtime dependency closure into the helper's node_modules. */
+export function stageEditorWriter(resources: string, writerSourceDir: string = join(packageDir, "..")): void {
+	const writer = join(resources, "editor-writer");
+	mkdirSync(writer, { recursive: true });
+	for (const name of EDITOR_WRITER_SOURCES) {
+		writeFileSync(join(writer, name.replace(/\.ts$/, ".mjs")), shippedModule(name, writerSourceDir));
+	}
+	stageEditorWriterDependencies(writer);
+}
+
+interface WriterPackage {
+	name: string;
+	version: string;
+	license: string;
+	main: string;
+	dependencies?: Record<string, string>;
+}
+
+function writerPackage(path: string): WriterPackage {
+	if (lstatSync(path).size > 64 * 1024) throw new Error("A writer dependency manifest exceeds the byte limit.");
+	const value = JSON.parse(readFileSync(path, "utf8")) as Partial<WriterPackage>;
+	if (!value || typeof value !== "object" || typeof value.name !== "string" || typeof value.version !== "string"
+		|| typeof value.license !== "string" || typeof value.main !== "string") {
+		throw new Error("A writer dependency manifest has an unexpected shape.");
+	}
+	if (value.dependencies !== undefined && (!value.dependencies || typeof value.dependencies !== "object" || Array.isArray(value.dependencies))) {
+		throw new Error("A writer dependency manifest has invalid dependencies.");
+	}
+	return value as WriterPackage;
+}
+
+/** Copies regular package files, including notices, without traversing nested dependencies or symlinks. */
+function copyWriterPackage(source: string, destination: string): void {
+	let visits = 0;
+	let bytes = 0;
+	const copyEntry = (input: string, output: string): void => {
+		const stat = lstatSync(input);
+		if (stat.isSymbolicLink()) throw new Error("A writer dependency contains a symbolic link.");
+		if (stat.isDirectory()) { copy(input, output); return; }
+		if (!stat.isFile()) throw new Error("A writer dependency contains a non-regular file.");
+		bytes += stat.size;
+		if (stat.size > EDITOR_WRITER_LIMITS.fileBytes || bytes > EDITOR_WRITER_LIMITS.packageBytes) {
+			throw new Error("A writer dependency exceeds the byte limit.");
+		}
+		cpSync(input, output);
+	};
+	const copy = (from: string, to: string): void => {
+		mkdirSync(to, { recursive: true });
+		const directory = opendirSync(from);
+		try {
+			let entry = directory.readSync();
+			while (entry) {
+				if (++visits > EDITOR_WRITER_LIMITS.files) throw new Error("A writer dependency exceeds the file limit.");
+				if (entry.name !== "node_modules") copyEntry(join(from, entry.name), join(to, entry.name));
+				entry = directory.readSync();
+			}
+		} finally { directory.closeSync(); }
+	};
+	copy(source, destination);
+}
+
+/** Uses Node's resolver and declared runtime dependencies, preserving installed nested versions. */
+function stageEditorWriterDependencies(writer: string): void {
+	const installedRoot = realpathSync(installedNodeModules);
+	const stagedRoot = join(writer, "node_modules");
+	const pending = [createRequire(import.meta.url).resolve("proper-lockfile/package.json")];
+	const staged = new Set<string>();
+	while (pending.length > 0) {
+		const next = pending.shift();
+		if (!next) break;
+		const manifestPath = realpathSync(next);
+		const source = dirname(manifestPath);
+		if (staged.has(source)) continue;
+		if (staged.size >= EDITOR_WRITER_LIMITS.packages) throw new Error("The writer exceeds the dependency limit.");
+		const packagePath = relative(installedRoot, source);
+		if (!packagePath || packagePath.startsWith("..") || isAbsolute(packagePath)) {
+			throw new Error("A writer dependency lies outside the installed packages.");
+		}
+		const manifest = writerPackage(manifestPath);
+		const dependencies = Object.keys(manifest.dependencies ?? {});
+		if (dependencies.length > EDITOR_WRITER_LIMITS.packages) throw new Error("A writer dependency exceeds the dependency limit.");
+		staged.add(source);
+		copyWriterPackage(source, join(stagedRoot, packagePath));
+		const resolver = createRequire(manifestPath);
+		for (const dependency of dependencies) pending.push(resolver.resolve(`${dependency}/package.json`));
+	}
 }
 
 function run(command: string, args: string[]): string {
@@ -241,6 +367,9 @@ function main(): void {
 		writeFileSync(join(contents, "PkgInfo"), "APPL????");
 		cpSync(join(packageDir, "Licenses"), join(contents, "Resources", "Licenses"), { recursive: true });
 		const terminalOrigin = embedTerminalOrigin(join(contents, "Resources"));
+		stageEditorWriter(join(contents, "Resources"));
+		const editorWriter = editorWriterMetadata();
+		console.log(`Editor writer staged; Node: ${editorWriter.node}`);
 		const build = {
 			contract: BUILD_CONTRACT,
 			pane: PANE_MODE,
@@ -250,6 +379,7 @@ function main(): void {
 			builtAt: new Date().toISOString(),
 			swift: swiftVersion,
 			store,
+			editorWriter,
 			...(terminalOrigin ? { terminalOrigin } : {}),
 		};
 		writeFileSync(join(contents, "Resources", "build.json"), `${JSON.stringify(build, null, 2)}\n`);
