@@ -55,14 +55,14 @@ extension SourceStructure {
     /// without the white space around the text. With `unique`, nil when the text occurs more
     /// than once.
     private func occurrences(of text: String, in range: ClosedRange<Int>, unique: Bool) -> ClosedRange<Int>? {
-        let needle = text.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let needle = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return nil }
         let hay = lines[(range.lowerBound - 1)...(range.upperBound - 1)]
             .map { $0.hasSuffix("\r") ? String($0.dropLast()) : $0 }
             .joined(separator: "\n")
         guard let found = hay.range(of: needle, options: .literal) else { return nil }
         if unique, hay.range(of: needle, options: .literal, range: hay.index(after: found.lowerBound)..<hay.endIndex) != nil { return nil }
-        let start = range.lowerBound + SourceStructure.lineFeeds(String(hay[..<found.lowerBound]))
-        return start...(start + SourceStructure.lineFeeds(needle))
+        let start = range.lowerBound + SourceStructure.lineBreakCount(String(hay[..<found.lowerBound]))
+        return start...(start + SourceStructure.lineBreakCount(needle))
     }
 }

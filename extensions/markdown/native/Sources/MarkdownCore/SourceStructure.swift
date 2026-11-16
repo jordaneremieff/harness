@@ -44,7 +44,7 @@ public struct SourceStructure: Sendable {
         var starts: [Start] = []
         var offset = 0
         if frontMatter != nil {
-            offset = lineFeeds(source) - lineFeeds(body)
+            offset = lineBreakCount(source) - lineBreakCount(body)
             starts.append(Start(line: 1, keyed: true))
         }
         var matchesRendering = true
@@ -157,9 +157,11 @@ public struct SourceStructure: Sendable {
         let bytes = Array(source.utf8)
         var lines: [String] = []
         var start = 0
-        for (index, byte) in bytes.enumerated() where byte == 0x0A {
-            lines.append(String(decoding: bytes[start..<index], as: UTF8.self))
-            start = index + 1
+        SourceLineBreaks.forEach(in: source) { boundary in
+            // Keep CR before LF in the line text, so existing source rows remain exact.
+            let end = bytes[boundary.endUTF8 - 1] == 0x0A ? boundary.endUTF8 - 1 : boundary.startUTF8
+            lines.append(String(decoding: bytes[start..<end], as: UTF8.self))
+            start = boundary.endUTF8
         }
         if start < bytes.count {
             lines.append(String(decoding: bytes[start...], as: UTF8.self))
@@ -168,8 +170,8 @@ public struct SourceStructure: Sendable {
         return (lines, !bytes.isEmpty)
     }
 
-    static func lineFeeds(_ text: String) -> Int {
-        text.utf8.reduce(0) { $1 == 0x0A ? $0 + 1 : $0 }
+    static func lineBreakCount(_ text: String) -> Int {
+        SourceLineBreaks.count(in: text)
     }
 
     static func isBlank(_ line: String) -> Bool {

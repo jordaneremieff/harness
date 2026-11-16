@@ -93,6 +93,7 @@ public struct RevisionComparison: Sendable {
         public var createdAt: String
         public var title: String
         public var lineCount: Int
+        public var endsWithLineBreak: Bool
     }
 
     public enum Limit: Sendable, Equatable {
@@ -134,6 +135,7 @@ public struct RevisionComparison: Sendable {
     /// of the source differs.
     public var finalLineBreakDiffers: Bool
 
+    public var finalLineBreakChanged: Bool { base.endsWithLineBreak != target.endsWithLineBreak }
     public var sourceIdentical: Bool { base.digest == target.digest }
     public var isPartial: Bool { !limits.isEmpty }
 }
@@ -170,11 +172,12 @@ public enum RevisionDiff {
         var regions: [ChangedRegion] = []
         var added = 0
         var removed = 0
-        if base.record.digest != target.record.digest || base.source != target.source {
-            var interned: [String: Int] = [:]
+        if base.record.digest != target.record.digest || !base.source.utf8.elementsEqual(target.source.utf8) {
+            var interned: [Data: Int] = [:]
             func identifier(_ text: String) -> Int {
-                if let known = interned[text] { return known }
-                interned[text] = interned.count
+                let key = Data(text.utf8)
+                if let known = interned[key] { return known }
+                interned[key] = interned.count
                 return interned.count - 1
             }
             let baseIds = baseStructure.blocks.map { identifier(baseStructure.text($0.span)) }
@@ -230,12 +233,15 @@ public enum RevisionDiff {
             limits: limits,
             addedLines: added,
             removedLines: removed,
-            finalLineBreakDiffers: regions.isEmpty && base.record.digest != target.record.digest
+            finalLineBreakDiffers: baseStructure.endsWithLineBreak != targetStructure.endsWithLineBreak
+                && SourceLineBreaks.withoutFinalBreak(base.source).utf8.elementsEqual(
+                    SourceLineBreaks.withoutFinalBreak(target.source).utf8
+                )
         )
     }
 
     private static func side(_ record: RevisionRecord, _ structure: SourceStructure) -> RevisionComparison.Side {
-        RevisionComparison.Side(revision: record.revision, digest: record.digest, bytes: record.bytes, createdAt: record.createdAt, title: record.title, lineCount: structure.lines.count)
+        RevisionComparison.Side(revision: record.revision, digest: record.digest, bytes: record.bytes, createdAt: record.createdAt, title: record.title, lineCount: structure.lines.count, endsWithLineBreak: structure.endsWithLineBreak)
     }
 
     // MARK: - Lines
@@ -247,10 +253,11 @@ public enum RevisionDiff {
         let new = targetLines.map { Array(target.lines[($0.lowerBound - 1)...($0.upperBound - 1)]) } ?? []
         let oldStart = baseLines?.lowerBound ?? 0
         let newStart = targetLines?.lowerBound ?? 0
-        var interned: [String: Int] = [:]
+        var interned: [Data: Int] = [:]
         func identifier(_ text: String) -> Int {
-            if let known = interned[text] { return known }
-            interned[text] = interned.count
+            let key = Data(text.utf8)
+            if let known = interned[key] { return known }
+            interned[key] = interned.count
             return interned.count - 1
         }
         let changes = SequenceChanges.compute(old.map(identifier), new.map(identifier), limit: bounds.lineElements)
@@ -315,13 +322,13 @@ public enum RevisionDiff {
     /// Marks the words of a replaced run that the other side does not have. Nothing is marked
     /// when the run exceeds the bound or the two sides share no word.
     static func markWords(_ removed: inout [DiffRow], _ added: inout [DiffRow], limit: Int) {
-        let old = tokens(removed.map(\.text))
-        let new = tokens(added.map(\.text))
-        guard old.count + new.count <= limit else { return }
-        var interned: [String: Int] = [:]
+        guard limit >= 0, let old = tokens(removed.map(\.text), limit: limit),
+              let new = tokens(added.map(\.text), limit: limit - old.count) else { return }
+        var interned: [Data: Int] = [:]
         func identifier(_ text: String) -> Int {
-            if let known = interned[text] { return known }
-            interned[text] = interned.count
+            let key = Data(text.utf8)
+            if let known = interned[key] { return known }
+            interned[key] = interned.count
             return interned.count - 1
         }
         let changes = SequenceChanges.compute(old.map { identifier($0.text) }, new.map { identifier($0.text) }, limit: limit)
@@ -340,22 +347,28 @@ public enum RevisionDiff {
 
     /// Words (letters, digits and underscores), runs of white space, and every other character
     /// by itself, with a separator between lines.
-    static func tokens(_ lines: [String]) -> [Token] {
+    static func tokens(_ lines: [String], limit: Int) -> [Token]? {
         var result: [Token] = []
+        func append(_ token: Token) -> Bool {
+            guard result.count < limit else { return false }
+            result.append(token)
+            return true
+        }
         for (index, line) in lines.enumerated() {
-            if index > 0 { result.append(Token(line: -1, text: "\n")) }
+            if index > 0, !append(Token(line: -1, text: "\n")) { return nil }
             var current = ""
             var currentKind = 0
             for character in line {
                 let kind = character.isLetter || character.isNumber || character == "_" ? 1 : character.isWhitespace ? 2 : 3
                 if kind != currentKind || kind == 3, !current.isEmpty {
-                    result.append(Token(line: index, text: current))
+                    guard append(Token(line: index, text: current)) else { return nil }
                     current = ""
                 }
+                if current.isEmpty, result.count >= limit { return nil }
                 current.append(character)
                 currentKind = kind
             }
-            if !current.isEmpty { result.append(Token(line: index, text: current)) }
+            if !current.isEmpty, !append(Token(line: index, text: current)) { return nil }
         }
         return result
     }

@@ -7,6 +7,24 @@ private func render(_ source: String, resolver: AssetResolving = NoAssetResolver
 }
 
 @Suite struct GFMRendering {
+    @Test func lineFeedAndCRLFBlockIdentitiesStayStable() {
+        func keys(_ source: String) -> [String] {
+            render(source).body.components(separatedBy: "data-key=\"").dropFirst().map { String($0.prefix { $0 != "\"" }) }
+        }
+        let lf = "# Héading\n\nsame\n\nsame\n"
+        let crlf = "# Héading\r\n\r\nsame\r\n\r\nsame\r\n"
+        let expected = ["b52c733b195f27575-0", "b097b5e18bf93ef5b-0", "b097b5e18bf93ef5b-1"]
+        #expect(keys(lf) == expected)
+        #expect(keys(crlf) == expected)
+        #expect(SourceStructure.scan(lf).lines == ["# Héading", "", "same", "", "same"])
+        #expect(SourceStructure.scan(crlf).lines == ["# Héading\r", "\r", "same\r", "\r", "same\r"])
+        #expect(SourceStructure.scan(lf).blocks.map(\.lines) == [1...1, 3...3, 5...5])
+        #expect(SourceStructure.scan(crlf).blocks.map(\.lines) == [1...1, 3...3, 5...5])
+        let front = "---\r\ntitle: T\r\n---\r\n# A\r\n\r\nText[^n]\r\n\r\n[^n]: note\r\n"
+        #expect(keys(front) == ["front-matter", "bcc5aae17d39b6255-0", "b54221ee0a579e28e-0"])
+        #expect(SourceStructure.scan(front).blocks.map(\.lines) == [1...3, 4...4, 6...6, 8...8])
+    }
+
     @Test func tablesTaskListsStrikethroughAndAutolinks() {
         let html = render("""
         | a | b |

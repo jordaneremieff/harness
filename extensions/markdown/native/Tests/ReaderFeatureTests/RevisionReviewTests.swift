@@ -95,6 +95,23 @@ private let imageOne = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1])
 private let imageTwo = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 2, 2])
 
 @MainActor @Suite(.serialized) struct RevisionReviews {
+    @Test func finalBreakChangeAppearsBesideOtherSourceChanges() throws {
+        for (old, new, ending) in [
+            ("old\n", "new", "ends with a line break; the later source does not end with one."),
+            ("old", "new\n", "does not end with a line break; the later source ends with one.")
+        ] {
+            let store = try ReviewStore()
+            defer { try? FileManager.default.removeItem(at: store.root) }
+            try store.publish(1, old)
+            try store.publish(2, new)
+            let review = try ReviewPage.prepare(store.reference, base: 1, target: 2, settings: PageSettings())
+            #expect(review.summary.changedRegions == 1)
+            #expect(!review.summary.finalLineBreakDiffers)
+            #expect(review.html.contains("The earlier source " + ending))
+            #expect(!review.html.contains("Every line is the same."))
+        }
+    }
+
     private func model(_ reference: DocumentReference) -> ReaderModel {
         ReaderModel(reference: reference, platform: ReaderPlatform(
             copyText: { _ in }, openExternal: { _ in false }, reveal: { _ in },

@@ -129,8 +129,9 @@ enum ReviewPage {
         for limit in comparison.limits {
             html += "<p class=\"rv-partial\">Partial comparison: \(escape(limit.description))</p>\n"
         }
-        if comparison.finalLineBreakDiffers {
-            html += "<p class=\"rv-partial\">Every line is the same. The earlier source \(comparison.baseStructure.endsWithLineBreak ? "ends" : "does not end") with a line break; the later source \(comparison.targetStructure.endsWithLineBreak ? "ends" : "does not end") with one.</p>\n"
+        if comparison.finalLineBreakChanged {
+            let sameLines = comparison.finalLineBreakDiffers ? "Every line is the same. " : ""
+            html += "<p class=\"rv-note\">\(sameLines)The earlier source \(comparison.base.endsWithLineBreak ? "ends" : "does not end") with a line break; the later source \(comparison.target.endsWithLineBreak ? "ends" : "does not end") with one.</p>\n"
         }
         html += "</header>\n"
 

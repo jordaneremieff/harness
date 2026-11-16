@@ -77,14 +77,14 @@ private struct Builder {
 
     init(source: String) {
         self.nativeSource = source as NSString
-        let lines = source.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" }).map(String.init)
+        let lines = source.split(omittingEmptySubsequences: false, whereSeparator: SourceLineBreaks.isBreak).map(String.init)
         self.lines = lines
         self.coordinates = EditorSourceCoordinates(source)
         let (frontMatter, body) = MarkdownRenderer.splitFrontMatter(source)
         self.body = body
-        self.lineOffset = SourceStructure.lineFeeds(source) - SourceStructure.lineFeeds(body)
+        self.lineOffset = SourceStructure.lineBreakCount(source) - SourceStructure.lineBreakCount(body)
         self.sourceLength = source.utf16.count
-        self.frontMatterClosingLine = frontMatter.map { SourceStructure.lineFeeds($0) + 3 }
+        self.frontMatterClosingLine = frontMatter.map { SourceStructure.lineBreakCount($0) + 3 }
     }
 
     mutating func analyze() -> EditorSourceAnalysis {

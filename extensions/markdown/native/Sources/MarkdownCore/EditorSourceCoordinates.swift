@@ -1,5 +1,43 @@
 import Foundation
 
+/// Source line breaks are CR, LF or one CRLF grapheme. Both coordinate systems refer to the
+/// original source; consumers keep the line-ending bytes their presentation requires.
+enum SourceLineBreaks {
+    struct Boundary {
+        var startUTF8: Int
+        var endUTF8: Int
+        var startUTF16: Int
+        var endUTF16: Int
+    }
+
+    static func isBreak(_ character: Character) -> Bool {
+        character == "\r" || character == "\n" || character == "\r\n"
+    }
+
+    static func forEach(in source: String, _ visit: (Boundary) -> Void) {
+        var utf8 = 0, utf16 = 0
+        for character in source {
+            let endUTF8 = utf8 + character.utf8.count
+            let endUTF16 = utf16 + character.utf16.count
+            if isBreak(character) {
+                visit(Boundary(startUTF8: utf8, endUTF8: endUTF8, startUTF16: utf16, endUTF16: endUTF16))
+            }
+            utf8 = endUTF8
+            utf16 = endUTF16
+        }
+    }
+
+    static func withoutFinalBreak(_ source: String) -> Substring {
+        source.last.map(isBreak) == true ? source.dropLast() : source[...]
+    }
+
+    static func count(in source: String) -> Int {
+        var count = 0
+        for character in source where isBreak(character) { count += 1 }
+        return count
+    }
+}
+
 /// Maps parser line and byte-column positions to UTF-16 ranges in the exact source, and maps
 /// UTF-16 offsets back to one-based lines and visible grapheme columns.
 public struct EditorSourceCoordinates: Sendable {
@@ -31,7 +69,7 @@ public struct EditorSourceCoordinates: Sendable {
         for character in source {
             graphemeUTF16.append(utf16Offset)
             graphemeUTF8.append(utf8Offset)
-            let isLineBreak = character == "\n" || character == "\r" || character == "\r\n"
+            let isLineBreak = SourceLineBreaks.isBreak(character)
             if isLineBreak {
                 lines.append(Line(
                     startUTF16: lineStartUTF16,

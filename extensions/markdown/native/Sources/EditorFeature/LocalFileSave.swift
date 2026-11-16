@@ -55,7 +55,7 @@ public enum LocalFileSave {
                 let current = try open(URL(fileURLWithPath: base.requestedPath))
                 guard current.base == base else { throw FileSaveError.changed }
                 // Do not even replace the inode on a no-op; original BOM and mixed endings stay exact.
-                if source == current.source { return base }
+                if source.utf8.elementsEqual(current.source.utf8) { return base }
                 var data = Data()
                 if base.hasBOM { data.append(contentsOf: [0xef, 0xbb, 0xbf]) }
                 data.append(contentsOf: source.utf8)

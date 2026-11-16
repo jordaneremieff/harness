@@ -27,6 +27,18 @@ private func spans(_ role: EditorSemanticRole, in analysis: EditorSourceAnalysis
 }
 
 @Suite struct EditorSourceCoordinateMapping {
+    @Test func mixedBreaksShareUTF8AndUTF16Boundaries() {
+        let source = "é\r文\r\n👩🏽‍💻\nx"
+        var boundaries: [SourceLineBreaks.Boundary] = []
+        SourceLineBreaks.forEach(in: source) { boundaries.append($0) }
+        #expect(boundaries.map(\.endUTF8) == [3, 8, 24])
+        #expect(boundaries.map(\.endUTF16) == [2, 5, 13])
+        let coordinates = EditorSourceCoordinates(source)
+        #expect(coordinates.position(atUTF16: 2).line == 2)
+        #expect(coordinates.position(atUTF16: 5).line == 3)
+        #expect(coordinates.position(atUTF16: 13).line == 4)
+    }
+
     @Test func positionsCountVisibleGraphemesAndCRLF() {
         let source = "👩🏽‍💻a e\u{301} β\r\n"
         let coordinates = EditorSourceCoordinates(source)

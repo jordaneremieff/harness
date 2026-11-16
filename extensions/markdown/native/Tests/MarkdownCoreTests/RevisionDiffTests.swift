@@ -43,6 +43,17 @@ Text with a note.[^n]
 """
 
 @Suite struct SourceStructures {
+    @Test func carriageReturnAndMixedBreaksMatchParserLines() {
+        let source = "# A\r\rfirst\rsecond\n\n## B\r\n\r\nlast"
+        let structure = SourceStructure.scan(source)
+        #expect(structure.lines == ["# A", "", "first", "second", "", "## B\r", "\r", "last"])
+        #expect(structure.blocks.map(\.lines) == [1...1, 3...4, 6...6, 8...8])
+        #expect(structure.matchesRendering)
+        #expect(!structure.endsWithLineBreak)
+        #expect(SourceStructure.lineBreakCount(source) == 7)
+        #expect(MarkdownRenderer.render(source, resolver: NoAssetResolver()).blockCount == 4)
+    }
+
     @Test func blocksCoverEveryLineAndFollowTheRendering() {
         let structure = SourceStructure.scan(report)
         #expect(structure.lines.count == 27)
@@ -102,6 +113,60 @@ Text with a note.[^n]
 }
 
 @Suite struct RevisionDiffs {
+    @Test func unicodeNormalisationChangesRemainExactAtEveryComparisonLevel() {
+        let old = "same e\u{301} word\nold\n"
+        let new = "same \u{e9} word\nnew\n"
+        let isolated = RevisionDiff.compare(base: record(1, "e\u{301}\n"), target: record(2, "\u{e9}\n"))
+        #expect(isolated.regions.count == 1)
+        #expect(!isolated.finalLineBreakDiffers)
+        #expect(!isolated.finalLineBreakChanged)
+        let changed = RevisionDiff.compare(base: record(1, old), target: record(2, new))
+        let rows = changed.regions.flatMap(\.rows)
+        #expect(rows.filter { $0.kind == .removed }.count == 2)
+        #expect(rows.filter { $0.kind == .added }.count == 2)
+        #expect(rows.contains { $0.kind == .removed && $0.text.utf8.elementsEqual("same e\u{301} word".utf8) })
+        #expect(rows.contains { $0.kind == .added && $0.segments.contains { $0.changed && $0.text.utf8.elementsEqual("\u{e9}".utf8) } })
+    }
+
+    @Test func finalBreakStatesRemainVisibleAlongsideTextChanges() {
+        for (old, new) in [("old\n", "new"), ("old", "new\n"), ("old\r", "new")] {
+            let comparison = RevisionDiff.compare(base: record(1, old), target: record(2, new))
+            #expect(!comparison.regions.isEmpty)
+            #expect(comparison.finalLineBreakChanged)
+            #expect(!comparison.finalLineBreakDiffers)
+            #expect(comparison.base.endsWithLineBreak == (old.last.map(SourceLineBreaks.isBreak) ?? false))
+            #expect(comparison.target.endsWithLineBreak == (new.last.map(SourceLineBreaks.isBreak) ?? false))
+        }
+    }
+
+    @Test func finalBreakOnlyRequiresTheRestOfTheSourceToMatchExactly() {
+        for ending in ["\r", "\n", "\r\n"] {
+            let comparison = RevisionDiff.compare(base: record(1, "same" + ending), target: record(2, "same"))
+            #expect(comparison.finalLineBreakDiffers)
+        }
+        let changed = RevisionDiff.compare(base: record(1, "a\rb"), target: record(2, "a\nb\n"))
+        #expect(changed.finalLineBreakChanged)
+        #expect(!changed.finalLineBreakDiffers)
+        let normalised = RevisionDiff.compare(base: record(1, "e\u{301}"), target: record(2, "\u{e9}\n"))
+        #expect(!normalised.finalLineBreakDiffers)
+    }
+
+    @Test func wordTokenisationRefusesBeyondTheCombinedBudget() throws {
+        #expect(RevisionDiff.tokens(["!?" + String(repeating: "a", count: 1_048_576)], limit: 2) == nil)
+        #expect(RevisionDiff.tokens([String(repeating: "!?", count: 1_048_576)], limit: 1200) == nil)
+        #expect(try #require(RevisionDiff.tokens([String(repeating: "!", count: 1200)], limit: 1200)).count == 1200)
+        #expect(RevisionDiff.tokens(["a", "b"], limit: 2) == nil)
+        #expect(try #require(RevisionDiff.tokens(["a", "b"], limit: 3)).count == 3)
+        var old = [DiffRow.line(.removed, base: 1, target: nil, text: "a b")]
+        var new = [DiffRow.line(.added, base: nil, target: 1, text: "a c")]
+        RevisionDiff.markWords(&old, &new, limit: 5)
+        #expect(old[0].segments.allSatisfy { !$0.changed })
+        #expect(new[0].segments.allSatisfy { !$0.changed })
+        RevisionDiff.markWords(&old, &new, limit: 6)
+        #expect(old[0].segments.contains { $0.changed && $0.text == "b" })
+        #expect(new[0].segments.contains { $0.changed && $0.text == "c" })
+    }
+
     @Test func aParagraphChangeIsOneRegionWithItsSectionAndMarkedWords() {
         let changed = report.replacingOccurrences(of: "Intro paragraph", with: "Opening paragraph")
         let comparison = RevisionDiff.compare(base: record(1, report), target: record(2, changed))

@@ -251,24 +251,18 @@ extension MarkdownCommands {
     private static func lines(of text: NSString) -> [Line] {
         var result: [Line] = []
         var start = 0
-        while start < text.length {
-            let search = NSRange(location: start, length: text.length - start)
-            let newline = text.range(of: "\n", options: [], range: search)
-            if newline.location == NSNotFound {
-                let content = text.substring(with: NSRange(location: start, length: text.length - start))
-                result.append(Line(start: start, contentEnd: text.length, end: text.length, content: content, ending: ""))
-                start = text.length
-                break
-            }
-            var contentEnd = newline.location
-            if contentEnd > start, text.character(at: contentEnd - 1) == 0x0D { contentEnd -= 1 }
-            let end = newline.location + 1
+        SourceLineBreaks.forEach(in: text as String) { boundary in
+            let contentEnd = boundary.startUTF16
+            let end = boundary.endUTF16
             let content = text.substring(with: NSRange(location: start, length: contentEnd - start))
             let ending = text.substring(with: NSRange(location: contentEnd, length: end - contentEnd))
             result.append(Line(start: start, contentEnd: contentEnd, end: end, content: content, ending: ending))
             start = end
         }
-        if result.isEmpty || (text.length > 0 && text.character(at: text.length - 1) == 0x0A) {
+        if start < text.length {
+            result.append(Line(start: start, contentEnd: text.length, end: text.length,
+                               content: text.substring(from: start), ending: ""))
+        } else {
             result.append(Line(start: text.length, contentEnd: text.length, end: text.length, content: "", ending: ""))
         }
         return result
@@ -349,11 +343,19 @@ extension MarkdownCommands {
     ) -> MarkdownEdit? {
         let selectedText = text.substring(with: selection)
         guard !selectedText.contains("\n"), !selectedText.contains("\r") else { return nil }
-        let replacement = prefix + selectedText + suffix
+        var leading = "", trailing = "", content = selectedText
+        if command != .link, !selectedText.isEmpty {
+            leading = String(selectedText.prefix(while: \.isWhitespace))
+            content = String(selectedText.dropFirst(leading.count))
+            guard !content.isEmpty else { return nil }
+            trailing = String(content.reversed().prefix(while: \.isWhitespace).reversed())
+            content = String(content.dropLast(trailing.count))
+        }
+        let replacement = leading + prefix + content + suffix + trailing
         return MarkdownEdit(
             range: selection,
             replacement: replacement,
-            selection: NSRange(location: selection.location + prefixLength(prefix), length: selectedText.utf16.count),
+            selection: NSRange(location: selection.location + prefixLength(leading + prefix), length: content.utf16.count),
             actionName: action
         )
     }
@@ -364,7 +366,8 @@ extension MarkdownCommands {
         let fence = String(repeating: "`", count: max(1, longestRun(of: "`", in: selectedText) + 1))
         let padded = selectedText.hasPrefix("`") || selectedText.hasSuffix("`")
             || selectedText.hasPrefix(" ") || selectedText.hasSuffix(" ")
-        let pad = padded && !selectedText.isEmpty ? " " : ""
+        let allSpaces = selectedText.allSatisfy { $0 == " " }
+        let pad = padded && !selectedText.isEmpty && !allSpaces ? " " : ""
         let replacement = fence + pad + selectedText + pad + fence
         return MarkdownEdit(
             range: selection,
@@ -389,7 +392,7 @@ extension MarkdownCommands {
         )
         var body = text.substring(with: range)
         let ending = all[selected.lowerBound].ending.isEmpty ? defaultEnding(all) : all[selected.lowerBound].ending
-        let trailing = body.hasSuffix("\n")
+        let trailing = body.last.map(SourceLineBreaks.isBreak) ?? false
         if !trailing { body += ending }
         let fenceRun = String(repeating: "`", count: max(3, longestRun(of: "`", in: body) + 1))
         let fence = fenceRun + (language ?? "")

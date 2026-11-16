@@ -20,6 +20,41 @@ private func applying(_ edit: MarkdownEdit?, to source: String) -> String {
 }
 
 @Suite struct MarkdownFormattingTests {
+    @Test func inlineFormattingKeepsBoundaryWhitespaceOutsideMarkers() throws {
+        let source = "Before  word \t after"
+        let selected = (source as NSString).range(of: " word \t")
+        for (command, tag) in [(MarkdownCommand.bold, "strong"), (.italic, "em"), (.strikethrough, "del")] {
+            let change = try #require(edit(command, source, selected))
+            let changed = applying(change, to: source)
+            let html = MarkdownRenderer.render(changed, resolver: NoAssetResolver()).body
+            #expect(html.contains("<\(tag)>word</\(tag)>"))
+            #expect((changed as NSString).substring(with: change.selection) == "word")
+            #expect(edit(command, " \t ", range(0, 3)) == nil)
+            #expect(edit(command, "", range(0, 0)) != nil)
+        }
+    }
+
+    @Test func inlineCodePreservesWhitespaceOnlyAndPaddedLiterals() throws {
+        for literal in [" ", "  ", "   ", " code ", "`inner`"] {
+            let change = try #require(edit(.inlineCode, literal, range(0, literal.utf16.count)))
+            let html = MarkdownRenderer.render(change.replacement, resolver: NoAssetResolver()).body
+            #expect(html.contains("<code>\(literal)</code>"))
+            #expect((change.replacement as NSString).substring(with: change.selection).utf8.elementsEqual(literal.utf8))
+        }
+    }
+
+    @Test func lineCommandsUseCarriageReturnsAndPreserveMixedEndings() throws {
+        for source in ["one\rtwo\rthree", "one\rtwo\r\nthree", "one\ntwo\rthree"] {
+            let selected = (source as NSString).range(of: "two")
+            let change = try #require(edit(.heading(1), source, NSRange(location: selected.location, length: 0)))
+            #expect(applying(change, to: source).utf8.elementsEqual(source.replacingOccurrences(of: "two", with: "# two").utf8))
+        }
+        #expect(applying(edit(.moveLineUp, "one\rtwo\rthree", range(4, 0)), to: "one\rtwo\rthree") == "two\rone\rthree")
+        #expect(applying(edit(.duplicateLine, "one\rtwo\rthree", range(4, 0)), to: "one\rtwo\rthree") == "one\rtwo\rtwo\rthree")
+        #expect(edit(.continueList, "- one\r- two\r", range(11, 0))?.replacement == "\r- ")
+        #expect(edit(.fencedCode(language: nil), "code\r", range(0, 4))?.replacement == "```\rcode\r```\r")
+    }
+
     @Test func headingsSetRemoveAndPreserveSurroundingLines() {
         let set = edit(.heading(2), "# Alpha\nbeta\n", range(0, 0))
         #expect(set?.range == range(0, 8))

@@ -80,8 +80,11 @@ source. Explicit replacement first retains the old draft as an independent recov
 failed recovery leaves the live source and Undo intact.
 
 The **Format** menu provides headings, emphasis, code, quotes, lists, tasks, links, table insertion,
-indentation and line movement/duplication. Native formatting shortcuts operate only when the source
-text view is the first responder: Command-B, Command-I, Command-K and Command-[ / Command-].
+indentation and line movement/duplication. Commands recognise CR, LF and CRLF as line breaks and
+preserve their original endings. Bold, italic and strikethrough keep selection-edge whitespace
+outside their markers; inline code keeps the selected literal's spaces. Native formatting shortcuts
+operate only when the source text view is the first responder: Command-B, Command-I, Command-K and
+Command-[ / Command-].
 Command-F opens literal source search with next/previous, case and whole-word controls, replacement
 and an explicit selection scope. Command-G and Shift-Command-G step through matches. A source edit
 outside a scoped replacement invalidates that scope instead of broadening Replace All. In rendered
@@ -390,7 +393,8 @@ The comparison is one column at every width:
   then the exact source difference, line by line, with the changed words of replaced lines
   marked and long unchanged runs folded. When both revisions render a part alike, the page says
   that the difference is in the source only. A changed line that ends with a carriage return
-  shows it.
+  shows it. When the final line break changes, the page states each revision's ending, even
+  when other source lines changed. Unicode-normalisation changes remain source differences.
 
 The work is bounded. The comparison aligns top-level blocks, then the lines of each changed run
 of blocks, then the words of replaced lines, each through the platform's collection difference

@@ -145,7 +145,7 @@ public enum MarkdownRenderer {
         let bytes = Array(body.utf8)
         guard let parsed = MarkdownParser.parse(bytes) else { return escapedFallback(body) }
         defer { parsed.free() }
-        wrapTopLevelBlocks(parsed.document, bytes: bytes, context: &context)
+        wrapTopLevelBlocks(parsed.document, bytes: bytes, source: body, context: &context)
         let work = collect(parsed.document, context: &context)
         for item in work.reversed() {
             apply(item, context: &context)
@@ -159,11 +159,9 @@ public enum MarkdownRenderer {
 
     /// Wraps each top-level block in an element with a key derived from its source text and its
     /// occurrence, so that a later revision can find the same block again.
-    static func wrapTopLevelBlocks(_ document: Node, bytes: [UInt8], context: inout Context) {
+    static func wrapTopLevelBlocks(_ document: Node, bytes: [UInt8], source: String, context: inout Context) {
         var lineStarts = [0]
-        for (offset, byte) in bytes.enumerated() where byte == 0x0A {
-            lineStarts.append(offset + 1)
-        }
+        SourceLineBreaks.forEach(in: source) { lineStarts.append($0.endUTF8) }
         var occurrences: [UInt64: Int] = [:]
         var node = cmark_node_first_child(document)
         while let current = node {

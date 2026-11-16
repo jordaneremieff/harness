@@ -24,6 +24,14 @@ Repeat repeat.
 """
 
 @Suite struct PassageLocations {
+    @Test func carriageReturnPassagesUseTheParserLineNumbers() {
+        let source = "# A\r\rfirst\rsecond\r"
+        let structure = SourceStructure.scan(source)
+        #expect(structure.endsWithLineBreak)
+        #expect(structure.locate(renderedText: "first\nsecond", renderedBlocks: 1...1, renderedBlockCount: 2).lines == 3...4)
+        #expect(structure.locate(sourceText: "first\rsecond", lines: 3...4).lines == 3...4)
+    }
+
     private let structure = SourceStructure.scan(passageSource)
 
     @Test func textThatOccursOnceInItsBlockGetsItsExactSourceLines() {
