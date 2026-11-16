@@ -27,6 +27,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
     var onWorkspaceChange: ((NSWindow, EditorWorkspace) -> Void)?
     private var retaining = false
     private var lostTerminal = false
+    private var editorFocusPending = false
     let state: ReadingStateStore
     private let platform: ReaderPlatform
     private let terminal: PaneTerminal
@@ -51,6 +52,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
         self.state = state
         self.terminal = terminal
         self.workspace = workspace
+        editorFocusPending = workspace != nil
     }
 
     func start(revision: Int? = nil, digest: String? = nil, origin: LaunchOrigin? = nil) -> NSWindow {
@@ -91,17 +93,20 @@ final class PaneHost: NSObject, NSWindowDelegate {
         workspace.onRelease = { [weak self] in self?.releaseFocus() }
     }
 
-    func newScratchpad(showDrafts: Bool = false) {
+    func newScratchpad(showDrafts: Bool = false, showLibrary: Bool = false) {
         if let workspace {
-            if showDrafts { Task { await workspace.library() } } else { workspace.newScratchpad() }
+            if showLibrary { Task { await workspace.showPublishedLibrary() } }
+            else if showDrafts { Task { await workspace.library() } } else { workspace.newScratchpad() }
             return
         }
         let root: String? = if case .stored(let root, _, _) = model.reference { root } else { state.selectedStoreRoot }
         let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: root)
         self.workspace = workspace
+        editorFocusPending = true
         workspace.launchOrigin = model.launchOrigin
         connect(workspace)
-        if showDrafts { Task { await workspace.library() } } else { workspace.newScratchpad() }
+        if showLibrary { Task { await workspace.showPublishedLibrary() } }
+        else if showDrafts { Task { await workspace.library() } } else { workspace.newScratchpad() }
         hosting?.rootView = view(model)
         onWorkspaceChange?(window, workspace)
         Task { await model.close() }
@@ -153,6 +158,12 @@ final class PaneHost: NSObject, NSWindowDelegate {
             }
             if !window.isVisible { window.orderFrontRegardless() }
             order()
+            if editorFocusPending, let workspace, workspace.active != nil, shown.coveredBy == nil {
+                let active = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                if active == shown.host || active == ProcessInfo.processInfo.processIdentifier {
+                    editorFocusPending = !Self.focusEditor(workspace, in: window)
+                }
+            }
         case .placed, .concealed, .searching, .untrusted:
             placement = nil
             if window.isVisible { window.orderOut(nil) }
@@ -178,6 +189,15 @@ final class PaneHost: NSObject, NSWindowDelegate {
             if window.level != .normal { window.level = .normal }
             if let number = placement.window { window.order(.above, relativeTo: Int(number)) }
         }
+    }
+
+    /// Focus follows real attachment and placement, not the editor controller's creation.
+    @discardableResult static func focusEditor(_ workspace: EditorWorkspace, in window: NSWindow) -> Bool {
+        guard let document = workspace.active, !workspace.libraryVisible, workspace.reading == nil, workspace.publishedLibrary == nil else { return false }
+        window.makeKeyAndOrderFront(nil)
+        window.contentView?.layoutSubtreeIfNeeded()
+        document.text.focus()
+        return window.isKeyWindow && window.firstResponder === document.text.textView
     }
 
     /// Gives the keyboard back to the application that shows the pane.
@@ -363,7 +383,9 @@ final class PaneHost: NSObject, NSWindowDelegate {
             retaining = false
             guard completed, saved.value else {
                 workspace.resumeEdits()
-                workspace.notice = "Draft recovery failed or timed out. The workspace remains open; retry Close after recovery succeeds."
+                if !completed || !workspace.documents.contains(where: { $0.text.hasMarkedText }) {
+                    workspace.notice = "Draft recovery failed or timed out. The workspace remains open; retry Close after recovery succeeds."
+                }
                 if lostTerminal { finishEnd(status: max(status, 1), terminalGone: true) }
                 return
             }
@@ -399,7 +421,10 @@ final class PaneHost: NSObject, NSWindowDelegate {
         }
         let deadline = DispatchTime.now() + Self.saveAllowance
         Task { @MainActor in
-            let captured = await Self.run(until: .now() + Self.captureAllowance) { await self.model.close() }
+            let captured = await Self.run(until: .now() + Self.captureAllowance) {
+                await self.workspace?.closeViews()
+                await self.model.close()
+            }
             var result = await state.flush(timeout: Self.seconds(until: deadline))
             while result == .saved, state.hasPendingChanges, Self.seconds(until: deadline) > 0 {
                 result = await state.flush(timeout: Self.seconds(until: deadline))

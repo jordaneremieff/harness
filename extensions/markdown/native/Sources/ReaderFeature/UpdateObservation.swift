@@ -27,8 +27,10 @@ public final class UpdateObserver {
 
     static let reasonLimit = 240
 
+    public init() {}
+
     /// Starts watching unless a watcher runs. A failed setup is tried again at the next start.
-    func start(_ reference: DocumentReference, onChange: @escaping @MainActor () async -> Void) {
+    public func start(_ reference: DocumentReference, onChange: @escaping @MainActor () async -> Void) {
         guard watcher == nil else { return }
         self.reference = reference
         self.onChange = onChange
@@ -44,14 +46,14 @@ public final class UpdateObserver {
         }
     }
 
-    func stop() {
+    public func stop() {
         watcher = nil
         onChange = nil
     }
 
     /// Reads the current marker off the main thread. Returns nil and records the reason when the
     /// read fails.
-    func readMarker(_ reference: DocumentReference) async -> String? {
+    public func readMarker(_ reference: DocumentReference) async -> String? {
         let outcome = await Task.detached { Result { try Self.marker(reference) } }.value
         switch outcome {
         case .success(let marker):

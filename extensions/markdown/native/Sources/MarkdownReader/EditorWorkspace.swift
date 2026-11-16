@@ -15,10 +15,15 @@ final class WorkingDocument: Identifiable {
     let session: EditSession
     let text: MarkdownEditorTextController
     let preview: ReaderModel
+    let updates = UpdateObserver()
+    @ObservationIgnored private var checkTask: Task<Void, Never>?
+    @ObservationIgnored private var checkRequested = false
+    @ObservationIgnored private var closed = false
     var mode: EditorMode = .styled
     var presentation = MarkdownEditorPresentation()
     var visible = false
     var pendingMode: EditorMode?
+    var replacing = false
     @ObservationIgnored private var previewTask: Task<Void, Never>?
     @ObservationIgnored private var resolver: any AssetResolving = NoAssetResolver()
     @ObservationIgnored private var composing = false
@@ -48,6 +53,7 @@ final class WorkingDocument: Identifiable {
         }
         text.onAnalysis = { [weak self] in self?.updateAnalysis() }
         text.onError = { [weak session] message in session?.setError(message) }
+        observeBase()
     }
 
     func setMode(_ next: EditorMode) {
@@ -87,7 +93,47 @@ final class WorkingDocument: Identifiable {
         }
     }
 
+    func observeBase() {
+        updates.stop()
+        let reference: DocumentReference
+        switch session.record.destination {
+        case .file(let base): reference = .file(path: base.requestedPath)
+        case .published(let base): reference = .stored(root: base.root, storeId: base.storeId, document: base.document)
+        default: return
+        }
+        updates.start(reference) { [weak self] in self?.checkForUpdates() }
+        checkForUpdates()
+    }
+
+    func checkForUpdates() {
+        checkRequested = true
+        guard checkTask == nil, !closed else { return }
+        checkTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.checkTask = nil }
+            while self.checkRequested, !self.closed {
+                self.checkRequested = false
+                let destination = self.session.record.destination
+                let reference: DocumentReference, expected: String
+                switch destination {
+                case .file(let base): reference = .file(path: base.requestedPath); expected = base.digest
+                case .published(let base): reference = .stored(root: base.root, storeId: base.storeId, document: base.document); expected = String(base.revision)
+                default: return
+                }
+                let marker = await self.updates.readMarker(reference)
+                guard !self.closed, self.session.record.destination == destination, !self.session.saving, let marker, marker != expected else { continue }
+                let conflict: EditConflict
+                switch destination {
+                case .published: conflict = .init(message: "A newer library revision exists. Your draft and expected revision remain unchanged.", revision: Int(marker))
+                default: conflict = .init(message: "The file changed outside this editor. Your draft remains unchanged.", digest: marker)
+                }
+                if self.session.record.conflict != conflict { self.session.setConflict(conflict) }
+            }
+        }
+    }
+
     func close() async {
+        closed = true; checkTask?.cancel(); updates.stop()
         previewTask?.cancel()
         await preview.close()
     }
@@ -111,8 +157,10 @@ final class EditorWorkspace {
     var closing = false
     var launchOrigin: LaunchOrigin?
     var reading: ReaderModel?
+    var revisionReview: EditorRevisionReview?
     var publishedLibrary: LibraryModel?
     private let readingState = ReadingStateStore(directory: nil)
+    private var navigationGeneration: UInt64 = 0
     @ObservationIgnored var onClose: (() -> Void)?
     @ObservationIgnored var onRelease: (() -> Void)?
     var active: WorkingDocument? { documents.first { $0.id == selected } }
@@ -125,6 +173,7 @@ final class EditorWorkspace {
             notice = "Finish composing text before \(action)."
             return false
         }
+        guard (document ?? active)?.replacing != true else { notice = "The document replacement is in progress."; return false }
         return !closing
     }
 
@@ -137,7 +186,7 @@ final class EditorWorkspace {
         document.setVisible(true)
         if case .published(let base) = record.destination { loadResolver(base, document: document) }
         if case .copy(let base) = record.destination { loadResolver(base, document: document) }
-        Task { @MainActor in document.text.focus() }
+        focusWhenActive(document)
     }
 
     private func loadResolver(_ base: StoredEditBase, document: WorkingDocument) {
@@ -146,9 +195,22 @@ final class EditorWorkspace {
                 let resolver = try await Task.detached {
                     try DocumentLoader.load(.stored(root: base.root, storeId: base.storeId, document: base.document), revision: base.revision, pinnedDigest: base.digest).resolver
                 }.value
+                guard document.session.record.destination == .published(base) || document.session.record.destination == .copy(base) else { return }
                 document.setResolver(resolver)
             } catch { document.session.setError("The base images are unavailable: \(error). Your draft remains intact.") }
         }
+    }
+
+    private func focusWhenActive(_ document: WorkingDocument) {
+        Task { @MainActor [weak self, weak document] in
+            guard let self, let document, self.active === document, !self.libraryVisible, self.reading == nil, self.publishedLibrary == nil else { return }
+            document.text.focus()
+        }
+    }
+
+    func closeViews() async {
+        for document in documents { document.setVisible(false); await document.close() }
+        await reading?.close()
     }
 
     func newScratchpad() { add(DraftRecord()) }
@@ -159,14 +221,16 @@ final class EditorWorkspace {
         active?.setVisible(false)
         selected = document.id; libraryVisible = false
         document.setVisible(true)
-        Task { @MainActor in document.text.focus() }
+        focusWhenActive(document)
     }
 
     func library(more: Bool = false) async {
         guard allowAction("opening drafts") else { return }
-        leaveReading()
+        let navigation = navigationGeneration
         do {
             let page = try await drafts.list(offset: more ? (nextDraftOffset ?? 0) : 0)
+            guard navigation == navigationGeneration, allowAction("opening drafts") else { return }
+            leaveReading()
             recovered = more ? recovered + page.records : page.records
             recoveryIssues = page.issues; nextDraftOffset = page.nextOffset; libraryVisible = true
             active?.setVisible(false)
@@ -174,6 +238,7 @@ final class EditorWorkspace {
     }
 
     private func leaveReading() {
+        navigationGeneration &+= 1
         if let root = publishedLibrary?.selectedRoot { selectedStore = root }
         let previous = reading
         reading = nil; publishedLibrary = nil
@@ -214,6 +279,7 @@ final class EditorWorkspace {
 
     func openReading(_ reference: DocumentReference) async {
         guard allowAction("opening another document") else { return }
+        navigationGeneration &+= 1
         let previous = reading
         let next = ReaderModel(reference: reference, platform: MacPlatform.operations(), state: readingState)
         publishedLibrary = nil; libraryVisible = false; active?.setVisible(false); reading = next
@@ -269,6 +335,10 @@ final class EditorWorkspace {
     }
 
     func prepareToClose() async -> Bool {
+        guard !documents.contains(where: \.replacing) else {
+            notice = "Wait for the document replacement before closing the workspace."
+            return false
+        }
         guard documents.allSatisfy({ !$0.text.hasMarkedText }) else {
             notice = "Finish composing text before closing the workspace."
             return false
@@ -334,6 +404,8 @@ final class EditorWorkspace {
                 return try LocalFileSave.save(source: snapshot.source, base: base)
             }.value
             document.session.finishSave(source: snapshot.source, destination: .file(base))
+            document.setResolver(DirectoryAssetResolver(directory: URL(fileURLWithPath: base.path).deletingLastPathComponent()))
+            document.observeBase()
         } catch {
             if case FileSaveError.changed = error { document.session.setConflict(.init(message: String(describing: error))) }
             document.session.failSave(String(describing: error))
@@ -389,6 +461,8 @@ final class EditorWorkspace {
         guard let id = outcome.document, let revision = outcome.revision, let digest = outcome.digest else { return }
         let base = StoredEditBase(root: request.storeRoot, storeId: request.storeId, document: id, revision: revision, digest: digest)
         document.session.finishSave(source: request.source, destination: .published(base))
+        document.observeBase()
+        loadResolver(base, document: document)
     }
 }
 
@@ -414,6 +488,9 @@ struct EditorWorkspaceView: View {
                     Menu {
                         Button("Save As…") { workspace.saveAs() }
                         Button("Duplicate") { if let record = workspace.active?.session.duplicate() { workspace.add(record) } }
+                        Button("Review / Revert to Saved Version…") {
+                            if let document = workspace.active { Task { await workspace.reviewSavedVersion(document) } }
+                        }
                         Button("Close Document") { Task { await workspace.closeActive() } }
                     } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).fixedSize()
                 }
@@ -446,6 +523,7 @@ struct EditorWorkspaceView: View {
                 ContentUnavailableView("Write Markdown", systemImage: "square.and.pencil", description: Text("Start a scratchpad or open a Markdown file."))
             }
         }.frame(minWidth: 360, minHeight: 300).disabled(workspace.closing)
+            .sheet(item: $workspace.revisionReview) { review in EditorRevisionReviewView(review: review, workspace: workspace) }
     }
 
     private var draftLibrary: some View {
@@ -475,10 +553,17 @@ struct EditorWorkspaceView: View {
             if let conflict = document.session.record.conflict {
                 HStack {
                     Label(conflict.message, systemImage: "exclamationmark.triangle")
+                    Button("Review Saved Version") { Task { await workspace.reviewSavedVersion(document) } }
                     Button("Save a Separate Copy") { workspace.add(document.session.duplicate()) }
                 }.foregroundStyle(.orange)
             }
             if let error = document.session.error { Text(error).foregroundStyle(.red) }
+            if case .failed(let reason) = document.updates.state {
+                HStack {
+                    Text("External updates are not observed: \(reason)").foregroundStyle(.orange)
+                    Button("Check Again") { document.observeBase() }
+                }
+            }
             HStack {
                 Text(document.session.saving ? "Save in progress" : document.session.isDirty ? "Uncommitted draft" : "Saved")
                 Text("·")

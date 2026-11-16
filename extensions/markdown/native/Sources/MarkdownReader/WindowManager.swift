@@ -80,7 +80,10 @@ final class WindowManager: NSObject, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender === editorWindow, !editorCloseAllowed, let editor else { return true }
         Task {
-            guard await editor.prepareToClose() else { editor.notice = "Recovery failed. The workspace stays open to protect your text."; return }
+            guard await editor.prepareToClose() else {
+                if !editor.documents.contains(where: { $0.text.hasMarkedText }) { editor.notice = "Recovery failed. The workspace stays open to protect your text." }
+                return
+            }
             editorCloseAllowed = true
             sender.close()
         }
@@ -98,9 +101,11 @@ final class WindowManager: NSObject, NSWindowDelegate {
     func selectStore(_ root: String) async {
         editor?.selectedStore = root
         await libraryModel?.selectStore(root)
+        await editor?.publishedLibrary?.selectStore(root)
     }
 
     func closeReaders() async {
+        await editor?.closeViews()
         let models = readers.values.map(\.model)
         for model in models { await model.close() }
         for task in Array(closing.values) { await task.value }
@@ -194,6 +199,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         if window === editorWindow {
+            if let editor { Task { await editor.closeViews() } }
             editorWindow = nil; editor = nil; editorCloseAllowed = false
             return
         }

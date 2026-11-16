@@ -56,7 +56,10 @@ safe rendering path without a fabricated file or revision identity. Hidden previ
 work. Mode changes defer while native text composition is active; document changes, saves and
 close actions instead explain that composition must finish first. The workspace contains its
 own library browser and read view, with explicit Edit or Edit Copy actions for stored documents.
-Captured files and responses require a copy.
+Captured files and responses require a copy. An editor observes external changes without
+replacing its buffer or advancing its expected revision. **Review / Revert to Saved Version**
+shows the exact draft and saved source side by side. Explicit replacement first retains the old
+draft as an independent recovery version; failed recovery leaves the live source and undo intact.
 
 The explicit editor launch is:
 

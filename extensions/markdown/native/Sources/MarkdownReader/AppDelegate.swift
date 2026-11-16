@@ -274,12 +274,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func saveEditorAs(_ sender: Any?) { windows.keyEditor?.saveAs() }
 
     @objc func showLibrary(_ sender: Any?) {
+        if let paneHost { paneHost.newScratchpad(showLibrary: true); return }
         if let workspace = paneHost?.workspace ?? windows.keyEditor { Task { await workspace.showPublishedLibrary() }; return }
         windows.showLibrary(openFile: { [weak self] in self?.openDocument(nil) },
                             openStore: { [weak self] in self?.openStore(nil) })
     }
 
     @objc func openStore(_ sender: Any?) {
+        if let paneHost, paneHost.workspace == nil { paneHost.newScratchpad(showLibrary: true) }
+        if let workspace = paneHost?.workspace ?? windows.keyEditor { workspace.chooseStore(); return }
         let panel = NSOpenPanel()
         panel.title = "Open Document Store"
         panel.prompt = "Select Store"

@@ -133,6 +133,11 @@ public final class EditSession {
         changed()
     }
 
+    public func finishRevert(source: String, destination: EditDestination) {
+        finishSave(source: source, destination: destination)
+        if case .copy = destination { record.savedSource = nil; changed() }
+    }
+
     public func failSave(_ message: String) { saving = false; error = message; changed() }
 
     public func setPendingPublication(_ data: Data?) {

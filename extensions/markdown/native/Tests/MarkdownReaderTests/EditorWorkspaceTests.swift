@@ -92,6 +92,27 @@ import EditorFeature
         await document.close()
     }
 
+    @Test func paneFocusAfterAttachmentPreservesTheFirstNativeCharacter() async throws {
+        _ = NSApplication.shared
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil)
+        workspace.newScratchpad()
+        let document = try #require(workspace.active)
+        let window = PaneWindow(contentRect: NSRect(x: -20000, y: -20000, width: 900, height: 600), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: EditorWorkspaceView(workspace: workspace))
+        defer { window.close() }
+        #expect(PaneHost.focusEditor(workspace, in: window))
+        #expect(window.firstResponder === document.text.textView)
+        document.text.textView.insertText("a", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(document.text.source == "a")
+        document.text.textView.insertText("q", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(document.text.source == "aq")
+        #expect(window.isVisible)
+        await workspace.closeViews()
+    }
+
     @Test func compositionRefusesWorkspaceTransitionsAndSaves() async throws {
         _ = NSApplication.shared
         let root = try directory()
@@ -123,6 +144,59 @@ import EditorFeature
         #expect(workspace.notice?.contains("composing") == true)
         active.text.textView.unmarkText()
         #expect(await workspace.prepareToClose())
+    }
+
+    @Test func externalFileChangeKeepsTheBaseUntilReviewedRevert() async throws {
+        _ = NSApplication.shared
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("external.md")
+        try Data("saved source".utf8).write(to: file)
+        let opened = try LocalFileSave.open(file)
+        let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil)
+        workspace.add(DraftRecord(source: opened.source, destination: .file(opened.base), savedSource: opened.source))
+        let document = try #require(workspace.active)
+        document.text.textView.insertText("my draft", replacementRange: NSRange(location: 0, length: (opened.source as NSString).length))
+        try Data("external revision".utf8).write(to: file, options: .atomic)
+        document.checkForUpdates()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while document.session.record.conflict == nil, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(document.session.record.conflict != nil)
+        #expect(document.session.record.destination == .file(opened.base))
+        #expect(document.text.source == "my draft")
+        await workspace.reviewSavedVersion(document)
+        let review = try #require(workspace.revisionReview)
+        #expect(review.candidate.source == "external revision")
+        await workspace.acceptRevision(review)
+        #expect(document.text.source == "external revision")
+        #expect(!document.session.isDirty)
+        #expect(document.session.record.conflict == nil)
+        #expect(document.text.textView.undoManager?.canUndo == false)
+        let retained = try await workspace.drafts.list()
+        #expect(retained.records.contains { $0.source == "my draft" && $0.parentBranch == document.session.record.branch })
+        #expect(try String(contentsOf: file, encoding: .utf8) == "external revision")
+        await workspace.closeViews()
+    }
+
+    @Test func failedRevertRecoveryPreservesTheLiveDraftAndUndo() async throws {
+        _ = NSApplication.shared
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("external.md"), blocked = root.appendingPathComponent("blocked")
+        try Data("saved".utf8).write(to: file)
+        try Data("not a directory".utf8).write(to: blocked)
+        let opened = try LocalFileSave.open(file)
+        let workspace = EditorWorkspace(directory: blocked, store: nil)
+        workspace.add(DraftRecord(source: opened.source, destination: .file(opened.base), savedSource: opened.source))
+        let document = try #require(workspace.active)
+        document.text.textView.insertText("draft", replacementRange: NSRange(location: 0, length: 5))
+        await workspace.reviewSavedVersion(document)
+        await workspace.acceptRevision(try #require(workspace.revisionReview))
+        #expect(document.text.source == "draft")
+        #expect(document.text.textView.undoManager?.canUndo == true)
+        #expect(document.text.textView.isEditable)
+        #expect(workspace.notice?.contains("Replacement did not start") == true)
+        await workspace.closeViews()
     }
 
     @Test func failedRecoveryKeepsTheEditableDocumentOpen() async throws {
