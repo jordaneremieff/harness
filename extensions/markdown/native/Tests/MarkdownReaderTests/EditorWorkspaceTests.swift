@@ -6,7 +6,9 @@ import EditorFeature
 
 @MainActor @Suite(.serialized) struct EditorWorkspaceLifecycle {
     private func directory() throws -> URL {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("editor-workspace-" + UUID().uuidString)
+        let temporary = ProcessInfo.processInfo.environment["TMPDIR"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.temporaryDirectory
+        let root = temporary.appendingPathComponent("editor-workspace-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }
@@ -92,6 +94,24 @@ import EditorFeature
         await document.close()
     }
 
+    @Test func paneFocusRefusesAnUnattachedSourceWithoutActivating() async throws {
+        _ = NSApplication.shared
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil)
+        workspace.newScratchpad()
+        let document = try #require(workspace.active)
+        let window = PaneWindow(contentRect: NSRect(x: -20000, y: -20000, width: 900, height: 600), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let active = NSApp.isActive
+        #expect(!PaneHost.focusEditor(workspace, in: window))
+        #expect(NSApp.isActive == active)
+        #expect(!window.isVisible)
+        #expect(document.text.textView.window == nil)
+        await workspace.closeViews()
+    }
+
     @Test func paneFocusAfterAttachmentPreservesTheFirstNativeCharacter() async throws {
         _ = NSApplication.shared
         let root = try directory()
@@ -103,8 +123,29 @@ import EditorFeature
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: EditorWorkspaceView(workspace: workspace))
         defer { window.close() }
-        #expect(PaneHost.focusEditor(workspace, in: window))
+        // Observe before requesting activation so a fast activation cannot be missed.
+        let (activations, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let observer = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: NSApp, queue: .main) { _ in
+            continuation.yield(())
+        }
+        defer { NotificationCenter.default.removeObserver(observer); continuation.finish() }
+        let deadline = Task {
+            try? await Task.sleep(for: .seconds(2))
+            continuation.finish()
+        }
+        defer { deadline.cancel() }
+        var focused = PaneHost.focusEditor(workspace, in: window)
+        if !focused {
+            for await _ in activations {
+                focused = PaneHost.focusEditor(workspace, in: window)
+                if focused { break }
+            }
+        }
+        #expect(focused)
+        #expect(NSApp.isActive)
+        #expect(NSApp.keyWindow === window)
         #expect(window.isKeyWindow)
+        #expect(window.isMainWindow)
         #expect(document.text.textView.window === window)
         #expect(window.firstResponder === document.text.textView)
         (window.firstResponder as? NSTextView)?.insertText("a", replacementRange: NSRange(location: NSNotFound, length: 0))

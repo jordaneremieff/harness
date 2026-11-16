@@ -69,6 +69,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        paneHost?.focusPendingEditor()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }

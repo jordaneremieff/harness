@@ -158,12 +158,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
             }
             if !window.isVisible { window.orderFrontRegardless() }
             order()
-            if editorFocusPending, let workspace, workspace.active != nil, shown.coveredBy == nil {
-                let active = NSWorkspace.shared.frontmostApplication?.processIdentifier
-                if active == shown.host || active == ProcessInfo.processInfo.processIdentifier {
-                    editorFocusPending = !Self.focusEditor(workspace, in: window)
-                }
-            }
+            focusPendingEditor()
         case .placed, .concealed, .searching, .untrusted:
             placement = nil
             if window.isVisible { window.orderOut(nil) }
@@ -191,13 +186,30 @@ final class PaneHost: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Focus follows real attachment and placement, not the editor controller's creation.
+    /// Placement and activation can finish in either order. Only the pending editor launch
+    /// claims focus; later application activations leave the current control unchanged.
+    func focusPendingEditor() {
+        guard !ending, editorFocusPending, let workspace, let placement,
+              window.isVisible, placement.coveredBy == nil else { return }
+        let active = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard active == placement.host || active == ProcessInfo.processInfo.processIdentifier else { return }
+        editorFocusPending = !Self.focusEditor(workspace, in: window)
+    }
+
+    /// Focus follows real attachment and app activation, not a text view's local focus flag.
     @discardableResult static func focusEditor(_ workspace: EditorWorkspace, in window: NSWindow) -> Bool {
         guard let document = workspace.active, !workspace.libraryVisible, workspace.reading == nil, workspace.publishedLibrary == nil else { return false }
-        window.makeKeyAndOrderFront(nil)
         window.contentView?.layoutSubtreeIfNeeded()
+        guard document.text.textView.window === window else { return false }
+        if !window.isVisible { window.orderFrontRegardless() }
+        // AppKit completes activation asynchronously. The delegate resumes the pending focus.
+        if !NSApp.isActive { NSApp.activate() }
+        guard NSApp.isActive else { return false }
+        window.makeKeyAndOrderFront(nil)
+        window.makeMain()
         document.text.focus()
-        return window.isKeyWindow && window.firstResponder === document.text.textView
+        return NSApp.keyWindow === window && window.isKeyWindow && window.isMainWindow
+            && window.firstResponder === document.text.textView
     }
 
     /// Gives the keyboard back to the application that shows the pane.
