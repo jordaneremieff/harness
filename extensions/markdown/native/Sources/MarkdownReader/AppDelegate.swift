@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             platform.savePDF = { try await ExportPanel.pdf($0, name: $1) }
         }
         windows = WindowManager(state: state, platform: platform, defaultRoots: mode.isCheck ? [] : Self.defaultRoots())
+        windows.onOpenStore = { [weak self] in self?.openStore(nil) }
         if case .pane = mode {
             NSApp.mainMenu = buildMenu(pane: true)
         } else if !mode.isAccessory {
@@ -80,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         guard case .application = mode else { return .terminateNow }
         let answered = Flag()
+        let editorRetained = Flag()
         let finish: (ReadingStateFlushResult) -> Void = { result in
             guard !answered.value else { return }
             answered.value = true
@@ -88,6 +90,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         let deadline = DispatchTime.now() + PaneHost.saveAllowance
         Task { @MainActor in
+            let retained = await windows.retainEditors()
+            guard !answered.value else { windows.editor?.resumeEdits(); return }
+            guard retained else {
+                answered.value = true
+                sender.reply(toApplicationShouldTerminate: false)
+                return
+            }
+            editorRetained.value = true
             let captured = await PaneHost.run(until: .now() + PaneHost.captureAllowance) { await self.windows.closeReaders() }
             var result = await windows.state.flush(timeout: PaneHost.seconds(until: deadline))
             while result == .saved, windows.state.hasPendingChanges, PaneHost.seconds(until: deadline) > 0 {
@@ -99,7 +109,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             finish(result)
         }
         DispatchQueue.main.asyncAfter(deadline: deadline + PaneHost.outputAllowance) {
-            MainActor.assumeIsolated { finish(.unconfirmed(reason: "The quit deadline passed before the save settled.")) }
+            MainActor.assumeIsolated {
+                if self.windows.editor != nil, !editorRetained.value, !answered.value {
+                    answered.value = true
+                    self.windows.editor?.resumeEdits()
+                    self.windows.editor?.notice = "Recovery did not finish before the quit deadline. The workspace remains open."
+                    sender.reply(toApplicationShouldTerminate: false)
+                } else { finish(.unconfirmed(reason: "The quit deadline passed before the save settled.")) }
+            }
         }
         return .terminateLater
     }
@@ -217,6 +234,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     // MARK: - Menu actions
 
+    @objc func newScratchpad(_ sender: Any?) { windows.showEditor() }
+    @objc func showDrafts(_ sender: Any?) { windows.showEditor(newScratchpad: false) }
+    @objc func saveEditor(_ sender: Any?) { windows.keyEditor?.save() }
+    @objc func saveEditorAs(_ sender: Any?) { windows.keyEditor?.saveAs() }
+
     @objc func showLibrary(_ sender: Any?) {
         windows.showLibrary(openFile: { [weak self] in self?.openDocument(nil) },
                             openStore: { [weak self] in self?.openStore(nil) })
@@ -286,7 +308,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let action = item.action else { return true }
-        if [#selector(showLibrary(_:)), #selector(openDocument(_:)), #selector(openStore(_:)), #selector(openRecent(_:))].contains(action) { return true }
+        if [#selector(newScratchpad(_:)), #selector(showDrafts(_:)), #selector(showLibrary(_:)), #selector(openDocument(_:)), #selector(openStore(_:)), #selector(openRecent(_:))].contains(action) { return true }
+        if [#selector(saveEditor(_:)), #selector(saveEditorAs(_:))].contains(action) { return windows.keyEditor?.active != nil }
         guard let model = windows.keyModel else { return false }
         switch action {
         case #selector(toggleOutline(_:)):
@@ -401,6 +424,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let recentHolder = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
         recentHolder.submenu = recentMenu
         main.addItem(submenu("File", [
+            item("New Scratchpad", #selector(newScratchpad(_:)), "n"),
+            item("Recoverable Drafts", #selector(showDrafts(_:)), "d", [.command, .shift]),
+            item("Save", #selector(saveEditor(_:)), "s"),
+            item("Save As…", #selector(saveEditorAs(_:)), "s", [.command, .shift]),
+            .separator(),
             item("Open…", #selector(openDocument(_:)), "o"),
             item("Open Store Folder…", #selector(openStore(_:)), "o", [.command, .option]),
             recentHolder,
@@ -425,6 +453,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     private func editMenu() -> NSMenuItem {
         submenu("Edit", [
+            standard("Undo", Selector(("undo:")), "z"),
+            standard("Redo", Selector(("redo:")), "z", [.command, .shift]),
+            .separator(),
+            standard("Cut", #selector(NSText.cut(_:)), "x"),
+            standard("Paste", #selector(NSText.paste(_:)), "v"),
             standard("Copy", #selector(NSText.copy(_:)), "c"),
             item("Copy Passage with Source", #selector(copyPassage(_:)), "c", [.command, .option]),
             item("Copy Markdown", #selector(copyMarkdown(_:)), "c", [.command, .shift]),

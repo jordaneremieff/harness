@@ -34,6 +34,11 @@ public struct DocumentSnapshot: Sendable {
     public var revision: Int? { record?.revision }
     public var latestRevision: Int? { document?.revision }
     public var completeness: Completeness { record?.completeness ?? .complete }
+
+    /// A private editor rendering has no committed revision or capture provenance.
+    public static func draft(reference: DocumentReference, title: String, source: String, resolver: any AssetResolving) -> DocumentSnapshot {
+        DocumentSnapshot(reference: reference, title: title, source: source, digest: Digest.sha256(Data(source.utf8)), bytes: source.utf8.count, document: nil, record: nil, revisions: [], olderRevisionsUnlisted: false, location: URL(fileURLWithPath: "/"), resolver: resolver)
+    }
 }
 
 public enum DocumentLoader {

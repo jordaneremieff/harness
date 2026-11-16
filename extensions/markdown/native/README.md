@@ -1,9 +1,10 @@
 # Markdown Reader (native Mac app)
 
 A native reader for Markdown documents that the Markdown extension saves: agent responses,
-published documents and file snapshots. It also opens plain `.md` files in place. The app reads
-the document store and never writes documents; its only change inside a store is the removal of
-an open request it accepted. Its own reading state (positions, recent documents, known store
+published documents and file snapshots. It also opens plain `.md` files in place. Reading never
+changes document source; its only store mutation is removal of an accepted open request.
+The editor provides explicit file saves and delegates library saves to the bundled store writer.
+Its own reading state (positions, recent documents, known store
 folders, text size) lives in `~/Library/Application Support/Markdown Reader/` and is bounded;
 trimming it never touches a stored document. The application and every [pane mode](#pane-mode)
 reader share that state: each process records the entries it changed since its last save, and
@@ -28,6 +29,26 @@ then abandoned and never writes), and *unconfirmed* while the write is under way
 
 Requirements: macOS 26 or later and Swift 6.2 (the Command Line Tools are enough). SwiftUI's
 `WebView` and `WebKit.WebPage` need macOS 26.
+
+## Scratchpads and private recovery
+
+**File > New Scratchpad** opens the native editing workspace. Each open document retains one
+TextKit 2 controller and undo history. Switching documents does not replace source storage.
+**Recoverable Drafts** lists private snapshots, including empty scratchpads. Reopening creates
+an independent recovery branch, so two processes never replace one another's draft.
+
+Drafts live under `Drafts/` in the app state directory, separate from disposable reading
+positions. They do not expire or enter the publication store automatically. Recovery writes
+immutable snapshots in the background and exposes pending, current and failed state.
+Closing a document or workspace requires a current recovery snapshot; a failure keeps it open.
+The workspace freezes input during its final recovery write, then restores input if closing fails.
+
+**Save** writes an opened file, or asks the bundled library writer to publish a snapshot.
+**Save As** chooses a local file. A file save checks the original file identity and content;
+external replacements leave the buffer intact and report a conflict. A no-op file save preserves
+its bytes and inode, including a UTF-8 BOM and mixed line endings. A save acknowledgement marks
+only the submitted source as saved; text typed later stays dirty. An unconfirmed library save
+retains its exact invocation for reconciliation before another publication starts.
 
 ## Build and install
 

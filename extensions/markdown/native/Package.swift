@@ -1,9 +1,10 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
-// Four responsibilities, one target each:
+// Native feature and platform boundaries:
 // MarkdownCore   document store reading, identities, asset resolution, rendering (Foundation + cmark)
 // ReaderFeature  the SwiftUI reader view and its per-window reading state (SwiftUI + WebKit)
+// EditorFeature  immutable edit snapshots, private recovery and explicit save boundaries
 // MacPlatform    pasteboard, external opening, Finder reveal, terminal return (AppKit)
 // MarkdownReader the application entry point: windows, menus, open-request intake, check modes
 // markdown-core  headless tool of the core (reference inventory); no AppKit, SwiftUI or WebKit
@@ -26,13 +27,15 @@ let package = Package(
             ]
         ),
         .target(name: "ReaderFeature", dependencies: ["MarkdownCore"]),
+        .target(name: "EditorFeature", dependencies: ["MarkdownCore"]),
         .target(name: "MacPlatform", dependencies: ["MarkdownCore", "ReaderFeature"]),
         .executableTarget(name: "markdown-core", dependencies: ["MarkdownCore"]),
-        .executableTarget(name: "MarkdownReader", dependencies: ["MarkdownCore", "ReaderFeature", "MacPlatform"]),
+        .executableTarget(name: "MarkdownReader", dependencies: ["MarkdownCore", "ReaderFeature", "EditorFeature", "MacPlatform"]),
+        .testTarget(name: "EditorFeatureTests", dependencies: ["EditorFeature", "MarkdownCore"]),
         .testTarget(name: "MarkdownCoreTests", dependencies: ["MarkdownCore"]),
         .testTarget(name: "MacPlatformTests", dependencies: ["MacPlatform", "MarkdownCore"]),
         .testTarget(name: "ReaderFeatureTests", dependencies: ["ReaderFeature", "MarkdownCore"]),
         // Runs the built reader binary in pane mode on a pseudo-terminal.
-        .testTarget(name: "MarkdownReaderTests", dependencies: ["MarkdownCore", "MarkdownReader"]),
+        .testTarget(name: "MarkdownReaderTests", dependencies: ["MarkdownCore", "EditorFeature", "MarkdownReader"]),
     ]
 )

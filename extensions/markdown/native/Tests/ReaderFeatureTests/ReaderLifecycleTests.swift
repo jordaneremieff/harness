@@ -94,6 +94,30 @@ private final class LifecycleGate {
         return window
     }
 
+    @Test func privateDraftPreviewKeepsLastGoodSourceAndNoReadingCacheIdentity() async {
+        let state = ReadingStateStore(directory: nil)
+        let model = model(reference: .file(path: "/draft-preview-not-a-file"), state: state)
+        let window = window(model)
+        defer { window.close() }
+        await model.openDraft(source: "", generation: 0, title: "Scratchpad", resolver: NoAssetResolver())
+        #expect(model.phase == .ready)
+        #expect(model.snapshot?.source == "")
+        #expect(model.snapshot?.revision == nil)
+        #expect(model.draftGeneration == 0)
+        #expect(state.recents.isEmpty)
+        await model.openDraft(source: "# Draft\n\nExact **source**.\n", generation: 1, title: "Scratchpad", resolver: NoAssetResolver())
+        #expect(model.snapshot?.source == "# Draft\n\nExact **source**.\n")
+        #expect(model.draftGeneration == 1)
+        await model.openDraft(source: String(repeating: "x", count: Limits.sourceBytes + 1), generation: 2, title: "Too large", resolver: NoAssetResolver())
+        #expect(model.snapshot?.source == "# Draft\n\nExact **source**.\n")
+        #expect(model.draftGeneration == 1)
+        #expect(model.failure != nil)
+        await model.refresh()
+        #expect(model.snapshot?.source == "# Draft\n\nExact **source**.\n")
+        #expect(state.recents.isEmpty)
+        await model.close()
+    }
+
     @Test func appContentWorldStaysAliveBetweenDOMCalls() {
         weak var observed: WKContentWorld?
         autoreleasepool { observed = PageScript.world }

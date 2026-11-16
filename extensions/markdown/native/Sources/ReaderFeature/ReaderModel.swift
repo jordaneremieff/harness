@@ -52,6 +52,8 @@ public final class ReaderModel {
     public let page: WebPage
     public private(set) var snapshot: DocumentSnapshot?
     public private(set) var rendered: RenderedDocument?
+    public private(set) var isDraft = false
+    public private(set) var draftGeneration: UInt64?
     public private(set) var phase: Phase = .loading
     /// A failure while the last good revision stays on screen.
     public private(set) var failure: String?
@@ -93,7 +95,7 @@ public final class ReaderModel {
             if case .revision(let latest) = update { return "\(identity)Revision \(revision) · Update \(latest) deferred · \(mode)" }
             return "\(identity)Revision \(revision) · \(followsLatest ? "Following latest" : "Manual updates") · \(mode)"
         }
-        return "File · \(mode)"
+        return isDraft ? "Uncommitted draft · \(mode)" : "File · \(mode)"
     }
     public var findVisible = false
     public var findQuery = "" {
@@ -175,6 +177,7 @@ public final class ReaderModel {
 
     /// Shows the latest revision. Without `followsLatest` the reader never does this by itself.
     public func refresh() async {
+        guard !isDraft else { return }
         olderChosen = false
         failedRevision = nil
         await load(revision: nil, restore: .current)
@@ -224,7 +227,29 @@ public final class ReaderModel {
         await checkForUpdate()
     }
 
-    private func prepareAndInstall(revision: Int?, pinnedDigest: String?, restore: RestoreMode, automatic: Bool, token: Int) async {
+    /// Invalidates obsolete analysis immediately, even when preview work is hidden or debounced.
+    public func invalidateDraftPreview() {
+        guard isDraft else { return }
+        generation += 1
+        supersedeDisplay()
+        preparations.discardWaiting()
+    }
+
+    public func openDraft(source: String, generation sourceGeneration: UInt64, title: String, resolver: any AssetResolving) async {
+        guard !closed else { return }
+        isDraft = true; followsLatest = false; updates.stop()
+        generation += 1
+        supersedeDisplay()
+        let token = generation
+        loadPending = true
+        let draft = DraftPreviewSource(title: title, source: source, resolver: resolver)
+        await prepareAndInstall(revision: nil, pinnedDigest: nil, restore: .current, automatic: false, token: token, draft: draft)
+        guard token == generation else { return }
+        loadPending = false
+        if phase == .ready, failure == nil { draftGeneration = sourceGeneration }
+    }
+
+    private func prepareAndInstall(revision: Int?, pinnedDigest: String?, restore: RestoreMode, automatic: Bool, token: Int, draft: DraftPreviewSource? = nil) async {
         let started = Date()
         var position: ReadingPosition?
         switch restore {
@@ -234,7 +259,7 @@ public final class ReaderModel {
         case .current: break
         }
         // A newer load replaced this one before its preparation started.
-        guard let result = await preparations.run(PreparationRequest(reference: reference, revision: revision, pinnedDigest: pinnedDigest)) else { return }
+        guard let result = await preparations.run(PreparationRequest(reference: reference, revision: revision, pinnedDigest: pinnedDigest, draft: draft)) else { return }
         switch result {
         case .success(let prepared): await preparationGate?(prepared.snapshot.revision)
         case .failure: await preparationGate?(revision)
@@ -322,7 +347,7 @@ public final class ReaderModel {
             displayMilliseconds: Date().timeIntervalSince(displayStart) * 1000,
             totalMilliseconds: Date().timeIntervalSince(started) * 1000
         )
-        state.noteOpened(reference, title: Provenance.displayTitle(prepared.snapshot, rendered: prepared.rendered))
+        if !isDraft { state.noteOpened(reference, title: Provenance.displayTitle(prepared.snapshot, rendered: prepared.rendered)) }
         readerLog.notice("rendered \(self.reference.key, privacy: .public) revision=\(prepared.snapshot.revision.map(String.init) ?? "-", privacy: .public) latest=\(prepared.snapshot.latestRevision.map(String.init) ?? "-", privacy: .public) update=\(self.update == nil ? "none" : "available", privacy: .public) restore=\(self.lastRestore.rawValue, privacy: .public) totalMs=\(Int(self.timings?.totalMilliseconds ?? 0), privacy: .public)")
         await savePosition()
         imageInspectionTask = Task { [weak self] in
@@ -422,13 +447,13 @@ public final class ReaderModel {
     // MARK: - Watching the pointer
 
     private func startWatching() {
-        guard !closed else { return }
+        guard !closed, !isDraft else { return }
         updates.start(reference) { [weak self] in await self?.checkForUpdate() }
     }
 
     /// Notes a newer revision or a changed file without touching the page.
     public func checkForUpdate() async {
-        guard let snapshot, !closed else { return }
+        guard let snapshot, !closed, !isDraft else { return }
         let token = generation
         let marker = await updates.readMarker(reference)
         guard let marker, token == generation, !closed else { return }
@@ -472,6 +497,7 @@ public final class ReaderModel {
     }
 
     func savePosition(final: Bool = false) async {
+        guard !isDraft else { return }
         let token = generation
         guard (!closed || final), phase == .ready, !showingSource,
               let position = await capturePosition(), token == generation, (!closed || final)

@@ -30,6 +30,54 @@ final class WindowManager: NSObject, NSWindowDelegate {
     private var closing: [UUID: Task<Void, Never>] = [:]
     private var libraryWindow: NSWindow?
     private var libraryModel: LibraryModel?
+    private var editorWindow: NSWindow?
+    private(set) var editor: EditorWorkspace?
+    private var editorCloseAllowed = false
+    var onOpenStore: (() -> Void)?
+
+    var keyEditor: EditorWorkspace? {
+        guard let window = NSApp.keyWindow, window === editorWindow else { return nil }
+        return editor
+    }
+
+    func showEditor(newScratchpad: Bool = true) {
+        if let editorWindow, let editor {
+            if newScratchpad { editor.newScratchpad() }
+            else { Task { await editor.library() } }
+            editorWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+            return
+        }
+        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: state.selectedStoreRoot ?? defaultRoots.first)
+        workspace.onReadLibrary = { [weak self] in
+            self?.showLibrary(openFile: { workspace.openFile() }, openStore: { [weak self] in self?.onOpenStore?() })
+        }
+        let host = NSHostingController(rootView: EditorWorkspaceView(workspace: workspace))
+        host.sizingOptions = []
+        let window = ReaderWindow(contentViewController: host)
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .unifiedTitleAndToolbar]
+        window.title = "Markdown Workspace"
+        window.isReleasedWhenClosed = false
+        window.contentMinSize = NSSize(width: 360, height: 320)
+        window.setContentSize(NSSize(width: 960, height: 800))
+        window.center(); window.delegate = self
+        editor = workspace; editorWindow = window
+        if newScratchpad { workspace.newScratchpad() }
+        else { Task { await workspace.library() } }
+        window.makeKeyAndOrderFront(nil); NSApp.activate()
+    }
+
+    func retainEditors() async -> Bool { await editor?.prepareToClose() ?? true }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === editorWindow, !editorCloseAllowed, let editor else { return true }
+        Task {
+            guard await editor.prepareToClose() else { editor.notice = "Recovery failed. The workspace stays open to protect your text."; return }
+            editorCloseAllowed = true
+            sender.close()
+        }
+        return false
+    }
 
     init(state: ReadingStateStore, platform: ReaderPlatform, defaultRoots: [String]) {
         self.state = state
@@ -40,6 +88,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
     var readerWindowCount: Int { readers.count }
 
     func selectStore(_ root: String) async {
+        editor?.selectedStore = root
         await libraryModel?.selectStore(root)
     }
 
@@ -136,6 +185,10 @@ final class WindowManager: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
+        if window === editorWindow {
+            editorWindow = nil; editor = nil; editorCloseAllowed = false
+            return
+        }
         if window === libraryWindow {
             libraryWindow = nil
             return

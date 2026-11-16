@@ -9,11 +9,18 @@ struct PreparedDocument: Sendable {
     var renderMilliseconds: Double
 }
 
-/// What a window asks to prepare: a revision of its document, or its latest.
+struct DraftPreviewSource: Sendable {
+    var title: String
+    var source: String
+    var resolver: any AssetResolving
+}
+
+/// What a window asks to prepare: a revision or an immutable draft snapshot.
 struct PreparationRequest: Sendable {
     var reference: DocumentReference
     var revision: Int?
     var pinnedDigest: String?
+    var draft: DraftPreviewSource? = nil
 }
 
 /// Runs synchronous preparation work off the main thread, one request at a time. Work that has
@@ -85,7 +92,13 @@ extension PreparationRequest {
     static func prepare(_ request: PreparationRequest) -> Result<PreparedDocument, any Error> {
         Result {
             let readStart = Date()
-            let snapshot = try DocumentLoader.load(request.reference, revision: request.revision, pinnedDigest: request.pinnedDigest)
+            let snapshot: DocumentSnapshot
+            if let draft = request.draft {
+                snapshot = DocumentSnapshot.draft(reference: request.reference, title: draft.title, source: draft.source, resolver: draft.resolver)
+            } else {
+                snapshot = try DocumentLoader.load(request.reference, revision: request.revision, pinnedDigest: request.pinnedDigest)
+            }
+            guard snapshot.bytes <= Limits.sourceBytes else { throw StoreError.tooLarge(name: "Draft preview", bytes: snapshot.bytes, limit: Limits.sourceBytes) }
             let renderStart = Date()
             let rendered = MarkdownRenderer.render(snapshot.source, resolver: snapshot.resolver)
             return PreparedDocument(
