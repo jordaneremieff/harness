@@ -27,6 +27,10 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
     private var replacingDocument = false
     private var sourceBytes: Int
     private var pendingSourceBytes: Int?
+    private var listContinuation: MarkdownListContinuation?
+    private var pendingListContinuation: MarkdownListContinuation?
+    private var applyingCommand = false
+    private var undoStart: MarkdownEditorSnapshot?
     private var styling: MarkdownEditorStyling!
     public private(set) var presentation = MarkdownEditorPresentation()
     private var pendingPresentation: MarkdownEditorPresentation?
@@ -80,8 +84,16 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
         scrollView.documentView = textView
         textView.delegate = self
         styling = MarkdownEditorStyling(controller: self)
+        for name in [Notification.Name.NSUndoManagerWillUndoChange, .NSUndoManagerWillRedoChange] {
+            NotificationCenter.default.addObserver(self, selector: #selector(willTraverseUndoHistory), name: name, object: textView.undoManager)
+        }
+        for name in [Notification.Name.NSUndoManagerDidUndoChange, .NSUndoManagerDidRedoChange] {
+            NotificationCenter.default.addObserver(self, selector: #selector(didTraverseUndoHistory), name: name, object: textView.undoManager)
+        }
         textView.compositionDidChange = { [weak self] in
             guard let self else { return }
+            self.listContinuation = nil
+            self.pendingListContinuation = nil
             if !self.hasMarkedText {
                 if let pending = self.pendingPresentation { self.setPresentation(pending) }
                 else { self.refreshColours() }
@@ -94,11 +106,35 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
         styling.changed()
     }
 
+    @objc private func willTraverseUndoHistory(_ notification: Notification) {
+        undoStart = snapshot
+        listContinuation = nil
+        pendingListContinuation = nil
+        pendingSourceBytes = nil
+    }
+
+    @objc private func didTraverseUndoHistory(_ notification: Notification) {
+        defer { undoStart = nil }
+        listContinuation = nil
+        pendingListContinuation = nil
+        // NSTextView can restore text storage without sending textDidChange to its delegate.
+        if let before = undoStart, generation == before.generation,
+           !before.source.utf16.elementsEqual(source.utf16) {
+            textDidChange(notification)
+        }
+    }
+
     public func textDidChange(_ notification: Notification) {
         guard !replacingDocument else { return }
         sourceBytes = pendingSourceBytes ?? source.utf8.count
         pendingSourceBytes = nil
         generation &+= 1
+        listContinuation = pendingListContinuation
+        listContinuation?.generation = generation
+        pendingListContinuation = nil
+        if hasMarkedText || textView.undoManager?.isUndoing == true || textView.undoManager?.isRedoing == true {
+            listContinuation = nil
+        }
         styling.changed()
         notify()
     }
@@ -112,6 +148,11 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
             return false
         }
         pendingSourceBytes = bytes
+        pendingListContinuation = nil
+        if !applyingCommand, !hasMarkedText, textView.undoManager?.isUndoing != true, textView.undoManager?.isRedoing != true {
+            let context = continuationContext(at: affectedCharRange.location)
+            pendingListContinuation = context?.replacing(affectedCharRange, with: replacementString)
+        }
         return true
     }
 
@@ -128,21 +169,58 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
 
     private func notify() { onChange?(snapshot) }
 
+    private func continuationContext(at offset: Int) -> MarkdownListContinuation? {
+        if let context = listContinuation, context.contains(NSRange(location: offset, length: 0), source: source, generation: generation) {
+            return context
+        }
+        let line = MarkdownListContinuation.lineRange(in: source as NSString, at: offset)
+        guard line.length <= MarkdownListContinuation.lineLimit, let markerEnd = styling.listMarkerEnd(in: line) else { return nil }
+        return MarkdownListContinuation(source: source, generation: generation, line: line, markerEnd: markerEnd)
+    }
+
+    /// Returns false without consuming Return when current list/code context is uncertain.
+    @discardableResult public func continueList() -> Bool {
+        guard !hasMarkedText, selectedRange.length == 0,
+              let context = continuationContext(at: selectedRange.location),
+              context.contains(selectedRange, source: source, generation: generation),
+              let edit = MarkdownCommands.apply(command: .continueList, to: source, selection: selectedRange),
+              edit.range.location >= context.line.location, NSMaxRange(edit.range) <= NSMaxRange(context.line),
+              apply(range: edit.range, replacement: edit.replacement, selection: edit.selection, actionName: edit.actionName) else { return false }
+        // The command owns the new prefix. Do not infer another Markdown grammar here.
+        if edit.range.length == 0, !edit.replacement.isEmpty {
+            let text = source as NSString
+            let line = MarkdownListContinuation.lineRange(in: text, at: selectedRange.location)
+            let offset = selectedRange.location
+            let beginsWithSpace = offset < NSMaxRange(line) && [32, 9].contains(text.character(at: offset))
+            if !beginsWithSpace {
+                listContinuation = MarkdownListContinuation(source: source, generation: generation, line: line, markerEnd: offset)
+            }
+        }
+        return true
+    }
+
     /// One explicit command, one native undo unit. Input methods retain their own transactions.
     @discardableResult public func apply(range: NSRange, replacement: String, selection: NSRange, actionName: String) -> Bool {
         guard !hasMarkedText, Self.validSelection(range, in: source) else { return false }
         let result = (source as NSString).replacingCharacters(in: range, with: replacement)
-        guard Self.validSelection(selection, in: result),
-              textView.shouldChangeText(in: range, replacementString: replacement) else { return false }
+        guard Self.validSelection(selection, in: result) else { return false }
+        listContinuation = nil
+        pendingListContinuation = nil
+        applyingCommand = true
+        defer { applyingCommand = false }
         let undo = textView.undoManager
         textView.breakUndoCoalescing()
         undo?.beginUndoGrouping()
+        defer {
+            undo?.endUndoGrouping()
+            textView.breakUndoCoalescing()
+        }
+        // shouldChangeText registers native undo, so it belongs inside the transaction.
+        guard textView.shouldChangeText(in: range, replacementString: replacement) else { return false }
         textView.textStorage?.replaceCharacters(in: range, with: replacement)
         textView.didChangeText()
         textView.setSelectedRange(selection)
         undo?.setActionName(actionName)
-        undo?.endUndoGrouping()
-        textView.breakUndoCoalescing()
         return true
     }
 
@@ -154,6 +232,8 @@ public struct MarkdownEditorSnapshot: Sendable, Equatable {
             return false
         }
         replacingDocument = true
+        listContinuation = nil
+        pendingListContinuation = nil
         sourceBytes = source.utf8.count
         pendingSourceBytes = nil
         textView.string = source

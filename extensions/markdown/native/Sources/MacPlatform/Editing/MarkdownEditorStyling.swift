@@ -100,6 +100,14 @@ struct MarkdownPresentationInvalidation {
         return codeRanges
     }
 
+    func listMarkerEnd(in line: NSRange) -> Int? {
+        guard let controller, analysedGeneration == controller.generation,
+              !codeRanges.contains(where: { NSIntersectionRange($0, line).length > 0 }) else { return nil }
+        let spans = index.overlapping(line)
+        guard spans.contains(where: { $0.role == .listMarker }) else { return nil }
+        return spans.filter { $0.role == .listMarker || $0.role == .taskMarker }.map { NSMaxRange($0.range) }.max()
+    }
+
     init(controller: MarkdownEditorTextController) {
         self.controller = controller
         super.init()

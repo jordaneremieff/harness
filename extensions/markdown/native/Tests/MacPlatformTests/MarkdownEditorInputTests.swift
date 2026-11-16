@@ -15,8 +15,10 @@ import AppKit
         #expect(editor.textView.textLayoutManager != nil)
         editor.textView.undoManager?.undo()
         #expect(editor.source == original)
+        #expect(editor.generation == 12)
         editor.textView.undoManager?.redo()
         #expect(editor.source == original + "**文**")
+        #expect(editor.generation == 13)
         #expect(editor.textView.textLayoutManager != nil)
     }
 
@@ -224,6 +226,128 @@ import AppKit
         #expect(editor.sourcePosition?.line == 6)
         #expect(editor.sourcePosition?.column == 1)
         window.contentView = nil
+    }
+
+    private func waitForAnalysis(_ editor: MarkdownEditorTextController) async -> Bool {
+        if editor.counts != nil { return true }
+        return await withCheckedContinuation { continuation in
+            var resumed = false
+            editor.onAnalysis = {
+                guard !resumed else { return }
+                resumed = true
+                editor.onAnalysis = nil
+                continuation.resume(returning: true)
+            }
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(5))
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: false)
+            }
+        }
+    }
+
+    @Test func listContinuationSurvivesImmediateTypingAndRepeatedReturn() async {
+        let editor = MarkdownEditorTextController(source: "- item")
+        #expect(await waitForAnalysis(editor))
+        editor.select(NSRange(location: editor.source.utf16.count, length: 0))
+        editor.textView.insertText(" 👩🏽‍💻 e\u{301}", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(editor.protectedRanges == nil)
+        #expect(editor.continueList())
+        #expect(editor.source == "- item 👩🏽‍💻 e\u{301}\n- ")
+        editor.textView.insertText("next", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(editor.continueList())
+        #expect(editor.source.hasSuffix("\n- next\n- "))
+        #expect(editor.continueList())
+        #expect(editor.source.hasSuffix("\n- next\n"))
+        #expect(editor.textView.textLayoutManager != nil)
+    }
+
+    @Test func listContinuationRefusesChangedCodeContextAndPrefix() async {
+        for inserted in ["`", "~", "\\", "\n"] {
+            let editor = MarkdownEditorTextController(source: "- item")
+            #expect(await waitForAnalysis(editor))
+            editor.select(NSRange(location: editor.source.utf16.count, length: 0))
+            editor.textView.insertText(inserted, replacementRange: NSRange(location: NSNotFound, length: 0))
+            let before = editor.snapshot
+            #expect(!editor.continueList())
+            #expect(editor.snapshot == before)
+        }
+        let editor = MarkdownEditorTextController(source: "- item")
+        #expect(await waitForAnalysis(editor))
+        editor.select(NSRange(location: 0, length: 0))
+        editor.textView.insertText(" ", replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.select(NSRange(location: editor.source.utf16.count, length: 0))
+        #expect(!editor.continueList())
+        for source in ["```\n- item\n```", "    - item", "- `code`"] {
+            let code = MarkdownEditorTextController(source: source)
+            #expect(await waitForAnalysis(code))
+            let end = (source as NSString).range(of: "item").location
+            code.select(NSRange(location: end == NSNotFound ? source.utf16.count : end + 4, length: 0))
+            #expect(!code.continueList())
+        }
+    }
+
+    @Test func listContinuationClearsOnUndoRedoCompositionAndReplacement() async {
+        let editor = MarkdownEditorTextController(source: "1. item")
+        #expect(await waitForAnalysis(editor))
+        editor.select(NSRange(location: editor.source.utf16.count, length: 0))
+        let undo = editor.textView.undoManager!
+        undo.groupsByEvent = false
+        undo.beginUndoGrouping()
+        editor.textView.insertText(" more", replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.textView.breakUndoCoalescing()
+        undo.endUndoGrouping()
+        let before = editor.source
+        #expect(editor.continueList())
+        #expect(editor.source == before + "\n2. ")
+        let generation = editor.generation
+        editor.textView.undoManager?.undo()
+        #expect(editor.source == before)
+        #expect(editor.generation > generation)
+        #expect(!editor.continueList())
+        let undoGeneration = editor.generation
+        editor.textView.undoManager?.redo()
+        #expect(editor.source == before + "\n2. ")
+        #expect(editor.generation > undoGeneration)
+        #expect(!editor.continueList())
+        undo.groupsByEvent = true
+        #expect(editor.replaceDocument(source: "- item", selectedRange: NSRange(location: 6, length: 0)))
+        #expect(!editor.continueList())
+        #expect(await waitForAnalysis(editor))
+        editor.textView.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.textView.setMarkedText("に", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(!editor.continueList())
+        editor.textView.unmarkText()
+        #expect(!editor.continueList())
+    }
+
+    @Test func listContinuationPreservesTaskMarkersAndCRLF() async {
+        let editor = MarkdownEditorTextController(source: "- [x] done\r\nnext")
+        #expect(await waitForAnalysis(editor))
+        editor.select(NSRange(location: 10, length: 0))
+        editor.textView.insertText("!", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(editor.continueList())
+        #expect(editor.source == "- [x] done!\r\n- [ ] \r\nnext")
+        #expect(editor.selectedRange == NSRange(location: 19, length: 0))
+        let long = MarkdownEditorTextController(source: "- " + String(repeating: "x", count: 4096))
+        #expect(await waitForAnalysis(long))
+        long.select(NSRange(location: long.source.utf16.count, length: 0))
+        #expect(!long.continueList())
+    }
+
+    @Test func listContinuationRefusesUnknownAndCrossLineEdits() async {
+        let unknown = MarkdownEditorTextController(source: "- item")
+        unknown.select(NSRange(location: 6, length: 0))
+        #expect(!unknown.continueList())
+        let editor = MarkdownEditorTextController(source: "prose\n- item")
+        #expect(await waitForAnalysis(editor))
+        editor.select(NSRange(location: editor.source.utf16.count, length: 0))
+        editor.textView.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.select(NSRange(location: 0, length: 0))
+        editor.textView.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.select(NSRange(location: editor.source.utf16.count, length: 0))
+        #expect(!editor.continueList())
     }
 
     @Test func snapshotsStayImmutableAfterLaterNativeInput() {
