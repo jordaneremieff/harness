@@ -90,11 +90,10 @@ enum ReviewPage {
         var assets: [String: ResolvedAsset] = [:]
         let baseResolver = StoredAssetResolver(revisionDirectory: base.directory, references: base.record.references, kind: base.document.kind)
         let targetResolver = StoredAssetResolver(revisionDirectory: target.directory, references: target.record.references, kind: target.document.kind)
-        // One nonce for both renderings, so that equal blocks render to equal HTML.
         let nonce = MarkdownRenderer.newNonce()
         let targetRendered = MarkdownRenderer.render(target.source, resolver: targetResolver, nonce: nonce)
-        var baseFragments: [String]?
-        var targetFragments: [String]?
+        var baseFragments: Fragments?
+        var targetFragments: Fragments?
         if !comparison.regions.isEmpty {
             let baseRendered = MarkdownRenderer.render(base.source, resolver: baseResolver, nonce: nonce)
             baseFragments = fragments(baseRendered, comparison.baseStructure, prefix: "b-", into: &assets)
@@ -182,29 +181,50 @@ enum ReviewPage {
 
     // MARK: - Rendered blocks
 
-    /// The rendered blocks of one revision with their image tokens renamed, so that both
-    /// revisions' images are served on one page. Nil when the blocks do not correspond to the
-    /// rendering one to one.
-    private static func fragments(_ rendered: RenderedDocument, _ structure: SourceStructure, prefix: String, into assets: inout [String: ResolvedAsset]) -> [String]? {
+    private struct Fragments {
+        var display: [String]
+        var canonical: [String]
+    }
+
+    /// The display keeps each side's serving addresses. Equality uses recorded image identity,
+    /// not serving tokens or document position keys. These transforms accept renderer-owned
+    /// markup only; raw HTML from a document is already escaped by the renderer.
+    private static func fragments(_ rendered: RenderedDocument, _ structure: SourceStructure, prefix: String, into assets: inout [String: ResolvedAsset]) -> Fragments? {
         let fragments = rendered.blockFragments()
         guard structure.matchesRendering, fragments.count == structure.blocks.count(where: \.keyed) else { return nil }
         for (token, asset) in rendered.assets { assets[prefix + token] = asset }
         let address = "src=\"\(MarkdownRenderer.assetScheme)://doc/"
-        return fragments.map { $0.replacingOccurrences(of: address, with: address + prefix) }
+        var canonicalAssets: [String: String] = [:]
+        for (token, asset) in rendered.assets {
+            canonicalAssets[address + token + "\""] = address + escape(asset.expectedDigest ?? asset.path) + "\""
+        }
+        let passive = fragments.map { fragment in
+            fragment
+                .replacingOccurrences(of: #"<a class="(?:copy|img-inspect)"[^>]*>[\s\S]*?</a>"#, with: "", options: [.regularExpression])
+                .replacingOccurrences(of: #"<a\b[^>]*href="(?:reader-action:|#)[^"]*"[^>]*>([\s\S]*?)</a>"#, with: "$1", options: [.regularExpression])
+        }
+        return Fragments(
+            display: passive.map { $0.replacingOccurrences(of: address, with: address + prefix) },
+            canonical: passive.map { fragment in
+                var html = fragment.replacingOccurrences(of: #"\s(?:data-(?:key|code|image|image-rendering|asset)|id)="[^"]*""#, with: "", options: [.regularExpression])
+                for (token, identity) in canonicalAssets { html = html.replacingOccurrences(of: token, with: identity) }
+                return html
+            }
+        )
     }
 
     private static func joined(_ blocks: Range<Int>, _ ordinals: [Int?], _ fragments: [String]) -> String {
         blocks.compactMap { ordinals[$0] }.map { fragments[$0] }.joined()
     }
 
-    private static func renderedPart(_ region: ChangedRegion, _ comparison: RevisionComparison, baseOrdinals: [Int?], targetOrdinals: [Int?], baseFragments: [String]?, targetFragments: [String]?, budget: inout Int) -> String {
+    private static func renderedPart(_ region: ChangedRegion, _ comparison: RevisionComparison, baseOrdinals: [Int?], targetOrdinals: [Int?], baseFragments: Fragments?, targetFragments: Fragments?, budget: inout Int) -> String {
         guard let baseFragments, let targetFragments else {
             return "<p class=\"rv-note\">The rendered form is not available for this comparison. The source difference is exact.</p>\n"
         }
         let tooLong = region.baseBlocks.count > renderedBlocks || region.targetBlocks.count > renderedBlocks
             || (region.baseLines?.count ?? 0) > renderedLines || (region.targetLines?.count ?? 0) > renderedLines
-        let before = tooLong ? "" : joined(region.baseBlocks, baseOrdinals, baseFragments)
-        let after = tooLong ? "" : joined(region.targetBlocks, targetOrdinals, targetFragments)
+        let before = tooLong ? "" : joined(region.baseBlocks, baseOrdinals, baseFragments.display)
+        let after = tooLong ? "" : joined(region.targetBlocks, targetOrdinals, targetFragments.display)
         guard !tooLong, before.utf8.count + after.utf8.count <= budget else {
             return "<p class=\"rv-note\">This part is too long to show in rendered form. The source difference is exact.</p>\n"
         }
@@ -213,10 +233,12 @@ enum ReviewPage {
         let blocks = comparison.targetStructure.blocks
         func context(_ index: Int) -> String {
             guard blocks.indices.contains(index), blocks[index].span.count <= contextLines, let ordinal = targetOrdinals[index] else { return "" }
-            return "<div class=\"rv-side rv-context\"><div class=\"rv-tag\">Unchanged</div>\(targetFragments[ordinal])</div>\n"
+            return "<div class=\"rv-side rv-context\"><div class=\"rv-tag\">Unchanged</div>\(targetFragments.display[ordinal])</div>\n"
         }
         html += context(region.targetBlocks.lowerBound - 1)
-        if !before.isEmpty, before == after {
+        let sameRendering = joined(region.baseBlocks, baseOrdinals, baseFragments.canonical)
+            == joined(region.targetBlocks, targetOrdinals, targetFragments.canonical)
+        if !before.isEmpty, sameRendering {
             html += "<div class=\"rv-side\"><div class=\"rv-tag\">Both revisions render this part alike; the Markdown source differs</div>\(after)</div>\n"
         } else {
             if !before.isEmpty {

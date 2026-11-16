@@ -56,6 +56,7 @@ public final class RevisionReview {
         }.value
         await preparationGate?()
         guard token == generation else { return }
+        guard !Task.isCancelled else { preparing = nil; return }
         switch result {
         case .failure(let error):
             preparing = nil
@@ -181,6 +182,10 @@ extension ReaderModel {
         }
         review.openExternal = { [weak self] url in self?.pendingExternalURL = url }
         await review.start(reference, base: from, target: to, settings: settings)
+        if review.preparing == nil, review.shown == nil {
+            // A cancelled comparison must not pass cancellation to the resumed page load.
+            await Task { await self.checkForUpdate() }.value
+        }
     }
 
     /// Ends the comparison. A revision that arrived while the comparison held the reader's

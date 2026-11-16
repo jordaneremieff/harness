@@ -597,11 +597,11 @@ public final class ReaderModel {
 
     /// Whether the reader is in the middle of something that a page replacement would undo: a
     /// text selection, source view, an open find bar, a scroll that has not settled or a
-    /// comparison of revisions on screen.
+    /// comparison of revisions in preparation or on screen.
     func interacting() async -> Bool {
-        if showingSource || findVisible || scrolling || review.shown != nil || inspection.isOpen { return true }
+        if showingSource || findVisible || scrolling || review.preparing != nil || review.shown != nil || inspection.isOpen { return true }
         let selection = await selectedText()
-        return showingSource || findVisible || scrolling || review.shown != nil || inspection.isOpen || !selection.isEmpty
+        return showingSource || findVisible || scrolling || review.preparing != nil || review.shown != nil || inspection.isOpen || !selection.isEmpty
     }
 
     public func showFind() {

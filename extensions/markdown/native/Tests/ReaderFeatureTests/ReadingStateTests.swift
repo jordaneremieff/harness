@@ -90,6 +90,68 @@ import Testing
         #expect(try Data(contentsOf: url) == garbage)
     }
 
+    @Test func longAnchorsSaveAndReopenWithinTheByteLimit() async throws {
+        let directory = try Self.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ReadingStateStore(directory: directory)
+        let anchor = String(repeating: "a", count: 2300)
+        for index in 0..<ReadingStateStore.positionLimit {
+            var position = Self.position("block", at: Double(index))
+            position.anchor = anchor
+            position.ratio = 0.5
+            store.setPosition(position, for: Self.reference(index))
+        }
+        #expect(await store.flush(timeout: 10) == .saved)
+        let data = try Data(contentsOf: directory.appendingPathComponent("reading-state.json"))
+        #expect(data.count <= ReadingStateStore.fileLimit)
+        let reopened = ReadingStateStore(directory: directory)
+        for index in 0..<ReadingStateStore.positionLimit {
+            #expect(reopened.position(for: Self.reference(index))?.blockKey == "block")
+            #expect(reopened.position(for: Self.reference(index))?.ratio == 0.5)
+        }
+        #expect(reopened.position(for: Self.reference(0))?.anchor == nil)
+        #expect(reopened.lastRecovery == nil)
+    }
+
+    @Test func theByteBudgetKeepsTheNewestRecentsThatFit() async throws {
+        let directory = try Self.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ReadingStateStore(directory: directory)
+        for index in 0..<ReadingStateStore.recentLimit {
+            store.noteOpened(Self.reference(index), title: "\(index) " + String(repeating: "q", count: 40_000))
+        }
+        #expect(await store.flush(timeout: 10) == .saved)
+        let url = directory.appendingPathComponent("reading-state.json")
+        #expect(try Data(contentsOf: url).count <= ReadingStateStore.fileLimit)
+        let reopened = ReadingStateStore(directory: directory)
+        #expect(!reopened.recents.isEmpty)
+        #expect(reopened.recents.count < ReadingStateStore.recentLimit)
+        #expect(reopened.recents.first?.reference == Self.reference(ReadingStateStore.recentLimit - 1))
+        #expect(reopened.recents.last?.reference != Self.reference(0))
+    }
+
+    @Test func oversizedCacheEntriesNeverMakeTheSavedStateUnreadable() async throws {
+        let directory = try Self.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ReadingStateStore(directory: directory)
+        let oversized = String(repeating: "x", count: ReadingStateStore.fileLimit + 1)
+        store.noteOpened(Self.reference(1), title: "Kept")
+        store.noteOpened(Self.reference(2), title: oversized)
+        store.selectStore(root: "/stores/kept")
+        store.selectStore(root: oversized)
+        store.setPosition(Self.position("kept", at: 2), for: Self.reference(1))
+        store.setPosition(Self.position("too large", at: 1), for: .file(path: oversized))
+        #expect(await store.flush(timeout: 10) == .saved)
+        let url = directory.appendingPathComponent("reading-state.json")
+        #expect(try Data(contentsOf: url).count <= ReadingStateStore.fileLimit)
+        let reopened = ReadingStateStore(directory: directory)
+        #expect(reopened.position(for: Self.reference(1))?.blockKey == "kept")
+        #expect(reopened.position(for: .file(path: oversized)) == nil)
+        #expect(reopened.recents.map(\.title) == ["Kept"])
+        #expect(reopened.knownRoots == ["/stores/kept"])
+        #expect(reopened.selectedStoreRoot == nil)
+    }
+
     static func position(_ block: String, at seconds: Double) -> ReadingPosition {
         ReadingPosition(blockKey: block, fraction: 0, anchor: nil, ratio: 0, revision: 1, savedAt: Date(timeIntervalSince1970: 1_800_000_000 + seconds))
     }

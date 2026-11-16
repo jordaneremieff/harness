@@ -196,6 +196,95 @@ private let imageTwo = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 2, 
         #expect(prepared.assets["t-a0"]?.bytes == 10)
     }
 
+    @Test(arguments: [false, true]) func equivalentEmphasisUsesOneRendering(withImage: Bool) throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let image = withImage ? " ![Diagram](diagram.png)" : ""
+        let images = withImage ? ["diagram.png": imageOne] : [:]
+        try store.publish(1, "# Report\n\nA *word*\(image) here.\n", images: images)
+        try store.publish(2, "# Report\n\nA _word_\(image) here.\n", images: images)
+        let prepared = try ReviewPage.prepare(store.reference, base: 1, target: 2, settings: PageSettings())
+        #expect(prepared.html.contains("Both revisions render this part alike"))
+        #expect(!prepared.html.contains("rv-side rv-before"))
+        #expect(prepared.html.contains("<em>word</em>"))
+        if withImage {
+            #expect(prepared.html.contains("src=\"reader-asset://doc/t-a0\""))
+            #expect(prepared.assets["t-a0"]?.expectedDigest == ReviewStore.digest(imageOne))
+        }
+    }
+
+    @Test func differentImageIdentitiesKeepBothRenderings() throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1, "A *word* ![Diagram](diagram.png).\n", images: ["diagram.png": imageOne])
+        try store.publish(2, "A _word_ ![Diagram](diagram.png).\n", images: ["diagram.png": imageTwo])
+        let prepared = try ReviewPage.prepare(store.reference, base: 1, target: 2, settings: PageSettings())
+        #expect(!prepared.html.contains("Both revisions render this part alike"))
+        #expect(prepared.html.contains("src=\"reader-asset://doc/b-a0\""))
+        #expect(prepared.html.contains("src=\"reader-asset://doc/t-a0\""))
+    }
+
+    @Test func comparisonFragmentsKeepContentAndSafeLinksWithoutAppControls() throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let source = """
+        # Report
+
+        [Section](#report) and [Web](https://example.com/report) with a note[^n].
+
+        ![Diagram](diagram.png) ![Missing](missing.png)
+
+        ```swift
+        print("old")
+        ```
+
+        [^n]: The note.
+        """
+        try store.publish(1, source, images: ["diagram.png": imageOne])
+        try store.publish(2, source.replacingOccurrences(of: "Report", with: "Updated").replacingOccurrences(of: "old", with: "new").replacingOccurrences(of: "Diagram", with: "Flow").replacingOccurrences(of: "with a note", with: "with the note"), images: ["diagram.png": imageOne])
+        let prepared = try ReviewPage.prepare(store.reference, base: 1, target: 2, settings: PageSettings())
+        #expect(!prepared.html.contains("reader-action:"))
+        #expect(!prepared.html.contains("href=\"#"))
+        #expect(!prepared.html.contains("class=\"copy\""))
+        #expect(!prepared.html.contains("class=\"img-inspect\""))
+        #expect(!prepared.html.contains("class=\"img-open\""))
+        #expect(prepared.html.contains("href=\"https://example.com/report\""))
+        #expect(prepared.html.contains("<pre><code>print(&quot;old&quot;)"))
+        #expect(prepared.html.contains("src=\"reader-asset://doc/b-a0\""))
+        #expect(prepared.html.contains("<sup"))
+    }
+
+    @Test(arguments: ["failure", "cancel", "close"]) func comparisonPreparationDefersFollowingUntilItEnds(ending: String) async throws {
+        _ = NSApplication.shared
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1, "# First\n")
+        try store.publish(2, "# Second\n")
+        let model = model(store.reference)
+        model.displayNavigationForCheck = {}
+        await model.open(origin: nil)
+        model.followsLatest = true
+        if ending == "failure" { try store.corrupt(1) }
+        let gate = ReviewGate()
+        model.review.preparationGate = { await gate.wait() }
+        let comparing = Task { await model.reviewChanges() }
+        #expect(await wait { gate.reached })
+        #expect(await model.interacting())
+        try store.publish(3, "# Third\n")
+        await model.checkForUpdate()
+        #expect(model.update == .revision(3))
+        #expect(model.snapshot?.revision == 2)
+        if ending == "cancel" { comparing.cancel() }
+        if ending == "close" { await model.closeReview() }
+        gate.release()
+        await comparing.value
+        #expect(model.review.preparing == nil)
+        #expect(model.review.shown == nil)
+        #expect(await wait { model.snapshot?.revision == 3 })
+        if ending == "failure" { #expect(model.review.failure?.contains("digest") == true) }
+        await model.close()
+    }
+
     @Test func theEarlierRevisionIsAlwaysTheBase() throws {
         let store = try ReviewStore()
         defer { try? FileManager.default.removeItem(at: store.root) }

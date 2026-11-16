@@ -276,6 +276,54 @@ public final class ReadingStateStore {
         return state
     }
 
+    /// Keeps the encoded file inside the intake limit without changing its format. Long
+    /// locators fall back to the position's ratio; remaining space favours newer cache entries.
+    nonisolated private static func encoded(_ snapshot: ReadingStateFile) throws -> (ReadingStateFile, Data) {
+        let encoder = JSONEncoder.reading
+        var state = bounded(snapshot)
+        var data = try encoder.encode(state)
+        if data.count <= fileLimit { return (state, data) }
+
+        let locatorLimit = fileLimit / positionLimit / 2
+        for key in Array(state.positions.keys) {
+            if let anchor = state.positions[key]?.anchor, try encoder.encode(anchor).count > locatorLimit { state.positions[key]?.anchor = nil }
+            if let block = state.positions[key]?.blockKey, try encoder.encode(block).count > locatorLimit { state.positions[key]?.blockKey = nil }
+        }
+        data = try encoder.encode(state)
+        if data.count <= fileLimit { return (state, data) }
+
+        var kept = ReadingStateFile()
+        kept.settings = state.settings
+        kept.selectedStoreRoot = state.selectedStoreRoot
+        var size = try encoder.encode(kept).count
+        if size > fileLimit {
+            kept.selectedStoreRoot = nil
+            size = try encoder.encode(kept).count
+        }
+        func fits(_ bytes: Int) -> Bool {
+            guard bytes <= fileLimit - size else { return false }
+            size += bytes
+            return true
+        }
+        for (key, value) in state.positions.sorted(by: {
+            $0.value.savedAt == $1.value.savedAt ? $0.key < $1.key : $0.value.savedAt > $1.value.savedAt
+        }) {
+            let bytes = try encoder.encode([key: value]).count - 2 + (kept.positions.isEmpty ? 0 : 1)
+            if fits(bytes) { kept.positions[key] = value }
+        }
+        for recent in state.recents {
+            let bytes = try encoder.encode(recent).count + (kept.recents.isEmpty ? 0 : 1)
+            if fits(bytes) { kept.recents.append(recent) }
+        }
+        for root in state.knownRoots {
+            let bytes = try encoder.encode(root).count + (kept.knownRoots.isEmpty ? 0 : 1)
+            if fits(bytes) { kept.knownRoots.append(root) }
+        }
+        data = try encoder.encode(kept)
+        guard data.count <= fileLimit else { throw SaveFailure("The encoded state exceeds its byte limit.") }
+        return (kept, data)
+    }
+
     public func position(for reference: DocumentReference) -> ReadingPosition? {
         state.positions[reference.key]
     }
@@ -449,8 +497,7 @@ public final class ReadingStateStore {
         case .unsupported: throw SaveFailure("The state version is not supported; the file stays unchanged.")
         case .corrupt: disk = snapshot; corrupt = true
         }
-        let merged = Self.merged(ours: snapshot, theirs: disk, changes: changes)
-        let data = try JSONEncoder.reading.encode(merged)
+        let (merged, data) = try Self.encoded(Self.merged(ours: snapshot, theirs: disk, changes: changes))
         try beforeWrite()
         try progress.beginWriting()
         try writing()

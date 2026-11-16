@@ -16,7 +16,10 @@ state and replaces the file atomically. Only a successful write clears the chang
 a change made while a save runs, and every change of a failed save, stays pending, and a failed
 save is logged and tried again after one second, then after twice the last wait, up to 30
 seconds. The file keeps fractional seconds, so for one document the position captured later
-wins, whichever process saves first.
+wins, whichever process saves first. Before publication, the writer also bounds the encoded
+bytes to the reader's intake limit. If needed, long block and heading locators give way to the
+position's scroll-ratio fallback; then only cache entries that fit remain, with newer positions
+and recents first. An oversized selected-store path is omitted. The file format stays unchanged.
 
 A save writes only over a file it could read. A missing file is created. A file that cannot be
 read (an I/O or permission error, or not a regular file) and a file with another `version` stay
@@ -408,12 +411,14 @@ image changes. Every bound that took effect is stated at the top of the page or 
 partial comparison, with its counts.
 
 The comparison has its own page above the document. Both revisions are read, rendered and
-compared off the main thread. While that runs, and when it fails (for example, a revision whose
-source no longer matches its digest), the document stays on screen as it was, with its
-position and selection, and a line says what happens or why it failed; a failure while another
-comparison is on screen keeps that comparison. Find and Copy act on the comparison while it is
-on screen. The reader does not replace the document below with a newer revision by itself
-during a comparison; closing the comparison checks for one again.
+compared off the main thread. While preparation runs, the document stays on screen with its
+position and selection. A failure (for example, a revision whose source no longer matches its
+digest) leaves the document or an earlier comparison in place, with a line that says why it
+failed. Find and text-selection Copy act on the comparison while it is on screen. Rendered
+samples keep safe external links and selectable text, but omit document-only Copy code, image
+inspection, section and footnote controls. The reader pauses automatic replacement from the
+start of preparation until the comparison closes. If preparation fails or is cancelled without
+a comparison on screen, the reader checks for updates again and resumes idle following.
 
 ## Inspecting images
 
