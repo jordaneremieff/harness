@@ -41,6 +41,8 @@ struct MarkdownSpanIndex: Sendable {
 struct MarkdownPresentationInvalidation {
     static func range(previousSource: String?, previousSpans: [EditorSemanticSpan],
                       source: String, spans: [EditorSemanticSpan]) -> NSRange? {
+        // Native edits already refresh base paragraphs; only semantic attributes need another pass.
+        guard !previousSpans.isEmpty || !spans.isEmpty else { return nil }
         guard let previousSource else { return NSRange(location: 0, length: source.utf16.count) }
         let old = Array(previousSource.utf16), new = Array(source.utf16)
         // Undo can restore the same bytes after intermediate edits replaced cached paragraphs.
@@ -153,7 +155,7 @@ struct MarkdownPresentationInvalidation {
                 self.codeRanges = result.4
                 self.analysedGeneration = snapshot.generation
                 self.analysedSource = snapshot.source
-                if let range = result.5 { self.invalidate(range: range) }
+                if self.presentation.mode == .styled, let range = result.5 { self.invalidate(range: range) }
                 controller.onAnalysis?()
             }
             self.startNext()

@@ -3,6 +3,11 @@ import AppKit
 @testable import MarkdownCore
 @testable import MacPlatform
 
+@MainActor private final class StorageEditObserver: NSObject {
+    var count = 0
+    @objc func edited(_ notification: Notification) { count += 1 }
+}
+
 @Suite(.serialized) @MainActor struct MarkdownEditorInputTests {
     @Test func commandPreservesUnicodeAndUsesNativeUndo() {
         _ = NSApplication.shared
@@ -184,13 +189,50 @@ import AppKit
         let range = try #require(MarkdownPresentationInvalidation.range(previousSource: old,
             previousSpans: EditorSourceAnalysis.scan(old).spans, source: new, spans: EditorSourceAnalysis.scan(new).spans))
         #expect(NSMaxRange(range) >= (new as NSString).range(of: "## End").upperBound)
-        let empty = MarkdownPresentationInvalidation.range(previousSource: "👩🏽‍💻", previousSpans: [], source: "", spans: [])
+        let emoji = "**👩🏽‍💻**"
+        let empty = MarkdownPresentationInvalidation.range(previousSource: emoji,
+            previousSpans: EditorSourceAnalysis.scan(emoji).spans, source: "", spans: [])
         #expect(empty == NSRange(location: 0, length: 0))
-        #expect(MarkdownPresentationInvalidation.range(previousSource: "same", previousSpans: [], source: "same", spans: []) == NSRange(location: 0, length: 4))
-        let decomposed = "e\u{301}\nunchanged"
-        let normalised = try #require(MarkdownPresentationInvalidation.range(previousSource: "é\nunchanged",
-            previousSpans: [], source: decomposed, spans: []))
-        #expect(normalised == NSRange(location: 0, length: 2))
+        let same = "**same**", sameSpans = EditorSourceAnalysis.scan("**same**").spans
+        #expect(MarkdownPresentationInvalidation.range(previousSource: same, previousSpans: sameSpans,
+            source: same, spans: sameSpans) == NSRange(location: 0, length: 8))
+        let composed = "**é**\nunchanged", decomposed = "**e\u{301}**\nunchanged"
+        let normalised = try #require(MarkdownPresentationInvalidation.range(previousSource: composed,
+            previousSpans: EditorSourceAnalysis.scan(composed).spans, source: decomposed,
+            spans: EditorSourceAnalysis.scan(decomposed).spans))
+        #expect(normalised.location <= 2)
+        #expect(NSMaxRange(normalised) >= 4)
+    }
+
+    @Test func plainAnalysisNeedsNoAdditionalParagraphRefresh() {
+        for previous in [nil, "plain", "other"] as [String?] {
+            #expect(MarkdownPresentationInvalidation.range(previousSource: previous, previousSpans: [],
+                source: "plain", spans: []) == nil)
+        }
+        #expect(MarkdownPresentationInvalidation.range(previousSource: "👩🏽‍💻", previousSpans: [],
+            source: "", spans: []) == nil)
+    }
+
+    @Test func analysisRefreshesOnlyStyledSemanticAttributes() async {
+        for (mode, source, needsRefresh) in [(MarkdownSourceMode.raw, "# Heading **bold**", false),
+                                            (.styled, "ordinary words", false), (.styled, "# Heading", true)] {
+            let editor = MarkdownEditorTextController(source: source)
+            editor.setPresentation(MarkdownEditorPresentation(mode: mode))
+            let observer = StorageEditObserver()
+            NotificationCenter.default.addObserver(observer, selector: #selector(StorageEditObserver.edited(_:)),
+                name: NSTextStorage.didProcessEditingNotification, object: editor.textView.textStorage)
+            #expect(await waitForAnalysis(editor))
+            #expect((observer.count > 0) == needsRefresh)
+            editor.textView.insertText("x", replacementRange: NSRange(location: 0, length: 0))
+            observer.count = 0
+            #expect(await waitForAnalysis(editor))
+            #expect((observer.count > 0) == needsRefresh)
+            editor.setPresentation(MarkdownEditorPresentation(mode: mode == .raw ? .styled : .raw))
+            #expect(observer.count > 0)
+            #expect(editor.source == "x" + source)
+            #expect(editor.textView.textLayoutManager != nil)
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     @Test func trailingEmptyLineHighlightFollowsNativeInput() async throws {
