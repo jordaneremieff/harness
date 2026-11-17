@@ -82,20 +82,6 @@ The kickoff encodes the direction as one JSON string on one line inside
 sections. The decoded text directs the run within the authority boundary above.
 Framing is not a sandbox or proof of model compliance.
 
-A valid non-RPC `/evo` direction offers an immediate automatic name through the
-shared session name module before the kickoff turn. The command correlates its
-original direction with its own generated input; an unrelated or already
-transformed first input discards the offer. Pi does not report later input
-transformations back to earlier handlers. If a later handler consumes the kickoff,
-a newer input discards the retained direction but preserves its immediate name. The module emits `session-name:provisional` for an
-optional generator and accepts `session-name:refined` only for the current exact
-fallback entry. No generator means fallback-only behaviour. An existing unmarked
-name, resumed name, later direct name write or deliberate clear stays protected.
-Bare `/evo`, invalid input and RPC commands leave the name unchanged. RPC clients
-use Pi's `set_session_name` command. The
-[session name convention](../../docs/conventions/session-names.md) defines the
-shared contract and derivation.
-
 ## Release intake
 
 Dependency checking, dependency changes, release review, activation, and runtime

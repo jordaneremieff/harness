@@ -19,10 +19,7 @@ import {
 	SettingsManager,
 	VERSION,
 } from "@earendil-works/pi-coding-agent";
-import { SESSION_NAME_CODE_POINTS, SESSION_NAME_WORDS } from "../../session-name/index.ts";
-import type { ProvisionalName } from "../../session-name/lifecycle.ts";
 import { MAX_DIRECTION_CODE_POINTS } from "./command.ts";
-import registerEvo from "./index.ts";
 import { buildEvoKickoff } from "./kickoff.ts";
 import { PI_HOST_PACKAGE, PI_PUBLICATION_DEADLINE_MS, readPiReleaseIntake } from "./release.ts";
 import {
@@ -56,7 +53,6 @@ async function ordinarySession(
 	configure?: (pi: ExtensionAPI) => void,
 	holdResponse?: ReturnType<typeof deferred>,
 	extensionPath = fileURLToPath(new URL("./index.ts", import.meta.url)),
-	inputFirst = false,
 ) {
 	const agentDir = mkdtempSync(join(tmpdir(), "evo-runtime-"));
 	const modelRuntime = await ModelRuntime.create({
@@ -81,7 +77,7 @@ async function ordinarySession(
 		noSkills: true,
 		noPromptTemplates: true,
 		noContextFiles: true,
-		additionalExtensionPaths: inputFirst ? [] : [extensionPath],
+		additionalExtensionPaths: [extensionPath],
 		extensionFactories: [
 			(pi) => {
 				pi.registerProvider("evo-fixture", {
@@ -136,7 +132,6 @@ async function ordinarySession(
 				});
 				configure?.(pi);
 			},
-			...(inputFirst ? [registerEvo] : []),
 		],
 	});
 	try {
@@ -477,10 +472,6 @@ function installFixtureExtension(root: string): string {
 	for (const file of ["index.ts", "command.ts", "kickoff.ts", "release.ts", "durable.ts"]) {
 		copyFileSync(new URL(file, import.meta.url), join(extensionDir, file));
 	}
-	mkdirSync(join(root, "session-name"), { recursive: true });
-	for (const file of ["index.ts", "lifecycle.ts"]) {
-		copyFileSync(new URL(`../../session-name/${file}`, import.meta.url), join(root, "session-name", file));
-	}
 	return join(extensionDir, "index.ts");
 }
 
@@ -493,39 +484,22 @@ async function settleCommand(runtime: Awaited<ReturnType<typeof ordinarySession>
 	await settled.promise;
 }
 
-test("a direction names an unnamed session in every mode except rpc", { timeout: 30000 }, async () => {
+test("a direction leaves an unnamed session unnamed in every mode", { timeout: 30000 }, async () => {
 	for (const mode of ["tui", "print", "json", "rpc"] as const) {
-		const names: ProvisionalName[] = [];
-		const runtime = await ordinarySession(mode, (pi) => {
-			pi.events.on("session-name:provisional", (value) => { names.push(value as ProvisionalName); });
-		});
+		const runtime = await ordinarySession(mode);
 		try {
-			const settled = deferred();
-			runtime.session.subscribe((event) => {
-				if (event.type === "agent_settled") settled.resolve();
-			});
-			await runtime.session.prompt("/evo Repair the parser");
-			await settled.promise;
-			assert.equal(
-				runtime.session.sessionName,
-				mode === "rpc" ? undefined : "Repair the parser",
-				mode,
-			);
+			await settleCommand(runtime, "/evo Repair the parser");
+			assert.equal(runtime.session.sessionName, undefined, mode);
 			assert.equal(runtime.requests.length, 1, mode);
-			assert.equal(names.length, mode === "rpc" ? 0 : 1, mode);
-			if (mode !== "rpc") assert.equal(names[0]?.text, "Repair the parser");
 		} finally {
 			await runtime.close();
 		}
 	}
 });
 
-test("long directions retain their user entry and bounded automatic name", { timeout: 30000 }, async () => {
+test("long directions retain their user entry", { timeout: 30000 }, async () => {
 	for (const length of [36_000, MAX_DIRECTION_CODE_POINTS]) {
-		const names: ProvisionalName[] = [];
-		const runtime = await ordinarySession("tui", (pi) => {
-			pi.events.on("session-name:provisional", (value) => { names.push(value as ProvisionalName); });
-		});
+		const runtime = await ordinarySession("tui");
 		try {
 			const prefix = "Improve long directions.\n";
 			const direction = prefix + "<".repeat(length - prefix.length);
@@ -545,99 +519,7 @@ test("long directions retain their user entry and bounded automatic name", { tim
 			);
 			assert.ok(stored?.type === "message" && stored.message.role === "user");
 			assert.deepEqual(stored.message.content, delivered.content);
-			const name = runtime.session.sessionName;
-			assert.equal(name, "Improve long directions");
-			assert.ok(Array.from(name).length <= SESSION_NAME_CODE_POINTS);
-			assert.ok(name.split(/\s+/u).length <= SESSION_NAME_WORDS);
-			assert.equal(names.length, 1);
-			assert.equal(names[0]?.text, direction.slice(0, 4096));
 			assert.deepEqual(runtime.errors, []);
-		} finally { await runtime.close(); }
-	}
-});
-
-test("a deliberate clear stays protected before a direction", { timeout: 30000 }, async () => {
-	const names: ProvisionalName[] = [];
-	const runtime = await ordinarySession("tui", (pi) => {
-		pi.events.on("session-name:provisional", (value) => { names.push(value as ProvisionalName); });
-	});
-	try {
-		runtime.session.setSessionName("");
-		await settleCommand(runtime, "/evo Repair parser");
-		assert.equal(runtime.session.sessionName, undefined);
-		assert.equal(names.length, 0);
-		assert.equal(runtime.requests.length, 1);
-	} finally { await runtime.close(); }
-});
-
-test("a delayed title refines the direction but never replaces a later direct name", { timeout: 30000 }, async () => {
-	let api!: ExtensionAPI;
-	const names: ProvisionalName[] = [];
-	const runtime = await ordinarySession("print", (pi) => {
-		api = pi;
-		pi.events.on("session-name:provisional", (value) => { names.push(value as ProvisionalName); });
-	});
-	try {
-		await settleCommand(runtime, "/evo Repair parser defects");
-		const event = names[0]; assert.ok(event);
-		api.events.emit("session-name:refined", { sessionId: event.sessionId, nameEntryId: event.nameEntryId, title: "Repair parser" });
-		assert.equal(runtime.session.sessionName, "Repair parser");
-		runtime.session.setSessionName("Explicit name");
-		api.events.emit("session-name:refined", { sessionId: event.sessionId, nameEntryId: event.nameEntryId, title: "Wrong title" });
-		await settleCommand(runtime, "/evo Another direction");
-		assert.equal(runtime.session.sessionName, "Explicit name");
-		assert.equal(names.length, 1);
-		assert.equal(runtime.requests.length, 2);
-	} finally { await runtime.close(); }
-});
-
-test("bare and invalid invocations emit no provisional name", { timeout: 30000 }, async () => {
-	const names: ProvisionalName[] = [];
-	const runtime = await ordinarySession("tui", (pi) => {
-		pi.events.on("session-name:provisional", (value) => { names.push(value as ProvisionalName); });
-	});
-	try {
-		await settleCommand(runtime, "/evo");
-		await runtime.session.prompt(`/evo ${"x".repeat(MAX_DIRECTION_CODE_POINTS + 1)}`);
-		assert.equal(runtime.session.sessionName, undefined);
-		assert.equal(names.length, 0);
-		assert.equal(runtime.requests.length, 1);
-	} finally { await runtime.close(); }
-});
-
-test("an earlier transformation discards the kickoff's original direction offer", { timeout: 30000 }, async () => {
-	const names: ProvisionalName[] = [];
-	const runtime = await ordinarySession("print", (pi) => {
-		pi.on("input", (event) => event.source === "extension" ? { action: "transform", text: "Transformed kickoff" } : undefined);
-		pi.events.on("session-name:provisional", (value) => { names.push(value as ProvisionalName); });
-	}, undefined, undefined, true);
-	try {
-		await settleCommand(runtime, "/evo Repair parser");
-		await runtime.session.prompt("A later prompt");
-		assert.equal(runtime.session.sessionName, undefined);
-		assert.equal(names.length, 0);
-		assert.equal(runtime.requests.length, 2);
-	} finally { await runtime.close(); }
-});
-
-test("a consumed kickoff followed by a prompt emits no old direction", { timeout: 30000 }, async () => {
-	for (const inputFirst of [false, true]) {
-		const consumed = deferred();
-		const names: ProvisionalName[] = [];
-		const runtime = await ordinarySession("print", (pi) => {
-			pi.on("input", (event) => {
-				if (event.source === "extension") { consumed.resolve(); return { action: "handled" }; }
-				return undefined;
-			});
-			pi.events.on("session-name:provisional", (value) => { names.push(value as ProvisionalName); });
-		}, undefined, undefined, inputFirst);
-		try {
-			await runtime.session.prompt("/evo Old parser direction");
-			await consumed.promise;
-			await runtime.session.prompt("A different prompt");
-			assert.equal(runtime.session.sessionName, inputFirst ? undefined : "Old parser direction");
-			assert.equal(names.length, 0);
-			assert.equal(runtime.requests.length, 1);
 		} finally { await runtime.close(); }
 	}
 });

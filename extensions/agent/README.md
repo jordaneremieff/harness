@@ -2673,22 +2673,6 @@ RPC and extension-generated input do not supply the fallback. The extension does
 not interpret another extension's prompts or entry formats. A session name or
 declared purpose still supplies useful context.
 
-### Automatic session names
-
-Agent offers only genuine interactive input to the shared session-name lifecycle,
-not RPC input, extension input, model responses or purpose updates. The lifecycle
-writes an immediate fallback for useful input only when no name or name entry
-exists. A receipt is an internal record of the session, exact name entry and
-fallback or refined state. Only the current fallback with its matching receipt
-accepts one valid generator refinement. An absent or failed generator leaves the
-fallback; refined names remain unchanged. Automatic naming never replaces `/name`
-or RPC names, names without a receipt, repeated explicit writes or deliberate
-clears. Forks keep inherited names; forks, switches and reloads cancel pending
-refinement without replaying generation.
-
-The [session name convention](../../docs/conventions/session-names.md) defines
-derivation and the shared lifecycle.
-
 `agent_intent` publishes only the invoking ordinary primary or native
 conversation. It takes no target identity. Native conversations retain claims in
 their own conversation metadata; a native root or child needs no ordinary primary

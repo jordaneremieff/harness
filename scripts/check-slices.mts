@@ -5,7 +5,7 @@
 //   1. every extension under extensions/ is a complete vertical slice:
 //      index.ts with a default-export factory and README.md;
 //   2. no extension imports a sibling or escapes its slice except through the
-//      documented package-level contracts (transport, operator-ui, session-name)
+//      documented package-level contracts (transport, operator-ui)
 //      or the colocated evaluation interfaces;
 //   3. no hardcoded counts of tests, tools, or files in tracked docs
 //      (AGENTS.md: "Do not hardcode counts ... in durable documentation");
@@ -280,9 +280,6 @@ function sourceSpecifiers(file: ts.SourceFile): string[] {
 /** Slices whose operator views use the package-level presentation entry. */
 const OPERATOR_UI_CONSUMERS = new Set(["agent", "clipboard", "markdown", "pillars", "policy", "stash", "statusline"]);
 
-/** Slices that derive session names through the package-level module. */
-const SESSION_NAME_CONSUMERS = new Set(["agent", "evo"]);
-
 function publicImport(
 	root: string,
 	file: string,
@@ -294,8 +291,6 @@ function publicImport(
 		(sliceName === "agent" && target === join(root, "transport", "index.ts")) ||
 		(OPERATOR_UI_CONSUMERS.has(sliceName) &&
 			(target === join(root, "operator-ui", "index.ts") || target === join(root, "operator-ui", "registration.ts"))) ||
-		(SESSION_NAME_CONSUMERS.has(sliceName) &&
-			(target === join(root, "session-name", "index.ts") || target === join(root, "session-name", "lifecycle.ts"))) ||
 		evaluationImport(root, file, sliceDir, target)
 	);
 }
@@ -370,13 +365,6 @@ for (const entry of main && existsSync(operatorUiDir) ? readdirSync(operatorUiDi
 	if (!entry.isFile() || !/\.(ts|mts)$/.test(entry.name)) continue;
 	const file = join(operatorUiDir, entry.name);
 	for (const violation of auditOperatorUiImports(root, file, inventory.analyse(file))) fail(violation);
-}
-const sessionNameDir = join(root, "session-name");
-for (const entry of main && existsSync(sessionNameDir) ? readdirSync(sessionNameDir, { withFileTypes: true }) : []) {
-	if (!entry.isFile() || !/\.(ts|mts)$/.test(entry.name)) continue;
-	const file = join(sessionNameDir, entry.name);
-	for (const violation of auditSelfContainedImports(root, file, inventory.analyse(file), "session-name"))
-		fail(violation);
 }
 
 // --- configuration declaration and documentation contract -------------
@@ -703,7 +691,7 @@ if (main) {
 		...sourceFiles.map((file) => relative(root, file).replaceAll("\\", "/")),
 	]);
 	for (const file of owned) {
-		if (!/^(extensions|scripts|prompts|transport|operator-ui|evals|session-name)\/.*\.(ts|mts)$/.test(file)) continue;
+		if (!/^(extensions|scripts|prompts|transport|operator-ui|evals)\/.*\.(ts|mts)$/.test(file)) continue;
 		const path = join(root, file);
 		if (!existsSync(path)) continue;
 		for (const violation of auditSchemaImports(root, path, inventory.analyse(path))) fail(violation);

@@ -148,7 +148,7 @@ it("keeps discovery and intent out of ordinary transcripts across processes", { 
 	assert.equal(parameters.oneOf, undefined);
 	const observed = await second.command("inspect");
 	const observedSelf = (observed.awareness as { self: { observedPurpose?: { source: string; text: string } }; threads: { items: unknown[] } }).self;
-	assert.deepEqual(observedSelf.observedPurpose, { source: "session-name", text: "Check the current effort context" }, "the derived session name supplies the observed purpose");
+	assert.deepEqual(observedSelf.observedPurpose, { source: "interactive-input", text: "Check the current effort context" }, "the first interactive input of an unnamed session supplies the observed purpose");
 	assert.ok(Array.isArray((observed.awareness as { threads: { items: unknown[] } }).threads.items), "the awareness result includes the bounded recent-thread view");
 
 	const publish = await second.command("prompt-intent", { action: "publish" });
