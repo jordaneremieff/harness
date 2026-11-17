@@ -9,6 +9,7 @@
 			payloads = new Map<string, Record<string, unknown>>();
 		const off: (() => void)[] = [];
 		let current: ReaderThread | null = null,
+			revealPending = false,
 			visible = false,
 			changeIndex = 0,
 			operationId: string | null = null;
@@ -93,7 +94,10 @@
 			if (box.width < 560) {
 				card.style.left = "";
 				card.style.top = "";
-				if (!current?.collapsed) revealPassage(card.getBoundingClientRect().top - 12);
+				// The bottom sheet brings its passage into view once, when the person opens the card;
+				// later redraws, agent changes and scrolling never move the page.
+				if (revealPending && !current?.collapsed) revealPassage(card.getBoundingClientRect().top - 12);
+				revealPending = false;
 				return;
 			}
 			const rect = cardAnchorRect();
@@ -157,6 +161,7 @@
 					() => {
 						current = thread;
 						visible = true;
+						revealPending = true;
 						thread.collapsed = false;
 						draw();
 						activity.hidePopover();
@@ -567,6 +572,7 @@
 				};
 				threads.unshift(current);
 				visible = true;
+				revealPending = true;
 				draw();
 				card.querySelector("textarea")?.focus({ preventScroll: true });
 			},
