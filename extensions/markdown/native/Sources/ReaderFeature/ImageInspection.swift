@@ -198,7 +198,7 @@ extension ReaderModel {
     }
 
     func prepareImage(_ index: Int) async {
-        guard let snapshot, let rendered, let facts = ImageFacts.make(index: index, rendered: rendered, snapshot: snapshot, evidence: imageEvidence) else { return }
+        guard let snapshot, let rendered, let facts = ImageFacts.make(index: index, rendered: rendered, snapshot: snapshot, evidence: []) else { return }
         let subject: ImageInspection.Subject
         switch rendered.images[index].source {
         case .local(let token):
@@ -216,18 +216,10 @@ extension ReaderModel {
         if case .local(let token) = rendered.images[index].source, inspection.problem == nil {
             inspection.setAddress("\(MarkdownRenderer.assetScheme)://doc/\(token)")
         }
-        // The document page's first observation can precede the image's decoding; ask again
-        // when it did not confirm the display.
-        if case .local = rendered.images[index].source, facts.evidence?.displayed != true, facts.evidence?.failure == nil, !showingSource {
-            let observed = await inspectImages()
-            guard self.rendered?.nonce == rendered.nonce, inspection.facts?.index == index else { return }
-            imageEvidence = observed
-            inspection.note(observed)
-        }
     }
 
-    /// Opens the inspection of the image in view, or ends an open inspection.
-    public func toggleImageInspection() async {
+    /// Check-only inspection of the image in the DOM viewport.
+    package func toggleImageInspection() async {
         if inspection.isOpen {
             await closeImageInspection()
             return

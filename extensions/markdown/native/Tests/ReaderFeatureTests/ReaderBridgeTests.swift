@@ -183,9 +183,72 @@ import Testing
         }
     }
 
+    @Test func jumpHistoryStateRequiresBooleansAndNativeCommandsRemainValid() throws {
+        let state: [String: Any] = ["lock": "reading", "canUndo": false, "canRedo": false,
+            "canBack": false, "canForward": false, "hasSelection": false, "findOpen": false,
+            "scroll": ["blockStart": 0, "offsetY": 0]]
+        for back in [false, true] {
+            for forward in [false, true] {
+                var fields = state
+                fields["canBack"] = back
+                fields["canForward"] = forward
+                let decoded = try ReaderBridgeCodec.decode(body: envelope("state", fields))
+                #expect(decoded.pageState?.canBack == back)
+                #expect(decoded.pageState?.canForward == forward)
+            }
+        }
+        for key in ["canBack", "canForward"] {
+            for value: Any in [0, 1, "true", NSNull()] {
+                var invalid = state
+                invalid[key] = value
+                #expect(throws: (any Error).self) { try ReaderBridgeCodec.decode(body: envelope("state", invalid)) }
+            }
+            var missing = state
+            missing.removeValue(forKey: key)
+            #expect(throws: (any Error).self) { try ReaderBridgeCodec.decode(body: envelope("state", missing)) }
+        }
+        for name in ["back", "forward"] {
+            try ReaderBridgeCodec.validateNativeEnvelope(["v": 1, "type": "command", "name": name])
+        }
+    }
+
+    @Test func scrollAndRestorePositionShareOneExactShape() throws {
+        var state: [String: Any] = ["lock": "reading", "canUndo": false, "canRedo": false,
+            "canBack": false, "canForward": false, "hasSelection": false, "findOpen": false]
+        var document: [String: Any] = ["v": 1, "type": "document", "source": "", "blocks": [[String: Any]]()]
+        try ReaderBridgeCodec.validateNativeEnvelope(document)
+        let positions: [(Int, Double)] = [(0, 0), (27, -12.5), (ReaderBridgeCodec.sourceLimit + 1, 1e10),
+            (ReaderBridgeCodec.maxInteger, Double.greatestFiniteMagnitude), (0, -Double.greatestFiniteMagnitude)]
+        for (start, offset) in positions {
+            let position: [String: Any] = ["blockStart": start, "offsetY": offset]
+            state["scroll"] = position
+            let decoded = try ReaderBridgeCodec.decode(body: envelope("state", state))
+            #expect(decoded.pageState?.scroll == .init(blockStart: start, offsetY: offset))
+            document["position"] = position
+            try ReaderBridgeCodec.validateNativeEnvelope(document)
+        }
+        let invalidPositions: [Any] = [
+            ["blockStart": -1, "offsetY": 0], ["blockStart": 0.5, "offsetY": 0],
+            ["blockStart": ReaderBridgeCodec.maxInteger + 1, "offsetY": 0],
+            ["blockStart": true, "offsetY": 0], ["blockStart": "0", "offsetY": 0],
+            ["blockStart": 0, "offsetY": true], ["blockStart": 0, "offsetY": "0"],
+            ["blockStart": 0, "offsetY": Double.nan], ["blockStart": 0, "offsetY": Double.infinity],
+            ["blockStart": 0, "offsetY": -Double.infinity], ["blockStart": 0], ["offsetY": 0],
+            ["blockStart": 0, "offsetY": 0, "extra": 1], NSNull(), [0, 0],
+        ]
+        for position in invalidPositions {
+            state["scroll"] = position
+            #expect(throws: (any Error).self) { try ReaderBridgeCodec.decode(body: envelope("state", state)) }
+            document["position"] = position
+            #expect(throws: (any Error).self) { try ReaderBridgeCodec.validateNativeEnvelope(document) }
+        }
+        state.removeValue(forKey: "scroll")
+        #expect(throws: (any Error).self) { try ReaderBridgeCodec.decode(body: envelope("state", state)) }
+    }
+
     @Test func stateQueriesAndCommandArguments() throws {
         let state: [String: Any] = ["lock": "writing", "canUndo": true, "canRedo": false,
-            "hasSelection": true, "findOpen": false, "held": ["start": 2, "end": 4],
+            "canBack": false, "canForward": false, "hasSelection": true, "findOpen": false, "held": ["start": 2, "end": 4],
             "activeBlock": ["start": 0, "end": 8], "scroll": ["blockStart": 0, "offsetY": -12.5]]
         let decoded = try ReaderBridgeCodec.decode(body: envelope("state", state))
         #expect(decoded.pageState?.held == .init(start: 2, end: 4))
@@ -402,9 +465,20 @@ import Testing
         #expect(ReaderPageCommand.open.isEnabled(state: nil, documentLoaded: false))
         #expect(!ReaderPageCommand.undo.isEnabled(state: reading, documentLoaded: true))
         #expect(!ReaderPageCommand.redo.isEnabled(state: reading, documentLoaded: true))
+        #expect(!ReaderPageCommand.back.isEnabled(state: reading, documentLoaded: true))
+        #expect(!ReaderPageCommand.forward.isEnabled(state: reading, documentLoaded: true))
         #expect(!ReaderPageCommand.replace.isEnabled(state: reading, documentLoaded: true))
         #expect(!ReaderPageCommand.askSelection.isEnabled(state: reading, documentLoaded: true))
         #expect(ReaderPageCommand.find.isEnabled(state: reading, documentLoaded: true))
+        var history = ReaderBridgePageState(canBack: true)
+        #expect(ReaderPageCommand.back.isEnabled(state: history, documentLoaded: true))
+        #expect(!ReaderPageCommand.forward.isEnabled(state: history, documentLoaded: true))
+        history.canBack = false
+        history.canForward = true
+        #expect(!ReaderPageCommand.back.isEnabled(state: history, documentLoaded: true))
+        #expect(ReaderPageCommand.forward.isEnabled(state: history, documentLoaded: true))
+        #expect(!ReaderPageCommand.back.isEnabled(state: history, documentLoaded: false))
+        #expect(!ReaderPageCommand.forward.isEnabled(state: history, documentLoaded: false))
         var writing = ReaderBridgePageState(lock: .writing, canUndo: true, canRedo: true, hasSelection: true)
         #expect(ReaderPageCommand.undo.isEnabled(state: writing, documentLoaded: true))
         #expect(ReaderPageCommand.redo.isEnabled(state: writing, documentLoaded: true))

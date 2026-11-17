@@ -362,7 +362,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func findNext(_ sender: Any?) { pageCommand("findNext") }
     @objc func findPrevious(_ sender: Any?) { pageCommand("findPrevious") }
     @objc func toggleOutline(_ sender: Any?) { pageCommand("toggleOutline") }
-    @objc func goBack(_ sender: Any?) { withModel { await $0.goBack() } }
+    @objc func goBack(_ sender: Any?) { pageCommand("back") }
+    @objc func goForward(_ sender: Any?) { pageCommand("forward") }
     @objc func toggleSource(_ sender: Any?) { pageCommand("showSource") }
     @objc func toggleWrap(_ sender: Any?) { withModel { $0.toggleWrap() } }
     @objc func biggerText(_ sender: Any?) { pageCommand("zoomIn") }
@@ -397,6 +398,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if action == #selector(formatEditor(_:)) { return windows.keySurface?.commandEnabled("format") == true }
         if action == #selector(undoPage(_:)) { return windows.keySurface?.commandEnabled("undo") == true }
         if action == #selector(redoPage(_:)) { return windows.keySurface?.commandEnabled("redo") == true }
+        if action == #selector(goBack(_:)) { return windows.keySurface?.commandEnabled("back") == true }
+        if action == #selector(goForward(_:)) { return windows.keySurface?.commandEnabled("forward") == true }
         guard let model = windows.keyModel else { return false }
         switch action {
         case #selector(toggleOutline(_:)):
@@ -406,8 +409,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return model.snapshot?.record != nil
         case #selector(exportPDF(_:)):
             return model.canExportPDF
-        case #selector(goBack(_:)):
-            return model.canGoBack
         case #selector(toggleSource(_:)):
             item.state = windows.keySurface?.pageState["overlay"] as? String == "source" ? .on : .off
             return model.snapshot != nil
@@ -611,7 +612,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     private func documentMenu(returnItem: Bool) -> NSMenuItem {
         var items = [
-            item("Go Back After Jump", #selector(goBack(_:)), "["),
+            item("Go Back", #selector(goBack(_:)), "["),
+            item("Go Forward", #selector(goForward(_:)), "]"),
             .separator(),
             item("Show Latest Revision", #selector(refreshDocument(_:)), "r"),
             item("Older Revision", #selector(olderRevision(_:)), "[", [.command, .option]),

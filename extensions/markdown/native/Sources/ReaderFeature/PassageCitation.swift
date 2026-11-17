@@ -103,9 +103,8 @@ enum PassageCitation {
 }
 
 extension ReaderModel {
-    /// Copies the selected text with the document identity, the exact revision, the source
-    /// digest and the best locator that the source establishes. Nothing is sent anywhere.
-    public func copyPassageWithSource() async {
+    /// Check-only selection citation with the document identity and exact revision.
+    package func copyPassageWithSource() async {
         guard let snapshot else { return }
         guard pageState?.overlay != "review" else {
             post("Close the comparison to copy a passage of the document with its source.", kind: .info)

@@ -48,10 +48,6 @@ public final class RevisionReview {
         shown = nil; preparing = nil; failure = nil; entry = nil; page = nil; html = ""; assets = [:]
     }
     public func dismissFailure() { failure = nil }
-    func selectedText() async -> String {
-        guard let page = visiblePage else { return "" }
-        return (try? await page.callJavaScript(PageScript.selectionText) as? String) ?? ""
-    }
 }
 
 extension ReaderModel {

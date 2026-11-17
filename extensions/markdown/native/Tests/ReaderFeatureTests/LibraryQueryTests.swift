@@ -96,6 +96,12 @@ struct LibraryQueries {
         #expect(summary["base"] as? Int == 1)
         #expect(summary["target"] is NSNull)
         #expect(summary["targetLabel"] as? String == "Uncommitted draft")
+        #expect(Set(summary.keys) == Set(["base", "target", "targetLabel", "changedRegions", "addedLines", "removedLines", "assetChanges", "partial", "line"]))
+        #expect(summary["addedLines"] is Int)
+        #expect(summary["removedLines"] is Int)
+        #expect(summary["assetChanges"] as? Int == 0)
+        #expect(summary["partial"] is Bool)
+        #expect(!(summary["line"] as? String ?? "").isEmpty)
         #expect((summary["changedRegions"] as? Int ?? 0) > 0)
         #expect(html.contains("Uncommitted draft"))
         #expect(html.contains("of the uncommitted draft"))
@@ -103,6 +109,31 @@ struct LibraryQueries {
         #expect(!html.contains("from the two stored revisions"))
         #expect(model.snapshot == nil)
         #expect(try DocumentLoader.load(store.reference(id), revision: 1).source == base.source)
+        await model.close()
+    }
+
+    @Test func storedReviewReplyUsesSourceRegionAndLineCounts() async throws {
+        let store = try ReviewStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1, "# Report\n\nOld text.\n")
+        try store.publish(2, "# Report\n\nNew text.\n")
+        let model = reader(ReadingStateStore(directory: nil))
+        try await model.showSnapshot(DocumentLoader.load(store.reference))
+        let reply = try await model.page.callJavaScript("return await window.webkit.messageHandlers.reader.postMessage({v:1,type:'query',id:'stored-review',kind:'review',against:1});") as? [String: Any]
+        #expect(reply?["ok"] as? Bool == true)
+        let summary = try #require(reply?["summary"] as? [String: Any])
+        #expect(Set(summary.keys) == Set(["base", "target", "changedRegions", "addedLines", "removedLines", "assetChanges", "partial", "line"]))
+        #expect(summary["base"] as? Int == 1)
+        #expect(summary["target"] as? Int == 2)
+        #expect(summary["changedRegions"] as? Int == 1)
+        #expect(summary["addedLines"] as? Int == 1)
+        #expect(summary["removedLines"] as? Int == 1)
+        #expect(summary["assetChanges"] as? Int == 0)
+        #expect(summary["partial"] as? Bool == false)
+        #expect(!(summary["line"] as? String ?? "").isEmpty)
+        let html = try #require(reply?["html"] as? String)
+        #expect(html.contains("Old text."))
+        #expect(html.contains("New text."))
         await model.close()
     }
 

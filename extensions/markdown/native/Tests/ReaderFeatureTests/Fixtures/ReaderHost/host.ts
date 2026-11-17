@@ -6,6 +6,7 @@
   const policy = trustedTypes.createPolicy("cmark", { createHTML: value => value });
   let source = "", blocks = [], sourceShown = false, front = null, lock = "reading";
   let findOpen = false, findQuery = "", messageId = 0;
+  let readingScroll = { blockStart: 0, offsetY: 0 };
 
   async function send(type, fields = {}) {
     const reply = await window.webkit.messageHandlers.reader.postMessage({ v: 1, type, id: `fixture-${++messageId}`, ...fields });
@@ -41,14 +42,16 @@
   }
 
   function reportState(extra = {}) {
-    const visible = Array.from(doc.querySelectorAll("[data-block]")).find(element => element.getBoundingClientRect().bottom > 0);
     const selection = window.getSelection();
+    const text = String(selection || "");
+    const start = text ? source.indexOf(text) : -1;
+    const located = start < 0 ? {} : { selection: { text, start, end: start + text.length } };
     return send("state", {
       lock, overlay: sourceShown ? "source" : front,
-      canUndo: false, canRedo: false,
+      canUndo: false, canRedo: false, canBack: false, canForward: false,
       hasSelection: Boolean(selection && !selection.isCollapsed), findOpen,
-      scroll: { blockStart: Number(visible?.dataset.start || 0), offsetY: visible ? -visible.getBoundingClientRect().top : 0 },
-      ...extra
+      scroll: readingScroll,
+      ...located, ...extra
     });
   }
 
@@ -101,10 +104,7 @@
       lock = message.settings.lock;
       findOpen = false;
       if (sourceShown) renderSource(); else renderBlocks();
-      if (message.position && !sourceShown) {
-        const block = Array.from(doc.querySelectorAll("[data-block]")).find(element => Number(element.dataset.start) === message.position.blockStart);
-        if (block) window.scrollTo(0, block.getBoundingClientRect().top + window.scrollY + message.position.offsetY);
-      }
+      readingScroll = message.position ? { ...message.position } : { blockStart: 0, offsetY: 0 };
       await reportState();
       break;
     }
@@ -117,7 +117,15 @@
   window.addEventListener("scroll", () => {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(() => { pending = false; reportState().catch(() => {}); });
+    requestAnimationFrame(() => {
+      pending = false;
+      if (!sourceShown) {
+        const visible = Array.from(doc.querySelectorAll("[data-block]")).find(element => element.getBoundingClientRect().bottom > 0);
+        if (visible) readingScroll = { blockStart: Number(visible.dataset.start), offsetY: -visible.getBoundingClientRect().top };
+      }
+      reportState().catch(() => {});
+    });
   }, { passive: true });
+  document.addEventListener("selectionchange", () => { reportState().catch(() => {}); });
   send("ready", { version: "reader-host-fixture-1", capabilities: {} }).catch(error => console.error(String(error)));
 })();

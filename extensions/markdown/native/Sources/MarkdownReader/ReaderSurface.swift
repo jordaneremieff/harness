@@ -71,6 +71,8 @@ final class ReaderSurface: NSView {
         switch name {
         case "undo": return pageState["canUndo"] as? Bool == true
         case "redo": return pageState["canRedo"] as? Bool == true
+        case "back": return pageState["canBack"] as? Bool == true
+        case "forward": return pageState["canForward"] as? Bool == true
         case "format": return pageState["lock"] as? String == "writing" && pageState["activeBlock"] is [String: Any]
         case "askSelection", "copyPassage": return pageState["hasSelection"] as? Bool == true
         default: return pageReady

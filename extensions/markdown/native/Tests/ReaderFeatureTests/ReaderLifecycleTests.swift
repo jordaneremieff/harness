@@ -12,7 +12,9 @@ private struct LifecycleStore {
     private let id = "md-0123456789abcdef0123"
 
     init() throws {
-        root = try ReadingStateIntake.directory()
+        let native = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        root = native.appendingPathComponent(".build/reader-lifecycle-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try write(["version": 1, "storeId": storeId], to: root.appendingPathComponent("store.json"))
     }
 
@@ -73,6 +75,15 @@ private final class LifecycleGate {
                 TerminalReturnResult(pane: .unavailable("test"), application: .failed("test"))
             }
         ), state: state, webRoot: ReaderHostFixture.root)
+    }
+
+    private func reportState(_ model: ReaderModel, blockStart: Int = 0, offsetY: Double = 0, selection: String? = nil) async throws {
+        var fields: [String: Any] = ["v": 1, "type": "state", "lock": model.lock.rawValue, "overlay": NSNull(),
+                                     "canUndo": false, "canRedo": false, "canBack": false, "canForward": false,
+                                     "hasSelection": selection != nil, "findOpen": false,
+                                     "scroll": ["blockStart": blockStart, "offsetY": offsetY]]
+        if let selection { fields["selection"] = ["text": selection, "start": 0, "end": min(model.source.utf16.count, selection.utf16.count)] }
+        _ = try await model.receive(ReaderBridgeCodec.decode(body: fields))
     }
 
     private func wait(until condition: () async -> Bool) async -> Bool {
@@ -164,9 +175,9 @@ private final class LifecycleGate {
         let reader = model(reference: .file(path: "annotation-draft"), state: ReadingStateStore(directory: nil))
         await reader.openDraft(source: "# Title\n\nExact **bold** 日本語\n", generation: 1, title: "Annotation", resolver: NoAssetResolver())
         #expect(reader.phase == .ready)
-        _ = try await reader.page.callJavaScript("const range = document.createRange(); range.selectNodeContents(document.querySelector('p')); const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);", contentWorld: PageScript.world)
+        try await reportState(reader, selection: "Exact bold 日本語")
         #expect(await reader.annotationSelection() == "Exact bold 日本語")
-        _ = try await reader.page.callJavaScript("const node = document.querySelector('p'); node.textContent = 'x'.repeat(8193); const range = document.createRange(); range.selectNodeContents(node); const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);", contentWorld: PageScript.world)
+        try await reportState(reader, selection: String(repeating: "x", count: 8193))
         #expect(await reader.annotationSelection() == nil)
         await reader.close()
     }
@@ -284,28 +295,66 @@ private final class LifecycleGate {
         await model.close()
     }
 
-    @Test func supersedingOpenDoesNotWaitForImageInspection() async throws {
+    @Test func closingSavesTheLatestReportedScrollWithoutAReadyWebPage() async throws {
         let store = try LifecycleStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         try store.publish(1)
-        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
-        let window = window(model)
-        defer { window.close() }
-        let gate = LifecycleGate()
-        defer { gate.release() }
-        model.imageInspectionGate = { await gate.wait() }
-        let first = Task { await model.open(revision: 1, origin: nil) }
-        #expect(await wait { gate.reached })
-        #expect(model.phase == .ready)
-        #expect(!model.isLoadingForCheck)
-        let origin = LaunchOrigin(terminal: "Rex", bundleId: LaunchOrigin.rexBundleId)
-        let superseding = Task { await model.open(revision: 1, origin: origin) }
-        #expect(await wait { model.launchOrigin == origin })
-        #expect(model.phase == .ready && model.snapshot?.revision == 1)
-        gate.release()
-        await first.value
-        await superseding.value
+        let state = ReadingStateStore(directory: nil)
+        let model = model(reference: store.reference, state: state)
+        model.displayNavigationForCheck = {}
+        await model.open(origin: nil)
+        let start = try #require(model.rendered?.blocks.dropFirst(2).first?.start)
+        try await reportState(model, blockStart: start, offsetY: -27.25)
+        #expect(!model.page.isReady)
+        let closing = ContinuousClock.now
         await model.close()
+        #expect(closing.duration(to: ContinuousClock.now) < .seconds(1))
+        #expect(state.position(for: store.reference)?.blockStart == start)
+        #expect(state.position(for: store.reference)?.offsetY == -27.25)
+        #expect(state.position(for: store.reference)?.revision == 1)
+    }
+
+    @Test func openingDeliversTheSavedSourcePositionThroughTheDocument() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let source = "# Title\n\nParagraph.\n\nAnother.\n"
+        try store.publish(1, source: source)
+        let state = ReadingStateStore(directory: nil)
+        let start = (source as NSString).range(of: "Another.").location
+        state.setPosition(ReadingPosition(blockStart: start, offsetY: 7.125, revision: 1), for: store.reference)
+        let model = model(reference: store.reference, state: state)
+        try await model.page.load()
+        _ = try await model.page.callJavaScript("const receive = reader.receive; reader.receive = m => { if (m.type === 'document') window.deliveredPosition = m.position; return receive(m); };")
+        await model.open(origin: nil)
+        let position = try await model.page.callJavaScript("return window.deliveredPosition;") as? [String: Any]
+        #expect(position?["blockStart"] as? Int == start)
+        #expect(position?["offsetY"] as? Double == 7.125)
+        #expect(model.cachedReadingPosition?.blockStart == start)
+        #expect(model.cachedReadingPosition?.offsetY == 7.125)
+        await model.close()
+    }
+
+    @Test func draftRecoveryRestoresReportedPositionWithoutAReadingCacheEntry() async throws {
+        _ = NSApplication.shared
+        let state = ReadingStateStore(directory: nil)
+        let model = model(reference: .file(path: "draft-position"), state: state)
+        let source = "# Draft\n\nAnother paragraph.\n"
+        let id = UUID()
+        try await model.sendDocument(source: source, generation: 0,
+            meta: ["kind": "draft", "title": "Draft", "capturedSource": false], initialLock: .writing, draftId: id)
+        let start = (source as NSString).range(of: "Another paragraph.").location
+        try await reportState(model, blockStart: start, offsetY: -11.5)
+        await model.recoverContentProcess()
+        #expect(model.recoveries == 1)
+        #expect(model.cachedReadingPosition?.blockStart == start)
+        #expect(model.cachedReadingPosition?.offsetY == -11.5)
+        #expect(state.position(for: model.reference) == nil)
+        try await model.sendDocument(source: source, generation: 0,
+            meta: ["kind": "draft", "title": "Another draft", "capturedSource": false], initialLock: .writing, draftId: UUID())
+        #expect(model.cachedReadingPosition?.blockStart == 0)
+        #expect(model.cachedReadingPosition?.offsetY == 0)
+        await model.close()
+        #expect(state.position(for: model.reference) == nil)
     }
 
     @Test func closingDoesNotWaitForAStateWrite() async throws {
@@ -342,18 +391,18 @@ private final class LifecycleGate {
         model.preparationGate = { revision in if revision == 2 { await gate.wait() } }
         try store.publish(2)
         #expect(await wait { gate.reached })
-        _ = try await model.page.callJavaScript("window.scrollTo(0, 5000); return true;", contentWorld: PageScript.world)
-        model.scrolled()
-        let moved = await model.capturePosition()
+        let start = try #require(model.rendered?.blocks.dropFirst(120).first?.start)
+        try await reportState(model, blockStart: start, offsetY: -18.5)
+        let moved = model.cachedReadingPosition
         gate.release()
         #expect(await wait { !model.isLoadingForCheck })
         #expect(model.isScrollingForCheck)
         #expect(model.snapshot?.revision == 1)
         #expect(await wait { model.snapshot?.revision == 2 && !model.isLoadingForCheck })
-        let restored = await model.capturePosition()
-        #expect(moved?.blockKey != nil)
-        #expect(moved?.blockKey == restored?.blockKey)
-        #expect(abs((moved?.fraction ?? 0) - (restored?.fraction ?? 1)) < 0.05)
+        let restored = model.cachedReadingPosition
+        #expect(moved?.blockStart == start)
+        #expect(restored?.blockStart == start)
+        #expect(restored?.offsetY == -18.5)
         await model.close()
     }
 
@@ -494,17 +543,16 @@ private final class LifecycleGate {
         model.preparationGate = { revision in if revision == 2 { await gate.wait() } }
         try store.publish(2)
         #expect(await wait { gate.reached })
-        _ = try await model.page.callJavaScript("window.scrollTo(0, 5000); return true;", contentWorld: PageScript.world)
-        model.scrolled()
-        let moved = await model.capturePosition()
+        let start = try #require(model.rendered?.blocks.dropFirst(120).first?.start)
+        try await reportState(model, blockStart: start, offsetY: 18.5)
+        let moved = model.cachedReadingPosition
         #expect(await wait { !model.isScrollingForCheck })
         gate.release()
         #expect(await wait { model.snapshot?.revision == 2 && !model.isLoadingForCheck })
-        let restored = await model.capturePosition()
-        #expect(moved?.blockKey != nil)
-        #expect(moved?.blockKey == restored?.blockKey)
-        #expect(abs((moved?.fraction ?? 0) - (restored?.fraction ?? 1)) < 0.05)
-        #expect((restored?.ratio ?? 0) > 0.1)
+        let restored = model.cachedReadingPosition
+        #expect(moved?.blockStart == start)
+        #expect(restored?.blockStart == start)
+        #expect(restored?.offsetY == 18.5)
         let selectionGate = LifecycleGate()
         model.preparationGate = { revision in if revision == 3 { await selectionGate.wait() } }
         try store.publish(3)
@@ -512,6 +560,7 @@ private final class LifecycleGate {
         _ = try await model.page.callJavaScript("getSelection().selectAllChildren(document.querySelector('p')); return true;", contentWorld: PageScript.world)
         let selected = await model.selectedText()
         #expect(!selected.isEmpty)
+        #expect(await wait { model.pageState?.hasSelection == true })
         selectionGate.release()
         #expect(await wait { !model.isLoadingForCheck })
         #expect(model.snapshot?.revision == 2)
@@ -623,32 +672,6 @@ private final class LifecycleGate {
         #expect(model.snapshot?.revision == 1)
         #expect(model.showingSource)
         #expect(model.update == .revision(2))
-        await model.close()
-    }
-
-    @Test func sectionNavigationKeepsBoundedReturns() async throws {
-        let store = try LifecycleStore()
-        defer { try? FileManager.default.removeItem(at: store.root) }
-        let paragraphs = String(repeating: "A paragraph with enough text for a useful section.\n\n", count: 40)
-        try store.publish(1, source: "# First\n\nA reference[^note].\n\n" + paragraphs + "## Second\n\n" + paragraphs + "## Third\n\n" + paragraphs + "[^note]: A footnote.\n")
-        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
-        let window = window(model)
-        defer { window.close() }
-        await model.open(origin: nil)
-        #expect(model.activeSection == "first")
-        let before = await model.capturePosition()
-        await model.scrollTo(anchor: "second")
-        #expect(model.activeSection == "second")
-        #expect(model.canGoBack)
-        await model.goBack()
-        let returned = await model.capturePosition()
-        #expect(returned?.blockKey == before?.blockKey)
-        #expect(model.activeSection == "first")
-        #expect(!model.canGoBack)
-        for index in 0..<24 { await model.scrollTo(anchor: index.isMultiple(of: 2) ? "second" : "third") }
-        #expect(model.jumpHistory.count == 20)
-        await model.scrollTo(anchor: "absent")
-        #expect(model.jumpHistory.count == 20)
         await model.close()
     }
 

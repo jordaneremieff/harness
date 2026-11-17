@@ -38,27 +38,14 @@ extension PageScript {
       const token = i.dataset.asset;
       const decoded = globalThis.readerImageDecodeStates?.get(rendering + ':' + token)?.result;
       const reason = failures[token] || (decoded === 'failed' ? 'Image decode failed.' : null);
-      if (reason) {
-        let placeholder = i.nextElementSibling;
-        if (!placeholder || placeholder.dataset.failedAsset !== token) {
-          placeholder = document.createElement('span');
-          placeholder.className = 'img-ph unavailable';
-          placeholder.dataset.failedAsset = token;
-          placeholder.setAttribute('role', 'img');
-          i.after(placeholder);
-        }
-        placeholder.textContent = 'Image unavailable: ' + reason + ' (' + i.dataset.reference + ')';
-        i.hidden = true;
-      }
       return { token, reference: i.dataset.reference, displayed: !reason && decoded === 'decoded' && i.complete && i.naturalWidth > 0, failure: reason };
     });
     """
 }
 
 extension ReaderModel {
-    /// Reads decode evidence through the app's content world. Failed serving gets a visible
-    /// qualified placeholder; no project-file fallback or document script is involved.
-    public func inspectImages() async -> [ImageEvidence] {
+    /// Check-only browser decode evidence. This observation never changes the document DOM.
+    package func inspectImages() async -> [ImageEvidence] {
         guard let rendered, !rendered.assets.isEmpty, !showingSource else { return [] }
         let rendering = rendered.nonce
         _ = try? await page.callJavaScript(PageScript.waitForImages, arguments: ["rendering": rendering], contentWorld: PageScript.world)

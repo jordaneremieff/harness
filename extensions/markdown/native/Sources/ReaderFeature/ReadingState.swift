@@ -4,8 +4,7 @@ import MarkdownCore
 import Observation
 import OSLog
 
-/// Where a reader was in a document: the top visible block and the offset inside it, the
-/// nearest heading above it, and the scroll ratio as the last fallback.
+/// The page reports the exact source offset and the signed visual offset of its reading position.
 public struct ReadingPosition: Codable, Sendable, Equatable {
     public var blockKey: String?
     public var fraction: Double
@@ -15,6 +14,10 @@ public struct ReadingPosition: Codable, Sendable, Equatable {
     public var savedAt: Date
     public var blockStart: Int?
     public var offsetY: Double?
+
+    public init(blockStart: Int, offsetY: Double, revision: Int?, savedAt: Date = Date()) {
+        self.init(blockKey: nil, fraction: 0, anchor: nil, ratio: 0, revision: revision, savedAt: savedAt, blockStart: blockStart, offsetY: offsetY)
+    }
 
     public init(blockKey: String?, fraction: Double, anchor: String?, ratio: Double, revision: Int?, savedAt: Date = Date(), blockStart: Int? = nil, offsetY: Double? = nil) {
         self.blockKey = blockKey

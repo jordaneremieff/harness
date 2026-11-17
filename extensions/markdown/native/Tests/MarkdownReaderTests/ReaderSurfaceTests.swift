@@ -75,8 +75,10 @@ import Testing
     }
 
     private func reportState(to model: ReaderModel, lock: String = "reading", undo: Bool = false,
-                             redo: Bool = false, selected: Bool = false, activeBlock: Bool = false) async throws {
+                             redo: Bool = false, selected: Bool = false, activeBlock: Bool = false,
+                             back: Bool = false, forward: Bool = false) async throws {
         var fields: [String: Any] = ["lock": lock, "canUndo": undo, "canRedo": redo,
+            "canBack": back, "canForward": forward,
             "hasSelection": selected, "findOpen": false, "scroll": ["blockStart": 0, "offsetY": 0]]
         if activeBlock { fields["activeBlock"] = ["start": 0, "end": 4] }
         try await post("state", fields: fields, to: model)
@@ -98,7 +100,7 @@ import Testing
             return true;
             """)
             let commands: [(String, [String: Any])] = [
-                ("undo", [:]), ("redo", [:]), ("find", ["query": "日本語"]),
+                ("undo", [:]), ("redo", [:]), ("back", [:]), ("forward", [:]), ("find", ["query": "日本語"]),
                 ("findNext", [:]), ("findPrevious", [:]), ("format", ["command": "bold"]),
                 ("askSelection", [:]), ("copyPassage", [:]), ("toggleLock", [:]),
                 ("zoomIn", [:]), ("selectAll", [:]),
@@ -138,16 +140,22 @@ import Testing
             try await reportState(to: model)
             #expect(!surface.commandEnabled("undo"))
             #expect(!surface.commandEnabled("redo"))
+            #expect(!surface.commandEnabled("back"))
+            #expect(!surface.commandEnabled("forward"))
             #expect(!surface.commandEnabled("askSelection"))
             #expect(!surface.commandEnabled("copyPassage"))
 
-            try await reportState(to: model, lock: "reading", undo: true, activeBlock: true)
+            try await reportState(to: model, lock: "reading", undo: true, activeBlock: true, back: true)
             #expect(surface.commandEnabled("undo"))
+            #expect(surface.commandEnabled("back"))
+            #expect(!surface.commandEnabled("forward"))
             #expect(!surface.commandEnabled("redo"))
             #expect(!surface.commandEnabled("format"))
 
-            try await reportState(to: model, lock: "writing", redo: true)
+            try await reportState(to: model, lock: "writing", redo: true, forward: true)
             #expect(!surface.commandEnabled("undo"))
+            #expect(!surface.commandEnabled("back"))
+            #expect(surface.commandEnabled("forward"))
             #expect(surface.commandEnabled("redo"))
             #expect(!surface.commandEnabled("format"))
 

@@ -69,7 +69,9 @@ The first change to a captured source creates the copy before acknowledgement.
 All offsets count UTF-16 code units of the exact source. Untouched source bytes, including
 mixed line endings, remain exact. The page owns one edit history for person, agent and
 history changes. Native Undo and Redo menu actions send page commands and use the page's
-reported state for validation. Native menus never send the web view an Undo selector.
+reported state for validation. Back and Forward menus mirror page-owned history through
+page commands and the reported `canBack` and `canForward` flags. Native menus never send
+the web view an Undo selector.
 
 ## Reading, writing and collaboration
 
@@ -121,6 +123,8 @@ Reading positions, recents, store folders and page settings use the separate bou
 `reading-state.json`. Each process saves only its changed entries under an exclusive lock
 and atomically replaces the file. A failed write stays pending for retry. Unreadable or
 unsupported state files remain untouched; corrupt files are retained beside the state file.
+The page reports its scroll position through `state.scroll`; native restores it through
+`document.position`. Closing saves the latest reported position without a browser round trip.
 Position retention never changes a stored document.
 
 ## Content safety

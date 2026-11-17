@@ -125,65 +125,9 @@ enum NavigationRequest {
 }
 
 
-/// Native DOM queries use the same page world as the reader interface.
+/// Check-only DOM queries use the same page world as the reader interface.
 enum PageScript {
     @MainActor static let world = WKContentWorld.page
-
-    static let capturePosition = """
-    const blocks = document.querySelectorAll('[data-block]');
-    const root = document.scrollingElement || document.documentElement;
-    const ratio = root.scrollHeight > root.clientHeight ? root.scrollTop / (root.scrollHeight - root.clientHeight) : 0;
-    let lo = 0, hi = blocks.length - 1, found = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (blocks[mid].getBoundingClientRect().bottom > 0) { found = mid; hi = mid - 1; } else { lo = mid + 1; }
-    }
-    if (found < 0) return { key: null, fraction: 0, anchor: null, ratio: ratio };
-    const block = blocks[found];
-    const rect = block.getBoundingClientRect();
-    const fraction = rect.height > 0 ? Math.min(1, Math.max(0, -rect.top / rect.height)) : 0;
-    let anchor = null;
-    const headings = document.querySelectorAll('h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]');
-    for (const heading of headings) {
-      if (heading.getBoundingClientRect().top <= 1) { anchor = heading.id; } else { break; }
-    }
-    return { key: block.dataset.block, blockStart: Number(block.dataset.start), offsetY: -rect.top, fraction: fraction, anchor: anchor, ratio: ratio };
-    """
-
-    /// Returns "block", "anchor" or "ratio" for the precision it achieved.
-    static let restorePosition = """
-    const root = document.scrollingElement || document.documentElement;
-    if (key) {
-      const block = document.querySelector('[data-block="' + CSS.escape(key) + '"]');
-      if (block) {
-        const rect = block.getBoundingClientRect();
-        window.scrollTo(0, rect.top + window.scrollY + fraction * rect.height);
-        return "block";
-      }
-    }
-    if (anchor) {
-      const heading = document.getElementById(anchor);
-      if (heading) { heading.scrollIntoView({ block: "start" }); return "anchor"; }
-    }
-    window.scrollTo(0, ratio * Math.max(0, root.scrollHeight - root.clientHeight));
-    return "ratio";
-    """
-
-    static let scrollToAnchor = """
-    const element = document.getElementById(anchor);
-    if (!element) return false;
-    element.scrollIntoView({ block: "start" });
-    return true;
-    """
-
-    static let activeSection = """
-    const headings = document.querySelectorAll('h1[id],h2[id],h3[id],h4[id],h5[id],h6[id]');
-    let active = headings.length ? headings[0].id : null;
-    for (const heading of headings) {
-      if (heading.getBoundingClientRect().top <= 32) { active = heading.id; } else { break; }
-    }
-    return active;
-    """
 
     static let selectionText = "return String(window.getSelection());"
 

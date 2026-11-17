@@ -136,7 +136,7 @@ private final class Copies {
         #expect(ImageInspection.step(from: 0.1, larger: false) == nil)
     }
 
-    @Test func aRetainedWideImageNamesItsEvidenceAndCopiesItsReference() async throws {
+    @Test func aRetainedWideImageNamesItsAssetFactsAndCopiesItsReference() async throws {
         let store = try ReviewStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         try store.publish(1, pictureSource, images: ["wide.svg": wideDiagram, "plain.png": smallPicture])
@@ -151,7 +151,9 @@ private final class Copies {
         #expect(model.inspection.facts?.index == 0)
         #expect(model.inspection.naturalSize == CGSize(width: 1600, height: 400))
         #expect(await model.interacting())
-        #expect(await wait { model.inspection.facts?.evidence?.reference == "wide.svg" })
+        #expect(model.inspection.facts?.reference == "wide.svg")
+        #expect(model.inspection.facts?.evidence == nil)
+        #expect(model.imageEvidence.isEmpty)
         #expect(model.inspectableImage(URL(string: "reader-action:inspect-image/\(nonce)/1")) == 1)
         #expect(model.inspectableImage(URL(string: "reader-action:inspect-image/other/1")) == nil)
         #expect(model.inspectableImage(URL(string: "https://example.com/")) == nil)

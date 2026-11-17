@@ -297,6 +297,19 @@ struct Context {
         CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700)
     }
 
+    static func sameSourcePosition(_ first: ReadingPosition?, _ second: ReadingPosition?) -> Bool {
+        guard let first, let second, let start = first.blockStart, let otherStart = second.blockStart,
+              let offset = first.offsetY, let otherOffset = second.offsetY else { return false }
+        return start == otherStart && abs(offset - otherOffset) < 1
+    }
+
+    func scroll(_ model: ReaderModel, to y: Double) async -> ReadingPosition? {
+        let previous = model.pageState?.scroll
+        guard await js(model, "window.scrollTo(0, y); return true;", ["y": y]) as? Bool == true,
+              await wait(seconds: 3, until: { model.pageState?.scroll != previous }) else { return nil }
+        return await model.capturePositionForCheck()
+    }
+
     static func png() -> Data {
         let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
         image?.setColor(.red, atX: 0, y: 0)
@@ -511,10 +524,9 @@ struct Context {
             _ = await js(model, "const i = document.querySelector('img[data-asset]'); i.src = 'reader-asset://doc/a0?modified'; return true;")
             let mutationRefused = await wait(seconds: 3) { model.refusedAssetRequests > beforeMutation }
             let evidence = await model.inspectImages()
-            let placeholderVisible = (await js(model, "return document.body.textContent.includes('Image unavailable:')") as? Bool) ?? false
             let detailRows = Provenance.details(model.snapshot, rendered: model.rendered, latestRevision: model.latestRevision, origin: nil, imageEvidence: evidence)
             let qualified = evidence.contains { !$0.displayed && $0.failure?.contains("recorded digest") == true }
-                && placeholderVisible && detailRows.contains { $0.1.contains("recorded digest") }
+                && detailRows.contains { $0.1.contains("recorded digest") }
             // A retained file replaced by a symlink after rendering is refused when served.
             try FileManager.default.removeItem(at: retained)
             try FileManager.default.createSymbolicLink(at: retained, withDestinationURL: outside)
@@ -522,7 +534,7 @@ struct Context {
             _ = await js(model, "const img = document.createElement('img'); img.src = 'reader-asset://doc/a0?again'; document.body.appendChild(img); return true;")
             let swapRefused = await wait(seconds: 3) { model.refusedAssetRequests > beforeSwap }
             let pass = loaded && displayedEvidence && displayRetained && linkedShown && refused && swapRefused && mutationRefused && qualified
-            return .init(name: "asset-scheme-containment", pass: pass, detail: "retained image decoded: \(loaded), displayed evidence: \(displayedEvidence), repeated Details evidence retained: \(displayRetained); symlink escape shown as unavailable: \(linkedShown); traversal, unknown token and other host refused: \(refused); same-size mutation refused: \(mutationRefused), qualified page failure: \(qualified); file swapped for a symlink refused: \(swapRefused)")
+            return .init(name: "asset-scheme-containment", pass: pass, detail: "retained image decoded: \(loaded), displayed evidence: \(displayedEvidence), repeated Details evidence retained: \(displayRetained); symlink escape shown as unavailable: \(linkedShown); traversal, unknown token and other host refused: \(refused); same-size mutation refused: \(mutationRefused), qualified asset failure: \(qualified); file swapped for a symlink refused: \(swapRefused)")
         } catch {
             return .init(name: "asset-scheme-containment", pass: false, detail: String(describing: error))
         }
@@ -907,25 +919,20 @@ struct Context {
             try store.write(id, revision: 1, source: Self.longDocument())
             let model = await open(store.reference(id), revision: nil, trackedScroll: true, keep: &keep)
             model.followsLatest = true
-            _ = await js(model, "window.scrollTo(0, 1200); return true;")
-            let stale = await model.capturePositionForCheck()
+            let stale = await scroll(model, to: 1200)
             let gate = RevisionPreparationGate()
             model.preparationGate = { revision in if revision == 2 { await gate.wait() } }
             try store.write(id, revision: 2, source: Self.longDocument(insert: "An introduction.\n", change: 30))
             let reached = await wait(seconds: 5) { gate.reached }
-            _ = await js(model, "window.scrollTo(0, 5000); return true;")
-            model.scrolled()
-            let moved = await model.capturePositionForCheck()
+            let moved = await scroll(model, to: 5000)
             let settled = await wait(seconds: 2) { !model.isScrollingForCheck }
             gate.release()
             let followed = await wait(seconds: 5) { model.snapshot?.revision == 2 && !model.isLoadingForCheck }
             let restored = await model.capturePositionForCheck()
-            let preserved = moved?.blockKey != nil && moved?.blockKey == restored?.blockKey
-                && abs((moved?.fraction ?? 0) - (restored?.fraction ?? 1)) < 0.05
-                && stale?.blockKey != restored?.blockKey
+            let preserved = Self.sameSourcePosition(moved, restored) && stale?.blockStart != restored?.blockStart
             let pass = reached && settled && followed && preserved && model.lastRestore == .block
             await model.close()
-            return .init(name: "position-captured-at-installation", pass: pass, detail: "preparation gated: \(reached); scroll settled before installation: \(settled); followed: \(followed); new block and fraction retained: \(preserved)")
+            return .init(name: "position-captured-at-installation", pass: pass, detail: "preparation gated: \(reached); scroll settled before installation: \(settled); followed: \(followed); requested source point retained: \(preserved)")
         } catch {
             return .init(name: "position-captured-at-installation", pass: false, detail: String(describing: error))
         }
@@ -937,29 +944,25 @@ struct Context {
             try store.write(id, revision: 1, source: Self.longDocument())
             let model = await open(store.reference(id), revision: nil, trackedScroll: true, keep: &keep)
             model.followsLatest = true
-            _ = await js(model, "window.scrollTo(0, 1200); return true;")
-            let stale = await model.capturePositionForCheck()
+            let stale = await scroll(model, to: 1200)
             let scrollGate = RevisionPreparationGate()
             model.preparationGate = { revision in if revision == 2 { await scrollGate.wait() } }
             try store.write(id, revision: 2, source: Self.longDocument(insert: "A new introduction.\n", change: 30))
             let prepared = await wait(seconds: 5) { scrollGate.reached }
-            _ = await js(model, "window.scrollTo(0, 5000); return true;")
-            model.scrolled()
-            let moved = await model.capturePositionForCheck()
+            let moved = await scroll(model, to: 5000)
             scrollGate.release()
             let deferred = await wait(seconds: 0.2) { !model.isLoadingForCheck }
                 && model.snapshot?.revision == 1
             let followed = await wait(seconds: 5) { model.snapshot?.revision == 2 }
             let restored = await model.capturePositionForCheck()
-            let preserved = moved?.blockKey != nil && moved?.blockKey == restored?.blockKey
-                && abs((moved?.fraction ?? 0) - (restored?.fraction ?? 1)) < 0.05
-                && stale?.blockKey != restored?.blockKey
+            let preserved = Self.sameSourcePosition(moved, restored) && stale?.blockStart != restored?.blockStart
             let selectionGate = RevisionPreparationGate()
             model.preparationGate = { revision in if revision == 3 { await selectionGate.wait() } }
             try store.write(id, revision: 3, source: Self.longDocument(insert: "Another introduction.\n", change: 31))
             let selectionPrepared = await wait(seconds: 5) { selectionGate.reached }
             _ = await js(model, "const p = document.querySelector('p'); getSelection().selectAllChildren(p); return true;")
             let selected = await model.selectedText()
+            _ = await wait(seconds: 3) { model.pageState?.hasSelection == true }
             selectionGate.release()
             let finished = await wait(seconds: 3) { !model.isLoadingForCheck }
             let retainedSelection = await model.selectedText()
@@ -979,6 +982,7 @@ struct Context {
             let id = VerifyStore.newId()
             try store.write(id, revision: 1, source: Self.longDocument())
             let model = await open(store.reference(id), revision: nil, keep: &keep)
+            let previous = model.pageState?.scroll
             _ = await js(model, """
             const block = [...document.querySelectorAll('[data-block]')].find(b => b.textContent.trim().startsWith('Paragraph 120 '));
             const rect = block.getBoundingClientRect();
@@ -986,6 +990,7 @@ struct Context {
             document.body.dataset.marker = "kept";
             return true;
             """)
+            _ = await wait(seconds: 3) { model.pageState?.scroll != previous }
             let before = await model.capturePositionForCheck()
             let scrollBefore = await js(model, "return window.scrollY") as? Double ?? -1
             _ = await js(model, "const p = [...document.querySelectorAll('p')].find(p => p.textContent.startsWith('Paragraph 121 ')); getSelection().selectAllChildren(p); return true;")
@@ -997,9 +1002,9 @@ struct Context {
             await model.refresh()
             let after = await model.capturePositionForCheck()
             let shown = model.snapshot?.revision
-            let samePlace = before?.blockKey != nil && before?.blockKey == after?.blockKey && abs((before?.fraction ?? 0) - (after?.fraction ?? 1)) < 0.05
+            let samePlace = Self.sameSourcePosition(before, after)
             let pass = watched && model.update == nil && marker == "kept" && scrollDuring == scrollBefore && selection.hasPrefix("Paragraph 121") && shown == 2 && model.lastRestore == .block && samePlace
-            return .init(name: "position-survives-refresh", pass: pass, detail: "update noticed by the watcher: \(watched); page untouched until refresh (marker \(marker ?? "?"), scroll \(scrollBefore) -> \(scrollDuring), selection kept: \(selection.hasPrefix("Paragraph 121"))); after refresh revision \(shown ?? 0), restore \(model.lastRestore.rawValue), block \(before?.blockKey ?? "-") -> \(after?.blockKey ?? "-"), fraction \(before?.fraction ?? -1) -> \(after?.fraction ?? -1)")
+            return .init(name: "position-survives-refresh", pass: pass, detail: "update noticed by the watcher: \(watched); page untouched until refresh (marker \(marker ?? "?"), scroll \(scrollBefore) -> \(scrollDuring), selection kept: \(selection.hasPrefix("Paragraph 121"))); after refresh revision \(shown ?? 0), restore \(model.lastRestore.rawValue), source point \(before?.blockStart ?? -1):\(before?.offsetY ?? -1) -> \(after?.blockStart ?? -1):\(after?.offsetY ?? -1)")
         } catch {
             return .init(name: "position-survives-refresh", pass: false, detail: String(describing: error))
         }
@@ -1014,10 +1019,7 @@ struct Context {
             let stateDirectory = workspace.appendingPathComponent("reading-state")
             let firstState = ReadingStateStore(directory: stateDirectory)
             let first = await open(store.reference(id), revision: nil, state: firstState, keep: &keep)
-            _ = await js(first, "window.scrollTo(0, 3100); return true;")
-            first.scrolled()
-            try? await Task.sleep(for: .milliseconds(800))
-            let saved = await first.capturePositionForCheck()
+            let saved = await scroll(first, to: 3100)
             await first.close()
             let flushed = await firstState.flush(timeout: 2)
             switch flushed {
@@ -1028,8 +1030,8 @@ struct Context {
             let second = await open(store.reference(id), revision: nil, state: ReadingStateStore(directory: stateDirectory), keep: &keep)
             let restored = await second.capturePositionForCheck()
             let scroll = await js(second, "return window.scrollY") as? Double ?? 0
-            let pass = second.lastRestore == .block && saved?.blockKey == restored?.blockKey && abs(scroll - 3100) < 40
-            return .init(name: "position-survives-reopen", pass: pass, detail: "closed at scroll 3100 (block \(saved?.blockKey ?? "-")); reopened at \(Int(scroll)) (block \(restored?.blockKey ?? "-"), restore \(second.lastRestore.rawValue))")
+            let pass = second.lastRestore == .block && Self.sameSourcePosition(saved, restored) && abs(scroll - 3100) < 40
+            return .init(name: "position-survives-reopen", pass: pass, detail: "closed at scroll 3100 (source point \(saved?.blockStart ?? -1):\(saved?.offsetY ?? -1)); reopened at \(Int(scroll)) (source point \(restored?.blockStart ?? -1):\(restored?.offsetY ?? -1), restore \(second.lastRestore.rawValue))")
         } catch {
             return .init(name: "position-survives-reopen", pass: false, detail: String(describing: error))
         }
@@ -1058,9 +1060,7 @@ struct Context {
     func recovery(keep: inout [NSWindow]) async -> Verification.Check {
         do {
             let model = try await openFile("recover.md", Self.longDocument(), keep: &keep)
-            _ = await js(model, "window.scrollTo(0, 2400); return true;")
-            model.scrolled()
-            try? await Task.sleep(for: .milliseconds(800))
+            let saved = await scroll(model, to: 2400)
             let before = model.recoveries
             guard let window = keep.last, let pid = ProcessProbe.webContentProcess(of: window) else {
                 return .init(name: "webcontent-recovery", pass: false, detail: "the page's web content process was not found")
@@ -1072,7 +1072,8 @@ struct Context {
                 (await js(model, "return document.querySelectorAll('[data-block]').length") as? Int ?? 0) > 100
             }
             let scroll = await js(model, "return window.scrollY") as? Double ?? 0
-            let pass = recovered && content && scroll > 1000
+            let restored = await model.capturePositionForCheck()
+            let pass = recovered && content && scroll > 1000 && Self.sameSourcePosition(saved, restored)
             return .init(name: "webcontent-recovery", pass: pass, detail: "killed \(processes.count) content process(es); reloaded: \(recovered); content back: \(content); scroll position after reload: \(Int(scroll)) (was 2400); saved \(String(describing: model.savedPositionForCheck)); restore \(model.lastRestore.rawValue)")
         } catch {
             return .init(name: "webcontent-recovery", pass: false, detail: String(describing: error))

@@ -54,6 +54,8 @@ public struct ReaderBridgePageState: Equatable, Sendable {
     public var lock: ReaderBridgeLock
     public var canUndo: Bool
     public var canRedo: Bool
+    public var canBack: Bool
+    public var canForward: Bool
     public var hasSelection: Bool
     public var findOpen: Bool
     public var held: ReaderBridgeRange?
@@ -64,10 +66,11 @@ public struct ReaderBridgePageState: Equatable, Sendable {
     public var overlay: String?
 
     public init(lock: ReaderBridgeLock = .reading, canUndo: Bool = false, canRedo: Bool = false,
-                hasSelection: Bool = false, findOpen: Bool = false, held: ReaderBridgeRange? = nil,
+                canBack: Bool = false, canForward: Bool = false, hasSelection: Bool = false, findOpen: Bool = false, held: ReaderBridgeRange? = nil,
                 activeBlock: ReaderBridgeRange? = nil, scroll: ReaderBridgeScroll = .init(blockStart: 0, offsetY: 0),
                 find: ReaderBridgeFindState? = nil, selection: ReaderBridgeSelection? = nil, overlay: String? = nil) {
         self.lock = lock; self.canUndo = canUndo; self.canRedo = canRedo
+        self.canBack = canBack; self.canForward = canForward
         self.hasSelection = hasSelection; self.findOpen = findOpen
         self.held = held; self.activeBlock = activeBlock; self.scroll = scroll
         self.find = find; self.selection = selection; self.overlay = overlay
@@ -82,16 +85,15 @@ public struct ReaderBridgePageState: Equatable, Sendable {
             try BridgeField.choice(fields, "overlay", values: ["review", "image", "details", "source", "library"])
             overlay = value as? String
         }
-        let scroll = try BridgeField.object(fields, "scroll")
-        try BridgeField.keys(scroll, allowed: ["blockStart", "offsetY"])
         self.init(lock: lock, canUndo: try BridgeField.bool(fields, "canUndo"),
                   canRedo: try BridgeField.bool(fields, "canRedo"),
+                  canBack: try BridgeField.bool(fields, "canBack"),
+                  canForward: try BridgeField.bool(fields, "canForward"),
                   hasSelection: try BridgeField.bool(fields, "hasSelection"),
                   findOpen: try BridgeField.bool(fields, "findOpen"),
                   held: try BridgeField.optionalRange(fields, "held"),
                   activeBlock: try BridgeField.optionalRange(fields, "activeBlock"),
-                  scroll: .init(blockStart: try BridgeField.integer(scroll, "blockStart", max: ReaderBridgeCodec.sourceLimit),
-                                offsetY: try BridgeField.number(scroll, "offsetY", magnitude: 1_000_000_000)), overlay: overlay)
+                  scroll: try BridgeField.scroll(fields, "scroll"), overlay: overlay)
         if fields["find"] != nil {
             let value = try BridgeField.object(fields, "find")
             try BridgeField.keys(value, allowed: ["query", "count", "index"])
@@ -222,7 +224,7 @@ public enum ReaderBridgeCodec {
                 }
             }
         case .state:
-            try BridgeField.keys(fields, allowed: ["lock", "overlay", "canUndo", "canRedo", "hasSelection", "findOpen", "held", "activeBlock", "scroll", "find", "selection"])
+            try BridgeField.keys(fields, allowed: ["lock", "overlay", "canUndo", "canRedo", "canBack", "canForward", "hasSelection", "findOpen", "held", "activeBlock", "scroll", "find", "selection"])
             pageState = try ReaderBridgePageState(fields: fields)
         case .edits:
             try BridgeField.keys(fields, allowed: ["baseGeneration", "generation", "origin", "operationId", "edits"])
@@ -270,6 +272,7 @@ public enum ReaderBridgeCodec {
         case "document":
             guard let source = fields["source"] as? String else { throw ReaderBridgeError.invalid("source") }
             guard source.utf8.count <= sourceLimit else { throw ReaderBridgeError.oversized }
+            if fields["position"] != nil { _ = try BridgeField.scroll(fields, "position") }
             var withoutSource = fields
             withoutSource.removeValue(forKey: "source")
             try validateArrayGroup(withoutSource, key: "blocks", limit: renderedLimit)
@@ -436,7 +439,7 @@ public struct ReaderSourceMirror: Sendable {
 }
 
 public enum ReaderPageCommand: String, CaseIterable, Sendable {
-    case undo, redo, find, findNext, findPrevious, replace, zoomIn, zoomOut, zoomReset
+    case undo, redo, back, forward, find, findNext, findPrevious, replace, zoomIn, zoomOut, zoomReset
     case toggleOutline, toggleLock, askSelection, askDocument, copyMarkdown, copyPassage, open, selectAll, escape, format
     case showReview, showDetails, inspectImage, showSource, showLibrary
 
@@ -446,6 +449,8 @@ public enum ReaderPageCommand: String, CaseIterable, Sendable {
         switch self {
         case .undo: return state.canUndo
         case .redo: return state.canRedo
+        case .back: return state.canBack
+        case .forward: return state.canForward
         case .askSelection, .copyPassage: return state.hasSelection
         case .replace: return state.lock == .writing
         case .format: return state.lock == .writing && state.activeBlock != nil
@@ -491,6 +496,12 @@ private enum BridgeField {
     }
     static func choice(_ object: [String: Any], _ key: String, values: Set<String>) throws {
         guard values.contains(try string(object, key, limit: 80)) else { throw ReaderBridgeError.invalid(key) }
+    }
+    static func scroll(_ fields: [String: Any], _ key: String) throws -> ReaderBridgeScroll {
+        let position = try object(fields, key)
+        try keys(position, allowed: ["blockStart", "offsetY"])
+        return .init(blockStart: try integer(position, "blockStart"),
+                     offsetY: try number(position, "offsetY", magnitude: .greatestFiniteMagnitude))
     }
     static func range(_ object: [String: Any]) throws -> ReaderBridgeRange {
         let start = try integer(object, "start", max: ReaderBridgeCodec.sourceLimit)

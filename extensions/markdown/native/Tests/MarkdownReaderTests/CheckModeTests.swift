@@ -78,6 +78,20 @@ import ReaderFeature
         }
     }
 
+    @Test func positionChecksRequireReportedSourceCoordinates() {
+        let point = ReadingPosition(blockStart: 42, offsetY: 12.5, revision: 1)
+        #expect(Context.sameSourcePosition(point, ReadingPosition(blockStart: 42, offsetY: 12.5, revision: 2)))
+        #expect(!Context.sameSourcePosition(point, ReadingPosition(blockStart: 43, offsetY: 12.5, revision: 1)))
+        #expect(!Context.sameSourcePosition(point, ReadingPosition(blockStart: 42, offsetY: 14, revision: 1)))
+        #expect(!Context.sameSourcePosition(point, nil))
+        var incomplete = point
+        incomplete.blockStart = nil
+        #expect(!Context.sameSourcePosition(point, incomplete))
+        incomplete = point
+        incomplete.offsetY = nil
+        #expect(!Context.sameSourcePosition(point, incomplete))
+    }
+
     @Test func deadlineReportsTheLastStageWithoutWaitingForWork() async {
         let deadline = VerificationDeadline()
         let stage = await withCheckedContinuation { continuation in

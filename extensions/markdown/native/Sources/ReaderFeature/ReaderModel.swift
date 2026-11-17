@@ -26,8 +26,6 @@ public enum FindStatus: Equatable, Sendable {
 
 public enum PositionRestore: String, Sendable {
     case block
-    case anchor
-    case ratio
     case none
 }
 
@@ -95,8 +93,6 @@ public final class ReaderModel {
     public private(set) var lastRestore: PositionRestore = .none
     public private(set) var recoveries = 0
     public var outlineVisible = true
-    public private(set) var activeSection: String?
-    public private(set) var jumpHistory: [ReadingPosition] = []
 
     public func toggleOutline() {
         outlineVisible.toggle()
@@ -148,8 +144,6 @@ public final class ReaderModel {
     @ObservationIgnored private var positionTask: Task<Void, Never>?
     @ObservationIgnored private var noticeTask: Task<Void, Never>?
     @ObservationIgnored private var monitorTask: Task<Void, Never>?
-    @ObservationIgnored private var imageInspectionTask: Task<Void, Never>?
-    @ObservationIgnored package var imageInspectionGate: (@MainActor () async -> Void)?
     @ObservationIgnored private var closed = false
     @ObservationIgnored private var scrolling = false
     /// The reader chose an older revision than the latest; following waits until the reader
@@ -159,7 +153,9 @@ public final class ReaderModel {
     /// names another revision.
     @ObservationIgnored private var failedRevision: Int?
     @ObservationIgnored private var interactionGeneration = 0
-    @ObservationIgnored private var navigationGeneration = 0
+    @ObservationIgnored private var latestScroll: ReaderBridgeScroll?
+    @ObservationIgnored private var requestedScroll: ReaderBridgeScroll?
+    @ObservationIgnored private var positionSourceLength: Int?
     /// Suspends a preparation result before installation or failure handling.
     @ObservationIgnored package var preparationGate: (@MainActor (Int?) async -> Void)?
     @ObservationIgnored private var displayWait: DisplayWait?
@@ -220,7 +216,6 @@ public final class ReaderModel {
         supersedeDisplay()
         updates.stop()
         preparations.discardWaiting()
-        imageInspectionTask?.cancel()
         positionTask?.cancel()
         review.close()
         inspection.close()
@@ -236,8 +231,8 @@ public final class ReaderModel {
         olderChosen = false
         failedRevision = nil
         timings = nil
-        activeSection = nil
-        jumpHistory = []
+        latestScroll = nil
+        requestedScroll = nil
         update = nil
         failure = nil
         draftIdentity = nil
@@ -306,13 +301,15 @@ public final class ReaderModel {
                              resolver: (any AssetResolving)? = nil, initialLock: ReaderBridgeLock? = nil,
                              draftId: UUID? = nil) async throws {
         let changedDraft = draftId != nil && draftId != draftIdentity
+        if changedDraft { latestScroll = nil; requestedScroll = nil }
         if let draftId { draftIdentity = draftId; isDraft = true }
         try await acceptSource(source: source, generation: generation, meta: meta, resolver: resolver)
         if let initialLock { self.initialLock = initialLock }
         else if changedDraft { self.initialLock = initialDraftLock }
         guard let snapshot, let rendered, sourceGeneration == generation, self.source.utf8.elementsEqual(source.utf8) else { return }
         lock = capturedSource ? .reading : (self.initialLock ?? lock)
-        var envelope = documentPayload(snapshot: snapshot, rendered: rendered, generation: generation, lock: lock, position: nil)
+        let position = cachedReadingPosition ?? (isDraft ? nil : state.position(for: reference))
+        var envelope = documentPayload(snapshot: snapshot, rendered: rendered, generation: generation, lock: lock, position: position)
         if let meta { envelope["meta"] = mergedMetadata(envelope["meta"] as? [String: Any] ?? [:], override: meta) }
         _ = try await sendEnvelope(envelope)
         if let draftIdentity { state.setDraftLock(lock, for: draftIdentity.uuidString) }
@@ -322,7 +319,21 @@ public final class ReaderModel {
 
     @discardableResult
     public func sendEnvelope(_ envelope: [String: Any]) async throws -> Any? {
-        try await page.send(envelope)
+        preparePositionDelivery(envelope)
+        return try await page.send(envelope)
+    }
+
+    private func preparePositionDelivery(_ envelope: [String: Any]) {
+        guard envelope["type"] as? String == "document" else { return }
+        if !isDraft, let position = cachedReadingPosition { state.setPosition(position, for: reference) }
+        positionSourceLength = (envelope["source"] as? String)?.utf16.count
+        latestScroll = nil
+        requestedScroll = nil
+        lastRestore = .none
+        if let position = envelope["position"] as? [String: Any],
+           let start = position["blockStart"] as? Int, let offset = position["offsetY"] as? Double {
+            requestedScroll = ReaderBridgeScroll(blockStart: start, offsetY: offset)
+        }
     }
 
     public func sendCommand(_ name: String, args: [String: Any] = [:]) async {
@@ -362,8 +373,8 @@ public final class ReaderModel {
                          "outlineWidth": state.outlineWidth, "outlineOpen": state.outlineOpen] as [String: Any],
             "chrome": chrome, "live": live,
         ]
-        if let position, let start = position.blockStart ?? rendered.blocks.first(where: { $0.key == position.blockKey })?.start {
-            result["position"] = ["blockStart": start, "offsetY": position.offsetY ?? 0]
+        if let position, let start = position.blockStart, let offset = position.offsetY {
+            result["position"] = ["blockStart": start, "offsetY": offset]
         }
         return result
     }
@@ -382,7 +393,7 @@ public final class ReaderModel {
         assets.update(combined)
     }
 
-    private func receive(_ message: ReaderBridgeMessage) async throws -> [String: Any]? {
+    func receive(_ message: ReaderBridgeMessage) async throws -> [String: Any]? {
         guard !closed else { throw CancellationError() }
         switch message.type {
         case .ready:
@@ -392,6 +403,13 @@ public final class ReaderModel {
             if let next = message.pageState {
                 let previousScroll = pageState?.scroll
                 pageState = next
+                if next.scroll.blockStart <= (positionSourceLength ?? source.utf16.count) {
+                    latestScroll = next.scroll
+                    if requestedScroll == next.scroll {
+                        lastRestore = .block
+                        requestedScroll = nil
+                    }
+                }
                 lock = capturedSource ? .reading : next.lock
                 showingSource = next.overlay == "source"
                 findVisible = next.findOpen
@@ -479,10 +497,21 @@ public final class ReaderModel {
             updateAssets()
             return reviewPayload(summary, html: review.html)
         case "details":
-            imageEvidence = await inspectImages()
-            let rows = Provenance.details(snapshot, rendered: rendered, latestRevision: latestRevision, origin: launchOrigin, imageEvidence: imageEvidence)
-            return ["rows": rows.map { ["label": $0.0, "value": $0.1] },
-                    "images": imageEvidence.enumerated().map { ["index": $0.offset, "state": $0.element.displayed ? "displayed" : "unavailable", "reason": $0.element.failure ?? ""] }]
+            let rows = Provenance.details(snapshot, rendered: rendered, latestRevision: latestRevision, origin: launchOrigin)
+            let images: [[String: Any]] = (rendered?.images ?? []).enumerated().map { index, image in
+                var row: [String: Any] = ["index": index]
+                switch image.source {
+                case .local(let token):
+                    let observation = assets.evidence(token)
+                    row["state"] = observation.failure == nil ? (observation.served ? "read" : "admitted") : "unavailable"
+                    if let failure = observation.failure { row["reason"] = failure }
+                case .embedded: row["state"] = "embedded"
+                case .external: row["state"] = "external"
+                case .unavailable(let reason): row["state"] = "unavailable"; row["reason"] = MarkdownRenderer.reasonLabel(reason)
+                }
+                return row
+            }
+            return ["rows": rows.map { ["label": $0.0, "value": $0.1] }, "images": images]
         case "image":
             guard let index = fields["index"] as? Int else { throw ReaderBridgeError.invalid("index") }
             await prepareImage(index)
@@ -652,7 +681,6 @@ public final class ReaderModel {
         guard !closed else { return }
         generation += 1
         supersedeDisplay()
-        imageInspectionTask?.cancel()
         let token = generation
         loadPending = true
         startWatching()
@@ -709,19 +737,15 @@ public final class ReaderModel {
         case .success(let prepared):
             if automatic, await interacting() { return }
             let interaction = interactionGeneration
-            if case .current = restore { position = await capturePosition() }
+            if case .current = restore { position = cachedReadingPosition }
             if automatic, await interacting() { return }
             guard token == generation, !closed else { return }
             if automatic, interaction != interactionGeneration { return }
-            let previousRevision = snapshot?.revision
             guard await install(prepared, position: position, token: token, started: started) else {
                 if automatic, token == generation, failure != nil { failedRevision = revision }
                 return
             }
             if automatic { failedRevision = nil }
-            if case .current = restore, previousRevision != nil, previousRevision != prepared.snapshot.revision {
-                reportRestore()
-            }
         }
     }
 
@@ -757,7 +781,6 @@ public final class ReaderModel {
             fail("The page could not be shown: \(error.localizedDescription)")
             if snapshot != nil {
                 try? await sendDocument(source: source, generation: sourceGeneration)
-                if let position { lastRestore = await restorePosition(position) }
             }
             return false
         }
@@ -777,12 +800,7 @@ public final class ReaderModel {
             update = nil
         }
         imageEvidence = []
-        jumpHistory.removeAll()
-        activeSection = nil
         phase = .ready
-        lastRestore = position.map { _ in .none } ?? .none
-        if !showingSource, let position { lastRestore = await restorePosition(position) }
-        await updateActiveSection()
         timings = ReaderTimings(
             readMilliseconds: prepared.readMilliseconds,
             renderMilliseconds: prepared.renderMilliseconds,
@@ -792,27 +810,12 @@ public final class ReaderModel {
         if !isDraft { state.noteOpened(reference, title: Provenance.displayTitle(prepared.snapshot, rendered: prepared.rendered)) }
         readerLog.notice("rendered \(self.reference.key, privacy: .public) revision=\(prepared.snapshot.revision.map(String.init) ?? "-", privacy: .public) latest=\(prepared.snapshot.latestRevision.map(String.init) ?? "-", privacy: .public) update=\(self.update == nil ? "none" : "available", privacy: .public) restore=\(self.lastRestore.rawValue, privacy: .public) totalMs=\(Int(self.timings?.totalMilliseconds ?? 0), privacy: .public)")
         await savePosition()
-        imageInspectionTask = Task { [weak self] in
-            guard let self, token == self.generation, !self.closed else { return }
-            await self.imageInspectionGate?()
-            guard token == self.generation, !self.closed, !Task.isCancelled else { return }
-            let evidence = await self.inspectImages()
-            guard token == self.generation, !self.closed, !Task.isCancelled else { return }
-            self.imageEvidence = evidence
-        }
         return true
-    }
-
-    private func reportRestore() {
-        switch lastRestore {
-        case .block: post("Showing revision \(snapshot?.revision ?? 0) at the same place.", kind: .info)
-        case .anchor: post("The paragraph you were reading changed. Showing the start of its section.", kind: .warning)
-        case .ratio, .none: post("Your position was not found in this revision. Showing the nearest place by length.", kind: .warning)
-        }
     }
 
     /// Commits a document bridge delivery only after the application page accepts it.
     func display(envelope: [String: Any]) async throws {
+        preparePositionDelivery(envelope)
         supersedeDisplay()
         let wait = DisplayWait()
         displayWait = wait
@@ -838,7 +841,6 @@ public final class ReaderModel {
     func recoverContentProcess() async {
         guard !closed, snapshot != nil else { return }
         readerLog.notice("web content process ended; reloading \(self.reference.key, privacy: .public)")
-        let position = state.position(for: reference)
         do {
             try await page.reload()
             try await sendDocument(source: source, generation: sourceGeneration)
@@ -848,7 +850,6 @@ public final class ReaderModel {
             post("The page could not be shown: \(error.localizedDescription)", kind: .warning)
             return
         }
-        if let position { lastRestore = await restorePosition(position) }
         recoveries += 1
         post("The page stopped unexpectedly and was reloaded.", kind: .info)
     }
@@ -895,7 +896,6 @@ public final class ReaderModel {
             guard !Task.isCancelled, let self, !self.closed else { return }
             self.scrolling = false
             await self.savePosition()
-            await self.updateActiveSection()
             guard !Task.isCancelled, !self.closed else { return }
             self.positionTask = nil
             if self.followsNow, await !self.interacting() {
@@ -906,76 +906,16 @@ public final class ReaderModel {
     }
 
     func savePosition(final: Bool = false) async {
-        guard !isDraft else { return }
-        let token = generation
-        guard (!closed || final), phase == .ready, !showingSource,
-              let position = await capturePosition(), token == generation, (!closed || final)
-        else { return }
+        guard !isDraft, !closed || final, phase == .ready, let position = cachedReadingPosition else { return }
         state.setPosition(position, for: reference)
     }
 
-    func capturePosition() async -> ReadingPosition? {
-        guard rendered != nil, !showingSource else { return nil }
-        guard let value = try? await page.callJavaScript(PageScript.capturePosition, contentWorld: PageScript.world) as? [String: Any] else {
-            return nil
-        }
-        return ReadingPosition(
-            blockKey: value["key"] as? String,
-            fraction: (value["fraction"] as? Double) ?? 0,
-            anchor: value["anchor"] as? String,
-            ratio: (value["ratio"] as? Double) ?? 0,
-            revision: snapshot?.revision,
-            blockStart: value["blockStart"] as? Int,
-            offsetY: value["offsetY"] as? Double
-        )
-    }
-
-    func restorePosition(_ position: ReadingPosition) async -> PositionRestore {
-        let arguments: [String: Any] = [
-            "key": position.blockKey ?? "",
-            "fraction": position.fraction,
-            "anchor": position.anchor ?? "",
-            "ratio": position.ratio,
-        ]
-        let result = try? await page.callJavaScript(PageScript.restorePosition, arguments: arguments, contentWorld: PageScript.world) as? String
-        return result.flatMap(PositionRestore.init(rawValue:)) ?? .none
+    var cachedReadingPosition: ReadingPosition? {
+        guard let latestScroll else { return nil }
+        return ReadingPosition(blockStart: latestScroll.blockStart, offsetY: latestScroll.offsetY, revision: snapshot?.revision)
     }
 
     // MARK: - Reading actions
-
-    public var canGoBack: Bool { !showingSource && !jumpHistory.isEmpty }
-
-    public func scrollTo(anchor: String) async {
-        navigationGeneration += 1
-        if showingSource { await toggleSource() }
-        guard !showingSource else { return }
-        let position = await capturePosition()
-        let moved = (try? await page.callJavaScript(PageScript.scrollToAnchor, arguments: ["anchor": anchor], contentWorld: PageScript.world) as? Bool) ?? false
-        guard moved else { return }
-        if let position {
-            jumpHistory.append(position)
-            if jumpHistory.count > 20 { jumpHistory.removeFirst(jumpHistory.count - 20) }
-        }
-        await updateActiveSection()
-        scrolled()
-    }
-
-    public func goBack() async {
-        guard canGoBack, let position = jumpHistory.popLast() else { return }
-        navigationGeneration += 1
-        lastRestore = await restorePosition(position)
-        await updateActiveSection()
-        scrolled()
-    }
-
-    func updateActiveSection() async {
-        guard !showingSource else { activeSection = nil; return }
-        let navigation = navigationGeneration
-        let document = generation
-        let section = try? await page.callJavaScript(PageScript.activeSection, contentWorld: PageScript.world) as? String
-        guard navigation == navigationGeneration, document == generation, !showingSource else { return }
-        activeSection = section
-    }
 
     public func find(backwards: Bool = false) async {
         let query = findQuery
@@ -987,21 +927,16 @@ public final class ReaderModel {
         if backwards { await sendCommand("findPrevious") }
     }
 
-    public func selectedText() async -> String {
+    /// Check-only access to the page's actual DOM selection.
+    package func selectedText() async -> String {
         (try? await page.callJavaScript(PageScript.selectionText, contentWorld: PageScript.world) as? String) ?? ""
     }
 
     /// A bounded display quote, never a source range. Nil means the selection exceeds the bound.
     public func annotationSelection() async -> String? {
         guard phase == .ready, pageState?.overlay == nil else { return "" }
-        let digest = snapshot?.digest, draft = draftGeneration, token = generation
-        do {
-            let value = try await page.callJavaScript("const text = String(window.getSelection()); return text.length > 8192 ? null : text;", contentWorld: PageScript.world)
-            guard generation == token, phase == .ready, snapshot?.digest == digest, draftGeneration == draft,
-                  pageState?.overlay == nil else { return "" }
-            guard let text = value as? String, text.utf8.count <= 8192 else { return nil }
-            return text
-        } catch { return "" }
+        let text = pageState?.selection?.text ?? ""
+        return text.utf8.count <= 8192 ? text : nil
     }
 
     /// Whether the reader is in the middle of something that a page replacement would undo: a
@@ -1011,8 +946,7 @@ public final class ReaderModel {
         if lock == .writing && pageState?.activeBlock != nil { return true }
         if pageState?.hasSelection == true || pageState?.findOpen == true || pageState?.overlay != nil { return true }
         if showingSource || findVisible || scrolling || review.preparing != nil { return true }
-        let selection = await selectedText()
-        return showingSource || findVisible || scrolling || review.preparing != nil || !selection.isEmpty
+        return false
     }
 
     public func showFind() {
@@ -1143,7 +1077,6 @@ public final class ReaderModel {
         monitorTask?.cancel()
         review.close()
         inspection.close()
-        imageInspectionTask?.cancel()
         await savePosition(final: true)
         state.saveNow()
         page.close()
@@ -1171,7 +1104,7 @@ extension ReaderModel {
     package var preparationsStartedForCheck: Int { preparations.started }
 
     package func capturePositionForCheck() async -> ReadingPosition? {
-        await capturePosition()
+        cachedReadingPosition
     }
 }
 
@@ -1187,9 +1120,7 @@ extension ReaderModel {
         case .blocked(let url):
             let scheme = url?.scheme ?? "this"
             post("The reader does not open \(scheme) links.", kind: .info)
-        case .sameDocument(let anchor):
-            Task { await scrollTo(anchor: anchor) }
-        case .documentLoad:
+        case .sameDocument, .documentLoad:
             break
         }
     }
