@@ -26,6 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -69,6 +70,8 @@ struct Verification {
                 await run("document-script-inert-under-csp") { await context.contentScript(keep: &keep) }
                 await run("reading-lock-blocks-edit") { await context.readingLock(keep: &keep) }
                 await run("bridge-typing-exact-line-endings") { await context.typing(keep: &keep) }
+                await run("published-writing-undo-matches-source") { await context.publishedWritingUndo(keep: &keep) }
+                await run("escape-layers-notices-and-focus") { await context.escapeLayers(keep: &keep) }
                 await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
                 await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
                 await run("image-inspection-deadline") { await context.imageInspectionDeadline(keep: &keep) }
@@ -406,6 +409,116 @@ struct Context {
             """) as? Bool == true
             let exact = Data(model.source.utf8) == Data(source.utf8)
             return .init(name: name, pass: noEditor && exact, detail: "Reading has no block editor: \(noEditor); source unchanged: \(exact)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    /// Writing on a published document in a pane surface: rapid edits, then the bar's Undo.
+    /// The rendered block must show the source the mirror and store hold, with no failure notice.
+    func publishedWritingUndo(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "published-writing-undo-matches-source"
+        do {
+            let id = VerifyStore.newId()
+            let original = "# Published\n\nThe status waits for evidence from real use.\n\nA closing paragraph.\n"
+            try store.write(id, revision: 1, source: original)
+            let state = ReadingStateStore(directory: nil)
+            let model = ReaderModel(reference: store.reference(id), platform: CheckRunner.platform(), state: state)
+            let surface = ReaderSurface(model: model, state: state, chrome: "pane",
+                                        draftDirectory: workspace.appendingPathComponent("published-undo-drafts"))
+            defer { withExtendedLifetime(surface) {} }
+            keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            await model.sendCommand("toggleLock", args: ["lock": "writing"])
+            let typed = await js(model, """
+            const block = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.includes('evidence'));
+            if (!block) return false;
+            const rect = block.getBoundingClientRect();
+            const point = { bubbles: true, cancelable: true, button: 0, clientX: rect.left + 4, clientY: rect.top + rect.height / 2 };
+            block.dispatchEvent(new PointerEvent('pointerdown', { ...point, buttons: 1, pointerType: 'mouse', isPrimary: true }));
+            block.dispatchEvent(new PointerEvent('pointerup', { ...point, pointerType: 'mouse', isPrimary: true }));
+            block.dispatchEvent(new MouseEvent('click', point));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            const editor = document.querySelector('[data-role="block-editor"]');
+            if (!editor) return false;
+            editor.focus();
+            const range = document.createRange(); range.selectNodeContents(editor); range.collapse(false);
+            getSelection().removeAllRanges(); getSelection().addRange(range);
+            for (const text of ['Z', 'Z', 'Q']) {
+              document.execCommand('insertText', false, text);
+              await new Promise(resolve => setTimeout(resolve, 5));
+            }
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            return true;
+            """) as? Bool == true
+            let edited = original.replacingOccurrences(of: "from real use.", with: "from real use.ZZQ")
+            let mirrored = await wait(seconds: 5) { Data(model.source.utf8) == Data(edited.utf8) }
+            let undoReady = await wait(seconds: 3) {
+                await js(model, "const b = document.getElementById('b-undo'); return !!b && !b.disabled;") as? Bool == true
+            }
+            let undoState = await js(model, "const b = document.getElementById('b-undo'); return b ? `disabled ${b.disabled}, label ${b.getAttribute('aria-label')}, editor ${!!document.querySelector('[data-role=\"block-editor\"]')}` : 'missing';") as? String ?? "unavailable"
+            var undone = false
+            if undoReady { undone = await js(model, "document.getElementById('b-undo').click(); return true;") as? Bool == true }
+            let restored = await wait(seconds: 5) { Data(model.source.utf8) == Data(original.utf8) }
+            let shown = await wait(seconds: 5) {
+                await js(model, "const b = [...document.querySelectorAll('[data-role=\"document\"] [data-block]')].find(b => b.textContent.includes('evidence')); return b ? b.textContent.trim() : '';") as? String
+                    == "The status waits for evidence from real use."
+            }
+            let notices = await js(model, "return [...document.querySelectorAll('[data-role=\"notice\"], .notice')].map(n => n.textContent.trim()).filter(Boolean).join(' | ');") as? String ?? "unavailable"
+            let failureNotice = notices.contains("did not complete") || notices.contains("ReaderBridgeError")
+            let pass = typed && mirrored && undone && restored && shown && !failureNotice
+            await surface.waitForPendingChanges()
+            await model.close()
+            return .init(name: name, pass: pass, detail: "typed \(typed); mirror after edits \(mirrored); bar Undo \(undone) (\(undoState)); mirror restored \(restored); rendered block matches restored source \(shown); notices '\(notices)'")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    /// Escape closes the topmost layer first (a menu, then the open block) and only then gives
+    /// the keyboard back; repeated notices collapse into one with a count, and at most three show.
+    func escapeLayers(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "escape-layers-notices-and-focus"
+        do {
+            let file = workspace.appendingPathComponent("escape.md")
+            try Data("# Escape\n\nA paragraph to open.\n".utf8).write(to: file)
+            let state = ReadingStateStore(directory: nil)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: state)
+            let surface = ReaderSurface(model: model, state: state, chrome: "pane",
+                                        draftDirectory: workspace.appendingPathComponent("escape-drafts"))
+            var returned = 0
+            surface.onReturnFocus = { returned += 1 }
+            defer { withExtendedLifetime(surface) {} }
+            keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            await model.sendCommand("toggleLock", args: ["lock": "writing"])
+            let layered = await js(model, """
+            const block = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.includes('A paragraph'));
+            if (!block) return false;
+            const rect = block.getBoundingClientRect();
+            const point = { bubbles: true, cancelable: true, button: 0, clientX: rect.left + 4, clientY: rect.top + rect.height / 2 };
+            block.dispatchEvent(new PointerEvent('pointerdown', { ...point, buttons: 1, pointerType: 'mouse', isPrimary: true }));
+            block.dispatchEvent(new PointerEvent('pointerup', { ...point, pointerType: 'mouse', isPrimary: true }));
+            block.dispatchEvent(new MouseEvent('click', point));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            document.getElementById('activity').showPopover();
+            return !!document.querySelector('[data-role="block-editor"]') && document.getElementById('activity').matches(':popover-open');
+            """) as? Bool == true
+            let escape = "document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await new Promise(r => setTimeout(r, 0)); return { menu: document.getElementById('activity').matches(':popover-open'), block: !!document.querySelector('[data-role=\"block-editor\"]') };"
+            let first = await js(model, escape) as? [String: Any]
+            let second = await js(model, escape) as? [String: Any]
+            _ = await js(model, escape)
+            let returnedOnce = await wait(seconds: 3) { returned == 1 }
+            let order = first?["menu"] as? Bool == false && first?["block"] as? Bool == true && second?["block"] as? Bool == false
+            for _ in 0..<3 { _ = try await model.sendEnvelope(["v": 1, "type": "notice", "tone": "warn", "text": "Repeated notice", "actions": []]) }
+            let repeated = await js(model, "return [...document.querySelectorAll('[data-role=\"notice\"]')].map(n => n.textContent.trim());") as? [String] ?? []
+            for index in 1...4 { _ = try await model.sendEnvelope(["v": 1, "type": "notice", "tone": "info", "text": "Notice \(index)", "actions": []]) }
+            _ = try await model.sendEnvelope(["v": 1, "type": "notice", "tone": "warn", "text": "Repeated notice", "actions": []])
+            let notices = await js(model, "return [...document.querySelectorAll('[data-role=\"notice\"]')].map(n => n.textContent.trim());") as? [String] ?? []
+            let collapsed = repeated.count == 1 && repeated.first?.contains("×3") == true
+                && notices.count == 3 && notices.filter { $0.contains("Repeated notice") }.count == 1
+                && notices.last?.contains("Repeated notice") == true
+            await model.close()
+            return .init(name: name, pass: layered && order && returnedOnce && collapsed,
+                         detail: "menu and block open \(layered); first Escape closed the menu only, second the block \(order); keyboard returned once after the third \(returnedOnce) (\(returned)); repeats \(repeated); notices \(notices)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
