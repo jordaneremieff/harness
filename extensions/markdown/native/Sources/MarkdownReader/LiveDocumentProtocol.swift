@@ -195,7 +195,7 @@ extension EditorWorkspace {
     private func heldResult() -> LiveResult {
         webHeldRefusal?()
         let range = pageHeld ?? NSRange(location: 0, length: 0)
-        return LiveResult(status: "busy", message: "The person is typing in this passage (UTF-16 \(range.location)–\(NSMaxRange(range))). Read again after a pause, or edit elsewhere.", reason: "held")
+        return LiveResult(status: "busy", message: "The person has this passage open for writing (UTF-16 \(range.location)–\(NSMaxRange(range))). Read again after they leave it, or edit elsewhere.", reason: "held")
     }
 
     func expireClaims(now: Date = Date()) {
@@ -308,7 +308,7 @@ extension EditorWorkspace {
             if reason == "held" {
                 pendingLiveEdits[operation] = nil
                 let held = range ?? pageHeld ?? NSRange(location: 0, length: 0)
-                return LiveResult(status: "busy", message: "The person is typing in this passage (UTF-16 \(held.location)–\(NSMaxRange(held))). Read again after a pause, or edit elsewhere.", reason: "held")
+                return LiveResult(status: "busy", message: "The person has this passage open for writing (UTF-16 \(held.location)–\(NSMaxRange(held))). Read again after they leave it, or edit elsewhere.", reason: "held")
             }
             if reason == "stale" { pendingLiveEdits[operation] = nil }
             return LiveResult(status: reason == "stale" ? "stale" : "uncertain", message: "The page refused the edit: " + reason)

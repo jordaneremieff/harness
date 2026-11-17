@@ -453,7 +453,7 @@ import ReaderFeature
         let held = await workspace.handleLive(request)
         #expect(held.status == "busy" && held.reason == "held")
         #expect(heldNotices == 1)
-        #expect(held.message?.contains("UTF-16 0–6") == true)
+        #expect(held.message?.contains("open for writing (UTF-16 0–6)") == true)
         #expect(document.text.source == "before after")
         workspace.pageHeld = nil
         workspace.webAgentApply = { _, _, _ in .refused(reason: "held", range: NSRange(location: 0, length: 6)) }

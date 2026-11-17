@@ -169,7 +169,7 @@ test("claims and releases forward only to a version 2 pane and preserve held out
 		assert.equal(bridge.list()[0].live, 2);
 		const claimId = randomUUID();
 		const results = [
-			{ status: "busy", message: "The person is typing in this passage (UTF-16 0–5). Read again after a pause, or edit elsewhere." },
+			{ status: "busy", message: "The person has this passage open for writing (UTF-16 0–5). Read again after they leave it, or edit elsewhere." },
 			{ status: "stale", message: "The base changed." },
 			{ status: "claimed", claimId, expiresAt: Date.now() + 90000 },
 		];
