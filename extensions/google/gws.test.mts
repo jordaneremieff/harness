@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { access, copyFile, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import lockfile from "proper-lockfile";
 import { ACCOUNT, createFake, errorCode, methodCalls } from "./fake-gws.test-support.mts";
 import { gwsArgv, SCOPES } from "./gws.ts";
 
@@ -69,6 +70,47 @@ test("a local operation does not require the subprocess environment or authentic
 		assert.equal(result.status, "ok");
 		assert.deepEqual(await fake.calls(), []);
 	} finally {
+		await fake.cleanup();
+	}
+});
+
+test("cancellation stops an account-lock wait without dispatch or a late held lock", async (t) => {
+	const fake = await createFake();
+	let release: (() => Promise<void>) | undefined;
+	let pending: ReturnType<typeof fake.runtime.run> | undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await fake.runtime.run({ local: true }, undefined, async () => ({ schemaVersion: 1, status: "ok" }));
+		const target = join(fake.configDir, "pi-extension", "lock-target");
+		release = await lockfile.lock(target, { realpath: false });
+		const controller = new AbortController();
+		const original = lockfile.lock;
+		t.mock.method(lockfile, "lock", (path: string, options?: lockfile.LockOptions) => {
+			const attempt = original(path, options);
+			controller.abort();
+			return attempt;
+		});
+		let handled = false;
+		pending = fake.runtime.run({ local: true }, controller.signal, async () => {
+			handled = true;
+			return { schemaVersion: 1, status: "ok" };
+		});
+		const result = await Promise.race([
+			pending,
+			new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), 500); }),
+		]);
+		assert.notEqual(result, "timeout", "cancellation must not wait for the account lock to become available");
+		assert.equal(typeof result === "object" && result.error?.code, "ABORTED");
+		assert.equal(handled, false);
+		assert.deepEqual(await fake.calls(), []);
+		await release();
+		release = undefined;
+		assert.equal(await lockfile.check(target, { realpath: false }), false);
+	} finally {
+		clearTimeout(timer);
+		t.mock.restoreAll();
+		await release?.();
+		await pending;
 		await fake.cleanup();
 	}
 });

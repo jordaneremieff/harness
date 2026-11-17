@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import lockfile from "proper-lockfile";
 import { ensureEmptyDotEnv, ensurePrivateDir } from "./files.ts";
 import { GWS_VERSION } from "./release.ts";
@@ -179,15 +180,19 @@ export function gwsArgv(service: string, path: string[], options: CallOptions = 
 	return argv;
 }
 
-async function acquireLock(target: string): Promise<() => Promise<void>> {
+async function acquireLock(target: string, signal?: AbortSignal): Promise<() => Promise<void>> {
 	try {
-		return await lockfile.lock(target, {
-			realpath: false,
-			stale: 30000,
-			update: 5000,
-			retries: { retries: 240, minTimeout: 50, maxTimeout: 250, factor: 1.2 },
-		});
+		for (let attempt = 0; ; attempt++) {
+			if (signal?.aborted) throw abortError();
+			try {
+				return await lockfile.lock(target, { realpath: false, stale: 30000, update: 5000, retries: 0 });
+			} catch (error) {
+				if (attempt >= 240) throw error;
+				await delay(Math.min(250, Math.round(50 * 1.2 ** attempt)), undefined, { signal });
+			}
+		}
 	} catch (error) {
+		if (signal?.aborted) throw abortError();
 		throw new GoogleError(
 			"LOCK_TIMEOUT",
 			`Could not acquire the Google account lock: ${error instanceof Error ? error.message : String(error)}`,
@@ -467,8 +472,9 @@ export class GoogleRuntime {
 		} catch (error) {
 			return errorResult(error);
 		}
-		const release = await acquireLock(prepared.lockTarget);
+		let release: (() => Promise<void>) | undefined;
 		try {
+			release = await acquireLock(prepared.lockTarget, signal);
 			if (signal?.aborted) throw abortError();
 			const connected = options.local
 				? { auth: { account: prepared.expectedAccount, scopes: [] }, call: noCall }
@@ -478,7 +484,7 @@ export class GoogleRuntime {
 			if (error instanceof GoogleError && AUTH_STATE_CODES.has(error.code)) this.authCache = undefined;
 			return errorResult(error);
 		} finally {
-			await release();
+			await release?.();
 		}
 	}
 
