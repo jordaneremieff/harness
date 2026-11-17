@@ -55,6 +55,7 @@ export const memorySearchOutputSchema = obj(
 		root: str({ maxLength: 1024 }),
 		query: union([query(), arr(query(), { minItems: 1, maxItems: 3 }), nul()]),
 		includeRetired: bool(),
+		detail: bool(),
 		excludedRetired: count(),
 		pageOffset: count(),
 		countScope: lit("source-window"),
@@ -127,38 +128,43 @@ export const memorySearchOutputSchema = obj(
 						},
 						{ open: false },
 					),
-					freshness: obj(
-						{
-							evaluatedOn: date(),
-							verified: union([bool(), nul()]),
-							verifiedDate: nullableDate(),
-							policy: union([
-								lit("on-change"),
-								lit("before-use"),
-								lit("unclassified"),
-								lit("unknown"),
-							]),
-							reviewAfter: nullableDate(),
-							deadline: union([
-								lit("due"),
-								lit("not-due"),
-								lit("unscheduled"),
-								lit("unknown"),
-							]),
-							concern,
-							lastReview: union([
-								obj(
-									{ date: date(), digest: digest(), sources: str({ maxLength: 1500 }) },
-									{
-										open: false,
-									},
-								),
-								nul(),
-							]),
-							retirement: concern,
-							problems: arr(str()),
-						},
-						{ open: false },
+					freshness: opt(
+						union([
+							obj(
+								{
+									evaluatedOn: date(),
+									verified: union([bool(), nul()]),
+									verifiedDate: nullableDate(),
+									policy: union([lit("on-change"), lit("before-use"), lit("unclassified"), lit("unknown")]),
+									reviewAfter: nullableDate(),
+									deadline: union([lit("due"), lit("not-due"), lit("unscheduled"), lit("unknown")]),
+									concern,
+									lastReview: union([
+										obj(
+											{ date: date(), digest: digest(), sources: str({ maxLength: 1500 }) },
+											{
+												open: false,
+											},
+										),
+										nul(),
+									]),
+									retirement: concern,
+									problems: arr(str()),
+								},
+								{ open: false },
+							),
+							obj(
+								{
+									evaluatedOn: opt(date()),
+									deadline: opt(lit("due")),
+									reviewAfter: opt(date()),
+									concern: opt(concern),
+									retirement: opt(concern),
+									problems: opt(arr(str(), { minItems: 1 })),
+								},
+								{ open: false },
+							),
+						]),
 					),
 					tags: cue(),
 					status: cue(),
@@ -167,7 +173,7 @@ export const memorySearchOutputSchema = obj(
 					cueProblem: cue(),
 					digest: opt(digest()),
 					rank: opt(int({ minimum: 1 })),
-					matched: opt(matched),
+					matched: opt(union([matched, arr(str(), { maxItems: 16 })])),
 					missing: opt(missing),
 					sourceMatch: opt(
 						union([

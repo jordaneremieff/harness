@@ -118,7 +118,7 @@ empty pages too.** There is no separate numeric result-page workflow. A cursor
 binds the original normalized query, retired-note filter, corpus path, complete filename
 inventory, and source evidence while paging within one window. A changed query, filter, inventory, or
 same-window source refuses instead of silently skipping or duplicating results.
-Changing only `limit` is permitted. Earlier windows are not reread, so a completed
+Changing `limit` or `detail` is permitted. Earlier windows are not reread, so a completed
 cursor chain establishes traversal coverage, not a frozen whole-corpus snapshot.
 
 Unquoted words match exact lowercase Unicode tokens. Common function words are
@@ -138,7 +138,9 @@ their best per-formulation rank first. Ties use reciprocal rank fusion,
 among the first three results even when another formulation matches many weakly
 related notes. The score stays internal. Ordinal rank describes retrieval order,
 never truth, confidence, freshness, or a comparable value across calls.
-Per-formulation matched and missing terms explain the evidence. The calling agent
+Compact results report matched term strings from the best-ranked formulation;
+ties use formulation order. The explicit `detail: true` option returns full
+per-formulation ranks, matched fields, and missing terms. The calling agent
 supplies reformulations; the extension makes no model calls.
 
 When title metadata is absent, browse cues use the first level 1–6 ATX heading
@@ -149,14 +151,28 @@ ambiguous frontmatter. The complete bounded header must parse at its physical
 closing delimiter. Otherwise raw cues remain visible with a qualification, metadata
 receives no title weight, and the prompt index counts status as unknown. Unicode
 line and paragraph separators do not create Markdown delimiter lines.
-Each note includes parsed `lifecycle` and `freshness` evidence from the same source.
+Each note includes parsed `lifecycle` evidence from the same source, including
+status, a replacement pointer, and any lifecycle problem. Default results keep
+slug, title, tags, outgoing supersession cues, and cue problems; query hits also
+keep their digest, rank, source excerpt, and compact matched terms. Duplicate raw
+status and replacement cues appear only with `detail: true`.
+
+Default `freshness` appears only for material facts: an unresolved `concern`, a
+`due` deadline with `reviewAfter` and `evaluatedOn`, a `retirement` record, or
+nonempty `problems`. The field is absent when none of these facts applies. Absence
+is not a declaration of freshness. `detail: true` returns the complete existing
+freshness record and match diagnostics for each note, for browse and query calls.
+The page echoes `detail`, which defaults to false. Coverage and corpus term
+frequencies remain unchanged. Use `memory_read` for full freshness and source
+qualifications before relying on a selected note.
+
 Prefer applicable active sources and inspect supersession pointers before applying
 a claim. Active status does not establish truth. Digests identify exact source bytes.
 Each matched note has at most one source passage. A body match takes priority over
 a frontmatter-only match for both string and array queries. For fused results, the
 best-ranked matching formulation selects the passage within that category.
-Per-formulation records retain rank and matched/missing terms without repeating
-passages. Selected excerpts retain half-open Unicode code-point offsets in original source.
+Detailed per-formulation records retain rank and matched/missing terms without
+repeating passages. Selected excerpts retain half-open Unicode code-point offsets in original source.
 They are discovery evidence, not complete support. Slug-only hits have no source
 passage. A later qualification can lie outside the selected excerpt.
 
@@ -186,8 +202,8 @@ page as `structuredContent`. Native codemode scripts receive an object, not a JS
 string. Model-facing text and native-card `details` retain the existing page.
 No scanner buffers, ranking scores, store handles, or additional source fields
 enter the structured result. Its serialized page keeps the same 48 KiB bound.
-Browse notes omit `digest` and `rank`; query hits include them. Raw cues remain
-strings, separate from parsed `lifecycle` and `freshness`. Unavailable sources,
+Browse notes omit `digest` and `rank`; query hits include them. Retained raw cues
+remain strings, separate from parsed lifecycle and freshness facts. Unavailable sources,
 unknown metadata, and nullable `corpusEmpty` retain their existing meaning.
 Invalid requests, changed cursors, unavailable corpora, and cancellation still
 fail the call; codemode receives a rejected promise, not an empty success page.
@@ -203,7 +219,7 @@ for (let pageNumber = 0; pageNumber < 8; pageNumber++) {
   const page = await tools.memory_search({ query, limit: 5, ...(cursor ? { cursor } : {}) });
   candidates.push(...page.notes
     .filter(note => note.lifecycle.status === "active")
-    .map(note => ({ slug: note.slug, digest: note.digest, freshness: note.freshness })));
+    .map(note => ({ slug: note.slug, digest: note.digest, freshnessFacts: note.freshness ?? null })));
   coverage.push({ scan: page.scan, coverage: page.coverage });
   cursor = page.nextCursor;
   if (cursor === null) break;

@@ -165,6 +165,7 @@ test("registered jobs round-trip source evidence and serialize concurrent update
 		{},
 		{ query: "editor" },
 		{ query: ["editor choice", "durable preference"] },
+		{ query: ["editor choice", "durable preference"], detail: true },
 		{ query: "absenttoken" },
 	];
 	for (const args of requests) {
@@ -174,6 +175,16 @@ test("registered jobs round-trip source evidence and serialize concurrent update
 		assert.deepEqual(page.structuredContent, JSON.parse(page.content[0].text));
 		assert.ok(Buffer.byteLength(JSON.stringify(page.structuredContent)) + 1 <= 48 * 1024);
 		assert.deepEqual(Object.keys(page).sort(), ["content", "details", "structuredContent"]);
+		assert.equal(page.details.detail, args.detail ?? false);
+		const note = (page.details.notes as JsonObject[])[0];
+		if (note && args.detail === true) {
+			assert.ok(Array.isArray(note.formulations));
+			assert.equal((note.freshness as JsonObject).policy, "unclassified");
+		} else if (note) {
+			assert.equal(note.formulations, undefined);
+			assert.equal(note.freshness, undefined);
+			if (args.query) assert.ok((note.matched as unknown[]).every((term) => typeof term === "string"));
+		}
 	}
 	const structured = search.structuredContent;
 	assert.ok(structured);

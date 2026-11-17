@@ -263,6 +263,7 @@ test("loaded tools preserve a note through correction, review, retirement, react
 				code: `
 const page = await tools.memory_search({ query: ["api_key configuration", "environment references"] });
 const browse = await tools.memory_search({});
+const detailed = await tools.memory_search({ query: ["api_key configuration", "environment references"], detail: true });
 let refused = false;
 try { await tools.memory_search({query: "configuration", cursor: "invalid"}); }
 catch (error) { refused = /cursor/.test(error.message); }
@@ -270,13 +271,14 @@ const sample = ALL_TOOLS.find(tool => tool.name === "memory_search").description
 return {
   type: typeof page,
   selected: page.notes.filter(note => note.lifecycle.status === "active").map(note => ({
-    slug: note.slug, digest: note.digest, policy: note.freshness.policy,
-    deadline: note.freshness.deadline, rank: note.rank, formulations: note.formulations.length
+    slug: note.slug, digest: note.digest, deadline: note.freshness.deadline,
+    rank: note.rank, matched: note.matched
   })),
+  detailed: { policy: detailed.notes[0].freshness.policy, formulations: detailed.notes[0].formulations.length },
   browseHasDigest: "digest" in browse.notes[0],
   scope: page.countScope, snapshot: page.coverage.frozenSnapshot,
   privateState: "details" in page || "sourceEvidence" in page.notes[0] || "analysis" in page.notes[0],
-  declared: sample.includes("digest?: string") && sample.includes("nextCursor:") && sample.includes("freshness:"),
+  declared: sample.includes("digest?: string") && sample.includes("nextCursor:") && sample.includes("freshness?:"),
   refused
 };`,
 			}),
@@ -284,8 +286,9 @@ return {
 		assert.deepEqual(composed, {
 			type: "object",
 			selected: [
-				{ slug: input.slug, digest: firstDigest, policy: "before-use", deadline: "due", rank: 1, formulations: 2 },
+				{ slug: input.slug, digest: firstDigest, deadline: "due", rank: 1, matched: ["api_key", "configuration"] },
 			],
+			detailed: { policy: "before-use", formulations: 2 },
 			browseHasDigest: false,
 			scope: "source-window",
 			snapshot: false,

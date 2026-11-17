@@ -307,6 +307,7 @@ function searchCall(args: unknown, theme: Theme, context: CallContext): Componen
 	const detail = [...qualifiers];
 	if (textField(fields.cursor)) detail.push("continuation");
 	if (fields.includeRetired === true) detail.push("includes retired");
+	if (fields.detail === true) detail.push("full evidence");
 	const limit = numberField(fields.limit);
 	if (limit !== null && limit > 0) detail.push(`limit ${limit}`);
 	else if (fields.query === undefined && context.argsComplete !== false) detail.push("byte-bounded cues");
@@ -424,8 +425,9 @@ function noteHeading(note: Record<string, unknown>, compact = false): string {
 function matchedTerms(value: unknown): string {
 	if (!Array.isArray(value)) return "";
 	return value
-		.map(record)
-		.map((match) => {
+		.map((value) => {
+			if (typeof value === "string") return textField(value) ?? "";
+			const match = record(value);
 			const term = textField(match.term);
 			const fields = stringList(match.fields);
 			return term ? `${term}${fields.length ? ` (${fields.join(", ")})` : ""}` : "";
@@ -705,14 +707,15 @@ function freshnessRecord(label: string, value: unknown): string[] {
 function freshnessEvidence(value: unknown): string[] {
 	const freshness = record(value);
 	if (Object.keys(freshness).length === 0) return [];
-	const lines = [
-		`Freshness evaluated on: ${textField(freshness.evaluatedOn) ?? "unknown"}`,
-		`Declared verified: ${typeof freshness.verified === "boolean" ? freshness.verified : "unknown"}`,
-		`Declared verification date: ${textField(freshness.verifiedDate) ?? "none or unknown"}`,
-		`Review policy: ${textField(freshness.policy) ?? "unknown"}`,
-		`Review deadline: ${textField(freshness.deadline) ?? "unknown"}`,
-		`Review after: ${textField(freshness.reviewAfter) ?? "none or unknown"}`,
-	];
+	const declarations = [
+		["evaluatedOn", `Freshness evaluated on: ${textField(freshness.evaluatedOn) ?? "unknown"}`],
+		["verified", `Declared verified: ${typeof freshness.verified === "boolean" ? freshness.verified : "unknown"}`],
+		["verifiedDate", `Declared verification date: ${textField(freshness.verifiedDate) ?? "none or unknown"}`],
+		["policy", `Review policy: ${textField(freshness.policy) ?? "unknown"}`],
+		["deadline", `Review deadline: ${textField(freshness.deadline) ?? "unknown"}`],
+		["reviewAfter", `Review after: ${textField(freshness.reviewAfter) ?? "none or unknown"}`],
+	] as const;
+	const lines: string[] = declarations.filter(([field]) => Object.hasOwn(freshness, field)).map(([, line]) => line);
 	lines.push(
 		...freshnessRecord("Unresolved concern", freshness.concern),
 		...freshnessRecord("Last review", freshness.lastReview),

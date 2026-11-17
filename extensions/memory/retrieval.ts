@@ -20,7 +20,7 @@ import { findMarkdownHeading, markdownHeadings } from "./headings.ts";
 import { findFrontmatterClose, memorySourceCache, type ParsedMemoryHeader } from "./source-cache.ts";
 import { memoryRoot, redactCredentials, SLUG } from "./store.ts";
 import { historyDirectory, revisionIdentity } from "./history.ts";
-import { sourceFreshness } from "./lifecycle.ts";
+import { sourceFreshness, type Freshness } from "./lifecycle.ts";
 
 const INVENTORY_CAP = 16384;
 const PROMPT_NOTE_CAP = 2048;
@@ -112,7 +112,7 @@ type SourceResult = { ok: true; buffer: Buffer } | SourceFailure;
 type DiscoveryResult = { ok: true; note: NoteCue } | SourceFailure;
 type PageSlice = { content: string; nextOffset: number; contentCodePoints: number; hasMore: boolean };
 
-export type SearchOptions = { query?: string | string[]; cursor?: string; limit?: number; includeRetired?: boolean };
+export type SearchOptions = { query?: string | string[]; cursor?: string; limit?: number; includeRetired?: boolean; detail?: boolean };
 export type ReadOptions = { slug: string; offset?: number; digest?: string; revision?: string };
 export type HistoryPlan = { capturedBefore: string; keepNewest: number };
 export type HistoryOptions = { slug: string; cursor?: string; limit?: number; plan?: HistoryPlan };
@@ -303,6 +303,40 @@ function toOutputNote(note: NoteCue): Record<string, unknown> {
 	}
 	if (note.metadataIssue !== undefined) output.cueProblem = note.metadataIssue;
 	return output;
+}
+
+function materialFreshness(freshness: Freshness): Partial<Freshness> | undefined {
+	const material: Partial<Freshness> = {};
+	if (freshness.deadline === "due")
+		Object.assign(material, { deadline: freshness.deadline, reviewAfter: freshness.reviewAfter, evaluatedOn: freshness.evaluatedOn });
+	if (freshness.concern) material.concern = freshness.concern;
+	if (freshness.retirement) material.retirement = freshness.retirement;
+	if (freshness.problems.length) material.problems = freshness.problems;
+	return Object.keys(material).length ? material : undefined;
+}
+
+type MatchSummary = { rank: number | null; matched: { term: string }[] };
+
+function matchedTerms(note: Record<string, unknown>): string[] | undefined {
+	if (Array.isArray(note.matched)) return note.matched.map((match) => match.term as string);
+	let best: MatchSummary | undefined;
+	for (const formulation of (note.formulations ?? []) as MatchSummary[]) {
+		if (formulation.rank !== null && (best === undefined || formulation.rank < (best.rank as number)))
+			best = formulation;
+	}
+	return best?.matched.map((match) => match.term);
+}
+
+function searchNoteOutput(note: Record<string, unknown>, detail: boolean): Record<string, unknown> {
+	if (detail) return note;
+	const compact: Record<string, unknown> = { slug: note.slug, title: note.title, lifecycle: note.lifecycle };
+	for (const key of ["tags", "supersedes", "cueProblem", "digest", "rank", "sourceMatch"])
+		if (Object.hasOwn(note, key)) compact[key] = note[key];
+	const freshness = materialFreshness(note.freshness as Freshness);
+	if (freshness) compact.freshness = freshness;
+	const matched = matchedTerms(note);
+	if (matched) compact.matched = matched;
+	return compact;
 }
 
 const STOP_WORDS = new Set(
@@ -1148,7 +1182,7 @@ function indexContinuation(cursor: Cursor, scan: Scan, nextPage: number, totalMa
 
 async function runIndex(
 	root: string,
-	args: { query: string | string[] | null; cursor?: string; limit: number; includeRetired: boolean },
+	args: { query: string | string[] | null; cursor?: string; limit: number; includeRetired: boolean; detail: boolean },
 	signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
 	const texts = args.query === null ? [] : [args.query].flat();
@@ -1181,6 +1215,7 @@ async function runIndex(
 		root: bounded(root, MAX_ROOT_CHARS),
 		query: args.query,
 		includeRetired: args.includeRetired,
+		detail: args.detail,
 		excludedRetired,
 		pageOffset: cursor.page,
 		countScope: "source-window",
@@ -1217,12 +1252,14 @@ async function runIndex(
 		matches,
 		cursor.page,
 		pageSize,
-		(note, rank) =>
+		(note, rank) => searchNoteOutput(
 			queries.length === 0
 				? toOutputNote(note)
 				: fused
 					? toFusedOutput(note, scan.notes, texts, queries, rankings, rank, signal)
 					: toSearchOutput(note, queries[0], rankings[0].idf, rank, signal),
+			args.detail,
+		),
 		signal,
 	);
 	const nextCursor = indexContinuation(cursor, scan, cursor.page + kept.length, totalMatches);
@@ -1380,7 +1417,9 @@ export async function searchMemory(
 ): Promise<Record<string, unknown>> {
 	try {
 		checkAbort(signal);
-		validateOptions(options, ["query", "cursor", "limit", "includeRetired"]);
+		validateOptions(options, ["query", "cursor", "limit", "includeRetired", "detail"]);
+		if (options.detail !== undefined && typeof options.detail !== "boolean")
+			throw new UsageError("detail must be a boolean");
 		if (options.includeRetired !== undefined && typeof options.includeRetired !== "boolean")
 			throw new UsageError("includeRetired must be a boolean");
 		const query = normalizeSearchQuery(options.query);
@@ -1394,7 +1433,7 @@ export async function searchMemory(
 		requireReadme(resolved);
 		const result = await runIndex(
 			resolved,
-			{ query, cursor: options.cursor, limit, includeRetired: options.includeRetired ?? false },
+			{ query, cursor: options.cursor, limit, includeRetired: options.includeRetired ?? false, detail: options.detail ?? false },
 			signal,
 		);
 		checkAbort(signal);

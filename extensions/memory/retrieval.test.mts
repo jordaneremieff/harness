@@ -18,6 +18,7 @@ import { after, test } from "node:test";
 import { compile } from "@earendil-works/pi-schema";
 import { memorySearchOutputSchema } from "./search-output.ts";
 import { newRevision } from "./history.ts";
+import { writeMemory } from "./store.ts";
 import {
 	MemoryRetrievalError,
 	memoryIndex,
@@ -93,6 +94,9 @@ async function search(root: string, options: SearchOptions = {}): Promise<Json> 
 	const result = boundedJson(await searchMemory(root, options));
 	assert.deepEqual(searchOutput.errors(result), []);
 	return result;
+}
+async function detailedSearch(root: string, options: SearchOptions = {}): Promise<Json> {
+	return search(root, { ...options, detail: true });
 }
 async function read(root: string, options: ReadOptions): Promise<Json> {
 	return boundedJson(await readMemory(root, options));
@@ -244,6 +248,99 @@ test("retired-only source windows preserve exact exclusions and continuation", a
 	}
 });
 
+test("compact search preserves discovery evidence in substantially smaller pages", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-18T00:00:00.000Z") });
+	const root = corpus({});
+	for (let index = 0; index < 10; index++) writeMemory(root, {
+		slug: `editor-choice-${index}`, title: `Editor choice ${index}`, tags: ["editor", "preference"],
+		summary: "Use the plain editor for editing.",
+		details: "The operator selected the plain editor. This editing preference concerns editor choice.",
+		sources: "Synthetic fixture, not operator knowledge.", verified: false, reviewPolicy: "on-change",
+	});
+	const query = ["editor choice", "editing preference", "plain editor"];
+	const compact = await search(root, { query });
+	const detailed = await detailedSearch(root, { query });
+	assert.equal(compact.detail, false);
+	assert.equal(detailed.detail, true);
+	assert.equal(compact.returned, 10);
+	assert.equal(detailed.returned, 10);
+	const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+	assert.ok(bytes(compact) <= bytes(detailed) * 0.6, `${bytes(compact)} compact bytes / ${bytes(detailed)} detailed bytes`);
+	assert.deepEqual(compact.search, detailed.search);
+	assert.deepEqual(compact.scan, detailed.scan);
+	for (const [index, note] of notes(compact).entries()) {
+		const full = notes(detailed)[index];
+		for (const key of ["slug", "title", "lifecycle", "tags", "supersedes", "digest", "rank", "sourceMatch"])
+			assert.deepEqual(note[key], full[key], key);
+		assert.equal(note.freshness, undefined);
+		assert.equal(note.formulations, undefined);
+		assert.equal(note.missing, undefined);
+		assert.equal(note.status, undefined);
+		assert.equal(note.superseded_by, undefined);
+		const best = array(full.formulations).map(object).filter((item) => item.rank !== null)
+			.sort((a, b) => number(a.rank) - number(b.rank))[0];
+		assert.deepEqual(note.matched, array(best.matched).map((item) => object(item).term));
+		assert.equal(array(full.formulations).length, query.length);
+		assert.deepEqual(full.freshness, (await read(root, { slug: string(note.slug), digest: string(note.digest) })).freshness);
+	}
+	for (const query of [undefined, "editor choice", ["editor choice"]]) {
+		const compact = notes(await search(root, { query }))[0];
+		const full = notes(await detailedSearch(root, { query }))[0];
+		assert.equal(compact.freshness, undefined);
+		assert.equal(object(full.freshness).policy, "on-change");
+		if (query) assert.deepEqual(compact.matched, ["editor", "choice"]);
+		else assert.equal(compact.matched, undefined);
+	}
+});
+
+test("compact search retains concerns, due dates, retirement and metadata problems", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-29T00:00:00.000Z") });
+	const concern = { date: "2026-09-28", reason: "One claim is disputed.", sources: "Synthetic conflicting source." };
+	const retirement = { date: "2026-09-27", reason: "The fact no longer applies.", sources: "Synthetic source." };
+	const root = corpus({
+		"README.md": README,
+		"plain.md": ACTIVE,
+		"concern.md": ACTIVE.replace("---\n\n#", `review_flag: ${JSON.stringify(concern)}\n---\n\n#`),
+		"due.md": ACTIVE.replace("---\n\n#", "review_after: 2026-09-29\n---\n\n#"),
+		"retired.md": ACTIVE.replace("status: active", "status: retired")
+			.replace("---\n\n#", `retirement: ${JSON.stringify(retirement)}\n---\n\n#`),
+		"superseded.md": OLD,
+		"invalid.md": ACTIVE.replace("verified: true", "verified: unknown"),
+	});
+	const expected = new Map<string, unknown>([
+		["plain", undefined], ["concern", { concern }], ["retired", { retirement }],
+		["due", { deadline: "due", reviewAfter: "2026-09-29", evaluatedOn: "2026-09-29" }],
+	]);
+	for (const slug of ["invalid", "superseded"])
+		expected.set(slug, { problems: object((await read(root, { slug })).freshness).problems });
+	for (const query of [undefined, "theme zebra-feature", ["theme", "zebra-feature"]]) {
+		const compact = notes(await search(root, { query, includeRetired: true }));
+		const detailed = notes(await detailedSearch(root, { query, includeRetired: true }));
+		for (const note of compact) {
+			const full = detailed.find((candidate) => candidate.slug === note.slug);
+			assert.ok(full);
+			assert.deepEqual(note.lifecycle, full.lifecycle);
+			assert.deepEqual(note.freshness, expected.get(string(note.slug)));
+		}
+		assert.equal(compact.length, expected.size);
+		assert.equal(object(compact.find((note) => note.slug === "retired")?.lifecycle).status, "retired");
+		assert.deepEqual(compact.find((note) => note.slug === "superseded")?.lifecycle,
+			{ status: "superseded", supersededBy: "prefer-dark-theme" });
+	}
+});
+
+test("a search cursor permits a different detail projection without changing result order", async () => {
+	const root = corpus({ "README.md": README, "a.md": ACTIVE, "b.md": ACTIVE });
+	const first = await search(root, { query: ["theme", "dark"], limit: 1 });
+	const next = await detailedSearch(root, { query: ["theme", "dark"], limit: 1, cursor: string(first.nextCursor) });
+	assert.equal(notes(first)[0].slug, "a");
+	assert.equal(notes(next)[0].slug, "b");
+	assert.equal(notes(next)[0].rank, 2);
+	assert.ok(Array.isArray(notes(next)[0].formulations));
+	assert.equal(next.nextCursor, null);
+	await rejects(searchMemory(root, { detail: "yes" as unknown as boolean }), "input", /detail must be a boolean/);
+});
+
 test("search and every note page expose source-specific freshness without renewing it", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-29T23:59:59.999Z") });
 	const concern = { date: "2026-09-28", reason: "One claim is disputed.", sources: "Conflicting synthetic source." };
@@ -272,7 +369,7 @@ test("search and every note page expose source-specific freshness without renewi
 	};
 	for (const page of pages) assert.deepEqual(page.freshness, expected);
 	for (const query of [undefined, "theme", ["theme", "qualified"]]) {
-		const item = notes(await search(root, { query }))[0];
+		const item = notes(await detailedSearch(root, { query }))[0];
 		assert.deepEqual(item.freshness, expected);
 		assert.deepEqual(item.lifecycle, { status: "active", supersededBy: null });
 		assert.equal(item.review_policy, undefined);
@@ -357,7 +454,7 @@ test("mutating returned freshness records cannot change later reads or searches"
 	const second = object((await read(root, { slug: "subject" })).freshness);
 	assert.deepEqual(second, expected);
 	assert.notEqual(second.concern, first.concern);
-	const found = object(notes(await search(root, { query: "theme" }))[0].freshness);
+	const found = object(notes(await detailedSearch(root, { query: "theme" }))[0].freshness);
 	assert.deepEqual(found, expected);
 	assert.notEqual(found.lastReview, first.lastReview);
 });
@@ -444,7 +541,7 @@ test("hard inventory overflow bounds traversal before source work and qualifies 
 	}
 });
 
-test("returns compact literal cues with heading and filename fallback", async () => {
+test("detailed browse returns literal cues with heading and filename fallback", async () => {
 	const root = corpus({
 		"README.md": README,
 		"prefer-dark-theme.md": ACTIVE,
@@ -452,7 +549,7 @@ test("returns compact literal cues with heading and filename fallback", async ()
 		"heading.md": "# Heading only\n",
 		"plain.md": "Body only",
 	});
-	const result = await search(root);
+	const result = await detailedSearch(root);
 	assert.equal(result.totalNotes, 4);
 	const bySlug = new Map(notes(result).map((note) => [note.slug, note]));
 	assert.equal(bySlug.has("README"), false);
@@ -479,7 +576,7 @@ test("returns compact literal cues with heading and filename fallback", async ()
 		assert.equal(object(freshness).policy, "unknown");
 	}
 	for (const query of [undefined]) {
-		const browse = await search(root, { query });
+		const browse = await detailedSearch(root, { query });
 		assert.equal(browse.search, undefined);
 		for (const note of notes(browse)) {
 			assert.equal(note.digest, undefined);
@@ -491,17 +588,17 @@ test("returns compact literal cues with heading and filename fallback", async ()
 test("searches full source, cues, and slugs while retaining superseded notes", async () => {
 	const root = corpus({ "README.md": README, "prefer-dark-theme.md": ACTIVE, "old-edge-setting.md": OLD });
 	for (const query of ["UI", "old-edge", "zebra-feature"])
-		assert.equal((await search(root, { query })).totalMatches, 1);
-	const body = notes(await search(root, { query: "zebra-feature" }))[0];
+		assert.equal((await detailedSearch(root, { query })).totalMatches, 1);
+	const body = notes(await detailedSearch(root, { query: "zebra-feature" }))[0];
 	assert.deepEqual(object(array(body.matched)[0]).fields, ["body"]);
 	assert.equal(body.status, "superseded");
-	const partial = notes(await search(root, { query: "dark interface" }));
+	const partial = notes(await detailedSearch(root, { query: "dark interface" }));
 	assert.equal(partial.length, 2);
 	assert.equal(partial[0].slug, "prefer-dark-theme");
 	assert.deepEqual(partial[0].missing, ["interface"]);
 	assert.deepEqual(object(array(partial[1].matched)[0]).fields, ["frontmatter"]);
-	assert.equal((await search(root, { query: '"UI.*"' })).totalMatches, 0);
-	const slug = notes(await search(root, { query: '"old-edge"' }))[0];
+	assert.equal((await detailedSearch(root, { query: '"UI.*"' })).totalMatches, 0);
+	const slug = notes(await detailedSearch(root, { query: '"old-edge"' }))[0];
 	assert.deepEqual(object(array(slug.matched)[0]).fields, ["slug"]);
 	assert.equal(slug.sourceMatch, null);
 	assert.match(string(slug.digest), /^[a-f0-9]{64}$/);
@@ -518,7 +615,7 @@ test("fenced comments retain body evidence and Unicode source positions without 
 		const fenced = `Intro 😀${newline}${open}${newline}# ${phrase}${newline}${close}${newline}`;
 		const prose = `Intro 😀${newline}${phrase}${newline}`;
 		const root = corpus({ "README.md": README, "fenced.md": fenced, "prose.md": prose });
-		const found = notes(await search(root, { query: "rotate cache" }));
+		const found = notes(await detailedSearch(root, { query: "rotate cache" }));
 		assert.deepEqual(
 			found.map((note) => note.slug),
 			["prose", "fenced"],
@@ -529,7 +626,7 @@ test("fenced comments retain body evidence and Unicode source positions without 
 		}
 		const heading = `${fenced}${newline}## ${phrase}${newline}`;
 		writeFileSync(join(root, "heading.md"), heading);
-		const result = notes(await search(root, { query: "rotate cache" })).find((note) => note.slug === "heading");
+		const result = notes(await detailedSearch(root, { query: "rotate cache" })).find((note) => note.slug === "heading");
 		assert.ok(result);
 		for (const match of array(result.matched)) assert.deepEqual(object(match).fields, ["body", "title"]);
 		const match = object(result.sourceMatch);
@@ -555,10 +652,10 @@ test("malformed headers expose qualified raw cues without metadata title weights
 	for (const suffix of ["other: [unclosed\n", "---suffix\ntitle: hidden-title\n"]) {
 		const source = `---\nstatus: active\n${suffix}---\nBody sentinel\n`;
 		const root = corpus({ "README.md": README, "subject.md": source });
-		const cue = notes(await search(root))[0];
+		const cue = notes(await detailedSearch(root))[0];
 		assert.equal(cue.status, "active");
 		assert.match(string(cue.cueProblem), /invalid or ambiguous frontmatter/);
-		const found = notes(await search(root, { query: suffix.startsWith("---") ? "hidden-title" : "active" }))[0];
+		const found = notes(await detailedSearch(root, { query: suffix.startsWith("---") ? "hidden-title" : "active" }))[0];
 		assert.match(string(found.cueProblem), /invalid or ambiguous frontmatter/);
 		for (const match of array(found.matched)) assert.deepEqual(object(match).fields, ["body"]);
 		const index = await memoryIndex(root);
@@ -891,7 +988,7 @@ test("reports duplicate, multiline, empty, clipped, and unclosed cue fields", as
 		"huge.md": `---\ntitle: Huge\nblob: ${"y".repeat(9000)}\n---\n# Huge\n`,
 		"empty.md": "---\ntitle:\nstatus:\n---\n# Heading\n",
 	});
-	const result = await search(root);
+	const result = await detailedSearch(root);
 	const bySlug = new Map(notes(result).map((note) => [note.slug, note]));
 	assert.equal(bySlug.get("duplicate")?.title, "A");
 	for (const [slug, pattern] of [
@@ -1223,7 +1320,7 @@ test("retains conflicting and superseded notes with literal lifecycle cues", asy
 			"---\ntitle: Previous\nstatus: superseded\nsuperseded_by: active\n---\n\nUse prose for a weekly report.\n",
 		"conflict.md": "---\ntitle: Other\nstatus: active\n---\n\nUse a table for a weekly report.\n",
 	});
-	const result = await search(root, { query: "weekly report" });
+	const result = await detailedSearch(root, { query: "weekly report" });
 	assert.equal(result.totalMatches, 3);
 	const bySlug = new Map(notes(result).map((note) => [note.slug, note]));
 	assert.deepEqual([...bySlug.keys()].sort(), ["active", "conflict", "old"]);
@@ -1273,7 +1370,7 @@ test("ranks multi-term evidence with ordinal ranks and explicit missing terms", 
 		"model.md": "# Other\n\nmodel model model model model\n",
 		"neither.md": "# Flowers\n\nA garden.\n",
 	});
-	const result = await search(root, { query: "model delegation unavailable" });
+	const result = await detailedSearch(root, { query: "model delegation unavailable" });
 	const found = notes(result);
 	assert.deepEqual(
 		found.map((note) => note.slug),
@@ -1381,7 +1478,7 @@ test("fused passages prefer body evidence and preserve original code-point locat
 		"body-rival.md": "# bodyneedle\nbodyneedle bodyneedle\n",
 		"metadata-only.md": "---\ntitle: uniquemetadata\n---\n\n# Subject\nflowers\n",
 	});
-	const result = await search(root, { query: ["metadata", "bodyneedle", "uniquemetadata"] });
+	const result = await detailedSearch(root, { query: ["metadata", "bodyneedle", "uniquemetadata"] });
 	const subject = notes(result).find((note) => note.slug === "subject");
 	assert.ok(subject);
 	const match = sourceLocation(subject, source, "bodyneedle");
@@ -1389,6 +1486,10 @@ test("fused passages prefer body evidence and preserve original code-point locat
 	assert.equal((JSON.stringify(subject).match(/"sourceMatch":/g) ?? []).length, 1);
 	const ranks = array(subject.formulations).map((item) => object(item).rank);
 	assert.ok(number(ranks[0]) < number(ranks[1]));
+	const compact = notes(await search(root, { query: ["metadata", "bodyneedle", "uniquemetadata"] }))
+		.find((note) => note.slug === "subject");
+	assert.deepEqual(compact?.matched, ["metadata"]);
+	assert.deepEqual(compact?.sourceMatch, subject.sourceMatch);
 	const metadata = notes(result).find((note) => note.slug === "metadata-only");
 	assert.ok(metadata);
 	sourceLocation(metadata, "---\ntitle: uniquemetadata\n---\n\n# Subject\nflowers\n", "uniquemetadata");
@@ -1441,7 +1542,7 @@ test("preserves best formulation rank, breaks ties with k=60 fusion and keeps in
 	};
 	const root = corpus(files);
 	const queries = ["alpha", "beta"];
-	const singles = await Promise.all(queries.map((query) => search(root, { query })));
+	const singles = await Promise.all(queries.map((query) => detailedSearch(root, { query })));
 	const expected = new Map<string, { best: number; score: number }>();
 	for (const single of singles)
 		for (const note of notes(single)) {
@@ -1450,7 +1551,7 @@ test("preserves best formulation rank, breaks ties with k=60 fusion and keeps in
 			const prior = expected.get(slug);
 			expected.set(slug, { best: Math.min(prior?.best ?? rank, rank), score: (prior?.score ?? 0) + 1 / (60 + rank) });
 		}
-	const result = await search(root, { query: queries });
+	const result = await detailedSearch(root, { query: queries });
 	assert.deepEqual(result.query, queries);
 	assert.equal(object(result.search).ranking, "best-rank-then-reciprocal-rank-fusion");
 	assert.equal(result.totalMatches, 3);
@@ -1559,7 +1660,7 @@ test("keeps phrase requirements local to each formulation", async () => {
 		"blue.md": "# Blue\nblue bird alpha\n",
 		"slug-only.md": "# Unrelated\nflower\n",
 	});
-	const result = await search(root, { query: ['"red bird" alpha', '"blue bird"', '"slug-only"'] });
+	const result = await detailedSearch(root, { query: ['"red bird" alpha', '"blue bird"', '"slug-only"'] });
 	assert.equal(result.totalMatches, 3);
 	const blue = notes(result).find((note) => note.slug === "blue");
 	assert.ok(blue);
@@ -1577,6 +1678,9 @@ test("keeps phrase requirements local to each formulation", async () => {
 	assert.equal(slug.sourceMatch, null);
 	assert.equal(object(array(slug.formulations)[2]).sourceMatch, undefined);
 	assert.equal(object(array(slug.formulations)[2]).rank, 1);
+	const compact = notes(await search(root, { query: ['"red bird" alpha', '"blue bird"', '"slug-only"'] }));
+	assert.deepEqual(compact.find((note) => note.slug === "blue")?.matched, ["blue bird"]);
+	assert.deepEqual(compact.find((note) => note.slug === "slug-only")?.matched, ["slug-only"]);
 	for (const query of [
 		[],
 		[" "],
@@ -1596,7 +1700,7 @@ test("preserves fusion order under bounded pagination and shared coverage gaps",
 			`${maximalNote(i)}\n${"\u0001".repeat(600)}needle alternate third${"\u0001".repeat(600)}`;
 	const root = corpus(files);
 	const query = ["needle", "alternate", "third"];
-	const pages = await drain(root, { query, limit: 25 });
+	const pages = await drain(root, { query, limit: 25, detail: true });
 	assert.ok(number(pages[0].returned) < 25);
 	const found = pages.flatMap(notes);
 	assert.equal(found.length, 30);
@@ -1610,8 +1714,8 @@ test("preserves fusion order under bounded pagination and shared coverage gaps",
 		assert.equal(object(page.search).unavailableNotes, 1);
 		assert.equal(object(page.scan).issueCount, 31);
 	}
-	const single = await search(root, { query: "needle" });
-	const one = await search(root, { query: ["needle"] });
+	const single = await detailedSearch(root, { query: "needle" });
+	const one = await detailedSearch(root, { query: ["needle"] });
 	assert.deepEqual(
 		notes(one).map((note) => note.slug),
 		notes(single).map((note) => note.slug),

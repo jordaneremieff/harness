@@ -294,6 +294,11 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 
 		const searchPage = JSON.parse(messageText(search)) as Record<string, unknown>;
 		assert.equal(searchPage.kind, "index");
+		assert.equal(searchPage.detail, false);
+		for (const note of searchPage.notes as Array<Record<string, unknown>>) {
+			assert.equal(note.formulations, undefined);
+			assert.equal((note.freshness as Record<string, unknown> | undefined)?.evaluatedOn, undefined);
+		}
 		assert.deepEqual(nativeDetails(search), searchPage);
 		assert.equal(Object.hasOwn(nativeDetails(search), "structuredContent"), false);
 
@@ -331,6 +336,16 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 			{ name: "memory_review", replay: "unsafe" },
 			{ name: "memory_retire", replay: "unsafe" },
 		]);
+		await drive("memory_search", { query: ["editor choice", "editor"], detail: true });
+		const detailedResult = (await toolResults(conversation)).at(-1)?.message;
+		assert.ok(detailedResult);
+		assert.equal(detailedResult.isError, false);
+		const detailedPage = JSON.parse(messageText(detailedResult)) as Record<string, unknown>;
+		assert.equal(detailedPage.detail, true);
+		assert.deepEqual(nativeDetails(detailedResult), detailedPage);
+		const detailedNote = (detailedPage.notes as Array<Record<string, unknown>>)[0];
+		assert.equal((detailedNote.freshness as Record<string, unknown>).evaluatedOn, new Date().toISOString().slice(0, 10));
+		assert.equal((detailedNote.formulations as unknown[]).length, 2);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 		if (previous === undefined) delete process.env.PI_MEMORY_DIR;

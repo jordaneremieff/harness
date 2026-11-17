@@ -333,6 +333,25 @@ describe("memory review and retirement cards", () => {
 });
 
 describe("memory_search result cards", () => {
+	it("renders compact matches and material freshness without inventing missing declarations", () => {
+		const details = { ...indexPage, detail: false, notes: [{
+			slug: "editor", title: "Editor", lifecycle: { status: "active", supersededBy: null },
+			matched: ["editor", "choice"], freshness: {
+				deadline: "due", reviewAfter: "2026-09-01", evaluatedOn: "2026-09-29",
+				concern: { date: "2026-09-28", reason: "One disputed claim.", sources: "Synthetic source." },
+				problems: ["Invalid review_policy"],
+			},
+		}] };
+		const shown = screen(renderResult("memory_search", result("t", details), expandedView, theme, okContext), 200);
+		assert.match(shown, /Matched: editor; choice/);
+		assert.match(shown, /Review deadline: due/);
+		assert.match(shown, /Unresolved concern reason: One disputed claim/);
+		assert.match(shown, /Freshness problem: Invalid review_policy/);
+		assert.doesNotMatch(shown, /Declared verified|Declared verification date|Review policy:|Formulation:/);
+		const preview = screen(renderResult("memory_search", result("t", details), collapsed, theme, okContext));
+		assert.match(preview, /review due/);
+		assert.match(screen(renderCall("memory_search", { detail: true }, theme, call)), /full evidence/);
+	});
 	const indexPage = {
 		ok: true,
 		kind: "index",
