@@ -80,11 +80,13 @@ function cleanUnit(chars: readonly string[], index: number): { piece: string; st
 /** Remove terminal controls while retaining ordinary newlines and tabs in external text. */
 export function cleanText(value: string, maxBytes = RESULT_MAX_BYTES): string {
 	let text = "";
+	let bytes = 0;
 	for (const char of value.replaceAll("\r\n", "\n").replaceAll("\r", "\n")) {
-		text += cleanChar(char);
-		if (Buffer.byteLength(text) > maxBytes) break;
+		const piece = cleanChar(char);
+		bytes += Buffer.byteLength(piece);
+		if (bytes > maxBytes) break;
+		text += piece;
 	}
-	while (Buffer.byteLength(text) > maxBytes) text = text.slice(0, -1);
 	return text;
 }
 

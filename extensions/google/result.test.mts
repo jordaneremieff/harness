@@ -4,7 +4,7 @@ import { boundOutput } from "@earendil-works/chord/output";
 import * as Durable from "@earendil-works/pi-durable";
 import { googleContribution } from "./durable.ts";
 import { createFake } from "./fake-gws.test-support.mts";
-import { RESULT_MAX_BYTES, sliceCleanText, toolResult } from "./result.ts";
+import { cleanText, RESULT_MAX_BYTES, sliceCleanText, toolResult } from "./result.ts";
 import { sheetsTools } from "./sheets.ts";
 import { invoke } from "./tools.ts";
 
@@ -61,6 +61,16 @@ test("an envelope over the byte bound reports one outcome", () => {
 	assert.equal(envelope.error?.retryable, true);
 	assert.deepEqual(large.details, { schemaVersion: 1, status: "error" });
 	assert.equal(large.isError, true);
+});
+
+test("cleaned text keeps whole characters and escape sequences at the byte bound", () => {
+	assert.equal(cleanText("😀x", 3), "");
+	assert.equal(cleanText("a😀x", 4), "a");
+	assert.equal(cleanText("a😀x", 5), "a😀");
+	assert.equal(cleanText("\u001bx", 5), "");
+	assert.equal(cleanText("\u001bx", 6), "\\u001b");
+	assert.equal(cleanText("a\r\nb\rc\u0000", 1024), "a\nb\nc�");
+	assert.equal(cleanText("x".repeat(65536)), "x".repeat(65536));
 });
 
 test("a cleaned slice continues exactly across a multibyte byte bound", () => {
