@@ -186,6 +186,26 @@ test("text settings use positive multipliers and ordered multiplier steps", () =
 	const incomplete = { ...doc, settings: { lock: "reading", textSize: 1 } };
 	assert.throws(() => api.bridge.native(incomplete));
 });
+test("jump commands and jump history state validate at the host boundary", () => {
+	const api = bridge();
+	for (const name of ["back", "forward"]) assert.equal(api.bridge.native({ v: 1, type: "command", name }).name, name);
+	const state = {
+		v: 1,
+		type: "state",
+		lock: "reading",
+		overlay: null,
+		canBack: false,
+		canForward: true,
+		canUndo: false,
+		canRedo: false,
+		hasSelection: false,
+		findOpen: false,
+		scroll: { blockStart: 0, offsetY: 0 },
+	};
+	assert.equal(api.bridge.page(state).canForward, true);
+	assert.throws(() => api.bridge.page({ ...state, canBack: "yes" }));
+	assert.throws(() => api.bridge.page({ ...state, canForward: undefined }));
+});
 test("block maps refuse malformed source ranges and block order", () => {
 	const api = bridge(),
 		message = documentMessage("abc");

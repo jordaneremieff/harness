@@ -219,6 +219,8 @@
 		"quote",
 	];
 	const pageCommands = [
+		"back",
+		"forward",
 		"undo",
 		"redo",
 		"find",
@@ -317,7 +319,8 @@
 		ensure(
 			one(m.lock, ["reading", "writing"]) && one(m.overlay, [null, "review", "image", "details", "source", "library"]),
 		);
-		for (const key of ["canUndo", "canRedo", "hasSelection", "findOpen"]) ensure(typeof m[key] === "boolean");
+		for (const key of ["canBack", "canForward", "canUndo", "canRedo", "hasSelection", "findOpen"])
+			ensure(typeof m[key] === "boolean");
 		if (m.held !== undefined) range(m.held);
 		if (m.activeBlock !== undefined) range(m.activeBlock);
 		const scroll = object(m.scroll);

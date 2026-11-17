@@ -60,6 +60,8 @@
 			epoch = 0,
 			lastState = -Infinity;
 		let extra: Record<string, unknown> = {
+			canBack: false,
+			canForward: false,
 			overlay: null,
 			hasSelection: false,
 			findOpen: false,
@@ -124,6 +126,8 @@
 				});
 				c.doc.listeners.add(changed);
 				extra = {
+					canBack: false,
+					canForward: false,
 					overlay: null,
 					hasSelection: false,
 					findOpen: false,
