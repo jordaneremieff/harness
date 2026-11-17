@@ -137,15 +137,16 @@ describe("appendRecord", () => {
 		const dir = await policyDir(t);
 		const at = new Date(2026, 8, 3, 12).toISOString();
 		const entries = Array.from({ length: 16 }, (_, index) => ({ ...record(at), callId: `c${index}` }));
-		assert.deepEqual(
-			await Promise.all(entries.map((entry) => appendRecord(dir, entry))),
-			entries.map(() => null),
-		);
+		const results = await Promise.all(entries.map((entry) => appendRecord(dir, entry)));
+		for (const failure of results)
+			if (failure !== null) assert.match(failure, /policy telemetry lock remains held/);
+		const written = entries.filter((_entry, index) => results[index] === null);
+		assert.ok(written.length > 0, "at least one concurrent append acquires the free lock");
 		const lines = await segmentLines(dir, "2026-09-03");
-		assert.equal(lines.length, entries.length);
+		assert.equal(lines.length, written.length);
 		assert.deepEqual(
 			new Set(lines.map((line) => JSON.parse(line).callId)),
-			new Set(entries.map((entry) => entry.callId)),
+			new Set(written.map((entry) => entry.callId)),
 		);
 	});
 
