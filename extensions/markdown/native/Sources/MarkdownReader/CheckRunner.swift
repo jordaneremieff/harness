@@ -52,8 +52,13 @@ struct CheckRunner {
     }
 
     /// WebKit needs an ordered window for layout, but a check must not activate the app.
-    static func offscreenWindow(page: ReaderWebPage, width: Double, height: Double = 1000) -> NSWindow {
-        let window = NSPanel(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    /// A panel that can become key, as the pane's window does, for checks that send real key events.
+    final class KeyPanel: NSPanel {
+        override var canBecomeKey: Bool { true }
+    }
+
+    static func offscreenWindow(page: ReaderWebPage, width: Double, height: Double = 1000, key: Bool = false) -> NSWindow {
+        let window = (key ? KeyPanel.self : NSPanel.self).init(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
         window.isExcludedFromWindowsMenu = true

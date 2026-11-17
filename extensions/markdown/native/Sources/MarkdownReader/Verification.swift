@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "find-close-clears-highlights",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "find-close-clears-highlights",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -79,6 +79,7 @@ struct Verification {
                 await run("agent-change-keeps-reading-position") { await context.agentChangeKeepsPlace(keep: &keep) }
                 await run("context-menu-ask-floats-beside-selection") { await context.contextMenuAsk(keep: &keep) }
                 await run("page-context-menu-replaces-system-menu") { await context.pageContextMenu(keep: &keep) }
+                await run("real-keys-and-clicks-reach-find-and-menu") { await context.realInput(keep: &keep) }
                 await run("find-close-clears-highlights") { await context.findCloseClears(keep: &keep) }
                 await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
                 await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
@@ -1256,6 +1257,120 @@ struct Context {
             } catch { pass = false; results.append("\(Int(width)): \(error)") }
         }
         return .init(name: name, pass: pass, detail: results.joined(separator: "; "))
+    }
+
+    /// Real AppKit events, not page events, sent through NSApplication's dispatch to a key panel:
+    /// key presses take AppKit's key-equivalent and command paths (cancelOperation:, moveDown:)
+    /// into WebKit, and right-clicks, double-clicks and Control-clicks take the window's hit test
+    /// and WebKit's own context-menu path. Covers Escape closing find, the arrow keys and Escape
+    /// in the open page menu, and the menu inside an open block after a double-click.
+    func realInput(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "real-keys-and-clicks-reach-find-and-menu"
+        let source = "# Real input\n\nHuman passage with words to select and edit.\n\nSecond paragraph for the menu.\n"
+        do {
+            let state = ReadingStateStore(directory: nil)
+            let file = workspace.appendingPathComponent("real-input.md")
+            try Data(source.utf8).write(to: file)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: state)
+            let editor = EditorWorkspace(directory: workspace.appendingPathComponent("real-input-drafts"), store: nil)
+            editor.add(DraftRecord(source: source))
+            let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
+            defer { withExtendedLifetime(surface) {} }
+            let window = CheckRunner.offscreenWindow(page: model.page, width: 700, height: 760, key: true)
+            keep.append(window)
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            _ = await wait(seconds: 5) { editor.webReady && model.source == source }
+            await model.sendCommand("toggleLock", args: ["lock": "reading"])
+            window.makeFirstResponder(model.page.webView)
+            let view = model.page.webView
+            window.makeKey()
+            func key(_ code: UInt16, _ characters: String, flags: NSEvent.ModifierFlags = []) async {
+                // Through NSApplication's dispatch, as the system delivers a key press: key
+                // equivalents first, then the key window's first responder.
+                for type in [NSEvent.EventType.keyDown, .keyUp] {
+                    guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code) else { continue }
+                    NSApp.sendEvent(event)
+                }
+                _ = await js(model, "await new Promise(r => setTimeout(r, 120)); return true;")
+            }
+            func escape() async { await key(53, "\u{1b}") }
+            func down() async { await key(125, String(UnicodeScalar(NSDownArrowFunctionKey)!), flags: [.function, .numericPad]) }
+            func up() async { await key(126, String(UnicodeScalar(NSUpArrowFunctionKey)!), flags: [.function, .numericPad]) }
+            func windowPoint(_ x: Double, _ y: Double) -> NSPoint {
+                view.convert(NSPoint(x: x, y: view.isFlipped ? y : view.bounds.height - y), to: nil)
+            }
+            func click(_ x: Double, _ y: Double, down: NSEvent.EventType, up: NSEvent.EventType, flags: NSEvent.ModifierFlags = [], count: Int = 1) async {
+                let point = windowPoint(x, y)
+                for type in [down, up] {
+                    guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: count, pressure: type == down ? 1 : 0) else { continue }
+                    NSApp.sendEvent(event)
+                    _ = await js(model, "await new Promise(r => setTimeout(r, 70)); return true;")
+                }
+                _ = await js(model, "await new Promise(r => setTimeout(r, 150)); return true;")
+            }
+            func point(of text: String, in selector: String) async -> (Double, Double) {
+                let value = await js(model, """
+                const scope = document.querySelector(selector); if (!scope) return [];
+                const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+                let node; while ((node = walker.nextNode()) && !node.data.includes(text));
+                if (!node) return [];
+                const range = document.createRange(); const i = node.data.indexOf(text);
+                range.setStart(node, i); range.setEnd(node, i + text.length);
+                const r = range.getBoundingClientRect(); return [r.left + 3, r.top + r.height / 2];
+                """, ["selector": selector, "text": text]) as? [Double] ?? []
+                return value.count == 2 ? (value[0], value[1]) : (-1, -1)
+            }
+            let menuState = "const m = document.querySelector('[data-role=\"context-menu\"]'); return [m.hidden ? 'hidden' : 'open', m.querySelector('[data-active]')?.dataset.id ?? '', [...m.querySelectorAll('.item')].map(i => i.dataset.id).join(' ')];"
+            func menu() async -> [String] { await js(model, menuState) as? [String] ?? [] }
+            let findOpen = "return !!document.querySelector('input[data-role=\"find-field\"]') && document.getElementById('app').hasAttribute('data-find');"
+            // Find: a real Escape closes it.
+            await model.sendCommand("find", args: ["query": "passage"])
+            _ = await wait(seconds: 2) { await js(model, findOpen) as? Bool == true }
+            let findWasOpen = await js(model, findOpen) as? Bool == true
+            await escape()
+            let findClosed = await wait(seconds: 2) { await js(model, findOpen) as? Bool == false }
+            // Page menu in Reading: a real right-click opens it; Down, Down, Up move; Escape closes.
+            let reading = await point(of: "Second paragraph", in: "[data-role=\"document\"]")
+            await click(reading.0, reading.1, down: .rightMouseDown, up: .rightMouseUp)
+            let opened = await menu()
+            await down()
+            let first = await menu()
+            await down()
+            let second = await menu()
+            await up()
+            let back = await menu()
+            await escape()
+            let closed = await menu()
+            let readingOK = opened.first == "open" && first.count == 3 && first[1].isEmpty == false && second[1] != first[1] && back[1] == first[1] && closed.first == "hidden"
+            // Writing: open the block with a real click, then a real right-click and a Control-click inside it.
+            await model.sendCommand("toggleLock", args: ["lock": "writing"])
+            _ = await js(model, "await new Promise(r => setTimeout(r, 200)); return true;")
+            let passage = await point(of: "words to", in: "[data-role=\"document\"]")
+            await click(passage.0, passage.1, down: .leftMouseDown, up: .leftMouseUp)
+            let blockOpen = await wait(seconds: 2) { await js(model, "return !!document.querySelector('[data-role=\"block-editor\"]');") as? Bool == true }
+            let inBlock = await point(of: "select", in: "[data-role=\"block-editor\"]")
+            // As a person does: a double-click selects a word in the open block, then a right-click on it.
+            await click(inBlock.0, inBlock.1, down: .leftMouseDown, up: .leftMouseUp, count: 1)
+            await click(inBlock.0, inBlock.1, down: .leftMouseDown, up: .leftMouseUp, count: 2)
+            let selectedWord = await js(model, "return getSelection().toString();") as? String ?? ""
+            await click(inBlock.0, inBlock.1, down: .rightMouseDown, up: .rightMouseUp)
+            let blockMenu = await menu()
+            await escape()
+            let blockMenuClosed = await menu()
+            let stillOpen = await js(model, "return !!document.querySelector('[data-role=\"block-editor\"]');") as? Bool == true
+            await click(inBlock.0, inBlock.1, down: .leftMouseDown, up: .leftMouseUp, flags: [.control])
+            let controlMenu = await menu()
+            await escape()
+            let blockItems = blockMenu.count == 3 ? blockMenu[2].split(separator: " ").map(String.init) : []
+            let controlItems = controlMenu.count == 3 ? controlMenu[2].split(separator: " ").map(String.init) : []
+            let blockOK = blockOpen && blockMenu.first == "open" && ["cut", "copy", "paste", "bold"].allSatisfy(blockItems.contains) && blockMenuClosed.first == "hidden" && stillOpen
+            let controlOK = controlMenu.first == "open" && controlItems.contains("paste") && controlItems.contains("bold")
+            await editor.closeViews()
+            await model.close()
+            let pass = findWasOpen && findClosed && readingOK && blockOK && controlOK
+            return .init(name: name, pass: pass, detail: "find open \(findWasOpen), closed by Escape \(findClosed); reading menu \(opened), Down \(first), Down \(second), Up \(back), Escape \(closed); block open \(blockOpen), double-click selected '\(selectedWord)', right-click in block \(blockMenu), Escape \(blockMenuClosed), block still open \(stillOpen); Control-click in block \(controlMenu)")
+        } catch { return .init(name: name, pass: false, detail: "\(error)") }
     }
 
     static let menuImage = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQVR4nGP4z8CAgonnAwEBAP9fC/V+u2SvAAAAAElFTkSuQmCC"
