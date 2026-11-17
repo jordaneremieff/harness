@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { compile } from "@earendil-works/pi-schema";
-import { PolicyControlParams } from "./control.ts";
+import { PolicyControlParams, validateControl } from "./control.ts";
 import { normalizeDataArtifact } from "./data-import.ts";
 import { proposalRevision, reduceRuleEvents, RuleRegistry, targetIdentity, validateRuleEvent } from "./local-rules.ts";
 import { contentRevision, type OperatorRuleAudit } from "./rule.ts";
@@ -140,6 +140,19 @@ it("keeps exact authority and command/proposal boundaries intact", async (t) => 
 		{ operation: "disable", id: p.ruleId, revision, authorization, reason: "x", extra: true },
 	])
 		await assert.rejects(f.call(input), /Invalid policy control fields/);
+});
+
+it("explains the required telemetry selection when a continuation omits it", () => {
+	assert.throws(
+		() => validateControl({ operation: "telemetry", cursor: "page" }),
+		/Invalid policy control fields for telemetry; use from and to, or since and until.*Repeat the same selection on every page/,
+	);
+	validateControl({ operation: "telemetry", from: "2026-11-10", to: "2026-11-17", cursor: "page" });
+	validateControl({ operation: "telemetry", since: "2026-11-10T00:00:00Z", until: "2026-11-17T00:00:00Z", cursor: "page" });
+	assert.throws(
+		() => validateControl({ operation: "telemetry", from: "2026-11-10", to: "2026-11-17", authorization }),
+		/This read accepts no authorization or mutation fields/,
+	);
 });
 
 it("binds data controls to complete normalized artifacts and prior binding revisions", async (t) => {

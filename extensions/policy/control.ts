@@ -278,10 +278,15 @@ export function validateControl(params: unknown): asserts params is Input {
 		!validator.check(params) ||
 		("authorization" in params && !params.authorization.trim()) ||
 		("reason" in params && !params.reason.trim())
-	)
+	) {
+		if (typeof params === "object" && params !== null && "operation" in params && params.operation === "telemetry")
+			throw new Error(
+				"Invalid policy control fields for telemetry; use from and to, or since and until, with an optional cursor. Repeat the same selection on every page. This read accepts no authorization or mutation fields.",
+			);
 		throw new Error(
 			"Invalid policy control fields; mutations require an exact revision and nonblank operator authorization, with only operation-specific fields",
 		);
+	}
 	if (Buffer.byteLength(JSON.stringify(params)) > 512 * 1024)
 		throw new Error("Policy control input exceeds byte bound");
 }
