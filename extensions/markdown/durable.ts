@@ -4,7 +4,7 @@ import { readSettings, publishSettings, type SettingsBus } from "./settings.ts";
 import { MarkdownStore } from "./store.ts";
 import { recentNative, readNative, type NativeSource } from "./native-responses.ts";
 import { readPanelRequest, responsePage, type MarkdownAnswer } from "./panel-protocol.ts";
-import { createNativePublishTool } from "./publish.ts";
+import { createNativePublishTool, NATIVE_PUBLISH_GUIDANCE } from "./publish.ts";
 import { createNativeReadTool } from "./read.ts";
 import { nativeConnection, nativeConversationConnection, nativeLive } from "./live-host.ts";
 import { createNativeLiveTool } from "./live-tool.ts";
@@ -82,7 +82,7 @@ export function markdownContribution(source: string, bus: SettingsBus, stopFacto
 			return host.durable.defineExtension({
 				name: "markdown",
 				tools: [createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store, app: settings.app, connection }), createNativeReadTool(host.durable, { store, app: settings.app, connection }), createNativeLiveTool(host.durable, (conversation) => live.bridges.find(conversation))],
-				sections: [host.durable.section("markdown", () => "Use markdown_publish for an explicitly requested document or a deliverable meant for sustained reading. Publication saves silently. Existing assistant responses are already readable through the operator's Markdown view; do not publish every reply. Use markdown_read to find a stored document and read an exact revision before you correct it.")],
+				sections: [host.durable.section("markdown", () => NATIVE_PUBLISH_GUIDANCE)],
 			});
 		},
 	};
