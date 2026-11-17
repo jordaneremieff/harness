@@ -301,7 +301,8 @@ test("a confirmed floating pane that rex_terminal creates is handed to the conve
 	const terminal = tools.get("rex_terminal");
 	await terminal?.execute("call-1", { op: "create", kind: "float", label: "reader", target: { session: "session:test", block: "block:anchor" } } as never, undefined, undefined, ctx as never);
 	await terminal?.execute("call-2", { op: "create", kind: "split", label: "split", target: { session: "session:test", block: "block:anchor" } } as never, undefined, undefined, ctx as never);
-	assert.deepEqual(floated, [[{ blockId: "block:float", bounds: [0.1, 0.06, 0.8, 0.88] }], []], "the default float bounds are the creation bounds");
+	await terminal?.execute("call-3", { op: "create", kind: "float", label: "kept", keepFloating: true, target: { session: "session:test", block: "block:anchor" } } as never, undefined, undefined, ctx as never);
+	assert.deepEqual(floated, [[{ blockId: "block:float", bounds: [0.1, 0.06, 0.8, 0.88] }], [], []], "the default float bounds are the creation bounds, and a float created to stay floating is not handed over");
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
 });
 

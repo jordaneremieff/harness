@@ -799,6 +799,8 @@ test("float creation opens an owned floating pane in the anchor block's window",
 	assert.match(outside.error ?? "", /float bounds/);
 	const misplaced = await f.core.execute({ op: "create", kind: "split", label: "Split", bounds: [0, 0, 1, 1], target: { session, block } }, { ...context, callId: "misplaced" });
 	assert.match(misplaced.error ?? "", /bounds apply only to float creation/);
+	const pinnedSplit = await f.core.execute({ op: "create", kind: "split", label: "Split", keepFloating: true, target: { session, block } }, { ...context, callId: "pinned-split" });
+	assert.match(pinnedSplit.error ?? "", /keepFloating applies only to float creation/);
 	assert.equal(layers().length, 2);
 });
 

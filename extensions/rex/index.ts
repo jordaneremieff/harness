@@ -18,10 +18,10 @@ type RegistrationOptions = RexAdapterOptions & {
 	createConversationKeeper?: (options: ConversationKeeperOptions) => ReturnType<typeof createConversationKeeper>;
 };
 
-/** Blocks of a confirmed floating pane that a `rex_terminal` create returned, with the bounds it requested. */
+/** Blocks of a confirmed floating pane that a `rex_terminal` create returned, with the bounds it requested; a pane created to stay floating is never handed over. */
 function createdFloats(tool: string, request: unknown, result: unknown): FloatedPane[] {
-	const call = request as { op?: unknown; kind?: unknown; bounds?: number[] } | undefined;
-	if (tool !== "rex_terminal" || call?.op !== "create" || call.kind !== "float") return [];
+	const call = request as { op?: unknown; kind?: unknown; bounds?: number[]; keepFloating?: unknown } | undefined;
+	if (tool !== "rex_terminal" || call?.op !== "create" || call.kind !== "float" || call.keepFloating === true) return [];
 	const effects = (result as { ok?: unknown; effects?: { state?: unknown; resources?: unknown } } | undefined);
 	if (effects?.ok !== true || effects.effects?.state !== "confirmed" || !Array.isArray(effects.effects.resources)) return [];
 	const bounds = floatBounds(call.bounds);

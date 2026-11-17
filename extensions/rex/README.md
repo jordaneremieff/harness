@@ -186,7 +186,11 @@ that leaves the layout around it visible. A created pane stays open after its
 program exits, so completed output stays readable. `keepOpen: false` closes the
 pane when its program exits successfully, for interactive programs such as
 viewers that the operator closes from inside; Rex keeps the pane open after a
-failure, so the error stays readable. A new window, split or floating pane does
+failure, so the error stays readable. `keepFloating: true` keeps a floating pane
+where it is when the run ends, for material that the operator reads in place,
+such as a document; without it, a float that covers the conversation moves beside
+it, as [Keep the conversation visible](#keep-the-conversation-visible) describes.
+A new window, split or floating pane does
 not take focus unless the request sets `focus: true`; use that when the operator
 asked to see the work, such as a diff tab, a test run or a document. A new
 session cannot be shown this way; `focus` is refused there, and a client action
@@ -225,8 +229,10 @@ need not stop.
 
 Ordinary interactive Pi keeps its own conversation pane visible when it needs the
 operator. A floating pane that this conversation created with `rex_terminal` is
-transient to the run that created it. Panes that this conversation did not create,
-including panes of other agents and of the operator, never move. A created pane waits
+transient to the run that created it, unless its creation set `keepFloating: true`:
+such a pane holds material that the operator reads in place, so it stays where it is.
+Panes that this conversation did not create, including panes of other agents and of
+the operator, never move. A created pane waits
 for a moment that needs the operator:
 a run that settles (`agent_settled`) with an answer, which is a last model message with
 text, or with an error, and a dialog that starts waiting (`ui_prompt_start`). A run that
@@ -280,10 +286,10 @@ holds no store: floating panes created before a reload get no decision. Each dec
 runs bounded CLI calls; a session change or shutdown aborts them and forgets the
 waiting panes. Durable, RPC, JSON and print sessions do not move panes.
 
-For content that the operator reads for a while, such as a document, create a split
-beside your own conversation instead of a floating pane. To show a new document where
-an earlier reader pane of yours is, create the split with that pane as the anchor and
-then clean up the earlier pane: the new pane takes its place.
+For content that the operator reads for a while, such as a document, create a floating
+pane with `keepFloating: true`. It stays where it is until the operator moves or closes
+it. To show new content in an earlier pane of yours, send that pane's program the input
+that it accepts for this instead of opening another pane.
 
 ## Pane stacking feed
 

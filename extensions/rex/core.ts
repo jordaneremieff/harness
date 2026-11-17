@@ -49,6 +49,7 @@ export type RexRequest =
 			ratio?: number;
 			bounds?: number[];
 			keepOpen?: boolean;
+			keepFloating?: boolean;
 			focus?: boolean;
 	  })
 	| (RequestBase & {
@@ -1651,6 +1652,7 @@ function createLayout(request: CreateRequest, offer?: string[]): Record<string, 
 	if (request.kind === "session" && request.focus !== undefined)
 		throw new Error("focus applies to window, split and float creation. Display a new session through a client action.");
 	if (request.bounds !== undefined && request.kind !== "float") throw new Error("bounds apply only to float creation.");
+	if (request.keepFloating !== undefined && request.kind !== "float") throw new Error("keepFloating applies only to float creation.");
 	return {
 		block: {
 			flavor: "com.superlogical.terminal.shell",
