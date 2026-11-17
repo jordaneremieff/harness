@@ -452,7 +452,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_status",
-		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. Selected status is compact by default. Use detail:true with an explicit sessionId for full state and bounded pending timers. An ordinary primary exposes bounded latest-retained ancestry with detail:true, not live idle or selected-branch state. For one storage, use view: storage-page with its exact storageId and call the tool named by coverage.next.tool with its remaining fields unchanged; this backend JSON cursor is separate from agent_list discovery.",
+		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. The fleet overview keeps coordination rows and attention updated within 24 hours, with at most three older terminal attention samples. Coverage states intentional attention omissions and the exact agent_list discovery call. Summary and coverage name omitted rows; agent_list discovers full agent identities. Selected status is compact by default. Use detail:true with an explicit sessionId for full state and bounded pending timers. An ordinary primary exposes bounded latest-retained ancestry with detail:true, not live idle or selected-branch state. For one storage, use view: storage-page with its exact storageId and call the tool named by coverage.next.tool with its remaining fields unchanged; this backend JSON cursor is separate from agent_list discovery.",
 		StatusToolInputSchema,
 		async (input, ctx) => {
 			validateStatusDetail(input);

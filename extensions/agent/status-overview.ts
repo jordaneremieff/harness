@@ -70,12 +70,14 @@ export interface StatusOverview {
 
 export const STATUS_OVERVIEW_BYTE_LIMIT = 16 * 1024;
 export const STATUS_OVERVIEW_DISCOVERY =
-	"Counts cover the supplied page, not unseen storage. Unavailable and quiet sessions, primaries, and failures include bounded samples. Unavailable observations are unknown, not healthy. Call agent_list without a cursor, then repeat its nextCursor to see more. Use agent_status with sessionId and detail:true for full status; agent_inspect retains full text.";
+	"Counts cover the supplied page, not unseen storage. Older terminal attention, unavailable and quiet sessions, primaries, and failures include bounded samples. Unavailable observations are unknown, not healthy. Call agent_list without a cursor, then repeat its nextCursor to see more. Use agent_status with sessionId and detail:true for full status; agent_inspect retains full text.";
 const EXCERPT_CHARACTERS = 160;
 const QUIET_SAMPLE = 5;
 const UNAVAILABLE_SAMPLE = 5;
 const PRIMARY_SAMPLE = 3;
 const FAILURE_SAMPLE = 5;
+const OLD_ATTENTION_SAMPLE = 3;
+const RECENT_ATTENTION_MS = 24 * 60 * 60 * 1000;
 
 function measure(value: unknown): number {
 	return Buffer.byteLength(JSON.stringify(value), "utf8");
@@ -145,6 +147,17 @@ function hasOpenWork(row: AgentConversationSummary): boolean {
 	return (row.openWorkCount ?? 0) > 0;
 }
 
+/** Coordination state survives sampling even when fault evidence changes the summary group. */
+function protectedFromSampling(row: AgentConversationSummary): boolean {
+	return Boolean(row.rosterOrder?.priority) || hasOpenWork(row) || (row.unplaced ?? 0) > 0 ||
+		row.state === "starting" || row.state === "working";
+}
+
+function oldTerminalAttention(row: AgentConversationSummary, observedAt: number): boolean {
+	return group(row) === "attention" && ["failed", "stopped", "done", "interrupted"].includes(row.state) &&
+		Number.isFinite(observedAt) && Number.isFinite(row.modifiedAt) && row.modifiedAt < observedAt - RECENT_ATTENTION_MS;
+}
+
 function byIdentity(a: string, b: string): number {
 	return a < b ? -1 : a > b ? 1 : 0;
 }
@@ -160,11 +173,13 @@ function initialOverview(
 			b.rosterOrder.modifiedAt - a.rosterOrder.modifiedAt || byIdentity(a.id, b.id),
 	);
 	const totals = { working: 0, attention: 0, unavailable: 0, quiet: 0 };
-	const sampled = { unavailable: 0, quiet: 0 };
+	const sampled = { attention: 0, unavailable: 0, quiet: 0 };
+	const observedAt = Date.parse(page.observedAt);
 	const selected = ordered.filter((row) => {
 		const category = group(row);
 		totals[category]++;
-		if (row.rosterOrder.priority || hasOpenWork(row) || category === "working" || category === "attention") return true;
+		if (protectedFromSampling(row) || category === "working") return true;
+		if (category === "attention") return !oldTerminalAttention(row, observedAt) || sampled.attention++ < OLD_ATTENTION_SAMPLE;
 		return sampled[category]++ < (category === "quiet" ? QUIET_SAMPLE : UNAVAILABLE_SAMPLE);
 	});
 	const sessions = selected.map(compact);
@@ -270,10 +285,11 @@ function excludeSession(value: MutableOverview, index: number, dropped: ByteOmis
 	value.coverage.omitted++;
 }
 
-function excludeRow(value: MutableOverview, dropped: ByteOmissions, priorityIds: ReadonlySet<string>): void {
+function excludeRow(value: MutableOverview, dropped: ByteOmissions, priorityIds: ReadonlySet<string>, protectedIds: ReadonlySet<string>, historicalIds: ReadonlySet<string>): void {
 	const rowBudget = STATUS_OVERVIEW_BYTE_LIMIT - measure({ ...value, sessions: [], primaries: [], failures: [], awareness: undefined });
 	const oversized = value.sessions.findIndex((row) => measure(row) > rowBudget);
-	const sample = value.sessions.findLastIndex((row) => !priorityIds.has(row.id) && !hasOpenWork(row) && ["quiet", "unavailable"].includes(group(row)));
+	const sample = value.sessions.findLastIndex((row) => !protectedIds.has(row.id) &&
+		(["quiet", "unavailable"].includes(group(row)) || historicalIds.has(row.id)));
 	if (oversized >= 0 || sample >= 0) {
 		excludeSession(value, oversized >= 0 ? oversized : sample, dropped, priorityIds);
 	} else if (value.primaries.length > 0) {
@@ -297,7 +313,7 @@ function excludeRow(value: MutableOverview, dropped: ByteOmissions, priorityIds:
 	dropped.rows++;
 }
 
-/** Keep priority, declared-work and fault evidence; separately sample unavailable and quiet history. */
+/** Keep coordination and recent fault evidence; sample older terminal faults and inactive history. */
 export function buildStatusOverview(
 	page: AgentPriorityPage,
 	primaries: readonly StatusOverviewPrimary[],
@@ -308,6 +324,10 @@ export function buildStatusOverview(
 	const reasons = sourceReasons(page);
 	const dropped: ByteOmissions = { working: 0, attention: 0, unavailable: 0, quiet: 0, rows: 0, priority: 0, openWork: 0 };
 	const priorityIds = new Set(page.rows.filter((row) => row.rosterOrder.priority).map((row) => row.id));
+	const protectedIds = new Set(page.rows.filter(protectedFromSampling).map((row) => row.id));
+	const historicalIds = new Set(page.rows.filter((row) => oldTerminalAttention(row, Date.parse(page.observedAt))).map((row) => row.id));
+	const summarizedAttention = value.summary.sessions.attention - value.sessions.filter((row) => group(row) === "attention").length;
+	const samplingReasons = summarizedAttention > 0 ? [`${summarizedAttention} older terminal attention rows were intentionally summarised; the recent attention window is 24 hours. Discover their identities with agent_list({}), then repeat coverage.next; use agent_status({sessionId:<identity>,detail:true}) for full status.`] : [];
 	for (;;) {
 		value.coverage.reasons = [...reasons];
 		value.coverage.omittedPriorityRows = dropped.priority;
@@ -322,9 +342,10 @@ export function buildStatusOverview(
 			);
 		if (value.awareness && (!value.awareness.presence.coverage.complete || !value.awareness.threads.coverage.complete || value.awareness.self.omitted)) value.coverage.reasons.push("Effort awareness is partial; its presence, thread, and self coverage identifies omitted observations.");
 		value.coverage.complete = value.coverage.reasons.length === 0 && dropped.rows === 0;
+		value.coverage.reasons.push(...samplingReasons);
 		if (fixedPointBytes(value) <= STATUS_OVERVIEW_BYTE_LIMIT) return value;
 		value.coverage.byteLimitReached = true;
-		excludeRow(value, dropped, priorityIds);
+		excludeRow(value, dropped, priorityIds, protectedIds, historicalIds);
 	}
 }
 

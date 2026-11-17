@@ -1166,14 +1166,20 @@ Each overview row keeps the catalogue's optional `attention` hint
 (`provider-blocked`, `task-blocked`, or `failed-turn`). Excerpts have visible shortening markers. Working and attention rows retain
 identity, cwd, ownership, model, update time, state, cost, partial-cost flag,
 current tool, tool count, duration, latest reply, errors, and recovery health
-when those fields exist. Live or caller-owned rows and rows with declared open
-work are not restricted to unavailable or quiet samples. Other unavailable and
-quiet rows have separate bounded samples; connected primaries and failures also
-have bounded samples. `summary.sessions.summarizedUnavailable` and
+when those fields exist. Live or caller-owned rows, starting or working rows, and rows with declared open
+work or unplaced input are never restricted by sampling. Attention rows whose
+published update is within the last 24 hours also stay outside sampling. Other
+terminal attention rows (`failed`, `stopped`, `done`, or `interrupted`) have a
+sample of at most three rows in catalogue order. Nonterminal attention stays
+outside sampling. The window uses each row's published update time against the
+page's observation time, not the catalogue file's modification time. Other
+unavailable and quiet rows have separate bounded samples; connected primaries
+and failures also have bounded samples. `summary.sessions.summarizedUnavailable` and
 `summarizedQuiet` count each group's rows absent from the response, including byte
 exclusions. All rows remain subject to the overview byte limit. Byte reduction
-removes unprotected unavailable and quiet samples before work or fault rows,
-then preserves declared-open-work and source-priority rows ahead of ordinary rows.
+removes unprotected unavailable, quiet, and old terminal attention samples before
+work, recent faults, or effort awareness, then preserves declared-open-work and
+source-priority rows ahead of ordinary rows.
 The collapsed card reports supplied-page totals, not sampled-row totals or costs.
 
 `coverage` states source inspections, skipped views, excluded rows, byte omissions,
@@ -1183,12 +1189,17 @@ excluded by the overview byte limit. `omittedPriorityRecords` counts distinct
 records with at least one such excluded row, even when another row from that
 record remains visible. `omittedOpenWorkRows` counts declared-open-work rows
 excluded by the byte limit. `omitted` counts source-view exclusions plus every
-byte-excluded session row; intentional unavailable and quiet samples do not add
-to it. This is a separate measure from the group summary counts: a byte-excluded
+byte-excluded session row; intentional attention, unavailable and quiet samples
+do not add to it. This is a separate measure from the group summary counts: a byte-excluded
 unavailable or quiet row also contributes to its group's summarised count.
 Counts cover the supplied catalog page, not unseen inventory. `complete` remains
-true for intentional unavailable or quiet summaries only when source coverage is
-complete; source gaps or byte exclusions make it false. `coverage.reasons` names recovery paths and boundaries. The overview
+true for intentional samples only when source coverage is complete; source gaps
+or byte exclusions make it false. `summary.sessions.attention` counts all supplied
+attention rows, not just the sample. `coverage.reasons` states the count of
+intentionally summarised old terminal attention rows and the exact initial call,
+`agent_list({})`; follow its returned `coverage.next` to discover the identities.
+This informational reason alone does not make coverage incomplete.
+`coverage.reasons` also names recovery paths and boundaries. The overview
 returns `coverage.nextCursor: null` because `agent_status` accepts no cursor;
 it never exposes the dashboard's catalog cursor. Call `agent_list` without a
 cursor, then call it again with the fields of its returned `coverage.next` to find

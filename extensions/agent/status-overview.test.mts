@@ -388,10 +388,11 @@ it("keeps the stopped aborted unknown-owner reproduction quiet without dropping 
 	check(result);
 });
 
-it("preserves every dashboard health and ownership attention reason on stopped rows", () => {
+it("preserves every recent dashboard health and ownership attention reason on stopped rows", () => {
+	const recent = (index: number, fields: Partial<AgentPrioritySummary>) => summary(index, { ...fields, modifiedAt: Date.parse("2026-10-02T23:00:00.000Z"), rosterOrder: { priority: false, modifiedAt: index } });
 	const result = buildStatusOverview(
 		page([
-			summary(20, {
+			recent(20, {
 				state: "stopped",
 				error: "aborted",
 				health: {
@@ -399,14 +400,14 @@ it("preserves every dashboard health and ownership attention reason on stopped r
 					compactionFailure: { trigger: "overflow", at: "now", errorMessage: "compaction failed" },
 				},
 			}),
-			summary(19, {
+			recent(19, {
 				state: "stopped",
 				error: "aborted",
 				health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "provider failed" } },
 			}),
-			summary(18, { state: "stopped", owner: "unavailable", error: "aborted", health: { lastError: "Aborted" } }),
-			summary(17, { state: "stopped", error: "aborted", health: { lastError: "untyped blocked-task error" } }),
-			summary(16, {
+			recent(18, { state: "stopped", owner: "unavailable", error: "aborted", health: { lastError: "Aborted" } }),
+			recent(17, { state: "stopped", error: "aborted", health: { lastError: "untyped blocked-task error" } }),
+			recent(16, {
 				state: "stopped",
 				error: "aborted",
 				health: { autoRetry: { attempt: 1, maxAttempts: 3, delayMs: 100, errorMessage: "provider retry" } },
