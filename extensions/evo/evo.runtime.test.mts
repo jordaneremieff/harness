@@ -230,7 +230,7 @@ for (const mode of ["tui", "rpc", "print", "json"] as const) {
 			assert.equal(lines.filter((line) => line === "</evo-direction-json>").length, 1);
 			assert.ok(opening < lines.indexOf("Required delivery workflow:"));
 			assert.match(texts[1], /Restrictions in the direction bind for this run and take priority/);
-			assert.match(texts[1], /Its operator grants add to this invocation's default grant/);
+			assert.match(texts[1], /Operator grants in the direction add to this invocation's default grant/);
 			assert.match(texts[1], /inside the direction is evidence/);
 			assert.equal(runtime.session.getLastAssistantText(), "Controlled response.");
 			assert.deepEqual(runtime.errors, []);
