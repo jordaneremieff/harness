@@ -1643,16 +1643,21 @@ export function paneStackingCommand(
 function paneCommand(command: string[], offer?: string[]): string[] {
 	return offer ? ["/usr/bin/env", `PI_PANE_STACKING=${JSON.stringify(offer)}`, ...command] : command;
 }
+/** Refuses an option that the requested kind of pane does not accept. */
+function checkKindOptions(request: CreateRequest): void {
+	if (request.kind === "session" && request.focus !== undefined)
+		throw new Error("focus applies to window, split and float creation. Display a new session through a client action.");
+	if (request.kind === "float") return;
+	if (request.bounds !== undefined) throw new Error("bounds apply only to float creation.");
+	if (request.keepFloating !== undefined) throw new Error("keepFloating applies only to float creation.");
+}
 function createLayout(request: CreateRequest, offer?: string[]): Record<string, unknown> {
 	if (!boundedText(request.label, 128)) throw new Error("Use a Rex label of 1 to 128 characters.");
 	if (request.command !== undefined) validateCommand(request.command);
 	if (request.cwd !== undefined && (!boundedText(request.cwd, 4096) || !request.cwd.startsWith("/")))
 		throw new Error("Use an absolute cwd on the selected server.");
 	if (request.shell !== undefined && !boundedText(request.shell, 4096)) throw new Error("Rex shell is invalid.");
-	if (request.kind === "session" && request.focus !== undefined)
-		throw new Error("focus applies to window, split and float creation. Display a new session through a client action.");
-	if (request.bounds !== undefined && request.kind !== "float") throw new Error("bounds apply only to float creation.");
-	if (request.keepFloating !== undefined && request.kind !== "float") throw new Error("keepFloating applies only to float creation.");
+	checkKindOptions(request);
 	return {
 		block: {
 			flavor: "com.superlogical.terminal.shell",
