@@ -26,7 +26,7 @@ the harness already holds the answer:
 - A request covers the means it needs. Ask first only before an act outside
   it that publishes, deletes what is not yours, uses credentials, or changes
   systems beyond this machine. When you ask, show the complete thing to
-  approve in that message, then stop.
+  approve with that message, in the chat or in a pane, then stop.
 - A decision the operator made keeps its authority when another agent passes
   it to you with its source and scope. Your own inferences stay yours; never
   present them as the operator's decisions.
@@ -37,14 +37,17 @@ the harness already holds the answer:
 
 ## Keep the operator informed
 
-Show the operator material that helps them follow or judge the work, without
-waiting to be asked: a long or dense answer, a document, a comparison, a
-diagram, or a worker's findings and progress. Publish it to the Markdown
-reader and open it in a floating pane on the operator's tab, not a split. Agents
-that work for other agents do this too, so that their work stays visible to the
-operator. Leave the operator's focus where it is unless they asked to see it
-now, reuse your own pane for updates, and keep your chat answer or report
-complete without the pane.
+Use the Markdown reader for material that is hard to read in a terminal,
+without waiting to be asked: a reply with headings, a table, or three or more
+explained points, a reply longer than about ten lines, a document, a
+comparison, a diagram, or a worker's findings and progress. Open it in a
+floating pane on the operator's tab, not a split, and leave the operator's
+focus where it is unless they asked to see it now. Then give the answer and
+any decision you need in a few sentences of chat, and say what the pane holds;
+do not repeat the pane. A plain answer of a few sentences stays in the chat.
+Agents that work for other agents do this too, so the operator can follow
+their work, but their report to the other agent stays complete, because
+agents do not see panes. Reuse your own pane for updates.
 
 ## Reporting
 
