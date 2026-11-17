@@ -1,8 +1,7 @@
 import Foundation
 import MarkdownCore
 import Observation
-import SwiftUI
-import WebKit
+import AppKit
 
 /// What the reader knows about one image of the shown revision: the Markdown reference, the
 /// alternatives the source gives, how the revision holds the image, and what the document page
@@ -140,268 +139,65 @@ public struct ImageFacts: Sendable, Equatable {
     }
 }
 
-/// The inspection of one image that a reader window shows over its document. The image has its
-/// own page, where WebKit renders it under the reader's content policy; the document's page
-/// stays loaded below with its position and selection.
+/// Native facts for the page-owned image inspection. The page owns layout, zoom and dismissal.
 @MainActor @Observable
 public final class ImageInspection {
-    public enum Zoom: Equatable, Sendable {
-        /// The whole image inside the view.
-        case fit
-        /// A multiple of the image's own size; 1 is actual size.
-        case scale(Double)
-    }
-
-    /// What the page shows.
-    enum Subject: Sendable {
-        case asset(ResolvedAsset)
-        /// A `data:` address.
-        case address(String)
-        /// No image; the text says why.
-        case none(String)
-    }
-
-    /// The scales that zooming in and out steps through.
+    public enum Zoom: Equatable, Sendable { case fit, scale(Double) }
+    enum Subject: Sendable { case asset(ResolvedAsset), address(String), none(String) }
     public static let scales: [Double] = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8]
-    /// The page keeps this much space around the image, on each side.
     static let margin = 12.0
-    static let token = "subject"
-
-    /// The inspected image. Nil while no inspection is open.
     public private(set) var facts: ImageFacts?
-    public private(set) var zoom: Zoom = .fit
-    /// The image's own size in points, once the page displayed it.
     public private(set) var naturalSize: CGSize?
-    /// Why the view shows no image.
     public private(set) var problem: String?
-    public private(set) var page: WebPage?
-
-    @ObservationIgnored private let assets = AssetTable()
-    @ObservationIgnored private let router = NavigationRouter()
-    @ObservationIgnored private var generation = 0
-    @ObservationIgnored var expectingLoad = false
-
+    public private(set) var address = ""
+    public weak var page: ReaderWebPage?
     public init() {}
-
     public var isOpen: Bool { facts != nil }
-
-    /// "Fit", or the scale as a percentage.
-    public var zoomLabel: String {
-        switch zoom {
-        case .fit: "Fit"
-        case .scale(let scale): "\(Int((scale * 100).rounded()))%"
-        }
-    }
-
-    /// The scale at which an image of `natural` size fills a view of `view` size inside the
-    /// page's margin.
     public static func fitScale(natural: CGSize, view: CGSize) -> Double {
         guard natural.width > 0, natural.height > 0 else { return 1 }
-        let width = max(1, view.width - 2 * margin)
-        let height = max(1, view.height - 2 * margin)
-        return min(width / natural.width, height / natural.height)
+        return min(max(1, view.width - 2 * margin) / natural.width, max(1, view.height - 2 * margin) / natural.height)
     }
-
-    /// The next listed scale above or below `scale`, or nil at the end of the list.
     public static func step(from scale: Double, larger: Bool) -> Double? {
         larger ? scales.first { $0 > scale * 1.001 } : scales.last { $0 < scale * 0.999 }
     }
-
-    /// Shows an image. The last request wins.
     func open(_ facts: ImageFacts, subject: Subject, title: String) async {
-        generation += 1
-        let token = generation
-        self.facts = facts
-        zoom = .fit
-        naturalSize = nil
-        problem = nil
-        let address: String
+        self.facts = facts; naturalSize = nil; problem = nil; address = ""
         switch subject {
-        case .none(let reason):
-            problem = reason
-            discardPage()
-            return
+        case .none(let reason): problem = reason
+        case .address(let address):
+            self.address = address
+            if let url = URL(string: address), let data = try? Data(contentsOf: url) { naturalSize = NSImage(data: data)?.size }
         case .asset(let asset):
-            assets.replace([Self.token: asset])
-            address = "\(MarkdownRenderer.assetScheme)://doc/\(Self.token)"
-        case .address(let data):
-            assets.replace([:])
-            address = data
-        }
-        do {
-            try await display(InspectionPage.html(address: address, alt: facts.alt, title: facts.title, pageTitle: title))
-        } catch {
-            guard token == generation else { return }
-            problem = "The image could not be shown: \(error.localizedDescription)"
-            return
-        }
-        // The page loads with the image at its own size and hidden, because a scaled SVG image
-        // reports its laid-out size as its natural size. Fit applies once the size is known.
-        guard token == generation, let measured = await measure(), token == generation else { return }
-        if measured.natural.width > 0, measured.natural.height > 0 {
-            if await show(.fit, natural: measured.natural), token == generation { naturalSize = measured.natural }
-        } else {
-            problem = assets.evidence(Self.token).failure.map { "The image was not served: \($0)" } ?? "The image did not load or could not be decoded."
+            do {
+                let data = try asset.readData()
+                naturalSize = NSImage(data: data)?.size
+            } catch { problem = "The image was not served: \(error.localizedDescription)" }
         }
     }
-
-    /// Replaces what the document page observed for the inspected image.
+    func setAddress(_ address: String) { self.address = address }
     func note(_ evidence: [ImageEvidence]) {
         guard let reference = facts?.reference, let found = evidence.first(where: { $0.reference == reference }) else { return }
         facts?.evidence = found
     }
-
-    public func close() {
-        generation += 1
-        facts = nil
-        naturalSize = nil
-        problem = nil
-        zoom = .fit
-        discardPage()
-    }
-
-    public func zoomToFit() async {
-        await apply(.fit)
-    }
-
-    public func actualSize() async {
-        await apply(.scale(1))
-    }
-
-    public func zoomIn() async {
-        guard let scale = await currentScale(), let next = Self.step(from: scale, larger: true) else { return }
-        await apply(.scale(next))
-    }
-
-    public func zoomOut() async {
-        guard let scale = await currentScale(), let next = Self.step(from: scale, larger: false) else { return }
-        await apply(.scale(next))
-    }
-
-    /// The scale on screen: the chosen one, or the one that Fit gives in the view's current size.
-    func currentScale() async -> Double? {
-        guard let naturalSize else { return nil }
-        switch zoom {
-        case .scale(let scale): return scale
-        case .fit:
-            guard let measured = await measure() else { return nil }
-            return Self.fitScale(natural: naturalSize, view: measured.view)
-        }
-    }
-
-    private func apply(_ zoom: Zoom) async {
-        guard let naturalSize, problem == nil else { return }
-        await show(zoom, natural: naturalSize)
-    }
-
-    /// Puts a zoom on the page for an image of `natural` size. Returns false when the page did
-    /// not take it.
-    @discardableResult
-    private func show(_ zoom: Zoom, natural: CGSize) async -> Bool {
-        guard let page else { return false }
-        var arguments: [String: Any] = ["mode": "fit", "width": 0]
-        if case .scale(let scale) = zoom {
-            arguments = ["mode": "scale", "width": max(1, Int((natural.width * scale).rounded()))]
-        }
-        let token = generation
-        guard (try? await page.callJavaScript(PageScript.applyImageZoom, arguments: arguments, contentWorld: PageScript.world)) != nil, token == generation else { return false }
-        self.zoom = zoom
-        return true
-    }
-
-    private func measure() async -> (natural: CGSize, view: CGSize)? {
-        guard let page, let value = try? await page.callJavaScript(PageScript.measureImage, contentWorld: PageScript.world) as? [String: Any] else { return nil }
-        func number(_ key: String) -> Double { (value[key] as? Double) ?? Double((value[key] as? Int) ?? 0) }
-        return (CGSize(width: number("width"), height: number("height")), CGSize(width: number("viewWidth"), height: number("viewHeight")))
-    }
-
-    private func display(_ html: String) async throws {
-        let page = self.page ?? makePage()
-        expectingLoad = true
-        defer { expectingLoad = false }
-        do {
-            for try await _ in page.load(html: html, baseURL: URL(string: "about:blank")!) {}
-        } catch WebPage.NavigationError.webContentProcessTerminated {
-            for try await _ in page.load(html: html, baseURL: URL(string: "about:blank")!) {}
-        }
-    }
-
-    private func makePage() -> WebPage {
-        let page = ReaderPageFactory.make(router: router, assets: assets)
-        router.handler = self
-        self.page = page
-        return page
-    }
-
-    private func discardPage() {
-        page = nil
-        assets.replace([:])
-    }
-}
-
-/// The inspection page allows its own load and nothing else.
-extension ImageInspection: NavigationHandling {
-    func handle(_ request: NavigationRequest) {}
+    public func close() { facts = nil; naturalSize = nil; problem = nil; address = ""; page = nil }
 }
 
 extension PageScript {
-    /// The image's own size and the view's size, in CSS pixels. The image's size is its own only
-    /// while the page does not scale it.
-    static let measureImage = """
-    const image = document.getElementById('subject');
-    if (!image) return null;
-    return { width: image.complete ? image.naturalWidth : 0, height: image.complete ? image.naturalHeight : 0, viewWidth: window.innerWidth, viewHeight: window.innerHeight };
-    """
-
-    /// Sets the zoom mode and, at a chosen scale, the image's width. The point in the middle of
-    /// the view stays in the middle.
-    static let applyImageZoom = """
-    const image = document.getElementById('subject');
-    if (!image) return false;
-    const root = document.scrollingElement || document.documentElement;
-    const centerX = (root.scrollLeft + window.innerWidth / 2) / Math.max(1, root.scrollWidth);
-    const centerY = (root.scrollTop + window.innerHeight / 2) / Math.max(1, root.scrollHeight);
-    document.documentElement.dataset.zoom = mode;
-    if (mode === "scale") image.setAttribute("width", String(width)); else image.removeAttribute("width");
-    root.scrollLeft = centerX * root.scrollWidth - window.innerWidth / 2;
-    root.scrollTop = centerY * root.scrollHeight - window.innerHeight / 2;
-    return true;
-    """
-
-    /// The index of the first image that reaches into the view, else of the last image above it.
     static let imageInView = """
     const images = document.querySelectorAll('[data-image]');
-    for (const image of images) {
-      if (image.getBoundingClientRect().bottom > 0) return Number(image.dataset.image);
-    }
+    for (const image of images) { if (image.getBoundingClientRect().bottom > 0) return Number(image.dataset.image); }
     return images.length ? Number(images[images.length - 1].dataset.image) : -1;
     """
-}
-
-/// The page of one inspected image: the reader's content policy and stylesheet, no script, and
-/// the image with the alternatives that the source gives it.
-enum InspectionPage {
-    static func html(address: String, alt: String, title: String, pageTitle: String) -> String {
-        """
-        <!doctype html>
-        <html data-zoom="measure">
-        <head>
-        <meta charset="utf-8">
-        <meta http-equiv="Content-Security-Policy" content="\(PageTemplate.contentSecurityPolicy)">
-        <meta name="color-scheme" content="light dark">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>\(MarkdownRenderer.escape(pageTitle))</title>
-        <link rel="stylesheet" href="\(PageTemplate.stylesheetAddress)">
-        </head>
-        <body class="inspect"><img id="subject" src="\(MarkdownRenderer.escape(address))" alt="\(MarkdownRenderer.escape(alt))"\(title.isEmpty ? "" : " title=\"\(MarkdownRenderer.escape(title))\"")></body>
-        </html>
-        """
-    }
 }
 
 extension ReaderModel {
     /// Opens the inspection of the image at `index` of the shown revision.
     public func inspectImage(_ index: Int) async {
+        await prepareImage(index)
+        if inspection.facts?.index == index { await sendCommand("inspectImage", args: ["index": index]) }
+    }
+
+    func prepareImage(_ index: Int) async {
         guard let snapshot, let rendered, let facts = ImageFacts.make(index: index, rendered: rendered, snapshot: snapshot, evidence: imageEvidence) else { return }
         let subject: ImageInspection.Subject
         switch rendered.images[index].source {
@@ -415,7 +211,11 @@ extension ReaderModel {
             subject = .none("This image is unavailable: \(MarkdownRenderer.reasonLabel(reason)).")
         }
         readerLog.notice("inspect image \(self.reference.key, privacy: .public) index=\(index, privacy: .public) of \(rendered.images.count, privacy: .public)")
+        inspection.page = page
         await inspection.open(facts, subject: subject, title: displayTitle)
+        if case .local(let token) = rendered.images[index].source, inspection.problem == nil {
+            inspection.setAddress("\(MarkdownRenderer.assetScheme)://doc/\(token)")
+        }
         // The document page's first observation can precede the image's decoding; ask again
         // when it did not confirm the display.
         if case .local = rendered.images[index].source, facts.evidence?.displayed != true, facts.evidence?.failure == nil, !showingSource {
@@ -449,6 +249,7 @@ extension ReaderModel {
     /// Ends the inspection. A revision that arrived meanwhile is then followed or announced.
     public func closeImageInspection() async {
         inspection.close()
+        await sendCommand("escape")
         await checkForUpdate()
     }
 
@@ -473,127 +274,5 @@ extension ReaderModel {
         guard let text = inspection.facts?.referenceText else { return }
         platform.copyText(text)
         post("Copied the image reference with its digest.", kind: .info)
-    }
-}
-
-/// The inspection layer of a reader: a bar with the zoom controls, the image, and what the
-/// revision records about it.
-struct ImageInspectionLayer: View {
-    @Bindable var model: ReaderModel
-
-    var body: some View {
-        if let facts = model.inspection.facts {
-            VStack(spacing: 0) {
-                InspectionBar(model: model, facts: facts)
-                subject(facts)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                InspectionFacts(model: model, facts: facts)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background { Rectangle().fill(.background) }
-        }
-    }
-
-    @ViewBuilder private func subject(_ facts: ImageFacts) -> some View {
-        let inspection = model.inspection
-        if let problem = inspection.problem {
-            ContentUnavailableView {
-                Label("No image to show", systemImage: "photo.badge.exclamationmark")
-            } description: {
-                Text(problem)
-            }
-        } else if let page = inspection.page {
-            WebView(page)
-                .webViewLinkPreviews(.disabled)
-                .webViewBackForwardNavigationGestures(.disabled)
-                .webViewElementFullscreenBehavior(.disabled)
-                .webViewContextMenu { _ in
-                    Button("Zoom to Fit") { Task { await inspection.zoomToFit() } }
-                    Button("Actual Size") { Task { await inspection.actualSize() } }
-                    Divider()
-                    if facts.isRetained { Button("Copy Reference") { model.copyImageReference() } }
-                    Button("Close Image") { Task { await model.closeImageInspection() } }
-                }
-                .accessibilityLabel(facts.accessibilityLabel)
-        } else {
-            ProgressView().controlSize(.small)
-        }
-    }
-}
-
-struct InspectionBar: View {
-    @Bindable var model: ReaderModel
-    let facts: ImageFacts
-
-    var body: some View {
-        let inspection = model.inspection
-        let zoomable = inspection.naturalSize != nil && inspection.problem == nil
-        HStack(spacing: 6) {
-            Button { Task { await model.inspectAdjacentImage(next: false) } } label: { Label("Previous Image", systemImage: "chevron.left") }
-                .disabled(facts.index == 0)
-                .help("Previous image")
-            Button { Task { await model.inspectAdjacentImage(next: true) } } label: { Label("Next Image", systemImage: "chevron.right") }
-                .disabled(facts.index + 1 >= facts.count)
-                .help("Next image")
-            Text("Image \(facts.index + 1) of \(facts.count)" + (zoomable ? " · \(inspection.zoomLabel)" : ""))
-                .font(.callout)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityLabel("Image \(facts.index + 1) of \(facts.count)" + (zoomable ? ", zoom \(inspection.zoomLabel)" : ""))
-            Group {
-                Button("Fit") { Task { await inspection.zoomToFit() } }
-                    .help("Zoom to fit (⌘9)")
-                Button("1:1") { Task { await inspection.actualSize() } }
-                    .help("Actual size (⌘0)")
-                    .accessibilityLabel("Actual size")
-                Button { Task { await inspection.zoomOut() } } label: { Label("Zoom Out", systemImage: "minus.magnifyingglass") }
-                    .help("Zoom out (⌘-)")
-                Button { Task { await inspection.zoomIn() } } label: { Label("Zoom In", systemImage: "plus.magnifyingglass") }
-                    .help("Zoom in (⌘=)")
-            }
-            .disabled(!zoomable)
-            Button("Done") { Task { await model.closeImageInspection() } }
-                .help("Close the image (Esc)")
-        }
-        .labelStyle(.iconOnly)
-        .controlSize(.small)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(.bar)
-        .overlay(alignment: .bottom) { Divider() }
-    }
-}
-
-struct InspectionFacts: View {
-    @Bindable var model: ReaderModel
-    let facts: ImageFacts
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 3) {
-                ForEach(facts.rows, id: \.label) { row in
-                    GridRow {
-                        Text(row.label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                        Text(row.value)
-                            .textSelection(.enabled)
-                            .lineLimit(row.label == "Alt text" ? 4 : 2)
-                            .truncationMode(.middle)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
-            .font(.caption)
-            if facts.isRetained {
-                Button("Copy Reference") { model.copyImageReference() }
-                    .controlSize(.small)
-                    .help("Copy the reference with the document, revision and digest")
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.bar)
-        .overlay(alignment: .top) { Divider() }
     }
 }

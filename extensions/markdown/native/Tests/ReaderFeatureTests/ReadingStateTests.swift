@@ -14,6 +14,55 @@ import Testing
         .file(path: "/notes/\(index).md")
     }
 
+    @Test func textSizeMultipliersRoundTripWithoutChangingStoredIndices() throws {
+        for (index, pixels) in PageSettings.textSizes.enumerated() {
+            let settings = PageSettings(textSize: index)
+            #expect(settings.textSizeMultiplier == Double(pixels) / 16)
+            #expect(PageSettings.textSizeMultipliers[index] == settings.textSizeMultiplier)
+            #expect(PageSettings.nearestTextSize(to: settings.textSizeMultiplier) == index)
+            let stored = try JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as? [String: Any]
+            #expect(stored?["textSize"] as? Int == index)
+        }
+        #expect(PageSettings.nearestTextSize(to: 1) == 3)
+        #expect(PageSettings.nearestTextSize(to: 1.11) == 5)
+        let midpoint = (PageSettings.textSizeMultipliers[0] + PageSettings.textSizeMultipliers[1]) / 2
+        #expect(PageSettings.nearestTextSize(to: midpoint) == 0)
+        #expect(PageSettings.nearestTextSize(to: 0) == 0)
+        #expect(PageSettings.nearestTextSize(to: .greatestFiniteMagnitude) == PageSettings.textSizes.count - 1)
+        #expect(PageSettings.nearestTextSize(to: .nan) == PageSettings.defaultTextSize)
+    }
+
+    @Test func draftLocksDefaultToWritingAndMergeByDraftIdentity() async throws {
+        let directory = try Self.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstId = UUID().uuidString, secondId = UUID().uuidString
+        let first = ReadingStateStore(directory: directory)
+        let second = ReadingStateStore(directory: directory)
+        #expect(first.draftLock(for: firstId) == .writing)
+        first.setDraftLock(.reading, for: firstId)
+        second.setDraftLock(.writing, for: secondId)
+        #expect(await first.flush(timeout: 2) == .saved)
+        #expect(await second.flush(timeout: 2) == .saved)
+        let reopened = ReadingStateStore(directory: directory)
+        #expect(reopened.draftLock(for: firstId) == .reading)
+        #expect(reopened.draftLock(for: secondId) == .writing)
+    }
+
+    @Test func presentationSettingsSurvivePositionSaves() async throws {
+        let directory = try Self.directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = ReadingStateStore(directory: directory)
+        let second = ReadingStateStore(directory: directory)
+        first.setPresentation(appearance: "dark", outlineWidth: 310, outlineOpen: false)
+        #expect(await first.flush(timeout: 2) == .saved)
+        second.setPosition(Self.position("block", at: 2), for: Self.reference(1))
+        #expect(await second.flush(timeout: 2) == .saved)
+        let reopened = ReadingStateStore(directory: directory)
+        #expect(reopened.appearance == "dark")
+        #expect(reopened.outlineWidth == 310)
+        #expect(!reopened.outlineOpen)
+    }
+
     @Test func selectionSurvivesAnotherReadersPositionSave() async throws {
         let directory = try Self.directory()
         defer { try? FileManager.default.removeItem(at: directory) }

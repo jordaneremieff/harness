@@ -3,15 +3,42 @@ import EditorFeature
 import MarkdownCore
 import MacPlatform
 
+private struct ExternalDocumentVersion: Sendable {
+    let source: String
+    let destination: EditDestination
+    let resolver: any AssetResolving
+    let baseSource: String
+
+    static func load(_ record: DraftRecord) throws -> Self {
+        switch record.destination {
+        case .file(let base):
+            let file = try LocalFileSave.open(URL(fileURLWithPath: base.requestedPath))
+            guard let source = record.savedSource else { throw FileSaveError.invalid("The edit base is unavailable.") }
+            return Self(source: file.source, destination: .file(file.base),
+                resolver: DirectoryAssetResolver(directory: URL(fileURLWithPath: file.base.path).deletingLastPathComponent()),
+                baseSource: source)
+        case .published(let base):
+            let reference = DocumentReference.stored(root: base.root, storeId: base.storeId, document: base.document)
+            let snapshot = try DocumentLoader.load(reference)
+            guard let revision = snapshot.revision else { throw FileSaveError.invalid("The stored revision is unavailable.") }
+            let selected = StoredEditBase(root: base.root, storeId: base.storeId, document: base.document, revision: revision, digest: snapshot.digest)
+            let original = try DocumentLoader.load(reference, revision: base.revision, pinnedDigest: base.digest)
+            return Self(source: snapshot.source, destination: .published(selected), resolver: snapshot.resolver, baseSource: original.source)
+        case .copy, .scratchpad:
+            throw FileSaveError.invalid("This document has no external save destination.")
+        }
+    }
+}
+
 private enum LiveMergeFailure: Error { case assetConflict }
 
 extension EditorWorkspace {
     func receiveExternalChange(_ document: WorkingDocument) async {
-        guard !closing, !document.closed, !document.text.hasMarkedText, !document.replacing, !document.stagingImages,
+        guard !closing, !document.closed, !document.text.hasMarkedText, !document.stagingImages,
               !document.session.saving, document.session.record.pendingPublication == nil else { return }
         let record = document.session.record, generation = document.text.generation
         func stillCurrent() -> Bool {
-            !closing && !document.closed && !document.text.hasMarkedText && !document.replacing && !document.stagingImages
+            !closing && !document.closed && !document.text.hasMarkedText && !document.stagingImages
                 && !document.session.saving && document.session.record.pendingPublication == nil
                 && generation == document.text.generation && record.destination == document.session.record.destination
                 && record.assetRoot == document.session.record.assetRoot
@@ -19,7 +46,7 @@ extension EditorWorkspace {
                 && record.stagedAssets?.map(\.digest) == document.session.record.stagedAssets?.map(\.digest)
         }
         do {
-            let candidate = try await Task.detached { try EditorRevisionCandidate.load(record) }.value
+            let candidate = try await Task.detached { try ExternalDocumentVersion.load(record) }.value
             guard stillCurrent() else { document.checkForUpdates(); return }
             let changes: [LiveTextMerge.Change]
             switch LiveTextMerge.merge(base: candidate.baseSource, local: record.source, remote: candidate.source) {
@@ -61,7 +88,7 @@ extension EditorWorkspace {
             guard stillCurrent() else { document.checkForUpdates(); return }
             if !changes.isEmpty {
                 let edits = changes.map { MarkdownSourceEdit(range: $0.range, expected: $0.expected, replacement: $0.replacement) }
-                guard document.text.apply(edits: edits, expectedGeneration: generation, selection: nil, actionName: "Shared Update") else { return }
+                guard await document.applyEdits(edits, generation: generation) else { return }
             }
             if !images.isEmpty {
                 document.session.retainImages(root: root.path, images: images)
@@ -92,7 +119,7 @@ extension EditorWorkspace {
             while document.persistenceRequested, !document.closed, !Task.isCancelled {
                 do { try await Task.sleep(for: .milliseconds(650)) } catch { return }
                 document.persistenceRequested = false
-                guard !self.closing, !document.text.hasMarkedText, !document.stagingImages, !document.replacing else { return }
+                guard !self.closing, !document.text.hasMarkedText, !document.stagingImages else { return }
                 guard document.session.record.conflict == nil else { return }
                 guard document.session.isDirty || document.session.record.pendingPublication != nil else { return }
                 guard !document.session.saving else { document.persistenceRequested = true; continue }

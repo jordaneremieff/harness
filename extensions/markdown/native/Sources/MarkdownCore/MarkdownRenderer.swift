@@ -38,6 +38,8 @@ public struct RenderedDocument: Sendable {
     /// Every image of the source in document order, shown or not. An image's position here is
     /// the index that its inspection action carries.
     public var images: [RenderedImage] = []
+    /// Source-ordered blocks for the web reader, with exact UTF-16 source ranges.
+    public var blocks: [WebBlock] = []
 
     /// A title taken from the content: the heading that opens the document, else the first text
     /// line of the first block, shortened to 80 characters.
@@ -69,13 +71,35 @@ public enum MarkdownRenderer {
         var context = Context(resolver: resolver, nonce: nonce, codeLineEnding: codeLineEnding)
         let (frontMatter, body) = splitFrontMatter(source)
         var html = ""
+        var frontHTML = ""
+        var frontMap: [[Int]] = []
         if let frontMatter {
             context.codeBlocks.append(CodeBlock(info: "front matter", literal: frontMatter.replacingOccurrences(of: "\n", with: codeLineEnding)))
-            html += "<div class=\"blk\" data-key=\"front-matter\">"
-                + codeFigure(index: 0, label: "Front matter", literal: frontMatter, nonce: nonce)
-                + "</div>\n"
+            let prefix = (source as NSString).substring(to: source.utf16.count - body.utf16.count)
+            let rows = WebSourceLines(prefix).rows
+            let interior = NSRange(location: rows[1].range.location, length: NSMaxRange(rows[rows.count - 2].range) - rows[1].range.location)
+            let mapping = WebTextMap(source: source)
+            let mapped = mapping.finish(codeFigure(index: 0, label: "Front matter", literal: frontMatter, nonce: nonce, mappedLiteral: mapping.sourceLiteralHTML(interior, text: frontMatter)))
+            frontHTML = mapped.html
+            frontMap = mapped.map
+            html += "<div class=\"blk\" data-key=\"front-matter\">" + frontHTML + "</div>\n"
         }
         html += renderBody(body, context: &context)
+        let bodyOffset = source.utf16.count - body.utf16.count
+        var blocks = context.webBlocks.map { block in
+            var shifted = block
+            shifted.start += bodyOffset
+            shifted.end += bodyOffset
+            shifted.map = shifted.map.map { [$0[0], $0[1], $0[2] + bodyOffset, $0[3]] }
+            return shifted
+        }
+        if frontMatter != nil {
+            let prefix = (source as NSString).substring(to: bodyOffset)
+            let range = WebSourceLines(prefix).nonblankRange
+            if let range {
+                blocks.insert(WebBlock.make(source: source, range: range, type: "code", html: frontHTML, nonce: nonce, occurrence: 0, map: frontMap), at: 0)
+            }
+        }
         return RenderedDocument(
             body: html,
             outline: context.outline,
@@ -90,8 +114,14 @@ public enum MarkdownRenderer {
             leadingText: context.leadingBlock?.text,
             startsWithHeading: context.leadingBlock?.isHeading ?? false,
             nonce: nonce,
-            images: context.images
+            images: context.images,
+            blocks: blocks
         )
+    }
+
+    /// Renders source-ordered web blocks through the same whole-document parser and safety checks.
+    public static func renderBlocks(_ source: String, resolver: AssetResolving, nonce: String = newNonce()) -> [WebBlock] {
+        render(source, resolver: resolver, nonce: nonce).blocks
     }
 
     public static func newNonce() -> String {
@@ -117,6 +147,8 @@ public enum MarkdownRenderer {
         var images: [RenderedImage] = []
         var rawHTML = 0
         var blockCount = 0
+        var webBlocks: [WebBlock] = []
+        var webMapping: WebTextMap?
         var leadingBlock: (text: String, isHeading: Bool)?
 
         init(resolver: AssetResolving, nonce: String, codeLineEnding: String) {
@@ -143,18 +175,35 @@ public enum MarkdownRenderer {
 
     static func renderBody(_ body: String, context: inout Context) -> String {
         let bytes = Array(body.utf8)
-        guard let parsed = MarkdownParser.parse(bytes) else { return escapedFallback(body) }
+        // Parse one byte per line ending; the text map restores exact source coordinates.
+        guard let parsed = MarkdownParser.parse(Array(WebTextMap.normalised(body).utf8), options: MarkdownParser.options | CMARK_OPT_SOURCEPOS) else {
+            let html = escapedFallback(body)
+            if let range = WebSourceLines(body).nonblankRange {
+                context.webBlocks = [WebBlock.make(source: body, range: range, type: "other", html: html, nonce: context.nonce, occurrence: 0)]
+            }
+            return html
+        }
         defer { parsed.free() }
+        let layout = WebBlockLayout(document: parsed.document, source: body)
+        let mapping = WebTextMap(source: body)
+        mapping.capture(parsed.document)
+        context.webMapping = mapping
         wrapTopLevelBlocks(parsed.document, bytes: bytes, source: body, context: &context)
         let work = collect(parsed.document, context: &context)
         for item in work.reversed() {
             apply(item, context: &context)
         }
         guard let rendered = cmark_render_html(parsed.document, MarkdownParser.options, cmark_parser_get_syntax_extensions(parsed.parser)) else {
-            return escapedFallback(body)
+            let html = escapedFallback(body)
+            if let range = WebSourceLines(body).nonblankRange {
+                context.webBlocks = [WebBlock.make(source: body, range: range, type: "other", html: html, nonce: context.nonce, occurrence: 0)]
+            }
+            return html
         }
         defer { free(rendered) }
-        return String(cString: rendered)
+        let html = String(cString: rendered)
+        context.webBlocks = layout.rendered(html: html, nonce: context.nonce, mapping: mapping)
+        return mapping.finish(html).html
     }
 
     /// Wraps each top-level block in an element with a key derived from its source text and its
@@ -215,7 +264,9 @@ public enum MarkdownRenderer {
             if type == CMARK_NODE_IMAGE {
                 if event == CMARK_EVENT_ENTER {
                     if imageDepth == 0 {
-                        let html = imageHTML(reference: string(cmark_node_get_url(node)), alt: plainText(node), title: string(cmark_node_get_title(node)), linked: isInsideLink(node), context: &context)
+                        let alt = plainText(node)
+                        let mappedAlt = context.webMapping?.literalHTML(node, text: alt)
+                        let html = imageHTML(reference: string(cmark_node_get_url(node)), alt: alt, title: string(cmark_node_get_title(node)), linked: isInsideLink(node), mappedAlt: mappedAlt, context: &context)
                         work.append(.image(node, html: html))
                     }
                     imageDepth += 1
@@ -261,16 +312,19 @@ public enum MarkdownRenderer {
         case .code(let node, let index):
             let block = context.codeBlocks[index]
             let label = block.info.split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map(String.init) ?? ""
-            replace(node, block: true, enter: codeFigure(index: index, label: label.isEmpty ? "code" : label, literal: block.literal, nonce: context.nonce), exit: "", keepChildren: false)
+            replace(node, block: true, enter: codeFigure(index: index, label: label.isEmpty ? "code" : label, literal: block.literal, nonce: context.nonce, mappedLiteral: context.webMapping?.literalHTML(node, text: block.literal)), exit: "", keepChildren: false)
         case .htmlBlock(let node):
             context.rawHTML += 1
             var literal = string(cmark_node_get_literal(node))
             while literal.hasSuffix("\n") { literal.removeLast() }
-            let html = "<div class=\"raw-html\" role=\"note\"><div class=\"raw-label\">HTML shown as text</div><pre><code>\(escape(literal))</code></pre></div>"
+            let mapped = context.webMapping?.literalHTML(node, text: literal) ?? escape(literal)
+            let html = "<div class=\"raw-html\" role=\"note\"><div class=\"raw-label\">HTML shown as text</div><pre><code>\(mapped)</code></pre></div>"
             replace(node, block: true, enter: html, exit: "", keepChildren: false)
         case .htmlInline(let node):
             context.rawHTML += 1
-            let html = "<code class=\"raw-inline\" title=\"HTML shown as text\">\(escape(string(cmark_node_get_literal(node))))</code>"
+            let literal = string(cmark_node_get_literal(node))
+            let mapped = context.webMapping?.literalHTML(node, text: literal) ?? escape(literal)
+            let html = "<code class=\"raw-inline\" title=\"HTML shown as text\">\(mapped)</code>"
             replace(node, block: false, enter: html, exit: "", keepChildren: false)
         case .link(let node):
             let url = string(cmark_node_get_url(node))
@@ -314,8 +368,8 @@ public enum MarkdownRenderer {
     /// The HTML of one image. Every image carries its index and, unless a Markdown link already
     /// holds it, an app action that opens its inspection: around a shown image, or as a control
     /// inside a placeholder.
-    static func imageHTML(reference: String, alt: String, title: String, linked: Bool = false, context: inout Context) -> String {
-        let shownAlt = alt.isEmpty ? "" : "<span class=\"ph-alt\">\(escape(alt))</span>"
+    static func imageHTML(reference: String, alt: String, title: String, linked: Bool = false, mappedAlt: String? = nil, context: inout Context) -> String {
+        let shownAlt = alt.isEmpty ? "" : "<span class=\"ph-alt\">\(mappedAlt ?? escape(alt))</span>"
         let index = context.images.count
         let action = "\(actionScheme):inspect-image/\(context.nonce)/\(index)"
         func record(_ source: RenderedImage.Source) {
@@ -379,10 +433,10 @@ public enum MarkdownRenderer {
         }
     }
 
-    static func codeFigure(index: Int, label: String, literal: String, nonce: String) -> String {
+    static func codeFigure(index: Int, label: String, literal: String, nonce: String, mappedLiteral: String? = nil) -> String {
         "<figure class=\"code\" data-code=\"\(index)\"><figcaption><span class=\"lang\">\(escape(label))</span>"
             + "<a class=\"copy\" href=\"\(actionScheme):copy-code/\(nonce)/\(index)\" title=\"Copy code\" aria-label=\"Copy code\">Copy</a>"
-            + "</figcaption><pre><code>\(escape(literal))</code></pre></figure>"
+            + "</figcaption><pre><code>\(mappedLiteral ?? escape(literal))</code></pre></figure>"
     }
 
     /// Replaces a node with custom HTML. With `keepChildren`, the node's children move into the
@@ -503,16 +557,16 @@ public enum MarkdownRenderer {
     /// as a rule and a heading.
     static func splitFrontMatter(_ source: String) -> (String?, String) {
         guard source.hasPrefix("---\n") || source.hasPrefix("---\r\n") else { return (nil, source) }
-        var lines = source.split(maxSplits: 400, omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" })
-        guard lines.count > 2 else { return (nil, source) }
-        lines.removeFirst()
-        var front: [Substring] = []
-        for (index, line) in lines.enumerated() where index < 399 {
-            let trimmed = line.hasSuffix("\r") ? line.dropLast() : line
-            if trimmed == "---" || trimmed == "..." {
+        let lines = WebSourceLines(source)
+        guard lines.rows.count > 2 else { return (nil, source) }
+        let native = source as NSString
+        var front: [String] = []
+        for index in 1..<min(lines.rows.count, 400) {
+            let row = lines.rows[index]
+            let line = native.substring(with: row.range)
+            if line == "---" || line == "..." {
                 guard !front.isEmpty else { return (nil, source) }
-                let rest = lines.dropFirst(index + 1).joined(separator: "\n")
-                return (front.map { $0.hasSuffix("\r") ? String($0.dropLast()) : String($0) }.joined(separator: "\n"), rest)
+                return (front.joined(separator: "\n"), native.substring(from: row.next))
             }
             front.append(line)
         }

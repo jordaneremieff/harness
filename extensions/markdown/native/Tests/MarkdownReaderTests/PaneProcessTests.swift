@@ -7,6 +7,48 @@ import CryptoKit
 /// the reading state.
 private final class PaneTestProduct: NSObject {}
 
+/// A fresh test application gives the current executable its own bundled bridge host.
+final class PaneTestApplication {
+    let root: URL
+    let bundle: URL
+    let binary: URL
+    let web: URL
+
+    init(sourceBinary: URL) throws {
+        let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let native = tests.deletingLastPathComponent()
+        root = native.appendingPathComponent(".build/pane-test-app/\(UUID().uuidString)", isDirectory: true)
+        bundle = root.appendingPathComponent("Markdown Reader.app", isDirectory: true)
+        binary = bundle.appendingPathComponent("Contents/MacOS/MarkdownReader")
+        web = bundle.appendingPathComponent("Contents/Resources/web", isDirectory: true)
+        let fixture = tests.appendingPathComponent("ReaderFeatureTests/Fixtures/ReaderHost", isDirectory: true)
+        do {
+            try PaneRun.requireBinary(sourceBinary)
+            let bytes = try Data(contentsOf: sourceBinary)
+            try FileManager.default.createDirectory(at: binary.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: web, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: sourceBinary, to: binary)
+            guard try Data(contentsOf: binary) == bytes,
+                  try Data(contentsOf: sourceBinary) == bytes else {
+                throw NSError(domain: "MarkdownReaderTests", code: 2, userInfo: [NSLocalizedDescriptionKey: "The staged reader executable does not match the current build."])
+            }
+            try PaneRun.requireBinary(binary)
+            let info = ["CFBundleExecutable": "MarkdownReader", "CFBundleIdentifier": "local.harness.markdown-reader.pane-tests", "CFBundlePackageType": "APPL"]
+            let plist = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            try plist.write(to: bundle.appendingPathComponent("Contents/Info.plist"))
+            for (source, destination) in [("index.html", "index.html"), ("host.css", "host.css"), ("host.ts", "host.js")] {
+                try FileManager.default.copyItem(at: fixture.appendingPathComponent(source), to: web.appendingPathComponent(destination))
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: root)
+            throw error
+        }
+    }
+
+    func remove() { try? FileManager.default.removeItem(at: root) }
+    deinit { remove() }
+}
+
 struct PaneRun {
     let root: URL
     let home: URL
@@ -61,10 +103,23 @@ struct PaneRun {
         let pid: pid_t
         let primary: Int32
         var output = [UInt8]()
+        private let application: PaneTestApplication
+        private var reaped = false
+        private var exitStatus: Int32?
 
-        init(pid: pid_t, primary: Int32) {
+        init(pid: pid_t, primary: Int32, application: PaneTestApplication) {
             self.pid = pid
             self.primary = primary
+            self.application = application
+        }
+
+        deinit {
+            if !reaped {
+                kill(pid, SIGKILL)
+                var status: Int32 = 0
+                waitpid(pid, &status, 0)
+            }
+            application.remove()
         }
 
         /// Reads the terminal until `text` appears or `seconds` pass.
@@ -85,6 +140,7 @@ struct PaneRun {
         /// Waits for the exit and reads what the terminal shows meanwhile. Returns the exit
         /// status, or nil for a signal or no exit within `seconds`.
         func exit(within seconds: Double, reading: Bool = true) -> (status: Int32?, seconds: Double) {
+            if reaped { return (exitStatus, 0) }
             let start = DispatchTime.now()
             let deadline = start + seconds
             var status: Int32 = 0
@@ -93,7 +149,10 @@ struct PaneRun {
                 if waitpid(pid, &status, WNOHANG) == pid {
                     if reading { _ = read(until: "\u{0}never", seconds: 0.2) }
                     let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e9
-                    return ((status & 0x7f) == 0 ? (status >> 8) & 0xff : nil, elapsed)
+                    reaped = true
+                    exitStatus = (status & 0x7f) == 0 ? (status >> 8) & 0xff : nil
+                    application.remove()
+                    return (exitStatus, elapsed)
                 }
                 if reading {
                     var ready = pollfd(fd: primary, events: Int16(POLLIN), revents: 0)
@@ -107,6 +166,8 @@ struct PaneRun {
             }
             kill(pid, SIGKILL)
             waitpid(pid, &status, 0)
+            reaped = true
+            application.remove()
             return (nil, seconds)
         }
 
@@ -115,7 +176,7 @@ struct PaneRun {
 
     /// Starts the reader on a new pseudo-terminal. `errors` replaces standard error.
     func start(arguments: [String]? = nil, errors: Int32? = nil, prepare: (Int32) -> Void = { _ in }) throws -> Process {
-        try Self.requireBinary(Self.binary)
+        let application = try PaneTestApplication(sourceBinary: Self.binary)
         var primary: Int32 = 0
         var secondary: Int32 = 0
         var size = winsize(ws_row: 30, ws_col: 100, ws_xpixel: 0, ws_ypixel: 0)
@@ -133,7 +194,7 @@ struct PaneRun {
         // The reader keeps only its standard descriptors, as in a terminal pane: a copy of the
         // terminal's primary side would keep the terminal open after the test closes it.
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))
-        let words = [Self.binary.path] + (arguments ?? ["--pane", "--store", store, document])
+        let words = [application.binary.path] + (arguments ?? ["--pane", "--store", store, document])
         var environment = ProcessInfo.processInfo.environment
         environment["PI_PANE_STACKING"] = nil
         environment["CFFIXED_USER_HOME"] = home.path
@@ -144,13 +205,13 @@ struct PaneRun {
             envp.forEach { free($0) }
         }
         var pid: pid_t = 0
-        let result = posix_spawn(&pid, Self.binary.path, &actions, &attributes, argv, envp)
+        let result = posix_spawn(&pid, application.binary.path, &actions, &attributes, argv, envp)
         close(secondary)
         guard result == 0 else {
             close(primary)
             throw POSIXError(POSIXErrorCode(rawValue: result) ?? .EIO)
         }
-        return Process(pid: pid, primary: primary)
+        return Process(pid: pid, primary: primary, application: application)
     }
 }
 
@@ -200,6 +261,24 @@ let notSaved = "Markdown Reader: the reading position was not saved."
             #expect(error.localizedDescription.contains(absent.path))
             #expect(error.localizedDescription.contains("running test product"))
         }
+    }
+
+    @Test func paneApplicationStagesTheCurrentExecutableAndSharedHost() throws {
+        let application = try PaneTestApplication(sourceBinary: PaneRun.binary)
+        let root = application.root
+        defer { application.remove() }
+        #expect(try Data(contentsOf: application.binary) == Data(contentsOf: PaneRun.binary))
+        #expect(FileManager.default.isExecutableFile(atPath: application.binary.path))
+        let bundle = try #require(Bundle(url: application.bundle))
+        #expect(bundle.executableURL?.standardizedFileURL.path == application.binary.standardizedFileURL.path)
+        #expect(bundle.resourceURL?.appendingPathComponent("web").standardizedFileURL.path == application.web.standardizedFileURL.path)
+        let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("ReaderFeatureTests/Fixtures/ReaderHost")
+        for (input, output) in [("index.html", "index.html"), ("host.css", "host.css"), ("host.ts", "host.js")] {
+            #expect(try Data(contentsOf: source.appendingPathComponent(input)) == Data(contentsOf: application.web.appendingPathComponent(output)))
+        }
+        application.remove()
+        #expect(!FileManager.default.fileExists(atPath: root.path))
     }
 
     func started(_ run: PaneRun, errors: Int32? = nil) throws -> PaneRun.Process {

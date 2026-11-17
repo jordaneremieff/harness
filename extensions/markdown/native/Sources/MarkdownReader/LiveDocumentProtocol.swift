@@ -1,13 +1,17 @@
+import Foundation
 import EditorFeature
-import MacPlatform
 import MarkdownCore
+import ReaderFeature
 
 struct LiveTextEdit: Codable, Sendable {
     var start: Int
     var end: Int
     var expected: String
     var replacement: String
+    var sourceEdit: MarkdownSourceEdit { .init(range: NSRange(location: start, length: end - start), expected: expected, replacement: replacement) }
 }
+
+struct LiveClaimRange: Codable, Sendable { var start: Int; var end: Int }
 
 struct LiveCommand: Codable, Sendable {
     var requestId: String
@@ -18,12 +22,12 @@ struct LiveCommand: Codable, Sendable {
     var baseGeneration: UInt64?
     var baseDigest: String?
     var edits: [LiveTextEdit]?
+    var ranges: [LiveClaimRange]?
+    var label: String?
+    var claimId: String?
 }
 
-struct LiveAssetIdentity: Codable, Sendable {
-    var reference: String
-    var digest: String
-}
+struct LiveAssetIdentity: Codable, Sendable { var reference: String; var digest: String }
 
 struct LiveResult: Codable, Sendable {
     var status: String
@@ -34,6 +38,46 @@ struct LiveResult: Codable, Sendable {
     var assets: [LiveAssetIdentity]?
     var operationId: String?
     var retained: Bool?
+    var claimId: String?
+    var expiresAt: Double?
+    var reason: String?
+}
+
+struct WebPageChange: Sendable {
+    var baseGeneration: UInt64
+    var generation: UInt64
+    var origin: String
+    var operationId: String?
+    var edits: [MarkdownSourceEdit]
+}
+
+enum WebAgentApplyResult {
+    case accepted(WebPageChange)
+    case refused(reason: String, range: NSRange? = nil)
+}
+
+struct WebPageAck {
+    let generation: UInt64
+    let digest: String
+    let copied: Bool
+    let recoveryRetained: Bool
+}
+
+enum WebMirrorError: Error { case closed, invalidChange, stale, copyFailed }
+struct WebObservedChange {
+    let change: WebPageChange
+    let digest: String
+    let document: UUID
+}
+struct WebPendingLiveEdit {
+    let document: UUID
+    let inputDigest: String
+    let generation: UInt64
+    let edits: [MarkdownSourceEdit]
+}
+struct WebLiveClaim {
+    let document: UUID
+    let expiresAt: Date
 }
 
 extension EditorWorkspace {
@@ -47,101 +91,256 @@ extension EditorWorkspace {
         client.start()
     }
 
+    /// The only page-to-native mutation path. An acknowledgement follows recovery retention.
+    func receivePageChange(_ change: WebPageChange) async throws -> WebPageAck {
+        guard !closing, !pageChangeInProgress else { throw WebMirrorError.closed }
+        guard ["person", "agent", "history"].contains(change.origin), change.baseGeneration < UInt64.max,
+              change.generation == change.baseGeneration + 1,
+              change.operationId == nil || (change.operationId!.utf8.count <= 128 && !change.operationId!.isEmpty),
+              change.origin != "agent" || change.operationId != nil else { throw WebMirrorError.invalidChange }
+        let identity = liveDocumentID
+        if change.origin == "agent", let operation = change.operationId {
+            guard issuedPageOperations[operation] == identity else { throw WebMirrorError.closed }
+        }
+        let source: String
+        let generation: UInt64
+        if let reading, let snapshot = reading.snapshot { source = snapshot.source; generation = 0 }
+        else if let document = active { source = document.text.source; generation = document.text.generation }
+        else { throw WebMirrorError.closed }
+        guard generation == change.baseGeneration else { throw WebMirrorError.stale }
+        guard let nextSource = MirrorText.applying(change.edits, to: source) else { throw WebMirrorError.invalidChange }
+        if change.origin == "agent", let operation = change.operationId, observedPageChanges[operation] != nil { throw WebMirrorError.invalidChange }
+        if change.origin == "agent", let operation = change.operationId, let pending = pendingLiveEdits[operation] {
+            guard pending.document == identity, pending.generation == generation, Self.equalEdits(pending.edits, change.edits) else { throw WebMirrorError.invalidChange }
+        }
+        pageChangeInProgress = true
+        defer { pageChangeInProgress = false }
+        let imageAdoption = try await prepareImageAdoption(source: nextSource, identity: identity)
+        guard identity == liveDocumentID, !closing else { throw WebMirrorError.closed }
+        var copied = false
+        if let reading {
+            copied = reading.snapshot?.document?.kind != .published
+            guard await editReading(copy: copied, pagePromotion: true) else { throw WebMirrorError.copyFailed }
+        }
+        guard identity == liveDocumentID, !closing, let document = active else { throw WebMirrorError.closed }
+        guard document.text.generation == change.baseGeneration, document.text.source.utf8.elementsEqual(source.utf8) else { throw WebMirrorError.stale }
+        if let imageAdoption {
+            document.session.retainImages(root: imageAdoption.root.path, images: imageAdoption.images)
+        }
+        guard document.text.apply(edits: change.edits, expectedGeneration: change.baseGeneration) else { throw WebMirrorError.stale }
+        if let imageAdoption {
+            document.session.consumeImages(imageAdoption.images.map(\.reference))
+            finishImageAdoption(imageAdoption)
+        }
+        let digest = document.text.digest
+        if change.origin == "agent", let operation = change.operationId {
+            observedPageChanges[operation] = WebObservedChange(change: change, digest: digest, document: identity)
+            if let pending = pendingLiveEdits[operation] {
+                document.session.retainLiveReceipt(.init(operationId: operation, inputDigest: pending.inputDigest, generation: change.generation, digest: digest))
+                pendingLiveEdits[operation] = nil
+            }
+            if observedPageChanges.count > 1024, let oldest = observedPageChanges.keys.first(where: { $0 != operation }) {
+                observedPageChanges[oldest] = nil
+            }
+        }
+        let retained = await document.session.persist()
+        schedulePersistence(document)
+        return WebPageAck(generation: change.generation, digest: digest, copied: copied, recoveryRetained: retained)
+    }
+
+    func applyThroughPage(_ edits: [MarkdownSourceEdit], generation: UInt64) async -> Bool {
+        guard !closing, webReady, !pageBusy, !pageChangeInProgress, !liveApplyInProgress, let webAgentApply,
+              !overlapsHold(edits.map(\.range)), let document = active,
+              document.text.generation == generation else { return false }
+        liveApplyInProgress = true
+        defer { liveApplyInProgress = false }
+        let operation = UUID().uuidString, identity = liveDocumentID
+        registerPageOperation(operation)
+        let result = await webAgentApply(operation, generation, edits)
+        guard case .accepted(let change) = result, identity == liveDocumentID,
+              matchesObserved(change, operation: operation, generation: generation, edits: edits) != nil else { return false }
+        return true
+    }
+
+    private func registerPageOperation(_ operation: String) {
+        issuedPageOperations[operation] = liveDocumentID
+        if issuedPageOperations.count > 4096,
+           let retired = issuedPageOperations.keys.first(where: { $0 != operation && pendingLiveEdits[$0] == nil }) {
+            issuedPageOperations[retired] = nil
+        }
+    }
+
+    private func matchesObserved(_ change: WebPageChange, operation: String, generation: UInt64,
+                                 edits: [MarkdownSourceEdit]) -> WebObservedChange? {
+        guard change.operationId == operation, change.origin == "agent", change.baseGeneration == generation,
+              generation < UInt64.max, change.generation == generation + 1,
+              let observed = observedPageChanges[operation], observed.document == liveDocumentID,
+              observed.change.generation == change.generation,
+              Self.equalEdits(change.edits, edits), Self.equalEdits(observed.change.edits, edits) else { return nil }
+        return observed
+    }
+
+    private static func equalEdits(_ a: [MarkdownSourceEdit], _ b: [MarkdownSourceEdit]) -> Bool {
+        a.count == b.count && zip(a, b).allSatisfy {
+            $0.range == $1.range && $0.expected.utf8.elementsEqual($1.expected.utf8) && $0.replacement.utf8.elementsEqual($1.replacement.utf8)
+        }
+    }
+
+    private func overlapsHold(_ ranges: [NSRange]) -> Bool {
+        guard let held = pageHeld else { return false }
+        let passage = ReaderBridgeRange(start: held.location, end: NSMaxRange(held))
+        return ranges.contains { ReaderBridgeRange(start: $0.location, end: NSMaxRange($0)).overlaps(passage) }
+    }
+
+    private func heldResult() -> LiveResult {
+        let range = pageHeld ?? NSRange(location: 0, length: 0)
+        return LiveResult(status: "busy", message: "The person is typing in this passage (UTF-16 \(range.location)–\(NSMaxRange(range))). Read again after a pause, or edit elsewhere.", reason: "held")
+    }
+
+    func expireClaims(now: Date = Date()) {
+        for (claim, value) in liveClaims where value.expiresAt <= now || value.document != liveDocumentID {
+            liveClaims[claim] = nil; webRelease?(claim)
+        }
+    }
+
+    private func releaseClaims(document: UUID) {
+        for (claim, value) in liveClaims where value.document == document {
+            liveClaims[claim] = nil; webRelease?(claim)
+        }
+    }
+
     func handleLive(_ command: LiveCommand) async -> LiveResult {
         guard command.workspace == id.uuidString, command.document == liveDocumentID.uuidString, !closing else {
             return LiveResult(status: "closed", message: "This document handle is no longer active.")
         }
+        expireClaims()
         guard !libraryVisible, publishedLibrary == nil else { return LiveResult(status: "busy", message: "Select a document first.") }
-        if command.op == "read" {
-            if let reading, let snapshot = reading.snapshot {
-                return LiveResult(status: "ok", source: snapshot.source, generation: 0, digest: snapshot.digest,
-                    assets: snapshot.record?.references?.items?.compactMap { item in item.digest.map { LiveAssetIdentity(reference: item.reference, digest: $0) } } ?? [])
+        if command.op == "release" {
+            guard let claim = command.claimId, let value = liveClaims[claim], value.document == liveDocumentID else {
+                return LiveResult(status: "error", message: "The claim is not active for this document.")
             }
-            guard let document = active else { return LiveResult(status: "busy", message: "The document has not opened yet.") }
-            let record = document.session.record, source = document.text.source, generation = document.text.generation
-            var assets: [LiveAssetIdentity] = []
-            let base: StoredEditBase? = switch record.destination { case .published(let base), .copy(let base): base; default: nil }
-            if let base {
-                do {
-                    assets = try await Task.detached {
-                        try DirectoryStore(root: URL(fileURLWithPath: base.root)).loadRevision(base.document, revision: base.revision).record.references?.items?.compactMap { item in item.digest.map { LiveAssetIdentity(reference: item.reference, digest: $0) } } ?? []
-                    }.value
-                } catch { return LiveResult(status: "error", message: "The retained asset inventory is unavailable.") }
+            liveClaims[claim] = nil; webRelease?(claim)
+            return LiveResult(status: "released", claimId: claim)
+        }
+        if command.op == "read" { return await readLive(command) }
+        let source: String, generation: UInt64, digest: String
+        if let reading, let snapshot = reading.snapshot { source = snapshot.source; generation = 0; digest = snapshot.digest }
+        else if let document = active { source = document.text.source; generation = document.text.generation; digest = document.text.digest }
+        else { return LiveResult(status: "busy", message: "The document has not opened yet.") }
+        if command.op == "claim" {
+            guard let ranges = command.ranges, !ranges.isEmpty, ranges.count <= 16,
+                  command.label.map({ $0.count <= 80 }) ?? true,
+                  ranges.allSatisfy({ $0.start >= 0 && $0.end >= $0.start && $0.end <= source.utf16.count }) else {
+                return LiveResult(status: "error", message: "The claim ranges are invalid.")
             }
-            guard command.document == liveDocumentID.uuidString, !closing else { return LiveResult(status: "closed", message: "The document changed during the read.") }
-            for image in record.stagedAssets ?? [] {
-                assets.removeAll { $0.reference == image.reference }
-                assets.append(LiveAssetIdentity(reference: image.reference, digest: image.digest))
+            guard command.baseGeneration == generation, command.baseDigest == digest else { return LiveResult(status: "stale", message: "Read the current document before claiming a passage.") }
+            guard webReady, !pageBusy, !pageChangeInProgress else { return LiveResult(status: "busy", message: "The document page is not ready.") }
+            let values = ranges.map { NSRange(location: $0.start, length: $0.end - $0.start) }
+            guard values.allSatisfy({ MirrorText.validRange($0, source: source) }) else { return LiveResult(status: "error", message: "A claim splits a Unicode character.") }
+            if overlapsHold(values) { return heldResult() }
+            guard liveClaims.count < 128 else { return LiveResult(status: "busy", message: "Release an active claim before claiming another passage.") }
+            let claim = UUID().uuidString, expires = Date().addingTimeInterval(90)
+            liveClaims[claim] = WebLiveClaim(document: liveDocumentID, expiresAt: expires)
+            webClaim?(claim, values, command.label, expires)
+            Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: .seconds(90)) } catch { return }
+                self?.expireClaims()
             }
-            return LiveResult(status: "ok", source: source, generation: generation,
-                digest: Digest.sha256(Data(source.utf8)), assets: assets)
+            return LiveResult(status: "claimed", claimId: claim, expiresAt: expires.timeIntervalSince1970 * 1000)
         }
         guard command.op == "apply", let operation = command.operationId, UUID(uuidString: operation) != nil,
-              let generation = command.baseGeneration, let digest = command.baseDigest,
+              let baseGeneration = command.baseGeneration, let baseDigest = command.baseDigest,
               let edits = command.edits, !edits.isEmpty, edits.count <= 128 else {
             return LiveResult(status: "error", message: "The edit request is invalid.")
         }
-        // The request itself defines the replay identity, excluding delivery request IDs.
         struct Input: Encodable { let generation: UInt64; let digest: String; let edits: [LiveTextEdit] }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        guard let encoded = try? encoder.encode(Input(generation: generation, digest: digest, edits: edits)) else {
-            return LiveResult(status: "error", message: "The edit request is invalid.")
-        }
+        guard let encoded = try? encoder.encode(Input(generation: baseGeneration, digest: baseDigest, edits: edits)) else { return LiveResult(status: "error", message: "The edit request is invalid.") }
         let inputDigest = Digest.sha256(encoded)
-        if let reading {
-            guard let snapshot = reading.snapshot, generation == 0, digest == snapshot.digest else {
-                return LiveResult(status: "stale", message: "Read the current document before editing it.")
-            }
-            guard Self.valid(edits, source: snapshot.source) else { return LiveResult(status: "error", message: "The edit ranges do not match the exact source.") }
-            guard await editReading(copy: snapshot.document?.kind != .published) else {
-                return LiveResult(status: "error", message: notice ?? "The document could not enter its live workspace.")
-            }
-            active?.readingDraft = true
-            active?.schedulePreview(force: true)
+        if let pending = pendingLiveEdits[operation], pending.inputDigest != inputDigest {
+            return LiveResult(status: "error", message: "This operation identity names another edit.")
         }
-        guard command.document == liveDocumentID.uuidString, !closing else { return LiveResult(status: "closed", message: "The document changed before the edit.") }
-        guard let document = active else { return LiveResult(status: "closed", message: "The document is no longer open.") }
-        if let receipt = document.session.record.liveReceipts?.first(where: { $0.operationId == operation }) {
+        if let document = active, reading == nil,
+           let receipt = document.session.record.liveReceipts?.first(where: { $0.operationId == operation }) {
             guard receipt.inputDigest == inputDigest else { return LiveResult(status: "error", message: "This operation identity names another edit.") }
-            guard await document.session.persistLiveReceipt(receipt) else { return LiveResult(status: "error", message: "The edit exists locally, but recovery is not confirmed. Retry this same operation.") }
+            guard await document.session.persistLiveReceipt(receipt) else { return recoveryFailure() }
+            releaseClaims(document: liveDocumentID)
             return LiveResult(status: "applied", generation: receipt.generation, digest: receipt.digest, operationId: operation, retained: true)
         }
-        guard (document.session.record.liveReceipts?.count ?? 0) < 1024 else {
-            return LiveResult(status: "error", message: "The retained live-operation limit was reached. The draft remains intact.")
+        guard (active?.session.record.liveReceipts?.count ?? 0) < 1024 else { return LiveResult(status: "error", message: "The retained live-operation limit was reached. The draft remains intact.") }
+        guard generation == baseGeneration, digest == baseDigest else { return LiveResult(status: "stale", message: "The document changed. Read the current buffer and revise the edit.") }
+        guard webReady, let webAgentApply else { return LiveResult(status: "busy", message: "The document has not opened yet.") }
+        guard !pageBusy, !pageChangeInProgress, !liveApplyInProgress, active?.stagingImages != true else { return LiveResult(status: "busy", message: "Page changes or an asset operation are in progress.") }
+        guard edits.allSatisfy({ $0.start >= 0 && $0.end >= $0.start && $0.end <= source.utf16.count }) else { return LiveResult(status: "error", message: "The edit ranges are invalid.") }
+        let mutations = edits.map(\.sourceEdit)
+        guard MirrorText.applying(mutations, to: source) != nil else { return LiveResult(status: "error", message: "The edit ranges overlap or do not match the exact source.") }
+        if overlapsHold(mutations.map(\.range)) { return heldResult() }
+        guard pendingLiveEdits[operation] != nil || pendingLiveEdits.count < 1024 else {
+            return LiveResult(status: "error", message: "The pending live-operation limit was reached.")
         }
-        guard document.text.generation == generation, Digest.sha256(Data(document.text.source.utf8)) == digest else {
-            return LiveResult(status: "stale", message: "The human changed this document. Read the current buffer and revise the edit.")
+        pendingLiveEdits[operation] = WebPendingLiveEdit(document: liveDocumentID, inputDigest: inputDigest, generation: generation, edits: mutations)
+        liveApplyInProgress = true
+        defer { liveApplyInProgress = false }
+        let identity = liveDocumentID
+        registerPageOperation(operation)
+        let result = await webAgentApply(operation, generation, mutations)
+        guard identity == liveDocumentID, !closing else { return LiveResult(status: "closed", message: "The document changed before the edit completed.") }
+        let acceptedChange: WebPageChange?
+        switch result {
+        case .accepted(let change): acceptedChange = change
+        case .refused: acceptedChange = observedPageChanges[operation]?.change
         }
-        guard !document.text.hasMarkedText, !document.stagingImages, !document.replacing else {
-            return LiveResult(status: "busy", message: "Native composition or an asset operation is active. Retry the same operation later.")
+        if let change = acceptedChange,
+           let observed = matchesObserved(change, operation: operation, generation: generation, edits: mutations), let document = active {
+            let receipt = document.session.record.liveReceipts?.first(where: { $0.operationId == operation })
+                ?? LiveEditReceipt(operationId: operation, inputDigest: inputDigest, generation: change.generation, digest: observed.digest)
+            if document.session.record.liveReceipts?.contains(where: { $0.operationId == operation }) != true {
+                document.session.retainLiveReceipt(receipt)
+            }
+            guard await document.session.persistLiveReceipt(receipt) else { return recoveryFailure() }
+            releaseClaims(document: identity)
+            schedulePersistence(document)
+            return LiveResult(status: "applied", generation: receipt.generation, digest: receipt.digest, operationId: operation, retained: true)
         }
-        guard Self.valid(edits, source: document.text.source) else {
-            return LiveResult(status: "error", message: "The edit ranges overlap or do not match the exact source.")
+        switch result {
+        case .refused(let reason, let range):
+            if reason == "held" {
+                pendingLiveEdits[operation] = nil
+                let held = range ?? pageHeld ?? NSRange(location: 0, length: 0)
+                return LiveResult(status: "busy", message: "The person is typing in this passage (UTF-16 \(held.location)–\(NSMaxRange(held))). Read again after a pause, or edit elsewhere.", reason: "held")
+            }
+            if reason == "stale" { pendingLiveEdits[operation] = nil }
+            return LiveResult(status: reason == "stale" ? "stale" : "uncertain", message: "The page refused the edit: " + reason)
+        case .accepted:
+            return LiveResult(status: "uncertain", message: "The page edit is not confirmed in the native mirror. Read before retrying this operation.")
         }
-        let mutations = edits.map { MarkdownSourceEdit(range: NSRange(location: $0.start, length: $0.end - $0.start), expected: $0.expected, replacement: $0.replacement) }
-        guard document.text.apply(edits: mutations, expectedGeneration: generation, selection: nil, actionName: "Agent Edit") else {
-            return LiveResult(status: "busy", message: "The native editor refused this edit. Read its current buffer before retrying.")
-        }
-        let receipt = LiveEditReceipt(operationId: operation, inputDigest: inputDigest, generation: document.text.generation, digest: Digest.sha256(Data(document.text.source.utf8)))
-        document.session.retainLiveReceipt(receipt)
-        guard await document.session.persistLiveReceipt(receipt) else {
-            return LiveResult(status: "error", message: "The edit exists locally, but recovery is not confirmed. Retry this same operation.")
-        }
-        schedulePersistence(document)
-        return LiveResult(status: "applied", generation: receipt.generation, digest: receipt.digest, operationId: operation, retained: true)
     }
 
-    private static func valid(_ edits: [LiveTextEdit], source: String) -> Bool {
-        let text = source as NSString
-        var previousEnd = -1, previousStart = -1, bytes = source.utf8.count
-        for edit in edits.sorted(by: { $0.start < $1.start }) {
-            guard edit.start >= 0, edit.end >= edit.start, edit.end <= text.length,
-                  edit.start > previousEnd, edit.start != previousStart,
-                  Range(NSRange(location: edit.start, length: edit.end - edit.start), in: source) != nil,
-                  text.substring(with: NSRange(location: edit.start, length: edit.end - edit.start)) == edit.expected else { return false }
-            bytes += edit.replacement.utf8.count - edit.expected.utf8.count
-            previousEnd = edit.end - 1; previousStart = edit.start
+    private func recoveryFailure() -> LiveResult {
+        LiveResult(status: "error", message: "The edit exists locally, but recovery is not confirmed. Retry this same operation.")
+    }
+
+    private func readLive(_ command: LiveCommand) async -> LiveResult {
+        if let reading, let snapshot = reading.snapshot {
+            return LiveResult(status: "ok", source: snapshot.source, generation: 0, digest: snapshot.digest,
+                assets: snapshot.record?.references?.items?.compactMap { item in item.digest.map { LiveAssetIdentity(reference: item.reference, digest: $0) } } ?? [])
         }
-        return bytes <= Limits.sourceBytes
+        guard let document = active else { return LiveResult(status: "busy", message: "The document has not opened yet.") }
+        let record = document.session.record, source = document.text.source, generation = document.text.generation
+        var assets: [LiveAssetIdentity] = []
+        let base: StoredEditBase? = switch record.destination { case .published(let base), .copy(let base): base; default: nil }
+        if let base {
+            do {
+                assets = try await Task.detached {
+                    try DirectoryStore(root: URL(fileURLWithPath: base.root)).loadRevision(base.document, revision: base.revision).record.references?.items?.compactMap { item in item.digest.map { LiveAssetIdentity(reference: item.reference, digest: $0) } } ?? []
+                }.value
+            } catch { return LiveResult(status: "error", message: "The retained asset inventory is unavailable.") }
+        }
+        guard command.document == liveDocumentID.uuidString, !closing else { return LiveResult(status: "closed", message: "The document changed during the read.") }
+        for image in record.stagedAssets ?? [] {
+            assets.removeAll { $0.reference == image.reference }
+            assets.append(LiveAssetIdentity(reference: image.reference, digest: image.digest))
+        }
+        return LiveResult(status: "ok", source: source, generation: generation, digest: Digest.sha256(Data(source.utf8)), assets: assets)
     }
 }

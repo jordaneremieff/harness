@@ -2,346 +2,153 @@ import AppKit
 import EditorFeature
 import MarkdownCore
 import ReaderFeature
-import SwiftUI
 
-/// A reader's window. Escape that no view handles ends what lies over the document: an image
-/// inspection or a comparison.
 final class ReaderWindow: NSWindow {
-    /// Returns true when it handled the cancel.
     var onCancel: (() -> Bool)?
-
     override func cancelOperation(_ sender: Any?) {
         if onCancel?() != true { super.cancelOperation(sender) }
     }
 }
 
-private struct StandaloneReaderView: View {
-    @Bindable var model: ReaderModel
-    let edit: (Bool) -> Void
-    var body: some View {
-        let captured = model.snapshot?.document.map { $0.kind != .published } ?? false
-        ReaderView(model: model, editActions: ReaderEditActions(edit: captured ? nil : { edit(false) }, editCopy: captured ? { edit(true) } : nil, isEnabled: model.snapshot != nil))
-    }
-}
-
-/// One window per document. A repeated open of a document brings its window forward and passes
-/// the open's launch origin to it.
 @MainActor
 final class WindowManager: NSObject, NSWindowDelegate {
     private struct Reader {
         let window: NSWindow
         let model: ReaderModel
-        var workspace: EditorWorkspace? = nil
+        var workspace: EditorWorkspace?
     }
-
     let state: ReadingStateStore
     let platform: ReaderPlatform
     let defaultRoots: [String]
-    private var readers: [String: Reader] = [:]
-    private var closing: [UUID: Task<Void, Never>] = [:]
-    private var libraryWindow: NSWindow?
-    private var libraryModel: LibraryModel?
+    private var readers: [ObjectIdentifier: Reader] = [:]
+    private var surfaces: [ObjectIdentifier: ReaderSurface] = [:]
     private var editorWindow: NSWindow?
     private(set) var editor: EditorWorkspace?
-    private var editorCloseAllowed = false
-    private var workspaceCloseAllowed: Set<ObjectIdentifier> = []
-    private var editingReaders: Set<ObjectIdentifier> = []
-
-    var keyEditor: EditorWorkspace? {
-        guard let window = NSApp.keyWindow else { return nil }
-        if window === editorWindow { return editor }
-        return readers.values.first { $0.window === window }?.workspace
-    }
-
-    @discardableResult func showEditor(newScratchpad: Bool = true, record: DraftRecord? = nil, store: String? = nil, origin: LaunchOrigin? = nil) -> EditorWorkspace {
-        if let editorWindow, let editor {
-            if let store { editor.selectedStore = store }
-            if let origin { editor.launchOrigin = origin }
-            if let record { editor.add(record) }
-            else if newScratchpad { editor.newScratchpad() }
-            else { Task { await editor.library() } }
-            editorWindow.makeKeyAndOrderFront(nil)
-            NSApp.activate()
-            return editor
-        }
-        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: store ?? state.selectedStoreRoot ?? defaultRoots.first, automaticallySaves: true)
-        let host = NSHostingController(rootView: EditorWorkspaceView(workspace: workspace))
-        host.sizingOptions = []
-        let window = ReaderWindow(contentViewController: host)
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .unifiedTitleAndToolbar]
-        window.title = "Markdown Workspace"
-        window.isReleasedWhenClosed = false
-        window.contentMinSize = NSSize(width: 360, height: 320)
-        window.setContentSize(NSSize(width: 960, height: 800))
-        window.center(); window.delegate = self
-        editor = workspace; editorWindow = window
-        workspace.launchOrigin = origin
-        if let record { workspace.add(record) }
-        else if newScratchpad { workspace.newScratchpad() }
-        else { Task { await workspace.library() } }
-        window.makeKeyAndOrderFront(nil); NSApp.activate()
-        return workspace
-    }
-
-    func adoptEditor(_ window: NSWindow, workspace: EditorWorkspace) {
-        readers = readers.filter { $0.value.window !== window }
-        editorWindow = window; editor = workspace
-    }
-
-    private var editorWorkspaces: [EditorWorkspace] {
-        (editor.map { [$0] } ?? []) + readers.values.compactMap(\.workspace)
-    }
-
-    func resumeEditors() {
-        for workspace in editorWorkspaces { workspace.resumeEdits() }
-    }
-
-    /// A deadline must not release any window while its recovery remains unconfirmed.
-    func refuseQuitBeforeRecovery(retained: Bool) -> Bool {
-        guard !retained, !editorWorkspaces.isEmpty else { return false }
-        for workspace in editorWorkspaces {
-            workspace.resumeEdits()
-            workspace.notice = "Recovery did not finish before the quit deadline. The workspace remains open."
-        }
-        return true
-    }
-
-    func retainEditors() async -> Bool {
-        var retained = true
-        for workspace in editorWorkspaces {
-            guard !Task.isCancelled else { resumeEditors(); return false }
-            if !(await workspace.prepareToClose()) { retained = false }
-        }
-        if Task.isCancelled { retained = false }
-        if !retained { resumeEditors() }
-        return retained
-    }
-
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if let workspace = readers.values.first(where: { $0.window === sender })?.workspace {
-            guard !workspaceCloseAllowed.contains(ObjectIdentifier(sender)) else { return true }
-            Task {
-                guard await workspace.prepareToClose() else { return }
-                workspaceCloseAllowed.insert(ObjectIdentifier(sender)); sender.close()
-            }
-            return false
-        }
-        guard sender === editorWindow, !editorCloseAllowed, let editor else { return true }
-        Task {
-            guard await editor.prepareToClose() else {
-                if !editor.documents.contains(where: { $0.text.hasMarkedText }) { editor.notice = "Recovery failed. The workspace stays open to protect your text." }
-                return
-            }
-            editorCloseAllowed = true
-            sender.close()
-        }
-        return false
-    }
+    private var closeAllowed: Set<ObjectIdentifier> = []
 
     init(state: ReadingStateStore, platform: ReaderPlatform, defaultRoots: [String]) {
-        self.state = state
-        self.platform = platform
-        self.defaultRoots = defaultRoots
+        self.state = state; self.platform = platform; self.defaultRoots = defaultRoots
     }
-
     var readerWindowCount: Int { readers.count }
-
-    func selectStore(_ root: String) async {
-        editor?.selectedStore = root
-        await libraryModel?.selectStore(root)
-        await editor?.publishedLibrary?.selectStore(root)
-    }
-
-    func closeReaders() async {
-        await editor?.closeViews()
-        for workspace in readers.values.compactMap(\.workspace) { await workspace.closeViews() }
-        let models = readers.values.map(\.model)
-        for model in models { await model.close() }
-        for task in Array(closing.values) { await task.value }
-    }
-
-    var keyModel: ReaderModel? {
+    var keySurface: ReaderSurface? {
         guard let window = NSApp.keyWindow ?? NSApp.mainWindow else { return nil }
-        if window === editorWindow {
-            if let reading = editor?.reading { return reading }
-            guard let document = editor?.active, document.readingDraft || document.previewHasFocus else { return nil }
-            return document.preview
-        }
-        if let reader = readers.values.first(where: { $0.window === window }) {
-            if let workspace = reader.workspace {
-                if let reading = workspace.reading { return reading }
-                if let document = workspace.active, document.readingDraft || document.previewHasFocus { return document.preview }
-                return nil
-            }
-            return reader.model
-        }
-        return nil
+        return surfaces[ObjectIdentifier(window)] ?? window.contentView?.subviews.compactMap { $0 as? ReaderSurface }.first
     }
-
-    func model(for reference: DocumentReference) -> ReaderModel? {
-        readers[reference.key]?.model
+    var keyEditor: EditorWorkspace? { keySurface?.workspace ?? (NSApp.keyWindow === editorWindow ? editor : nil) }
+    var keyModel: ReaderModel? { keySurface?.model ?? readers.values.first { $0.window === (NSApp.keyWindow ?? NSApp.mainWindow) }?.model }
+    private func displays(_ reader: Reader, reference: DocumentReference) -> Bool {
+        guard reader.model.reference == reference else { return false }
+        let workspace = surfaces[ObjectIdentifier(reader.window)]?.workspace
+        return workspace?.active == nil || workspace?.reading != nil
     }
+    func model(for reference: DocumentReference) -> ReaderModel? { readers.values.first { displays($0, reference: reference) }?.model }
 
-    /// Lists a window that another owner created and closes, such as the pane reader's window, so
-    /// that menu actions reach its model.
     func adopt(_ window: NSWindow, model: ReaderModel, workspace: EditorWorkspace? = nil) {
-        readers[model.reference.key] = Reader(window: window, model: model, workspace: workspace)
+        readers[ObjectIdentifier(window)] = Reader(window: window, model: model, workspace: workspace)
+        if let surface = window.contentView as? ReaderSurface { surfaces[ObjectIdentifier(window)] = surface }
+        else if let surface = window.contentView?.subviews.compactMap({ $0 as? ReaderSurface }).first { surfaces[ObjectIdentifier(window)] = surface }
     }
-
-    /// Moves an adopted window to another model, as when a pane reader shows another document.
+    func adoptEditor(_ window: NSWindow, workspace: EditorWorkspace) {
+        editorWindow = window; editor = workspace
+        if let surface = window.contentView as? ReaderSurface { surfaces[ObjectIdentifier(window)] = surface }
+        else if let surface = window.contentView?.subviews.compactMap({ $0 as? ReaderSurface }).first { surfaces[ObjectIdentifier(window)] = surface }
+    }
     func replace(_ previous: ReaderModel, with next: ReaderModel) {
-        guard let reader = readers[previous.reference.key], reader.model === previous else { return }
-        readers[previous.reference.key] = nil
-        readers[next.reference.key] = Reader(window: reader.window, model: next)
+        guard let entry = readers.first(where: { $0.value.model === previous }) else { return }
+        readers[entry.key] = Reader(window: entry.value.window, model: next, workspace: entry.value.workspace)
     }
 
-    /// `digest` is the digest of an accepted open request, which the open's load must find.
     @discardableResult
     func open(_ reference: DocumentReference, revision: Int?, digest: String? = nil, origin: LaunchOrigin?) -> ReaderModel {
-        if let reader = readers[reference.key] {
-            reader.window.makeKeyAndOrderFront(nil)
-            NSApp.activate()
-            if let workspace = reader.workspace { Task { await workspace.openReading(reference, revision: revision, digest: digest, origin: origin) } }
-            else { Task { await reader.model.open(revision: revision, digest: digest, origin: origin) } }
+        if let reader = readers.values.first(where: { displays($0, reference: reference) }) {
+            reader.window.orderFrontRegardless()
+            Task { await reader.model.open(revision: revision, digest: digest, origin: origin) }
             return reader.model
         }
         let model = ReaderModel(reference: reference, platform: platform, state: state)
-        let window = makeWindow(model: model)
-        readers[reference.key] = Reader(window: window, model: model)
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate()
+        let surface = ReaderSurface(model: model, state: state, chrome: "window")
+        let window = makeWindow(surface: surface)
+        readers[ObjectIdentifier(window)] = Reader(window: window, model: model, workspace: nil)
+        surface.onWorkspace = { [weak self, weak window] workspace in
+            guard let self, let window else { return }
+            self.readers[ObjectIdentifier(window)]?.workspace = workspace
+            self.surfaces[ObjectIdentifier(window)] = surface
+        }
+        window.orderFrontRegardless()
         Task { await model.open(revision: revision, digest: digest, origin: origin) }
         return model
     }
 
-    private func makeWindow(model: ReaderModel) -> NSWindow {
-        let host = NSHostingController(rootView: readerView(model))
-        host.sizingOptions = []
-        host.sceneBridgingOptions = [.toolbars]
-        let window = ReaderWindow(contentViewController: host)
-        window.onCancel = { [weak model] in model?.dismissOverlay() ?? false }
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .unifiedTitleAndToolbar]
-        window.toolbarStyle = .unified
+    private func makeWindow(surface: ReaderSurface) -> NSWindow {
+        let window = ReaderWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 800), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.titleVisibility = .hidden; window.titlebarAppearsTransparent = true
+        window.contentView = surface
+        window.backgroundColor = ReaderSurface.paperColour
         window.isReleasedWhenClosed = false
         window.contentMinSize = NSSize(width: 360, height: 320)
-        window.tabbingIdentifier = "reader"
-        let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let size = NSSize(width: min(960, visible.width - 80), height: min(1040, visible.height - 40))
-        window.setContentSize(size)
-        if let key = NSApp.keyWindow, readers.values.contains(where: { $0.window === key }) {
-            window.setFrameTopLeftPoint(window.cascadeTopLeft(from: NSPoint(x: key.frame.minX, y: key.frame.maxY)))
-        } else {
-            window.center()
-        }
-        window.title = "Opening…"
-        window.delegate = self
-        trackTitle(window: window, model: model)
+        window.delegate = self; window.center()
+        surface.onClose = { [weak window] in window?.performClose(nil) }
+        window.onCancel = { [weak surface] in surface?.sendCommand("escape"); return true }
+        surfaces[ObjectIdentifier(window)] = surface
         return window
     }
 
-    private func readerView(_ model: ReaderModel) -> some View {
-        StandaloneReaderView(model: model, edit: { [weak self, weak model] copy in
-            guard let self, let model else { return }
-            self.edit(model, copy: copy)
-        })
+    @discardableResult
+    func showEditor(newScratchpad: Bool = true, record: DraftRecord? = nil, store: String? = nil, origin: LaunchOrigin? = nil) -> EditorWorkspace {
+        if let editor, let editorWindow {
+            if let record { editor.add(record) } else if newScratchpad { editor.newScratchpad() }
+            editorWindow.orderFrontRegardless(); return editor
+        }
+        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: store ?? state.selectedStoreRoot ?? defaultRoots.first, automaticallySaves: true)
+        workspace.launchOrigin = origin
+        if let record { workspace.add(record) } else if newScratchpad { workspace.newScratchpad() }
+        let model = ReaderModel(reference: .file(path: "draft:" + (workspace.active?.session.record.id.uuidString ?? UUID().uuidString)), platform: platform, state: state)
+        let surface = ReaderSurface(model: model, state: state, chrome: "window", workspace: workspace)
+        let window = makeWindow(surface: surface)
+        editor = workspace; editorWindow = window
+        window.orderFrontRegardless()
+        if !newScratchpad, record == nil { surface.sendCommand("open") }
+        return workspace
     }
-
-    private func edit(_ model: ReaderModel, copy: Bool) {
-        guard let reader = readers[model.reference.key], reader.workspace == nil else { return }
-        let windowID = ObjectIdentifier(reader.window)
-        guard editingReaders.insert(windowID).inserted else { return }
-        let root: String? = if case .stored(let root, _, _) = model.reference { root } else { state.selectedStoreRoot }
-        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: root, automaticallySaves: true)
-        workspace.launchOrigin = model.launchOrigin; workspace.reading = model
+    func showLibrary(openFile: @escaping () -> Void, openStore: @escaping () -> Void) {
+        _ = showEditor(newScratchpad: false)
+        if let editorWindow { surfaces[ObjectIdentifier(editorWindow)]?.sendCommand("showLibrary") }
+    }
+    func selectStore(_ root: String) async { editor?.selectedStore = root }
+    private var workspaces: [EditorWorkspace] {
+        var result = readers.values.compactMap(\.workspace)
+        if let editor, !result.contains(where: { $0 === editor }) { result.append(editor) }
+        return result
+    }
+    func resumeEditors() { for workspace in workspaces { workspace.resumeEdits() } }
+    func refuseQuitBeforeRecovery(retained: Bool) -> Bool {
+        guard !retained, !workspaces.isEmpty else { return false }
+        resumeEditors(); return true
+    }
+    func retainEditors() async -> Bool {
+        var result = true
+        for workspace in workspaces { if !(await workspace.prepareToClose()) { result = false } }
+        if !result { resumeEditors() }
+        return result
+    }
+    func closeReaders() async {
+        for workspace in workspaces { await workspace.closeViews() }
+        for reader in readers.values { await reader.model.close() }
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard !closeAllowed.contains(ObjectIdentifier(sender)), let workspace = surfaces[ObjectIdentifier(sender)]?.workspace else { return true }
         Task {
-            defer { editingReaders.remove(windowID) }
-            guard await workspace.editReading(copy: copy),
-                  let current = readers[model.reference.key], current.window === reader.window,
-                  current.model === model, current.workspace == nil else {
-                workspace.reading = nil; await workspace.closeViews(); return
-            }
-            adopt(reader.window, model: model, workspace: workspace)
-            workspace.onClose = { [weak window = reader.window] in window?.performClose(nil) }
-            workspace.onEditorFocus = { [weak window = reader.window, weak workspace] in
-                guard let window, let workspace else { return }
-                _ = PaneHost.focusEditor(workspace, in: window)
-            }
-            reader.window.contentViewController = NSHostingController(rootView: EditorWorkspaceView(workspace: workspace))
-            (reader.window as? ReaderWindow)?.onCancel = { [weak workspace] in
-                (workspace?.reading ?? workspace?.active?.preview)?.dismissOverlay() ?? false
-            }
-            workspace.onEditorFocus?()
+            guard await workspace.prepareToClose() else { return }
+            closeAllowed.insert(ObjectIdentifier(sender)); sender.close()
         }
+        return false
     }
-
-    private func trackTitle(window: NSWindow, model: ReaderModel) {
-        withObservationTracking {
-            if let snapshot = model.snapshot {
-                window.title = model.displayTitle
-                let stored = snapshot.document?.kind == .response ? snapshot.title : Provenance.kindLabel(snapshot)
-                window.subtitle = model.showingSource ? "Source · \(stored)" : stored
-                if case .file(let path) = model.reference {
-                    window.representedURL = URL(fileURLWithPath: path)
-                }
-            } else if case .failed = model.phase {
-                window.title = "Not opened"
-            }
-        } onChange: { [weak self, weak window, weak model] in
-            Task { @MainActor in
-                guard let self, let window, let model else { return }
-                self.trackTitle(window: window, model: model)
-            }
-        }
-    }
-
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
-        if window === editorWindow {
-            if let editor { Task { await editor.closeViews() } }
-            editorWindow = nil; editor = nil; editorCloseAllowed = false
-            return
-        }
-        if window === libraryWindow {
-            libraryWindow = nil
-            return
-        }
-        guard let entry = readers.first(where: { $0.value.window === window }) else { return }
-        readers.removeValue(forKey: entry.key)
-        workspaceCloseAllowed.remove(ObjectIdentifier(window))
-        if let workspace = entry.value.workspace { Task { await workspace.closeViews() } }
-        let model = entry.value.model
-        let id = UUID()
-        closing[id] = Task { [weak self] in
-            await model.close()
-            self?.closing.removeValue(forKey: id)
-        }
-    }
-
-    func showLibrary(openFile: @escaping () -> Void, openStore: @escaping () -> Void) {
-        if let libraryWindow {
-            libraryWindow.makeKeyAndOrderFront(nil)
-            Task { await libraryModel?.reload() }
-            NSApp.activate()
-            return
-        }
-        let model = LibraryModel(state: state, extraRoots: defaultRoots)
-        let view = LibraryView(model: model, open: { [weak self] reference in
-            self?.open(reference, revision: nil, origin: nil)
-        }, openFile: openFile, openStore: openStore)
-        let host = NSHostingController(rootView: view)
-        host.sizingOptions = []
-        host.sceneBridgingOptions = [.toolbars]
-        let window = NSWindow(contentViewController: host)
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .unifiedTitleAndToolbar]
-        window.title = "Markdown Library"
-        window.isReleasedWhenClosed = false
-        window.setContentSize(NSSize(width: 620, height: 640))
-        window.contentMinSize = NSSize(width: 360, height: 300)
-        window.setFrameAutosaveName("Library")
-        window.delegate = self
-        libraryWindow = window
-        libraryModel = model
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate()
+        let surface = surfaces.removeValue(forKey: ObjectIdentifier(window))
+        readers = readers.filter { $0.value.window !== window }
+        if window === editorWindow { editorWindow = nil; editor = nil }
+        closeAllowed.remove(ObjectIdentifier(window))
+        Task { await surface?.workspace?.closeViews(); await surface?.model.close() }
     }
 }

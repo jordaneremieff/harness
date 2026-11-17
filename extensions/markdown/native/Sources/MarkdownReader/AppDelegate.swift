@@ -6,45 +6,6 @@ import MarkdownCore
 import ReaderFeature
 import UniformTypeIdentifiers
 
-/// Routes commands to the displayed document without treating Find or comment fields as source input.
-@MainActor
-struct EditorMenuTarget {
-    let workspace: EditorWorkspace?
-    let reader: ReaderModel?
-
-    var document: WorkingDocument? {
-        guard let workspace, !workspace.libraryVisible, workspace.publishedLibrary == nil, workspace.reading == nil,
-              let document = workspace.active, !document.readingDraft, !document.previewHasFocus else { return nil }
-        return document
-    }
-
-    var canFormat: Bool {
-        guard let document else { return false }
-        let text = document.text.activeTextView
-        return !document.text.hasMarkedText && !document.replacing && text.window?.firstResponder === text
-    }
-
-    func format(_ command: MarkdownCommand) {
-        guard canFormat else { return }
-        document?.perform(command)
-    }
-
-    func showFind() {
-        if let document { document.showFind() }
-        else { reader?.showFind() }
-    }
-
-    func find(backwards: Bool = false) {
-        if let document {
-            document.showFind()
-            Task { await document.find(backwards: backwards) }
-        } else if let reader {
-            reader.findVisible = true
-            Task { await reader.find(backwards: backwards) }
-        }
-    }
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     let mode: LaunchMode
@@ -342,24 +303,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc func showLibrary(_ sender: Any?) {
         if let paneHost { paneHost.newScratchpad(showLibrary: true); return }
-        if let workspace = paneHost?.workspace ?? windows.keyEditor { Task { await workspace.showPublishedLibrary() }; return }
+        if let surface = windows.keySurface { surface.sendCommand("showLibrary", args: ["collection": "published"]); return }
         windows.showLibrary(openFile: { [weak self] in self?.openDocument(nil) },
                             openStore: { [weak self] in self?.openStore(nil) })
     }
 
     @objc func openStore(_ sender: Any?) {
-        if let paneHost, paneHost.workspace == nil { paneHost.newScratchpad(showLibrary: true) }
-        if let workspace = paneHost?.workspace ?? windows.keyEditor { workspace.chooseStore(); return }
-        let panel = NSOpenPanel()
-        panel.title = "Open Document Store"
-        panel.prompt = "Select Store"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.begin { [weak self] response in
-            guard response == .OK, let root = panel.url?.path, let self else { return }
-            self.showLibrary(nil)
-            Task { await self.windows.selectStore(root) }
+        let workspace = paneHost?.workspace ?? windows.keyEditor
+        Task {
+            do {
+                let result = try await ReaderSurface.chooseStore(state: windows.state, workspace: workspace)
+                if result["changed"] as? Bool == true { showLibrary(nil) }
+            } catch { showError("Store not opened", detail: String(describing: error)) }
         }
     }
 
@@ -382,46 +337,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     private func withModel(_ action: @escaping (ReaderModel) async -> Void) {
         guard let model = windows.keyModel else { return }
-        Task { await action(model) }
+        let surface = windows.keySurface
+        Task { await surface?.waitForPendingChanges(); await action(model) }
     }
 
-    @objc func commentOnSelection(_ sender: Any?) {
-        guard let workspace = windows.keyEditor else { return }
-        Task { await workspace.annotateSelection() }
-    }
-
-    @objc func askAboutDocument(_ sender: Any?) { windows.keyEditor?.collaboration?.beginAnnotation(quote: nil) }
-
-    @objc func copyMarkdown(_ sender: Any?) { withModel { $0.copyMarkdown() } }
-    @objc func copyPassage(_ sender: Any?) { withModel { await $0.copyPassageWithSource() } }
-    private var editorMenu: EditorMenuTarget {
-        EditorMenuTarget(workspace: paneHost?.workspace ?? windows.keyEditor, reader: windows.keyModel)
-    }
-
+    private func pageCommand(_ name: String, args: [String: Any] = [:]) { windows.keySurface?.sendCommand(name, args: args) }
+    @objc func undoPage(_ sender: Any?) { pageCommand("undo") }
+    @objc func redoPage(_ sender: Any?) { pageCommand("redo") }
+    @objc func selectAllPage(_ sender: Any?) { pageCommand("selectAll") }
+    @objc func toggleLock(_ sender: Any?) { pageCommand("toggleLock") }
+    @objc func replacePage(_ sender: Any?) { pageCommand("replace") }
+    @objc func commentOnSelection(_ sender: Any?) { pageCommand("askSelection") }
+    @objc func askAboutDocument(_ sender: Any?) { pageCommand("askDocument") }
+    @objc func copyMarkdown(_ sender: Any?) { pageCommand("copyMarkdown") }
+    @objc func copyPassage(_ sender: Any?) { pageCommand("copyPassage") }
     @objc func formatEditor(_ sender: NSMenuItem) {
         guard let command = sender.representedObject as? MarkdownCommand else { return }
-        editorMenu.format(command)
+        let name: String
+        switch command { case .bold: name = "bold"; case .italic: name = "italic"; case .link: name = "link"; case .indent: name = "indent"; case .outdent: name = "outdent"; default: return }
+        pageCommand("format", args: ["command": name])
     }
 
-    @objc func showFind(_ sender: Any?) { editorMenu.showFind() }
-    @objc func findNext(_ sender: Any?) { editorMenu.find() }
-    @objc func findPrevious(_ sender: Any?) { editorMenu.find(backwards: true) }
-    @objc func toggleOutline(_ sender: Any?) { withModel { $0.toggleOutline() } }
+    @objc func showFind(_ sender: Any?) { pageCommand("find") }
+    @objc func findNext(_ sender: Any?) { pageCommand("findNext") }
+    @objc func findPrevious(_ sender: Any?) { pageCommand("findPrevious") }
+    @objc func toggleOutline(_ sender: Any?) { pageCommand("toggleOutline") }
     @objc func goBack(_ sender: Any?) { withModel { await $0.goBack() } }
-    @objc func toggleSource(_ sender: Any?) { withModel { await $0.toggleSource() } }
+    @objc func toggleSource(_ sender: Any?) { pageCommand("showSource") }
     @objc func toggleWrap(_ sender: Any?) { withModel { $0.toggleWrap() } }
-    // While an image inspection is open, the size commands zoom the image instead of the text.
-    @objc func biggerText(_ sender: Any?) { withModel { model in if model.inspection.isOpen { await model.inspection.zoomIn() } else { model.changeTextSize(by: 1) } } }
-    @objc func smallerText(_ sender: Any?) { withModel { model in if model.inspection.isOpen { await model.inspection.zoomOut() } else { model.changeTextSize(by: -1) } } }
-    @objc func actualSize(_ sender: Any?) { withModel { model in if model.inspection.isOpen { await model.inspection.actualSize() } else { model.resetTextSize() } } }
-    @objc func zoomToFit(_ sender: Any?) { withModel { await $0.inspection.zoomToFit() } }
-    @objc func inspectImage(_ sender: Any?) { withModel { await $0.toggleImageInspection() } }
+    @objc func biggerText(_ sender: Any?) { pageCommand("zoomIn") }
+    @objc func smallerText(_ sender: Any?) { pageCommand("zoomOut") }
+    @objc func actualSize(_ sender: Any?) { pageCommand("zoomReset") }
+    @objc func actualImageSize(_ sender: Any?) { pageCommand("imageZoom", args: ["mode": "actual"]) }
+    @objc func zoomToFit(_ sender: Any?) { pageCommand("imageZoom", args: ["mode": "fit"]) }
+    @objc func inspectImage(_ sender: Any?) { pageCommand("inspectImage", args: ["index": 0]) }
     @objc func refreshDocument(_ sender: Any?) { withModel { await $0.refresh() } }
     @objc func olderRevision(_ sender: Any?) { withModel { await $0.showAdjacentRevision(newer: false) } }
     @objc func newerRevision(_ sender: Any?) { withModel { await $0.showAdjacentRevision(newer: true) } }
-    @objc func reviewChanges(_ sender: Any?) { withModel { await $0.reviewChanges() } }
-    @objc func goToRevision(_ sender: Any?) { withModel { $0.review.entry = .show } }
-    @objc func showDetails(_ sender: Any?) { withModel { $0.detailsVisible.toggle() } }
+    @objc func reviewChanges(_ sender: Any?) {
+        if windows.keySurface?.pageState["overlay"] as? String == "review" { pageCommand("escape") }
+        else { pageCommand("showReview", args: ["against": windows.keyEditor?.active == nil ? "previous" : "base"]) }
+    }
+    @objc func goToRevision(_ sender: Any?) { pageCommand("showReview") }
+    @objc func showDetails(_ sender: Any?) { pageCommand("showDetails") }
     @objc func revealDocument(_ sender: Any?) { withModel { $0.revealInFinder() } }
     @objc func returnToTerminal(_ sender: Any?) { withModel { await $0.returnToTerminal() } }
     @objc func exportArchive(_ sender: Any?) { withModel { await $0.exportRevision(.archive) } }
@@ -432,16 +390,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         guard let action = item.action else { return true }
         if [#selector(commentOnSelection(_:)), #selector(askAboutDocument(_:))].contains(action) {
             guard let workspace = windows.keyEditor, let client = workspace.collaboration else { return false }
-            return !client.isClosed && !workspace.closing && !workspace.libraryVisible && workspace.publishedLibrary == nil && workspace.active?.text.hasMarkedText != true
+            return !client.isClosed && !workspace.closing && windows.keySurface?.commandEnabled(action == #selector(commentOnSelection(_:)) ? "askSelection" : "askDocument") == true
         }
         if [#selector(newScratchpad(_:)), #selector(showDrafts(_:)), #selector(showLibrary(_:)), #selector(openDocument(_:)), #selector(openStore(_:)), #selector(openRecent(_:))].contains(action) { return true }
         if [#selector(saveEditor(_:)), #selector(saveEditorAs(_:))].contains(action) { return windows.keyEditor?.active != nil }
-        if action == #selector(formatEditor(_:)) { return editorMenu.canFormat }
-        if [#selector(showFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:))].contains(action), editorMenu.document != nil { return true }
+        if action == #selector(formatEditor(_:)) { return windows.keySurface?.commandEnabled("format") == true }
+        if action == #selector(undoPage(_:)) { return windows.keySurface?.commandEnabled("undo") == true }
+        if action == #selector(redoPage(_:)) { return windows.keySurface?.commandEnabled("redo") == true }
         guard let model = windows.keyModel else { return false }
         switch action {
         case #selector(toggleOutline(_:)):
-            item.state = model.outlineIsPresented ? .on : .off
+            item.state = windows.state.outlineOpen ? .on : .off
             return !(model.rendered?.outline.isEmpty ?? true)
         case #selector(exportArchive(_:)), #selector(exportSharing(_:)):
             return model.snapshot?.record != nil
@@ -450,24 +409,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(goBack(_:)):
             return model.canGoBack
         case #selector(toggleSource(_:)):
-            item.state = model.showingSource ? .on : .off
+            item.state = windows.keySurface?.pageState["overlay"] as? String == "source" ? .on : .off
             return model.snapshot != nil
         case #selector(biggerText(_:)):
-            item.title = model.inspection.isOpen ? "Zoom In" : "Bigger Text"
+            item.title = "Bigger Text"
             return model.snapshot != nil
         case #selector(smallerText(_:)):
-            item.title = model.inspection.isOpen ? "Zoom Out" : "Smaller Text"
+            item.title = "Smaller Text"
             return model.snapshot != nil
-        case #selector(zoomToFit(_:)):
-            return model.inspection.isOpen
+        case #selector(zoomToFit(_:)), #selector(actualImageSize(_:)):
+            return windows.keySurface?.pageState["overlay"] as? String == "image"
         case #selector(inspectImage(_:)):
-            item.title = model.inspection.isOpen ? "Close Image" : "Inspect Image"
-            return model.inspection.isOpen || !(model.rendered?.images.isEmpty ?? true)
+            item.title = "Inspect Image"
+            return !(model.rendered?.images.isEmpty ?? true)
         case #selector(toggleWrap(_:)):
             item.state = model.settings.wrapCode ? .on : .off
             return true
         case #selector(refreshDocument(_:)):
-            return model.snapshot != nil
+            return model.snapshot != nil && !model.isDraft
         case #selector(olderRevision(_:)):
             guard let revision = model.snapshot?.revision else { return false }
             return revision > 1
@@ -475,7 +434,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             guard let revision = model.snapshot?.revision else { return false }
             return revision < (model.latestRevision ?? revision)
         case #selector(reviewChanges(_:)):
-            item.title = model.review.shown == nil ? "Review Changes" : "Close Comparison"
+            item.title = windows.keySurface?.pageState["overlay"] as? String == "review" ? "Close Comparison" : "Review Changes"
+            if let workspace = windows.keyEditor, workspace.reading == nil, let document = workspace.active {
+                switch document.session.record.destination { case .published, .copy: return true; default: return false }
+            }
             return model.canReviewChanges
         case #selector(goToRevision(_:)):
             return model.canReviewChanges
@@ -595,15 +557,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     private func editMenu() -> NSMenuItem {
         submenu("Edit", [
-            standard("Undo", Selector(("undo:")), "z"),
-            standard("Redo", Selector(("redo:")), "z", [.command, .shift]),
+            item("Undo", #selector(undoPage(_:)), "z"),
+            item("Redo", #selector(redoPage(_:)), "z", [.command, .shift]),
             .separator(),
             standard("Cut", #selector(NSText.cut(_:)), "x"),
             standard("Paste", #selector(NSText.paste(_:)), "v"),
             standard("Copy", #selector(NSText.copy(_:)), "c"),
             item("Copy Passage with Source", #selector(copyPassage(_:)), "c", [.command, .option]),
             item("Copy Markdown", #selector(copyMarkdown(_:)), "c", [.command, .shift]),
-            standard("Select All", #selector(NSText.selectAll(_:)), "a"),
+            item("Select All", #selector(selectAllPage(_:)), "a"),
+            item("Edit", #selector(toggleLock(_:)), "e"),
             .separator(),
             item("Comment on Selection…", #selector(commentOnSelection(_:)), "m", [.command, .shift]),
             item("Ask about Document…", #selector(askAboutDocument(_:)), "m", [.command, .option]),
@@ -617,6 +580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             ]),
             submenu("Find", [
                 item("Find…", #selector(showFind(_:)), "f"),
+                item("Find and Replace…", #selector(replacePage(_:)), "f", [.command, .option]),
                 item("Find Next", #selector(findNext(_:)), "g"),
                 item("Find Previous", #selector(findPrevious(_:)), "g", [.command, .shift]),
             ]),
@@ -631,8 +595,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             .separator(),
             item("Bigger Text", #selector(biggerText(_:)), "="),
             item("Smaller Text", #selector(smallerText(_:)), "-"),
-            item("Actual Size", #selector(actualSize(_:)), "0"),
-            item("Zoom to Fit", #selector(zoomToFit(_:)), "9"),
+            item("Default Text Size", #selector(actualSize(_:)), "0"),
+            submenu("Image", [
+                item("Actual Size", #selector(actualImageSize(_:)), "0", [.command, .option]),
+                item("Zoom to Fit", #selector(zoomToFit(_:)), "9"),
+            ]),
             .separator(),
             item("Inspect Image", #selector(inspectImage(_:)), "i", [.command, .shift]),
         ]

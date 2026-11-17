@@ -19,18 +19,38 @@ import Testing
     @Test func metadataSelectionIsSeparateFromSourceContent() throws {
         let fixture = try FixtureStore()
         defer { fixture.remove() }
-        let directory = try fixture.addRevision(docA, revision: 1, source: "hidden source needle")
+        let emoji = "👩🏽‍💻"
+        let combining = "e\u{301}"
+        let source = String(repeating: emoji, count: 90) + "needle" + String(repeating: combining, count: 200)
+        let directory = try fixture.addRevision(docA, revision: 1, source: source)
+        try fixture.addRevision(docB, revision: 1, source: "This source has no matching term.")
         let store = try DirectoryStore(root: fixture.root)
         let pointer = try store.document(docA)
+        let nonmatch = try store.document(docB)
         var filter = LibraryFilter()
         filter.text = "needle"
         #expect(!filter.matches(title: pointer.title, id: pointer.id, kind: pointer.kind, source: "", updatedAt: pointer.updatedAt))
-        let searched = SourceContentSearch.search(store: store, records: [pointer], query: "NEEDLE", limit: 1)
-        #expect(searched.examined == [docA] && searched.matches == [docA] && searched.issues.isEmpty)
+        let searched = SourceContentSearch.search(store: store, records: [pointer, nonmatch], query: "NEEDLE", limit: 2)
+        #expect(searched.examined == [docA, docB] && searched.matches == [docA] && searched.issues.isEmpty)
+        let excerpt = try #require(searched.excerpts[docA])
+        #expect(excerpt.localizedCaseInsensitiveContains("NEEDLE"))
+        #expect(excerpt.count <= 180)
+        #expect(excerpt.utf8.count <= 2048)
+        #expect(excerpt == String(repeating: emoji, count: 60) + "needle" + String(repeating: combining, count: 114))
+        #expect(!excerpt.contains("\u{FFFD}"))
+        #expect(String(data: Data(excerpt.utf8), encoding: .utf8) == excerpt)
+        #expect(searched.excerpts[docB] == nil)
+        #expect(Set(searched.excerpts.keys) == [docA])
+        let hugeCluster = "a" + String(repeating: "\u{301}", count: 3000)
+        let bounded = try #require(SourceContentSearch.excerpt(in: hugeCluster + "needle", query: "needle"))
+        #expect(bounded.isEmpty)
+        #expect(bounded.utf8.count <= 2048)
+        #expect(bounded.count <= 180)
         try Data("changed".utf8).write(to: directory.appendingPathComponent("source.md"))
         #expect(try store.revisionMetadata(docA, revision: 1).contentOrigin?.kind == "native-response")
         let failed = SourceContentSearch.search(store: store, records: [pointer], query: "needle")
         #expect(failed.matches.isEmpty && failed.issues.count == 1)
+        #expect(failed.excerpts.isEmpty)
         #expect(SourceContentSearch.search(store: store, records: [pointer], query: "needle", byteLimit: 0).examined.isEmpty)
     }
 

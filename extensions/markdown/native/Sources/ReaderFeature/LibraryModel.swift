@@ -1,7 +1,6 @@
 import Foundation
 import MarkdownCore
 import Observation
-import SwiftUI
 
 /// Passive library reads use authoritative files and bounded, continuing directory scans.
 @MainActor @Observable
@@ -58,14 +57,17 @@ public final class LibraryModel {
     private var examined: Set<String> = []
     private var matches: Set<String> = []
     private var sourceFailures = 0
+    private var sourceExcerpts: [String: String] = [:]
     private var pendingRoot: String?
     @ObservationIgnored private var scans: [String: ScanContext] = [:]
     @ObservationIgnored let state: ReadingStateStore
     @ObservationIgnored let extraRoots: [String]
+    @ObservationIgnored private let collections: [StoreCollection]
 
-    public init(state: ReadingStateStore, extraRoots: [String]) {
+    public init(state: ReadingStateStore, extraRoots: [String], collections: [StoreCollection] = Array(StoreCollection.allCases)) {
         self.state = state
         self.extraRoots = extraRoots
+        self.collections = collections
     }
 
     private var query: LibraryFilter {
@@ -89,14 +91,15 @@ public final class LibraryModel {
         availableRoots = roots
         let selected = selectedRoot.map { [$0] } ?? []
         let recents = state.recents
+        let collections = self.collections
         let loaded = await Task.detached { () -> ([Section], [String: ScanContext]) in
             let recentRows = recents.map { Row(reference: $0.reference, title: $0.title, detail: Self.recentDetail($0)) }
             var sections = [Section(id: "recent", title: "Recently Read", rows: recentRows, note: recentRows.isEmpty ? "Documents you open appear here." : nil)]
             var scans: [String: ScanContext] = [:]
-            for root in selected {
+            for root in selected where !collections.isEmpty {
                 do {
                     let store = try DirectoryStore(root: URL(fileURLWithPath: root))
-                    for collection in StoreCollection.allCases {
+                    for collection in collections {
                         let title = Self.title(root, collection)
                         do {
                             let context = ScanContext(scan: try CollectionScan(store: store, collection: collection), store: store, root: root, collection: collection)
@@ -104,11 +107,11 @@ public final class LibraryModel {
                             sections.append(Self.page(context, previous: empty))
                             scans[context.id] = context
                         } catch {
-                            sections.append(Section(id: "\(root)|\(collection.rawValue)", title: title, rows: [], note: "Collection unavailable: \(error)"))
+                            sections.append(Section(id: "\(root)|\(collection.rawValue)", title: title, rows: [], note: "Collection unavailable: \(error)", failure: String(describing: error)))
                         }
                     }
                 } catch {
-                    sections.append(Section(id: root, title: root, rows: [], note: "Store unavailable: \(error)"))
+                    sections.append(Section(id: root, title: root, rows: [], note: "Store unavailable: \(error)", failure: String(describing: error)))
                 }
             }
             return (sections, scans)
@@ -214,35 +217,86 @@ public final class LibraryModel {
         examined = []
         matches = []
         sourceFailures = 0
+        sourceExcerpts = [:]
         sourceSearchNote = nil
     }
 
-    public func searchNextSources() async {
+    public struct SourceCoverage: Sendable, Equatable {
+        public var searched: Int
+        public var total: Int?
+        public var stopped: Bool
+        public var reason: String?
+    }
+
+    private func sourceRows(in sectionIDs: Set<String>?) -> [Row] {
+        var seen: Set<String> = []
+        return sections.filter { sectionIDs?.contains($0.id) ?? true }
+            .flatMap { metadataRows($0) }.filter { seen.insert($0.id).inserted }
+    }
+
+    public func hasMoreSources(in sectionIDs: Set<String>? = nil) -> Bool {
+        !sourceQuery.isEmpty && sourceRows(in: sectionIDs).contains { !examined.contains($0.id) }
+    }
+
+    public func sourceExcerpt(for row: Row) -> String? { sourceExcerpts[row.id] }
+
+    public func sourceCoverage(in sectionIDs: Set<String>? = nil) -> SourceCoverage {
+        let selected = sections.filter { sectionIDs?.contains($0.id) ?? true }
+        let ids = Set(sourceRows(in: sectionIDs).map(\.id))
+        let moreEntries = selected.contains(where: \.hasMore)
+        let failed = sourceFailures > 0 || selected.contains { $0.unreadable > 0 || $0.failure != nil }
+        let unchecked = !sourceQuery.isEmpty && !ids.subtracting(examined).isEmpty
+        let reason: String? = failed ? "Some records or sources could not be read."
+            : moreEntries ? "More directory entries remain."
+            : unchecked ? "The source search reached its batch limit." : nil
+        return SourceCoverage(searched: ids.intersection(examined).count,
+                              total: moreEntries || failed ? nil : ids.count,
+                              stopped: moreEntries || failed || unchecked, reason: reason)
+    }
+
+    public func searchNextSources(in sectionIDs: Set<String>? = nil) async {
         guard !loading, !sourceQuery.isEmpty, dateError == nil else { return }
         if searchedQuery != sourceQuery { clearSourceSearch(); searchedQuery = sourceQuery }
-        let candidates = sections.flatMap { section -> [(ScanContext, Row)] in
-            guard let context = scans[section.id] else { return [] }
-            return metadataRows(section).filter { !examined.contains($0.id) }.map { (context, $0) }
-        }
+        let candidates = sourceRows(in: sectionIDs).filter { !examined.contains($0.id) }
         let query = sourceQuery
         loading = true
-        let result = await Task.detached { () -> (Set<String>, Set<String>, Int) in
-            var examined: Set<String> = [], matches: Set<String> = []
+        let result = await Task.detached { () -> (Set<String>, Set<String>, Int, [String: String]) in
+            var examined: Set<String> = [], matches: Set<String> = [], excerpts: [String: String] = [:]
             var bytes = 0, failures = 0
-            for (context, row) in candidates.prefix(20) {
-                guard let record = row.record else { continue }
-                let batch = SourceContentSearch.search(store: context.store, records: [record], query: query, byteLimit: 8 * 1024 * 1024 - bytes)
-                guard !batch.examined.isEmpty else { break }
+            for row in candidates.prefix(20) {
+                // Reserve a maximum-size source even when its record is unreadable.
+                guard bytes + Limits.sourceBytes <= 8 * 1024 * 1024 else { break }
                 examined.insert(row.id)
-                if !batch.matches.isEmpty { matches.insert(row.id) }
-                bytes += batch.bytes
-                failures += batch.issues.count
+                do {
+                    switch row.reference {
+                    case .stored(let root, let storeId, let id):
+                        let store = try DirectoryStore(root: URL(fileURLWithPath: root))
+                        guard store.storeId == storeId else { throw StoreError.unreadable("Store identity changed") }
+                        let record = try row.record ?? store.document(id)
+                        let batch = SourceContentSearch.search(store: store, records: [record], query: query, byteLimit: 8 * 1024 * 1024 - bytes)
+                        if !batch.matches.isEmpty { matches.insert(row.id) }
+                        if let excerpt = batch.excerpts[id] { excerpts[row.id] = excerpt }
+                        bytes += batch.bytes
+                        failures += batch.issues.count
+                    case .file:
+                        let snapshot = try DocumentLoader.load(row.reference, revision: nil, pinnedDigest: nil)
+                        bytes += snapshot.bytes
+                        if let excerpt = SourceContentSearch.excerpt(in: snapshot.source, query: query) {
+                            matches.insert(row.id)
+                            excerpts[row.id] = excerpt
+                        }
+                    }
+                } catch {
+                    bytes += Limits.sourceBytes
+                    failures += 1
+                }
             }
-            return (examined, matches, failures)
+            return (examined, matches, failures, excerpts)
         }.value
         examined.formUnion(result.0)
         matches.formUnion(result.1)
         sourceFailures += result.2
+        sourceExcerpts.merge(result.3) { _, new in new }
         sourceSearchNote = "Source search: \(examined.count) sources checked, \(matches.count) matched, \(sourceFailures) unavailable. Only checked sources under the metadata selection are covered. Read more directory entries to reach other documents."
         loading = false
         await applyPendingSelection()
@@ -268,102 +322,4 @@ public final class LibraryModel {
     }
 
     nonisolated static func abbreviated(_ path: String) -> String { (path as NSString).abbreviatingWithTildeInPath }
-}
-
-public struct LibraryView: View {
-    @Bindable var model: LibraryModel
-    let open: (DocumentReference) -> Void
-    let openFile: () -> Void
-    let openStore: (() -> Void)?
-    @State private var selection: String?
-
-    public init(model: LibraryModel, open: @escaping (DocumentReference) -> Void, openFile: @escaping () -> Void, openStore: (() -> Void)? = nil) {
-        self.model = model
-        self.open = open
-        self.openFile = openFile
-        self.openStore = openStore
-    }
-
-    public var body: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                if !model.availableRoots.isEmpty {
-                    Picker("Store", selection: Binding(get: { model.selectedRoot ?? "" }, set: { root in Task { await model.selectStore(root) } })) {
-                        ForEach(model.availableRoots, id: \.self) { root in Text(LibraryModel.abbreviated(root)).tag(root) }
-                    }.disabled(model.loading)
-                }
-                if let failure = model.selectionFailure { Text(failure).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-                if let note = model.persistenceNote { Text(note).font(.caption).foregroundStyle(.secondary) }
-            }.padding(.horizontal, 10).padding(.top, 8)
-            metadataControls
-            List(selection: $selection) {
-                ForEach(model.sections) { section in
-                    Section(section.title) {
-                        if let note = section.note { Text(note).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-                        ForEach(model.visibleRows(section)) { row in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(row.title).lineLimit(1)
-                                Text(row.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                                if !row.source.isEmpty { Text(row.source).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
-                            }
-                            .tag("\(section.id)|\(row.id)")
-                            .accessibilityElement(children: .combine)
-                            .accessibilityAction(named: "Open") { open(row.reference) }
-                        }
-                        if section.hasMore {
-                            Button("Read Next Documents") { Task { await model.loadMore(section.id) } }.disabled(model.loading)
-                        }
-                    }
-                }
-            }
-            .contextMenu(forSelectionType: String.self) { _ in Button("Open") { openSelected() } } primaryAction: { _ in openSelected() }
-            .onKeyPress(.return) { openSelected(); return .handled }
-            DisclosureGroup("Source-content search (separate from metadata)") {
-                HStack {
-                    TextField("Literal source text", text: $model.sourceQuery)
-                    Button("Search Next Sources") { Task { await model.searchNextSources() } }.disabled(model.loading || model.sourceQuery.isEmpty)
-                    Button("Clear") { model.sourceQuery = ""; model.clearSourceSearch() }
-                }
-                if let note = model.sourceSearchNote { Text(note).font(.caption).foregroundStyle(.secondary) }
-                Text("Each action checks up to 20 loaded sources and reads at most 8 MiB. It does not search unscanned documents.").font(.caption).foregroundStyle(.secondary)
-            }.padding(10)
-        }
-        .searchable(text: $model.filter, placement: .toolbar, prompt: "Metadata: title or ID")
-        .toolbar {
-            ToolbarItemGroup {
-                Button { Task { await model.reload() } } label: { Label("Reload", systemImage: "arrow.clockwise") }.disabled(model.loading)
-                Button { openFile() } label: { Label("Open File…", systemImage: "doc") }
-                if let openStore { Button { openStore() } label: { Label("Open Store Folder…", systemImage: "folder") } }
-            }
-        }
-        .overlay { if model.loading && model.sections.isEmpty { ProgressView() } }
-        .task { await model.reload() }
-    }
-
-    private var metadataControls: some View {
-        DisclosureGroup("Metadata selection") {
-            HStack {
-                Picker("Kind", selection: $model.kind) {
-                    Text("All").tag("all")
-                    Text("Published").tag("published")
-                    Text("Responses").tag("response")
-                    Text("Files").tag("file")
-                }
-                TextField("Source or workspace", text: $model.sourceFilter)
-            }
-            HStack {
-                TextField("From YYYY-MM-DD", text: $model.fromDate)
-                TextField("Through YYYY-MM-DD", text: $model.throughDate)
-            }
-            if let error = model.dateError { Text(error).foregroundStyle(.red).font(.caption) }
-            Text("Filters apply only to scanned metadata. Dates select the UTC update date.").font(.caption).foregroundStyle(.secondary)
-        }.padding(10)
-    }
-
-    private func openSelected() {
-        guard let selection else { return }
-        for section in model.sections {
-            if let row = model.visibleRows(section).first(where: { "\(section.id)|\($0.id)" == selection }) { open(row.reference); return }
-        }
-    }
 }

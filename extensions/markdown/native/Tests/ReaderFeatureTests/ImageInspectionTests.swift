@@ -1,7 +1,5 @@
 import Testing
 import AppKit
-import SwiftUI
-import WebKit
 @testable import MarkdownCore
 @testable import ReaderFeature
 
@@ -35,15 +33,20 @@ private final class Copies {
 }
 
 @MainActor @Suite(.serialized) struct ImageInspections {
-    private func reader(_ store: ReviewStore, copies: Copies = Copies(), width: CGFloat = 420) async -> (ReaderModel, NSWindow) {
+    private func reader(_ store: ReviewStore, copies: Copies = Copies()) async -> (ReaderModel, NSWindow) {
         let model = ReaderModel(reference: store.reference, platform: ReaderPlatform(
             copyText: { copies.texts.append($0) }, openExternal: { _ in false }, reveal: { _ in },
             returnToTerminal: { _ in TerminalReturnResult(pane: .unavailable("test"), application: .failed("test")) }
-        ), state: ReadingStateStore(directory: nil))
+        ), state: ReadingStateStore(directory: nil), webRoot: ReaderHostFixture.root)
         _ = NSApplication.shared
-        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
+        let size = NSSize(width: 420, height: 700)
+        let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000), size: size),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ReaderView(model: model, chrome: .embedded(close: {}, release: {})))
+        let webView = model.page.webView
+        webView.frame = NSRect(origin: .zero, size: size)
+        webView.autoresizingMask = [.width, .height]
+        window.contentView = webView
         window.orderFrontRegardless()
         await model.open(origin: nil)
         return (model, window)
@@ -56,17 +59,6 @@ private final class Copies {
             try? await Task.sleep(for: .milliseconds(20))
         }
         return await condition()
-    }
-
-    /// The image's laid-out width and whether the page scrolls sideways.
-    private func layout(_ model: ReaderModel) async throws -> (width: Double, scrolls: Bool, view: Double) {
-        let page = try #require(model.inspection.page)
-        let value = try #require(try await page.callJavaScript("""
-        const image = document.getElementById('subject');
-        const root = document.scrollingElement;
-        return { width: image.getBoundingClientRect().width, scrolls: root.scrollWidth > window.innerWidth + 1, view: window.innerWidth };
-        """, contentWorld: PageScript.world) as? [String: Any])
-        return ((value["width"] as? Double) ?? Double((value["width"] as? Int) ?? 0), (value["scrolls"] as? Bool) ?? false, (value["view"] as? Double) ?? Double((value["view"] as? Int) ?? 0))
     }
 
     @Test func factsNameTheReferenceAlternativesAndRetainedIdentity() throws {
@@ -144,7 +136,7 @@ private final class Copies {
         #expect(ImageInspection.step(from: 0.1, larger: false) == nil)
     }
 
-    @Test func aWideDiagramFitsThenPansAtActualSizeOverAnUntouchedDocument() async throws {
+    @Test func aRetainedWideImageNamesItsEvidenceAndCopiesItsReference() async throws {
         let store = try ReviewStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         try store.publish(1, pictureSource, images: ["wide.svg": wideDiagram, "plain.png": smallPicture])
@@ -155,47 +147,14 @@ private final class Copies {
 
         model.handle(.inspectImage(nonce: "another-rendering", index: 0))
         model.handle(.inspectImage(nonce: nonce, index: 0))
-        #expect(await wait { model.inspection.naturalSize != nil })
+        #expect(await wait { model.inspection.naturalSize != nil && model.pageState?.overlay == "image" })
         #expect(model.inspection.facts?.index == 0)
         #expect(model.inspection.naturalSize == CGSize(width: 1600, height: 400))
-        #expect(model.inspection.zoom == .fit)
-        #expect(model.inspection.zoomLabel == "Fit")
         #expect(await model.interacting())
-        let fitted = try await layout(model)
-        #expect(fitted.width <= fitted.view)
-        #expect(!fitted.scrolls)
-
-        await model.inspection.actualSize()
-        #expect(model.inspection.zoom == .scale(1))
-        #expect(model.inspection.zoomLabel == "100%")
-        let actual = try await layout(model)
-        #expect(actual.width == 1600)
-        #expect(actual.scrolls)
-
-        await model.inspection.zoomIn()
-        #expect(model.inspection.zoom == .scale(1.5))
-        #expect(try await layout(model).width == 2400)
-        await model.inspection.zoomOut()
-        await model.inspection.zoomOut()
-        #expect(model.inspection.zoom == .scale(0.75))
-
-        await model.inspection.zoomToFit()
-        #expect(model.inspection.zoom == .fit)
-        #expect(!(try await layout(model).scrolls))
-        await model.inspection.zoomIn()
-        guard case .scale(let stepped) = model.inspection.zoom else {
-            Issue.record("zooming in from Fit must choose a scale")
-            return
-        }
-        let fitScale = fitted.width / 1600
-        #expect(stepped == ImageInspection.step(from: fitScale, larger: true))
-
         #expect(await wait { model.inspection.facts?.evidence?.reference == "wide.svg" })
         #expect(model.inspectableImage(URL(string: "reader-action:inspect-image/\(nonce)/1")) == 1)
         #expect(model.inspectableImage(URL(string: "reader-action:inspect-image/other/1")) == nil)
         #expect(model.inspectableImage(URL(string: "https://example.com/")) == nil)
-        let alternatives = try await model.inspection.page?.callJavaScript("const image = document.getElementById('subject'); return image.alt + '|' + image.title;", contentWorld: PageScript.world) as? String
-        #expect(alternatives == "Wide architecture diagram|Data flow")
 
         model.copyImageReference()
         #expect(copies.texts.last?.hasPrefix("Image reference: wide.svg\nDocument: \(store.id)\nRevision: 1\n") == true)
@@ -203,8 +162,6 @@ private final class Copies {
 
         #expect(model.phase == .ready)
         #expect(model.snapshot?.revision == 1)
-        let heading = try await model.page.callJavaScript("return document.querySelector('h1').textContent.trim();", contentWorld: PageScript.world) as? String
-        #expect(heading == "Pictures")
         #expect(model.dismissOverlay())
         #expect(await wait { !model.inspection.isOpen })
         #expect(model.inspection.page == nil)
@@ -221,14 +178,13 @@ private final class Copies {
         await model.inspectImage(2)
         #expect(model.inspection.facts?.reference == "https://example.com/chart.png")
         #expect(model.inspection.problem == "The reader does not load images from the web. The address is below.")
-        #expect(model.inspection.page == nil)
         await model.inspectAdjacentImage(next: true)
         #expect(model.inspection.facts?.index == 3)
         #expect(model.inspection.problem == "This image is unavailable: no folder to resolve it against.")
         await model.inspectAdjacentImage(next: true)
         #expect(model.inspection.facts?.index == 4)
-        #expect(await wait { model.inspection.naturalSize != nil })
-        #expect(model.inspection.naturalSize == CGSize(width: 1, height: 1))
+        #expect(model.inspection.facts?.state == .embedded(mediaType: "image/gif"))
+        #expect(model.inspection.address == model.inspection.facts?.reference)
         await model.inspectAdjacentImage(next: true)
         #expect(model.inspection.facts?.index == 4)
         await model.toggleImageInspection()

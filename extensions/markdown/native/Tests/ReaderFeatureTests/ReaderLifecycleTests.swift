@@ -1,7 +1,6 @@
 import Testing
 import AppKit
 import CryptoKit
-import SwiftUI
 import WebKit
 @testable import MarkdownCore
 @testable import ReaderFeature
@@ -73,7 +72,7 @@ private final class LifecycleGate {
             returnToTerminal: { _ in
                 TerminalReturnResult(pane: .unavailable("test"), application: .failed("test"))
             }
-        ), state: state)
+        ), state: state, webRoot: ReaderHostFixture.root)
     }
 
     private func wait(until condition: () async -> Bool) async -> Bool {
@@ -85,7 +84,82 @@ private final class LifecycleGate {
         return await condition()
     }
 
-    @Test func annotationReadsBoundedWebPageSelectionWithoutAWindow() async throws {
+    @Test func textSizeBridgeUsesMultipliersAndStoresTheNearestStep() async throws {
+        _ = NSApplication.shared
+        let state = ReadingStateStore(directory: nil)
+        state.settings = PageSettings(textSize: 3)
+        let reader = model(reference: .file(path: "draft-host"), state: state)
+        try await reader.page.load()
+        _ = try await reader.page.callJavaScript("const receive = reader.receive; reader.receive = m => { if (m.type === 'document') window.initialSettings = m.settings; if (m.type === 'command' && m.name === 'applySettings') window.settingsPatch = m.args; return receive(m); };")
+        try await reader.sendDocument(source: "Text", generation: 0)
+        #expect(try await reader.page.callJavaScript("return window.initialSettings.textSize;") as? Double == 1)
+        #expect(try await reader.page.callJavaScript("return window.initialSettings.textSizeSteps;") as? [Double] == PageSettings.textSizeMultipliers)
+        reader.settings = PageSettings(textSize: 6)
+        #expect(await wait { (try? await reader.page.callJavaScript("return window.settingsPatch?.textSize;")) as? Double == PageSettings(textSize: 6).textSizeMultiplier })
+        let reply = try await reader.page.callJavaScript("return await window.webkit.messageHandlers.reader.postMessage({v:1,type:'command',id:'text-size',name:'saveSettings',args:{patch:{textSize:1.11}}});") as? [String: Any]
+        #expect(reply?["ok"] as? Bool == true)
+        #expect(reader.settings.textSize == 5)
+        #expect(state.settings.textSize == 5)
+        await reader.close()
+    }
+
+    @Test func aShellReloadStaysBusyUntilTheDocumentIsAccepted() async throws {
+        _ = NSApplication.shared
+        let reader = model(reference: .file(path: "draft-host"), state: ReadingStateStore(directory: nil))
+        var transitions: [Bool] = []
+        reader.page.onDocumentReady = { transitions.append($0) }
+        try await reader.sendDocument(source: "Text", generation: 0)
+        #expect(reader.page.documentReady)
+        try await reader.page.reload()
+        #expect(reader.page.isReady)
+        #expect(!reader.page.documentReady)
+        try await reader.sendDocument(source: "Text", generation: 0)
+        #expect(reader.page.documentReady)
+        await reader.close()
+        #expect(!reader.page.documentReady)
+        #expect(transitions == [true, false, true, false])
+    }
+
+    @Test func draftMirrorUpdatesKeepExactBytesWithoutAReplacementDocument() async throws {
+        _ = NSApplication.shared
+        let state = ReadingStateStore(directory: nil)
+        let id = UUID()
+        state.setDraftLock(.reading, for: id.uuidString)
+        let reader = model(reference: .file(path: "draft-host"), state: state)
+        try await reader.sendDocument(source: "# Draft\n\nCafé\n", generation: 7,
+                                      meta: ["documentId": id.uuidString, "kind": "draft", "capturedSource": false], draftId: id)
+        #expect(reader.phase == .ready)
+        #expect(reader.isDraft)
+        #expect(reader.draftGeneration == 7)
+        #expect(reader.lock == .reading)
+        _ = try await reader.page.callJavaScript("window.replacements = 0; const receive = reader.receive; reader.receive = m => { if (m.type === 'document') window.replacements++; return receive(m); };")
+        let exact = "# Draft\r\n\r\nCafe\u{301}\r\n"
+        try await reader.acceptSource(source: exact, generation: 8)
+        #expect(reader.source.utf8.elementsEqual(exact.utf8))
+        #expect(reader.sourceGeneration == 8)
+        #expect(reader.draftGeneration == 8)
+        #expect(try await reader.page.callJavaScript("return window.replacements;") as? Int == 0)
+        await reader.close()
+    }
+
+    @Test func editIntentOverridesDraftLockButCapturedSourcesStayReading() async throws {
+        _ = NSApplication.shared
+        let state = ReadingStateStore(directory: nil)
+        let id = UUID()
+        state.setDraftLock(.reading, for: id.uuidString)
+        let draft = model(reference: .file(path: "draft-host"), state: state)
+        try await draft.sendDocument(source: "Text", generation: 0,
+                                     meta: ["documentId": id.uuidString, "kind": "published", "capturedSource": false], initialLock: .writing, draftId: id)
+        #expect(draft.lock == .writing)
+        await draft.close()
+        let captured = model(reference: .file(path: "capture-host"), state: state)
+        try await captured.sendDocument(source: "Text", generation: 0,
+                                        meta: ["documentId": "capture", "kind": "file", "capturedSource": true], initialLock: .writing)
+        #expect(captured.lock == .reading)
+        await captured.close()
+    }
+
+    @Test func annotationReadsBoundedPageSelectionWithoutAWindow() async throws {
         _ = NSApplication.shared
         let reader = model(reference: .file(path: "annotation-draft"), state: ReadingStateStore(directory: nil))
         await reader.openDraft(source: "# Title\n\nExact **bold** 日本語\n", generation: 1, title: "Annotation", resolver: NoAssetResolver())
@@ -99,9 +173,14 @@ private final class LifecycleGate {
 
     private func window(_ model: ReaderModel) -> NSWindow {
         _ = NSApplication.shared
-        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 800, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
+        let size = NSSize(width: 800, height: 700)
+        let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000), size: size),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ReaderView(model: model, chrome: .embedded(close: {}, release: {})))
+        let webView = model.page.webView
+        webView.frame = NSRect(origin: .zero, size: size)
+        webView.autoresizingMask = [.width, .height]
+        window.contentView = webView
         window.orderFrontRegardless()
         return window
     }
@@ -172,10 +251,10 @@ private final class LifecycleGate {
         defer { first.release(); second.release() }
         model.displayNavigationForCheck = { await first.wait() }
         var firstReturned = false
-        let old = Task { await model.displayForCheck(html: "old"); firstReturned = true }
+        let old = Task { await model.waitForDisplayForCheck(); firstReturned = true }
         #expect(await wait { first.reached })
         model.displayNavigationForCheck = { await second.wait() }
-        let newer = Task { await model.displayForCheck(html: "new") }
+        let newer = Task { await model.waitForDisplayForCheck() }
         #expect(await wait { second.reached && firstReturned })
         #expect(model.isDisplayingForCheck)
         second.release()
@@ -547,7 +626,7 @@ private final class LifecycleGate {
         await model.close()
     }
 
-    @Test func outlineNavigationTracksSectionsFiltersAndBoundedReturns() async throws {
+    @Test func sectionNavigationKeepsBoundedReturns() async throws {
         let store = try LifecycleStore()
         defer { try? FileManager.default.removeItem(at: store.root) }
         let paragraphs = String(repeating: "A paragraph with enough text for a useful section.\n\n", count: 40)
@@ -557,14 +636,8 @@ private final class LifecycleGate {
         defer { window.close() }
         await model.open(origin: nil)
         #expect(model.activeSection == "first")
-        model.outlineQuery = "SECOND"
-        #expect(model.filteredOutline.map(\.id) == ["second"])
-        model.outlineCompact = true
-        model.toggleOutline()
-        #expect(model.outlineIsPresented)
         let before = await model.capturePosition()
         await model.scrollTo(anchor: "second")
-        #expect(!model.outlinePopoverVisible)
         #expect(model.activeSection == "second")
         #expect(model.canGoBack)
         await model.goBack()
@@ -572,12 +645,6 @@ private final class LifecycleGate {
         #expect(returned?.blockKey == before?.blockKey)
         #expect(model.activeSection == "first")
         #expect(!model.canGoBack)
-        let footnote = try await model.page.callJavaScript("const link = document.querySelector('.footnote-ref a, a.footnote-ref'); const href = link.getAttribute('href'); link.click(); return href;", contentWorld: PageScript.world) as? String
-        #expect(footnote?.hasPrefix("reader-action:jump/") == true)
-        #expect(await wait { model.canGoBack || model.notice != nil })
-        #expect(model.canGoBack, "Footnote: \(footnote ?? "nil"); notice: \(model.notice?.text ?? "none")")
-        await model.goBack()
-        #expect(model.activeSection == "first")
         for index in 0..<24 { await model.scrollTo(anchor: index.isMultiple(of: 2) ? "second" : "third") }
         #expect(model.jumpHistory.count == 20)
         await model.scrollTo(anchor: "absent")

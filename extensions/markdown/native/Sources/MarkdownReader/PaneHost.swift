@@ -5,7 +5,7 @@ import MacPlatform
 import OSLog
 import MarkdownCore
 import ReaderFeature
-import SwiftUI
+import WebKit
 
 let paneLog = Logger(subsystem: "local.harness.markdown-reader", category: "pane")
 
@@ -41,7 +41,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
     private let anchor = TerminalAnchor()
     private var window: PaneWindow!
     private var content: PaneContentView!
-    private var hosting: NSHostingController<AnyView>?
+    private var surface: ReaderSurface?
     private var placement: TerminalAnchor.Placement?
     private var ending = false
     private var observers: [NSObjectProtocol] = []
@@ -85,13 +85,21 @@ final class PaneHost: NSObject, NSWindowDelegate {
 
     // MARK: - Window
 
-    private func view(_ model: ReaderModel) -> AnyView {
-        if let workspace { return AnyView(EditorWorkspaceView(workspace: workspace).onAppear { [weak self] in self?.focusPendingEditor() }) }
-        let captured = model.snapshot?.document.map { $0.kind != .published } ?? false
-        return AnyView(ReaderView(model: model, chrome: .embedded(close: { [weak self] in self?.end(status: 0) }, release: { [weak self] in self?.releaseFocus() }), editActions: ReaderEditActions(
-            edit: captured ? nil : { [weak self] in self?.editShown(copy: false) },
-            editCopy: captured ? { [weak self] in self?.editShown(copy: true) } : nil,
-            isEnabled: model.snapshot != nil)))
+    private func installSurface(_ model: ReaderModel) {
+        surface?.removeFromSuperview()
+        let next = ReaderSurface(model: model, state: state, chrome: "pane", workspace: workspace)
+        next.frame = content.bounds
+        next.autoresizingMask = [.width, .height]
+        next.onClose = { [weak self] in self?.end(status: 0) }
+        next.onReturnFocus = { [weak self] in self?.releaseFocus() }
+        next.onWorkspace = { [weak self] workspace in
+            guard let self else { return }
+            self.workspace = workspace
+            self.connect(workspace)
+            self.onWorkspaceChange?(self.window, workspace)
+        }
+        content.addSubview(next)
+        surface = next
     }
 
     private func connect(_ workspace: EditorWorkspace) {
@@ -104,61 +112,27 @@ final class PaneHost: NSObject, NSWindowDelegate {
         }
     }
 
-    func editShown(copy: Bool) {
-        guard !ending, !opening, workspace == nil else { return }
-        opening = true
-        let previous = model
-        let root: String? = if case .stored(let root, _, _) = model.reference { root } else { state.selectedStoreRoot }
-        let candidate = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: root, automaticallySaves: true)
-        candidate.launchOrigin = previous.launchOrigin
-        candidate.reading = previous
-        Task { @MainActor in
-            defer { opening = false; draw() }
-            guard await candidate.editReading(copy: copy), !ending, model === previous else {
-                message = candidate.notice
-                candidate.reading = nil
-                await candidate.closeViews()
-                return
-            }
-            workspace = candidate
-            connect(candidate)
-            editorFocusPending = true
-            hosting?.rootView = view(previous)
-            onWorkspaceChange?(window, candidate)
-            observePhase()
-            Task { @MainActor [weak self] in self?.focusPendingEditor() }
-        }
-    }
-
     func newScratchpad(showDrafts: Bool = false, showLibrary: Bool = false) {
-        if let workspace {
-            if showLibrary { Task { await workspace.showPublishedLibrary() } }
-            else if showDrafts { Task { await workspace.library() } } else { workspace.newScratchpad() }
-            return
+        let workspace: EditorWorkspace
+        if let current = self.workspace { workspace = current }
+        else {
+            let root: String? = if case .stored(let root, _, _) = model.reference { root } else { state.selectedStoreRoot }
+            workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: root, automaticallySaves: true)
+            workspace.launchOrigin = model.launchOrigin; workspace.reading = model
+            self.workspace = workspace
+            connect(workspace); surface?.setWorkspace(workspace)
+            onWorkspaceChange?(window, workspace)
         }
-        let root: String? = if case .stored(let root, _, _) = model.reference { root } else { state.selectedStoreRoot }
-        let workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: root, automaticallySaves: true)
-        self.workspace = workspace
-        editorFocusPending = true
-        workspace.launchOrigin = model.launchOrigin
-        connect(workspace)
-        if showLibrary { Task { await workspace.showPublishedLibrary() } }
-        else if showDrafts { Task { await workspace.library() } } else { workspace.newScratchpad() }
-        hosting?.rootView = view(model)
-        onWorkspaceChange?(window, workspace)
-        Task { await model.close() }
+        if showLibrary || showDrafts {
+            surface?.sendCommand("showLibrary", args: ["collection": showDrafts ? "drafts" : "published"])
+        } else { workspace.newScratchpad() }
         observePhase(); draw()
     }
 
     private func makeWindow() -> PaneWindow {
-        let host = NSHostingController(rootView: view(model))
-        host.sizingOptions = []
-        hosting = host
         let bounds = NSRect(x: 0, y: 0, width: 640, height: 480)
         content = PaneContentView(frame: bounds)
-        host.view.frame = bounds
-        host.view.autoresizingMask = [.width, .height]
-        content.addSubview(host.view)
+        installSurface(model)
         let window = PaneWindow(contentRect: bounds, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.contentView = content
         window.isOpaque = false
@@ -172,18 +146,7 @@ final class PaneHost: NSObject, NSWindowDelegate {
         window.delegate = self
         window.onClose = { [weak self] in self?.end(status: 0) }
         window.onCancel = { [weak self] in
-            // Escape first ends an image inspection, a comparison or an open comment box;
-            // otherwise it gives the keyboard back.
-            guard let self else { return }
-            let shown = self.workspace?.reading ?? (self.workspace?.active?.readingDraft == true ? self.workspace?.active?.preview : nil) ?? self.model
-            guard !shown.dismissOverlay() else { return }
-            if let workspace = self.workspace, let client = workspace.collaboration, client.annotationPresented {
-                client.finishAnnotation()
-                workspace.restoreEditorFocus()
-                return
-            }
-            guard self.workspace?.allowAction("releasing keyboard focus") != false else { return }
-            self.releaseFocus()
+            self?.surface?.sendCommand("escape")
         }
         return window
     }
@@ -230,30 +193,12 @@ final class PaneHost: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Placement and activation can finish in either order. Only the pending editor launch
-    /// claims focus; later application activations leave the current control unchanged.
-    func focusPendingEditor() {
-        guard !ending, editorFocusPending, let workspace, let placement,
-              window.isVisible, placement.coveredBy == nil else { return }
-        let active = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard active == placement.host || active == ProcessInfo.processInfo.processIdentifier else { return }
-        editorFocusPending = !Self.focusEditor(workspace, in: window)
-    }
+    /// Loading a document never claims keyboard focus from its terminal.
+    func focusPendingEditor() { editorFocusPending = false }
 
-    /// Focus follows real attachment and app activation, not a text view's local focus flag.
     @discardableResult static func focusEditor(_ workspace: EditorWorkspace, in window: NSWindow) -> Bool {
-        guard let document = workspace.active, !document.readingDraft, !workspace.libraryVisible, workspace.reading == nil, workspace.publishedLibrary == nil else { return false }
-        window.contentView?.layoutSubtreeIfNeeded()
-        guard document.text.activeTextView.window === window else { return false }
-        if !window.isVisible { window.orderFrontRegardless() }
-        // AppKit completes activation asynchronously. The delegate resumes the pending focus.
-        if !NSApp.isActive { NSApp.activate() }
-        guard NSApp.isActive else { return false }
-        window.makeKeyAndOrderFront(nil)
-        window.makeMain()
-        document.text.focus()
-        return NSApp.keyWindow === window && window.isKeyWindow && window.isMainWindow
-            && window.firstResponder === document.text.activeTextView
+        guard let surface = (window.contentView as? ReaderSurface) ?? window.contentView?.subviews.compactMap({ $0 as? ReaderSurface }).first else { return false }
+        return window.makeFirstResponder(surface.model.page.webView)
     }
 
     /// Gives the keyboard back to the application that shows the pane.
@@ -343,13 +288,13 @@ final class PaneHost: NSObject, NSWindowDelegate {
             let next = ReaderModel(reference: .stored(root: root, storeId: storeId, document: document), platform: platform, state: state)
             next.followsLatest = true
             model = next
-            hosting?.rootView = view(next)
+            installSurface(next)
             message = nil
             observePhase()
             await next.open(revision: nil, origin: nil)
             guard !ending else { await previous.close(); return }
             if case .failed(let error) = next.phase {
-                model = previous; hosting?.rootView = view(previous)
+                model = previous; installSurface(previous)
                 message = "\(document) cannot be shown: \(error)"
                 await next.close(); observePhase()
                 return
@@ -386,7 +331,6 @@ final class PaneHost: NSObject, NSWindowDelegate {
         } onChange: { [weak self] in
             Task { @MainActor in
                 guard let self, self.observation == current else { return }
-                if self.workspace == nil { self.hosting?.rootView = self.view(self.model) }
                 self.draw()
                 self.observePhase()
             }
@@ -577,7 +521,7 @@ final class PaneContentView: NSView {
     override var wantsUpdateLayer: Bool { true }
 
     override func updateLayer() {
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        layer?.backgroundColor = ReaderSurface.paperColour.cgColor
     }
 
     override func layout() {
@@ -608,9 +552,7 @@ final class PaneContentView: NSView {
     }
 }
 
-/// A borderless panel whose first click reaches the content. Reader-only panes keep the
-/// terminal application active; editor panes explicitly activate before taking source focus.
-/// Escape outside a text field gives the keyboard back to the terminal application.
+/// A non-activating panel whose first click reaches the page.
 final class PaneWindow: NSPanel {
     var onCancel: (() -> Void)?
     var onClose: (() -> Void)?

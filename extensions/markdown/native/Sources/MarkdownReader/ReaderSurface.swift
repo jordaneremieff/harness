@@ -1,0 +1,444 @@
+import AppKit
+import EditorFeature
+import MarkdownCore
+import Observation
+import ReaderFeature
+
+/// The native shell owns data and system effects; one page owns all visible interaction.
+@MainActor
+final class ReaderSurface: NSView {
+    let model: ReaderModel
+    let state: ReadingStateStore
+    private(set) var workspace: EditorWorkspace?
+    var onWorkspace: ((EditorWorkspace) -> Void)?
+    var onClose: (() -> Void)?
+    var onReturnFocus: (() -> Void)?
+    private var pendingAgent: (id: String, finish: (WebAgentApplyResult) -> Void)?
+    private var observedDocument: UUID?
+    private var observation = 0
+    private var applying = false
+    private var changeTail: Task<Void, Never>?
+    private var queuedChanges = 0
+    private(set) var pageState: [String: Any] = [:]
+    private var pageReady = false
+    private let draftDirectory: URL
+    private enum DraftReference { case session(UUID), recovery(UUID, UUID) }
+    private var draftReferences: [String: DraftReference] = [:]
+    private var draftReferenceKeys: [String: String] = [:]
+    private var draftCursor: (token: String, query: String, offset: Int)?
+
+    static var paperColour: NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                ? NSColor(srgbRed: 0.058, green: 0.061, blue: 0.071, alpha: 1)
+                : NSColor(srgbRed: 0.992, green: 0.994, blue: 0.998, alpha: 1)
+        }
+    }
+
+    init(model: ReaderModel, state: ReadingStateStore, chrome: String, workspace: EditorWorkspace? = nil, draftDirectory: URL? = nil) {
+        self.model = model; self.state = state; self.workspace = workspace
+        self.draftDirectory = draftDirectory ?? AppDelegate.stateDirectory().appendingPathComponent("Drafts")
+        super.init(frame: NSRect(x: 0, y: 0, width: 640, height: 480))
+        model.chrome = chrome; model.live = workspace?.collaboration != nil
+        wantsLayer = true; layer?.backgroundColor = Self.paperColour.cgColor
+        let view = model.page.webView
+        view.frame = bounds; view.autoresizingMask = [.width, .height]
+        addSubview(view)
+        model.page.onDocumentReady = { [weak self] ready in self?.workspace?.webReady = ready }
+        model.page.onMessage = { [weak self] message in
+            guard let self else { return [:] }
+            return try await self.receive(message)
+        }
+        if let workspace { connect(workspace) }
+        observe()
+        Task { [weak self] in try? await self?.model.page.load() }
+    }
+    required init?(coder: NSCoder) { nil }
+
+    func setWorkspace(_ workspace: EditorWorkspace) {
+        self.workspace = workspace
+        connect(workspace); observe()
+        Task { await showWorkspace() }
+    }
+
+    func waitForPendingChanges() async { await changeTail?.value }
+
+    func sendCommand(_ name: String, args: [String: Any] = [:]) {
+        Task { await model.sendCommand(name, args: args) }
+    }
+
+    func commandEnabled(_ name: String) -> Bool {
+        switch name {
+        case "undo": return pageState["canUndo"] as? Bool == true
+        case "redo": return pageState["canRedo"] as? Bool == true
+        case "format": return pageState["lock"] as? String == "writing" && pageState["activeBlock"] is [String: Any]
+        case "askSelection", "copyPassage": return pageState["hasSelection"] as? Bool == true
+        default: return pageReady
+        }
+    }
+
+    private func connect(_ workspace: EditorWorkspace) {
+        model.live = workspace.collaboration != nil
+        workspace.webReady = model.page.documentReady
+        workspace.webHostModel = model
+        workspace.webAgentApply = { [weak self] operation, generation, edits in
+            guard let self, self.pageReady, self.pendingAgent == nil else { return .refused(reason: "stale") }
+            return await withCheckedContinuation { continuation in
+                self.pendingAgent = (operation, { continuation.resume(returning: $0) })
+                Task {
+                    do {
+                        var envelope: [String: Any] = ["v": 1, "type": "agentApply", "operationId": operation,
+                            "baseGeneration": generation, "edits": edits.map(Self.editPayload)]
+                        if let workspace = self.workspace,
+                           let thread = workspace.collaboration?.currentAdmittedThreadId(for: workspace.liveDocumentID) { envelope["threadId"] = thread }
+                        _ = try await self.model.sendEnvelope(envelope)
+                    } catch {
+                        self.finishAgent(operation, result: .refused(reason: "unknown"))
+                    }
+                }
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(20))
+                    self?.finishAgent(operation, result: .refused(reason: "unknown"))
+                }
+            }
+        }
+        workspace.webClaim = { [weak self] id, ranges, label, expires in
+            var message: [String: Any] = ["v": 1, "type": "claim", "claimId": id,
+                "ranges": ranges.map { ["start": $0.location, "end": NSMaxRange($0)] },
+                "expiresAt": expires.timeIntervalSince1970 * 1000]
+            if let label { message["label"] = label }
+            Task { _ = try? await self?.model.sendEnvelope(message) }
+        }
+        workspace.webRelease = { [weak self] id in
+            Task { _ = try? await self?.model.sendEnvelope(["v": 1, "type": "release", "claimId": id]) }
+        }
+        workspace.collaboration?.onPromptState = { [weak self] id, thread, status, detail in
+            var message: [String: Any] = ["v": 1, "type": "promptState", "requestId": id, "threadId": thread, "state": status]
+            if let detail { message["detail"] = detail }
+            Task { _ = try? await self?.model.sendEnvelope(message) }
+        }
+    }
+
+    private func finishAgent(_ operation: String, result: WebAgentApplyResult) {
+        guard let pending = pendingAgent, pending.id == operation else { return }
+        pendingAgent = nil; pending.finish(result)
+    }
+
+    private func ensureWorkspace() -> EditorWorkspace {
+        if let workspace { return workspace }
+        let root: String? = if case .stored(let root, _, _) = model.reference { root } else { state.selectedStoreRoot }
+        let value = EditorWorkspace(directory: draftDirectory, store: root, automaticallySaves: true)
+        value.reading = model; value.launchOrigin = model.launchOrigin
+        workspace = value; connect(value); onWorkspace?(value); observe()
+        return value
+    }
+
+    private func receive(_ message: [String: Any]) async throws -> [String: Any] {
+        guard let type = message["type"] as? String else { throw BridgeFailure.invalid }
+        switch type {
+        case "ready":
+            pageReady = true; workspace?.webReady = model.page.documentReady
+            if workspace?.active != nil { await showWorkspace() }
+        case "state":
+            pageState = message
+            workspace?.pageHeld = Self.range(message["held"])
+            if let document = workspace?.active, let selection = message["selection"] as? [String: Any],
+               let range = Self.range(selection), let text = selection["text"] as? String,
+               MirrorText.validRange(range, source: document.text.source),
+               (document.text.source as NSString).substring(with: range).utf8.elementsEqual(text.utf8) {
+                document.text.select(range)
+                document.session.receive(source: document.text.source, generation: document.text.generation,
+                    selection: .init(location: range.location, length: range.length), markedText: false)
+            }
+            // Queued source writes keep the live document busy until acknowledgement.
+            workspace?.pageBusy = queuedChanges > 0
+        case "edits":
+            let change = try Self.change(message)
+            queuedChanges += 1
+            workspace?.pageBusy = true
+            let previous = changeTail
+            let task = Task { @MainActor [weak self] in
+                await previous?.value
+                guard let self else { return }
+                await self.applyPageChange(change)
+                self.queuedChanges -= 1
+                self.workspace?.pageBusy = self.queuedChanges > 0
+            }
+            changeTail = task
+            await task.value
+        case "agentRefused":
+            guard let operation = message["operationId"] as? String else { throw BridgeFailure.invalid }
+            finishAgent(operation, result: .refused(reason: message["reason"] as? String ?? "stale", range: Self.range(message["range"])))
+        case "prompt":
+            guard let request = message["requestId"] as? String, let thread = message["threadId"] as? String,
+                  let text = message["text"] as? String, let generation = Self.generation(message["generation"]) else { throw BridgeFailure.invalid }
+            let expected = workspace?.active?.text.generation ?? 0
+            guard generation == expected, let client = workspace?.collaboration else { return ["accepted": false, "detail": "The conversation connection is not available for this document."] }
+            let accepted = await client.submitPrompt(requestId: request, threadId: thread, text: text, quote: message["quote"] as? String)
+            return ["accepted": accepted]
+        case "query":
+            if message["kind"] as? String == "library", message["collection"] as? String == "drafts" { return try await draftLibrary(message) }
+            guard message["kind"] as? String == "review", message["against"] as? String == "base",
+                  let workspace, let document = workspace.active else { throw BridgeFailure.invalid }
+            let source = document.text.source, generation = document.text.generation
+            let base = try await workspace.draftReviewBase()
+            guard workspace.active === document, document.text.generation == generation else { throw BridgeFailure.invalid }
+            return try await model.queryDraftReview(base: base, currentSource: source, resolver: document.assetResolver)
+        case "command":
+            await waitForPendingChanges()
+            guard let name = message["name"] as? String else { throw BridgeFailure.invalid }
+            return try await command(name, args: message["args"] as? [String: Any] ?? [:])
+        default: break
+        }
+        return [:]
+    }
+
+    private func applyPageChange(_ change: WebPageChange) async {
+        let workspace = ensureWorkspace()
+        applying = true; workspace.pageBusy = true
+        defer { applying = false; workspace.pageBusy = queuedChanges > 0 }
+        do {
+            let ack = try await workspace.receivePageChange(change)
+            if let document = workspace.active {
+                observedDocument = document.id
+                try await model.acceptSource(source: document.text.source, generation: document.text.generation,
+                    meta: metadata(document), resolver: document.assetResolver, draftId: document.session.record.id)
+            }
+            var envelope: [String: Any] = ["v": 1, "type": "ack", "generation": ack.generation,
+                "digest": ack.digest, "recovery": ack.recoveryRetained ? "retained" : "pending"]
+            if ack.copied, let document = workspace.active { envelope["meta"] = metadata(document) }
+            _ = try await model.sendEnvelope(envelope)
+            if let operation = change.operationId { finishAgent(operation, result: .accepted(change)) }
+        } catch {
+            _ = try? await model.sendEnvelope(["v": 1, "type": "refused", "generation": workspace.active?.text.generation ?? 0, "reason": String(describing: error)])
+            applying = false
+            await resynchronise()
+            if let operation = change.operationId { finishAgent(operation, result: .refused(reason: "stale")) }
+        }
+    }
+
+    private func command(_ name: String, args: [String: Any]) async throws -> [String: Any] {
+        switch name {
+        case "returnFocus":
+            if let onReturnFocus { onReturnFocus() } else { await model.returnToTerminal() }
+        case "close": onClose?()
+        case "openLink":
+            guard let href = args["href"] as? String, let url = URL(string: href), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { throw BridgeFailure.invalid }
+            let alert = NSAlert()
+            alert.messageText = "Open this link in your browser?"; alert.informativeText = href
+            alert.addButton(withTitle: "Open"); alert.addButton(withTitle: "Cancel")
+            guard let window else { throw BridgeFailure.invalid }
+            let response = await withCheckedContinuation { continuation in alert.beginSheetModal(for: window) { continuation.resume(returning: $0) } }
+            if response == .alertFirstButtonReturn { model.pendingExternalURL = url; model.confirmExternal() }
+        case "copy":
+            guard let text = args["text"] as? String, text.utf8.count <= Limits.sourceBytes else { throw BridgeFailure.invalid }
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+        case "export":
+            switch args["format"] as? String {
+            case "archive": await model.exportRevision(.archive)
+            case "sharing": await model.exportRevision(.sharing)
+            case "pdf": await model.exportCurrentPagePDF()
+            default: throw BridgeFailure.invalid
+            }
+        case "showRevision":
+            guard !model.isDraft, let n = args["n"] as? Int, n > 0 else { throw BridgeFailure.invalid }
+            await model.showRevision(n)
+        case "reviewChanges":
+            var arguments = args
+            if workspace?.active != nil { arguments["against"] = "base" }
+            await model.sendCommand("showReview", args: arguments)
+        case "inspectImage": await model.sendCommand("inspectImage", args: args)
+        case "showOriginal": await model.sendCommand("showReview", args: ["against": "base"])
+        case "details": await model.sendCommand("showDetails")
+        case "pickImage":
+            guard let generation = Self.generation(args["generation"]), generation == model.sourceGeneration,
+                  let range = Self.range(args["range"]) else { throw BridgeFailure.invalid }
+            let reply = try await ensureWorkspace().preparePickedImages(generation: generation, range: range, source: model.source)
+            if reply.cancelled { return ["cancelled": true] }
+            return ["generation": reply.generation, "edits": reply.edits.map(Self.editPayload)]
+        case "newDraft": ensureWorkspace().newScratchpad(); await showWorkspace()
+        case "chooseStore":
+            let result = try await Self.chooseStore(state: state, workspace: workspace)
+            return result
+        case "open":
+            guard let token = args["ref"] as? String else { sendCommand("open"); return [:] }
+            let workspace = ensureWorkspace()
+            if let draft = draftReferences[token] {
+                switch draft {
+                case .session(let id):
+                    guard let document = workspace.documents.first(where: { $0.id == id }) else { throw BridgeFailure.invalid }
+                    workspace.select(document)
+                case .recovery(let id, let branch):
+                    if let document = workspace.documents.first(where: { $0.session.record.id == id && $0.session.record.branch == branch }) {
+                        workspace.select(document)
+                    } else {
+                        let record = try await workspace.drafts.load(id: id, branch: branch)
+                        workspace.add(record.resumed())
+                    }
+                }
+                await showWorkspace()
+            } else {
+                guard let reference = model.resolveReference(token) else { throw BridgeFailure.invalid }
+                await workspace.openReading(reference)
+            }
+        case "saveSettings": break // The ReaderModel owns durable page settings.
+        default: throw BridgeFailure.invalid
+        }
+        return [:]
+    }
+
+    static func chooseStore(state: ReadingStateStore, workspace: EditorWorkspace?) async throws -> [String: Any] {
+        let panel = NSOpenPanel()
+        panel.title = "Open Document Store"; panel.prompt = "Select Store"
+        panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
+        let response = await withCheckedContinuation { continuation in panel.begin { continuation.resume(returning: $0) } }
+        guard response == .OK, let url = panel.url else { return ["changed": false] }
+        let canonical = try await Task.detached { try DirectoryStore(root: url).root }.value
+        state.selectStore(root: canonical.path)
+        workspace?.selectedStore = canonical.path
+        return ["changed": true, "store": ["label": canonical.lastPathComponent]]
+    }
+
+    private func draftLibrary(_ fields: [String: Any]) async throws -> [String: Any] {
+        let workspace = ensureWorkspace()
+        let query = fields["query"] as? String ?? ""
+        let sourceMatch = fields["match"] as? String == "source"
+        let cursorQuery = (sourceMatch ? "source:" : "title:") + query
+        let offset: Int
+        if let token = fields["cursor"] as? String {
+            guard let cursor = draftCursor, cursor.token == token, cursor.query == cursorQuery else { throw BridgeFailure.invalid }
+            offset = cursor.offset
+        } else { offset = 0; draftCursor = nil }
+        let listing = try await workspace.drafts.list(offset: offset)
+        var rows: [[String: Any]] = []
+        var visible = Set<String>()
+        var searched = 0, sourceBytes = 0
+        var searchStopped = false
+        func row(_ record: DraftRecord, key: String, reference: DraftReference, subtitle: String) {
+            guard visible.insert(key).inserted else { return }
+            if sourceMatch, !query.isEmpty {
+                let bytes = record.source.utf8.count
+                guard searched < 20, bytes <= Limits.sourceBytes, sourceBytes + bytes <= 8 * 1024 * 1024 else { searchStopped = true; return }
+                sourceBytes += bytes
+            }
+            searched += 1
+            let excerpt = sourceMatch ? SourceContentSearch.excerpt(in: record.source, query: query) : nil
+            guard query.isEmpty || (sourceMatch ? excerpt != nil : record.displayTitle.localizedStandardContains(query)) else { return }
+            let token = draftReferenceKeys[key] ?? UUID().uuidString
+            draftReferenceKeys[key] = token; draftReferences[token] = reference
+            var item: [String: Any] = ["ref": token, "kind": "draft", "title": record.displayTitle,
+                         "subtitle": subtitle, "age": ISO8601DateFormatter().string(from: record.updatedAt)]
+            if let excerpt { item["excerpt"] = excerpt }
+            rows.append(item)
+        }
+        if offset == 0 {
+            if workspace.documents.count > 20 { searchStopped = true }
+            for document in workspace.documents.prefix(20) {
+                let record = document.session.record
+                row(record, key: record.id.uuidString + ":" + record.branch.uuidString,
+                    reference: .session(document.id), subtitle: "Open draft")
+            }
+        }
+        for record in listing.records {
+            row(record, key: record.id.uuidString + ":" + record.branch.uuidString,
+                reference: .recovery(record.id, record.branch), subtitle: "Retained draft")
+        }
+        let stopped = listing.nextOffset != nil || !listing.issues.isEmpty || searchStopped
+        var coverage: [String: Any] = ["searched": searched, "total": stopped || offset > 0 ? NSNull() : searched, "stopped": stopped]
+        if searchStopped { coverage["reason"] = "The draft search reached its source or open-draft limit." }
+        else if stopped { coverage["reason"] = listing.issues.isEmpty ? "More retained drafts remain." : "Some retained drafts are unavailable." }
+        else if offset > 0 { coverage["reason"] = "Only this page of retained drafts was searched." }
+        var reply: [String: Any] = ["rows": rows, "limited": stopped, "coverage": coverage,
+            "store": ["label": "Private drafts"]]
+        if let next = listing.nextOffset {
+            let token = UUID().uuidString
+            draftCursor = (token, cursorQuery, next); reply["cursor"] = token
+        } else { draftCursor = nil }
+        return reply
+    }
+
+    private func metadata(_ document: WorkingDocument) -> [String: Any] {
+        let record = document.session.record
+        var kind = "draft", id = record.id.uuidString
+        var result: [String: Any] = [:]
+        switch record.destination {
+        case .file(let base): kind = "localFile"; id = base.path
+        case .published(let base): kind = "published"; id = base.document; result["revision"] = base.revision
+        case .copy(let base): result["copyOf"] = base.document
+        case .scratchpad: break
+        }
+        result.merge(["documentId": id, "kind": kind, "title": record.displayTitle,
+            "shortId": String(id.prefix(12)), "digest": Digest.sha256(Data(record.source.utf8)),
+            "revisions": [], "provenance": "", "capturedSource": false], uniquingKeysWith: { _, new in new })
+        return result
+    }
+
+    private func showWorkspace() async {
+        guard pageReady, !applying, let workspace else { return }
+        if let document = workspace.active, workspace.reading == nil {
+            observedDocument = document.id
+            document.setVisible(false)
+            try? await model.sendDocument(source: document.text.source, generation: document.text.generation,
+                meta: metadata(document), resolver: document.assetResolver, draftId: document.session.record.id)
+        } else if let reading = workspace.reading, reading !== model, let snapshot = reading.snapshot {
+            observedDocument = nil
+            try? await model.showSnapshot(snapshot, latestRevision: reading.latestRevision)
+        } else if workspace.reading === model { observedDocument = nil }
+    }
+    private func resynchronise() async {
+        if workspace?.active != nil { await showWorkspace() }
+        else if let snapshot = model.snapshot { try? await model.sendDocument(source: snapshot.source, generation: 0) }
+    }
+    private func observe() {
+        observation += 1; let token = observation
+        withObservationTracking {
+            _ = workspace?.selected
+            _ = workspace?.reading?.snapshot?.digest
+            _ = workspace?.collaboration
+            _ = workspace?.active?.session.saving
+            _ = workspace?.active?.session.error
+            _ = workspace?.active?.session.recovery
+            _ = workspace?.active?.session.record.conflict
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, token == self.observation else { return }
+                if let workspace = self.workspace {
+                    self.connect(workspace)
+                    if workspace.active?.id != self.observedDocument { await self.showWorkspace() }
+                    if let document = workspace.active {
+                        let session = document.session
+                        let status = session.record.conflict != nil ? "conflict" : session.saving ? "saving" : session.error != nil ? "retrying" : "saved"
+                        var envelope: [String: Any] = ["v": 1, "type": "saveState", "state": status]
+                        if let detail = session.record.conflict?.message ?? session.error { envelope["detail"] = detail }
+                        _ = try? await self.model.sendEnvelope(envelope)
+                    }
+                }
+                self.observe()
+            }
+        }
+    }
+    private static func editPayload(_ edit: MarkdownSourceEdit) -> [String: Any] {
+        ["start": edit.range.location, "end": NSMaxRange(edit.range), "text": edit.replacement, "expected": edit.expected]
+    }
+    private static func generation(_ value: Any?) -> UInt64? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue >= 0,
+              number.doubleValue.rounded(.down) == number.doubleValue, number.doubleValue <= 9_007_199_254_740_991 else { return nil }
+        return number.uint64Value
+    }
+    private static func range(_ value: Any?) -> NSRange? {
+        guard let value = value as? [String: Any], let start = value["start"] as? Int, let end = value["end"] as? Int,
+              start >= 0, end >= start else { return nil }
+        return NSRange(location: start, length: end - start)
+    }
+    private static func change(_ message: [String: Any]) throws -> WebPageChange {
+        guard let base = generation(message["baseGeneration"]), let generation = generation(message["generation"]),
+              let origin = message["origin"] as? String, ["person", "agent", "history"].contains(origin),
+              let values = message["edits"] as? [[String: Any]], !values.isEmpty, values.count <= ReaderBridgeCodec.editLimit else { throw BridgeFailure.invalid }
+        let edits = try values.map { value -> MarkdownSourceEdit in
+            guard let range = range(value), let text = value["text"] as? String, let expected = value["expected"] as? String else { throw BridgeFailure.invalid }
+            return MarkdownSourceEdit(range: range, expected: expected, replacement: text)
+        }
+        return WebPageChange(baseGeneration: base, generation: generation, origin: origin, operationId: message["operationId"] as? String, edits: edits)
+    }
+    private enum BridgeFailure: Error { case invalid }
+}

@@ -3,11 +3,11 @@ import PackageDescription
 
 // Native feature and platform boundaries:
 // MarkdownCore   document store reading, identities, asset resolution, rendering (Foundation + cmark)
-// ReaderFeature  the SwiftUI reader view and its per-window reading state (SwiftUI + WebKit)
+// ReaderFeature  the WebKit host, bridge, document preparation and reading state (AppKit + WebKit)
 // EditorFeature  immutable edit snapshots, private recovery and explicit save boundaries
 // MacPlatform    pasteboard, external opening, Finder reveal, terminal return (AppKit)
 // MarkdownReader the application entry point: windows, menus, open-request intake, check modes
-// markdown-core  headless tool of the core (reference inventory); no AppKit, SwiftUI or WebKit
+// markdown-core  headless tool of the core (reference inventory); no AppKit or WebKit
 let package = Package(
     name: "MarkdownReader",
     platforms: [.macOS(.v26)],

@@ -9,15 +9,20 @@ struct Measurement {
     let windows: WindowManager
 
     static func document(from pieces: [String], bytes: Int) -> String {
-        var text = ""
+        guard bytes > 0, !pieces.isEmpty else { return "" }
+        var data = Data()
         var index = 0
-        while text.utf8.count < bytes, !pieces.isEmpty {
-            text += pieces[index % pieces.count] + "\n\n"
+        while data.count < bytes {
+            let piece = Data((pieces[index % pieces.count] + "\n\n").utf8)
+            data.append(piece.prefix(bytes - data.count))
             index += 1
         }
-        var data = Array(text.utf8.prefix(bytes))
-        if let lastBreak = data.lastIndex(of: 0x0A) { data = Array(data[...lastBreak]) }
-        return String(decoding: data, as: UTF8.self)
+        if let lastBreak = data.lastIndex(of: 0x0A) { data = Data(data[...lastBreak]) }
+        while !data.isEmpty {
+            if let text = String(data: data, encoding: .utf8) { return text }
+            data.removeLast()
+        }
+        return ""
     }
 
     func run(corpus: [String], sizes: [Int], shapes: [String], output: String?) async -> Int32 {
@@ -42,19 +47,22 @@ struct Measurement {
                     return ["readMs": t.readMilliseconds, "renderMs": t.renderMilliseconds, "displayMs": t.displayMilliseconds, "totalMs": t.totalMilliseconds]
                 }
                 var keep: [NSWindow] = []
+                defer { for window in keep { window.close() } }
                 // Each open's timings are taken right after it, before the refresh replaces them.
                 let first = await context.open(store.reference(id), revision: nil, keep: &keep)
+                try CheckRunner.requireReady(first)
                 let firstOpen = timing(first)
                 let second = await context.open(store.reference(id), revision: nil, keep: &keep)
+                try CheckRunner.requireReady(second)
                 let secondOpen = timing(second)
                 // The next revision stays within the source limit: the same text, slightly shorter, plus a new last paragraph.
                 try store.write(id, revision: 2, source: Self.document(from: pieces, bytes: size - 64) + "\nAn appended paragraph.\n", kind: "response")
                 let refreshStart = Date()
                 await second.refresh()
+                try CheckRunner.requireReady(second)
                 let refreshMs = Date().timeIntervalSince(refreshStart) * 1000
-                second.findQuery = "appended paragraph"
                 let findStart = Date()
-                await second.find()
+                let found = await context.findState(second, query: "appended paragraph")
                 let findMs = Date().timeIntervalSince(findStart) * 1000
                 results.append([
                     "bytes": source.utf8.count,
@@ -66,20 +74,21 @@ struct Measurement {
                     "refreshMs": refreshMs,
                     "refreshRestore": second.lastRestore.rawValue,
                     "findNearEndMs": findMs,
-                    "findFound": second.findStatus == .found,
+                    "findFound": (found?.count ?? 0) > 0,
+                    "findCount": found?.count as Any? ?? NSNull(),
                     "openPages": 2,
                 ].merging(ShapeMeasurement.memory(keep), uniquingKeysWith: { $1 }))
                 await first.close()
                 await second.close()
-                for window in keep { window.close() }
             }
             let shapeMeasurement = ShapeMeasurement(windows: windows, context: context, store: store)
             for shape in shapes { shapeResults.append(try await shapeMeasurement.run(shape)) }
         } catch {
-            CheckRunner.emit(["error": String(describing: error)], to: output)
+            CheckRunner.emit(["ok": false, "error": String(describing: error), "results": results, "shapes": shapeResults], to: output)
             return 1
         }
         CheckRunner.emit([
+            "ok": true,
             "results": results,
             "shapes": shapeResults,
             "note": "the first open in the process includes starting a web content process; check-mode windows lie outside the visible screen area",

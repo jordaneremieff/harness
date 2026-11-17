@@ -29,7 +29,7 @@ extension PageScript {
       for (let i = from; i < to; i++) if (inside.charCodeAt(i) === 10) endLine++;
       return { text: text, mode: "source", startLine: startLine, endLine: endLine };
     }
-    const blocks = Array.from(document.querySelectorAll('.blk[data-key]'));
+    const blocks = Array.from(document.querySelectorAll('[data-block]'));
     const holdsText = (block) => {
       if (!range.intersectsNode(block)) return false;
       const part = range.cloneRange();
@@ -107,7 +107,7 @@ extension ReaderModel {
     /// digest and the best locator that the source establishes. Nothing is sent anywhere.
     public func copyPassageWithSource() async {
         guard let snapshot else { return }
-        guard review.shown == nil else {
+        guard pageState?.overlay != "review" else {
             post("Close the comparison to copy a passage of the document with its source.", kind: .info)
             return
         }

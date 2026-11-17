@@ -11,7 +11,7 @@ struct MarkdownParser {
     let parser: UnsafeMutablePointer<cmark_parser>
     let document: UnsafeMutablePointer<cmark_node>
 
-    static func parse(_ bytes: [UInt8]) -> MarkdownParser? {
+    static func parse(_ bytes: [UInt8], options: Int32 = Self.options) -> MarkdownParser? {
         cmark_gfm_core_extensions_ensure_registered()
         guard let parser = cmark_parser_new(options) else { return nil }
         for name in extensions {

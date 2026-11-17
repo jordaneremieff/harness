@@ -3,7 +3,9 @@ import MarkdownCore
 import WebKit
 
 extension ReaderModel {
-    public var canExportPDF: Bool { snapshot != nil && phase == .ready && review.shown == nil && !inspection.isOpen }
+    public var canExportPDF: Bool {
+        snapshot != nil && phase == .ready && (pageState?.overlay == nil || pageState?.overlay == "source")
+    }
 
     public func exportRevision(_ form: RevisionExportForm) async {
         guard let snapshot, snapshot.record != nil else { return }

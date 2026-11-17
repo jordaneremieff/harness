@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import MarkdownCore
 import WebKit
@@ -19,6 +20,15 @@ final class AssetTable: @unchecked Sendable {
         }
     }
 
+    func update(_ assets: [String: ResolvedAsset]) {
+        lock.withLock {
+            let unchanged = Set(assets.keys.filter { self.assets[$0] == assets[$0] })
+            servedTokens.formIntersection(unchanged)
+            failures = failures.filter { unchanged.contains($0.key) }
+            self.assets = assets
+        }
+    }
+
     func asset(_ token: String) -> ResolvedAsset? {
         lock.withLock { assets[token] }
     }
@@ -34,45 +44,32 @@ final class AssetTable: @unchecked Sendable {
     var served: Int { lock.withLock { servedCount } }
 }
 
-/// Serves `reader-asset://app/reader.css` and `reader-asset://doc/<token>` for tokens of the
-/// current rendering. Every other address fails.
-struct AssetSchemeHandler: URLSchemeHandler {
+/// Serves only the assets of the current document and its overlays.
+final class AssetSchemeHandler: NSObject, WKURLSchemeHandler {
     let table: AssetTable
 
-    func reply(for request: URLRequest) -> AsyncThrowingStream<URLSchemeTaskResult, any Error> {
-        let table = self.table
-        return AsyncThrowingStream { continuation in
-            guard let url = request.url else {
-                continuation.finish(throwing: URLError(.badURL))
-                return
-            }
-            do {
-                let (data, mediaType) = try Self.content(for: url, table: table)
-                let headers = [
-                    "Content-Type": mediaType,
-                    "Content-Length": String(data.count),
-                    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
-                    "X-Content-Type-Options": "nosniff",
-                    "Cache-Control": "no-store",
-                ]
-                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)
-                    ?? URLResponse(url: url, mimeType: mediaType, expectedContentLength: data.count, textEncodingName: nil)
-                continuation.yield(.response(response))
-                continuation.yield(.data(data))
-                continuation.finish()
-                table.noteServed()
-            } catch {
-                table.noteRefused()
-                continuation.finish(throwing: error)
-            }
+    init(table: AssetTable) { self.table = table }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: any WKURLSchemeTask) {
+        do {
+            guard let url = urlSchemeTask.request.url else { throw URLError(.badURL) }
+            let (data, mediaType) = try Self.content(for: url, table: table)
+            let response = URLResponse(url: url, mimeType: mediaType, expectedContentLength: data.count, textEncodingName: nil)
+            urlSchemeTask.didReceive(response)
+            urlSchemeTask.didReceive(data)
+            urlSchemeTask.didFinish()
+            table.noteServed()
+        } catch {
+            table.noteRefused()
+            urlSchemeTask.didFailWithError(error)
         }
     }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: any WKURLSchemeTask) {}
 
     static func content(for url: URL, table: AssetTable) throws -> (Data, String) {
         let path = url.path
         switch url.host {
-        case "app" where path == "/reader.css":
-            return (Data(Stylesheet.css.utf8), "text/css; charset=utf-8")
         case "doc":
             let token = String(path.dropFirst())
             guard let asset = table.asset(token) else { throw URLError(.fileDoesNotExist) }
@@ -103,12 +100,8 @@ enum NavigationRequest {
         guard let url else { return .blocked(nil) }
         let scheme = url.scheme?.lowercased() ?? ""
         switch scheme {
-        case "about":
-            // WebKit sometimes reports an in-page link of the about:blank document with its number
-            // sign percent-encoded, as about:blank%23<anchor>.
-            let fragment = url.fragment ?? url.absoluteString.removingPercentEncoding.flatMap { URL(string: $0)?.fragment }
-            if let fragment, !expectingLoad { return .sameDocument(anchor: fragment.removingPercentEncoding ?? fragment) }
-            return expectingLoad ? .documentLoad : .blocked(url)
+        case "reader-app":
+            return expectingLoad && url.host == "app" && url.path == "/index.html" ? .documentLoad : .blocked(url)
         case MarkdownRenderer.actionScheme:
             let action = url.absoluteString.dropFirst(scheme.count + 1)
             if action.hasPrefix("jump/") {
@@ -131,48 +124,13 @@ enum NavigationRequest {
     }
 }
 
-/// Receives navigation decisions for one page.
-@MainActor
-protocol NavigationHandling: AnyObject {
-    var expectingLoad: Bool { get }
-    func handle(_ request: NavigationRequest)
-}
 
-@MainActor
-final class NavigationRouter {
-    weak var handler: (any NavigationHandling)?
-}
-
-/// Allows the document load. Section jumps, app actions, web links and everything else are
-/// cancelled and handed to the reader.
-struct ReaderNavigationDecider: WebPage.NavigationDeciding {
-    let router: NavigationRouter
-
-    func decidePolicy(for action: WebPage.NavigationAction, preferences: inout WebPage.NavigationPreferences) async -> WKNavigationActionPolicy {
-        preferences.allowsContentJavaScript = false
-        let request = NavigationRequest.classify(action.request.url, expectingLoad: router.handler?.expectingLoad ?? false)
-        switch request {
-        case .documentLoad:
-            return .allow
-        default:
-            router.handler?.handle(request)
-            return .cancel
-        }
-    }
-
-    func decidePolicy(for response: WebPage.NavigationResponse) async -> WKNavigationResponsePolicy {
-        .allow
-    }
-}
-
-/// App-owned DOM helpers. They run only in the reader's own content world and receive data as
-/// arguments; the document's own scripts are disabled.
+/// Native DOM queries use the same page world as the reader interface.
 enum PageScript {
-    // WebKit reuses a named world only while its WKContentWorld instance stays alive.
-    @MainActor static let world = WKContentWorld.world(name: "markdown-reader")
+    @MainActor static let world = WKContentWorld.page
 
     static let capturePosition = """
-    const blocks = document.querySelectorAll('[data-key]');
+    const blocks = document.querySelectorAll('[data-block]');
     const root = document.scrollingElement || document.documentElement;
     const ratio = root.scrollHeight > root.clientHeight ? root.scrollTop / (root.scrollHeight - root.clientHeight) : 0;
     let lo = 0, hi = blocks.length - 1, found = -1;
@@ -189,14 +147,14 @@ enum PageScript {
     for (const heading of headings) {
       if (heading.getBoundingClientRect().top <= 1) { anchor = heading.id; } else { break; }
     }
-    return { key: block.dataset.key, fraction: fraction, anchor: anchor, ratio: ratio };
+    return { key: block.dataset.block, blockStart: Number(block.dataset.start), offsetY: -rect.top, fraction: fraction, anchor: anchor, ratio: ratio };
     """
 
     /// Returns "block", "anchor" or "ratio" for the precision it achieved.
     static let restorePosition = """
     const root = document.scrollingElement || document.documentElement;
     if (key) {
-      const block = document.querySelector('[data-key="' + CSS.escape(key) + '"]');
+      const block = document.querySelector('[data-block="' + CSS.escape(key) + '"]');
       if (block) {
         const rect = block.getBoundingClientRect();
         window.scrollTo(0, rect.top + window.scrollY + fraction * rect.height);
@@ -227,29 +185,13 @@ enum PageScript {
     return active;
     """
 
-    static let find = """
-    return window.find(query, false, backwards, true, false, false, false);
-    """
-
     static let selectionText = "return String(window.getSelection());"
 
-    static let applySettings = """
-    document.documentElement.dataset.ts = String(textSize);
-    document.documentElement.dataset.wrap = wrap ? "1" : "0";
-    return true;
-    """
 }
 
 @MainActor
 enum ReaderPageFactory {
-    static func make(router: NavigationRouter, assets: AssetTable) -> WebPage {
-        var configuration = WebPage.Configuration()
-        configuration.websiteDataStore = .nonPersistent()
-        configuration.defaultNavigationPreferences.allowsContentJavaScript = false
-        configuration.urlSchemeHandlers[URLScheme(MarkdownRenderer.assetScheme)!] = AssetSchemeHandler(table: assets)
-        configuration.upgradeKnownHostsToHTTPS = false
-        let page = WebPage(configuration: configuration, navigationDecider: ReaderNavigationDecider(router: router))
-        page.isInspectable = false
-        return page
+    static func make(assets: AssetTable, root: URL? = nil) -> ReaderWebPage {
+        ReaderWebPage(root: root ?? Bundle.main.resourceURL!.appendingPathComponent("web"), assets: assets)
     }
 }

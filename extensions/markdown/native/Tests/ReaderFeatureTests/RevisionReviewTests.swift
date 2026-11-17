@@ -1,7 +1,6 @@
 import Testing
 import AppKit
 import CryptoKit
-import SwiftUI
 import WebKit
 @testable import MarkdownCore
 @testable import ReaderFeature
@@ -116,14 +115,19 @@ private let imageTwo = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 2, 
         ReaderModel(reference: reference, platform: ReaderPlatform(
             copyText: { _ in }, openExternal: { _ in false }, reveal: { _ in },
             returnToTerminal: { _ in TerminalReturnResult(pane: .unavailable("test"), application: .failed("test")) }
-        ), state: ReadingStateStore(directory: nil))
+        ), state: ReadingStateStore(directory: nil), webRoot: ReaderHostFixture.root)
     }
 
     private func window(_ model: ReaderModel) -> NSWindow {
         _ = NSApplication.shared
-        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 420, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
+        let size = NSSize(width: 420, height: 700)
+        let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000), size: size),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ReaderView(model: model, chrome: .embedded(close: {}, release: {})))
+        let webView = model.page.webView
+        webView.frame = NSRect(origin: .zero, size: size)
+        webView.autoresizingMask = [.width, .height]
+        window.contentView = webView
         window.orderFrontRegardless()
         return window
     }
@@ -135,6 +139,15 @@ private let imageTwo = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 2, 
             try? await Task.sleep(for: .milliseconds(10))
         }
         return condition()
+    }
+
+    private func waitForFind(_ model: ReaderModel) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while ContinuousClock.now < deadline {
+            if model.findStatus == .found { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return model.findStatus == .found
     }
 
     @Test func thePageNamesTheDocumentBothRevisionsAndTheirDigests() throws {
@@ -160,7 +173,6 @@ private let imageTwo = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 2, 
         #expect(prepared.html.contains("rv-side rv-after"))
         #expect(prepared.html.contains("without a model"))
         #expect(prepared.html.contains("The recorded images are the same in both revisions (1 compared"))
-        #expect(prepared.html.contains(PageTemplate.contentSecurityPolicy))
     }
 
     @Test func anImageOnlyRevisionShowsBothImagesAndNoSourceChange() throws {
@@ -321,13 +333,13 @@ private let imageTwo = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 2, 
         #expect(model.review.shown?.target == 2)
         #expect(model.review.preparing == nil)
         #expect(model.review.visiblePage != nil)
-        let heading = try await model.review.visiblePage?.callJavaScript("return document.querySelector('.rv-head h1').textContent;", contentWorld: PageScript.world) as? String
-        #expect(heading == "Design report")
+        // The comparison fragment belongs to native data; the test host does not draw product UI.
+        #expect(model.review.html.contains("<h1>Design report</h1>"))
         let documentHeading = try await model.page.callJavaScript("return document.querySelector('h1').textContent.trim();", contentWorld: PageScript.world) as? String
         #expect(documentHeading == "Design report")
         model.findQuery = "without a model"
         await model.find()
-        #expect(model.findStatus == .found)
+        #expect(await waitForFind(model))
 
         try store.corrupt(1)
         await model.reviewChanges(base: 1, target: 2)
@@ -409,11 +421,16 @@ Second paragraph, plain.
         let model = ReaderModel(reference: store.reference, platform: ReaderPlatform(
             copyText: { pasteboard.copies.append($0) }, openExternal: { _ in false }, reveal: { _ in },
             returnToTerminal: { _ in TerminalReturnResult(pane: .unavailable("test"), application: .failed("test")) }
-        ), state: ReadingStateStore(directory: nil))
+        ), state: ReadingStateStore(directory: nil), webRoot: ReaderHostFixture.root)
         _ = NSApplication.shared
-        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 420, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
+        let size = NSSize(width: 420, height: 700)
+        let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000), size: size),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ReaderView(model: model, chrome: .embedded(close: {}, release: {})))
+        let webView = model.page.webView
+        webView.frame = NSRect(origin: .zero, size: size)
+        webView.autoresizingMask = [.width, .height]
+        window.contentView = webView
         window.orderFrontRegardless()
         await model.open(origin: nil)
         return (model, window)
@@ -422,7 +439,7 @@ Second paragraph, plain.
     /// Selects the contents of the keyed blocks `first` through `last` of the rendering.
     private func select(_ model: ReaderModel, _ first: Int, _ last: Int) async throws {
         _ = try await model.page.callJavaScript("""
-        const blocks = document.querySelectorAll('.blk[data-key]');
+        const blocks = document.querySelectorAll('[data-block]');
         const range = document.createRange();
         range.setStart(blocks[first], 0);
         range.setEnd(blocks[last], blocks[last].childNodes.length);
@@ -473,7 +490,7 @@ Second paragraph, plain.
 
         // A selection that ends at the start of the next block, as a triple click makes it.
         _ = try await model.page.callJavaScript("""
-        const blocks = document.querySelectorAll('.blk[data-key]');
+        const blocks = document.querySelectorAll('[data-block]');
         const range = document.createRange();
         range.setStart(blocks[1], 0);
         range.setEnd(blocks[2], 0);

@@ -246,12 +246,6 @@ private func render(_ source: String, resolver: AssetResolving = NoAssetResolver
         #expect(rendered.body.contains("img/d.png"))
     }
 
-    @Test func pageCarriesStrictPolicy() {
-        let page = PageTemplate.page(body: "<p>x</p>", title: "<t>", settings: PageSettings())
-        #expect(page.contains("default-src 'none'"))
-        #expect(page.contains("&lt;t&gt;"))
-        #expect(!page.contains("<script"))
-    }
 }
 
 @Suite struct References {

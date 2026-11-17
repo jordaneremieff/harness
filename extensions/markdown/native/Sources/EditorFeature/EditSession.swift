@@ -93,15 +93,18 @@ public enum RecoveryState: Equatable, Sendable {
     case failed(String)
 }
 
-/// Owns immutable snapshots and persistence state. The native text controller alone mutates text
-/// and owns undo; a save acknowledgement never installs source into that controller.
+/// Owns exact-source snapshots and persistence state. The page owns edits and history;
+/// a save acknowledgement never replaces its source.
 @MainActor @Observable
 public final class EditSession {
     public private(set) var record: DraftRecord
     public private(set) var recovery: RecoveryState = .pending
     public private(set) var saving = false
     public private(set) var error: String?
-    public var isDirty: Bool { record.savedSource != record.source }
+    public var isDirty: Bool {
+        guard let saved = record.savedSource else { return true }
+        return !saved.utf8.elementsEqual(record.source.utf8)
+    }
     @ObservationIgnored private let drafts: DraftStore
     @ObservationIgnored private var revision: UInt64 = 0
     @ObservationIgnored private var recoveredRevision: UInt64?
@@ -114,7 +117,7 @@ public final class EditSession {
 
     public func receive(source: String, generation: UInt64, selection: EditSelection, markedText: Bool) {
         guard generation >= record.generation else { return }
-        guard source != record.source || selection != record.selection || generation != record.generation else { return }
+        guard !source.utf8.elementsEqual(record.source.utf8) || selection != record.selection || generation != record.generation else { return }
         record.source = source; record.generation = generation; record.selection = selection
         changed()
     }

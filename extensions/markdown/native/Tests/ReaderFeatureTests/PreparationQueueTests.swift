@@ -1,7 +1,6 @@
 import Testing
 import AppKit
 import CryptoKit
-import SwiftUI
 import WebKit
 @testable import MarkdownCore
 @testable import ReaderFeature
@@ -46,14 +45,16 @@ private struct PreparedStore {
         ReaderModel(reference: reference, platform: ReaderPlatform(
             copyText: { _ in }, openExternal: { _ in false }, reveal: { _ in },
             returnToTerminal: { _ in TerminalReturnResult(pane: .unavailable("test"), application: .failed("test")) }
-        ), state: ReadingStateStore(directory: nil))
+        ), state: ReadingStateStore(directory: nil), webRoot: ReaderHostFixture.root)
     }
 
     private func window(_ model: ReaderModel) -> NSWindow {
         _ = NSApplication.shared
         let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 800, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ReaderView(model: model, chrome: .embedded(close: {}, release: {})))
+        model.page.webView.frame = NSRect(x: 0, y: 0, width: 800, height: 700)
+        model.page.webView.autoresizingMask = [.width, .height]
+        window.contentView = model.page.webView
         window.orderFrontRegardless()
         return window
     }

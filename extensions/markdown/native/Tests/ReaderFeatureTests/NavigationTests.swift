@@ -2,38 +2,45 @@ import Testing
 @testable import MarkdownCore
 @testable import ReaderFeature
 
-/// The reader's decision for each navigation that its page asks for.
+/// Pure interpretation of renderer-owned action addresses and application-shell loads.
 @Suite struct NavigationDecisions {
-    @Test func inPageLinksStayInTheDocumentInBothSpellings() {
-        for spelling in ["about:blank#limits", "about:blank%23limits"] {
-            guard case .sameDocument(let anchor) = NavigationRequest.classify(URL(string: spelling), expectingLoad: false), anchor == "limits" else {
-                Issue.record("\(spelling) did not stay in the document")
-                continue
-            }
+    @Test func applicationShellRequiresAnExpectedLoad() {
+        let shell = URL(string: "reader-app://app/index.html")!
+        guard case .documentLoad = NavigationRequest.classify(shell, expectingLoad: true) else {
+            Issue.record("The application shell was not recognised")
+            return
+        }
+        guard case .blocked = NavigationRequest.classify(shell, expectingLoad: false) else {
+            Issue.record("An unsolicited application navigation was not refused")
+            return
+        }
+        guard case .blocked = NavigationRequest.classify(URL(string: "reader-app://other/index.html"), expectingLoad: true) else {
+            Issue.record("A foreign application host was not refused")
+            return
         }
     }
 
-    @Test func renderedFragmentActionsKeepTheirDecodedAnchor() {
-        let html = PageTemplate.page(body: "<a href=\"#caf%C3%A9\">Section</a>", title: "Document", settings: PageSettings())
-        #expect(html.contains("href=\"reader-action:jump/caf%C3%A9\""))
+    @Test func rendererActionsKeepTheirDecodedAnchorAndIdentity() {
         guard case .sameDocument(let anchor) = NavigationRequest.classify(URL(string: "reader-action:jump/caf%C3%A9"), expectingLoad: false) else {
-            Issue.record("the section action did not reach the reader")
+            Issue.record("The section address was not recognised")
             return
         }
         #expect(anchor == "café")
+        guard case .inspectImage(let nonce, let index) = NavigationRequest.classify(URL(string: "reader-action:inspect-image/nonce/2"), expectingLoad: false) else {
+            Issue.record("The image address was not recognised")
+            return
+        }
+        #expect(nonce == "nonce")
+        #expect(index == 2)
     }
 
-    @Test func otherAboutAddressesAreRefusedUnlessTheReaderLoads() {
-        guard case .blocked = NavigationRequest.classify(URL(string: "about:blank"), expectingLoad: false) else {
-            Issue.record("about:blank was not refused")
-            return
-        }
-        guard case .documentLoad = NavigationRequest.classify(URL(string: "about:blank"), expectingLoad: true) else {
-            Issue.record("the reader's own load was not allowed")
-            return
-        }
+    @Test func webAddressesRequireNativeConfirmation() {
         guard case .external = NavigationRequest.classify(URL(string: "https://example.com/a#b"), expectingLoad: false) else {
-            Issue.record("a web link did not go to the browser confirmation")
+            Issue.record("The web address did not require confirmation")
+            return
+        }
+        guard case .blocked = NavigationRequest.classify(URL(string: "file:///document.md"), expectingLoad: false) else {
+            Issue.record("A file address was not refused")
             return
         }
     }

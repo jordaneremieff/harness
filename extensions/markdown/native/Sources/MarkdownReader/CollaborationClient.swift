@@ -2,7 +2,6 @@ import Darwin
 import Foundation
 import MarkdownCore
 import Observation
-import SwiftUI
 
 struct CollaborationConfiguration: Decodable, Sendable {
     let version: Int
@@ -49,7 +48,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
 }
 
 @MainActor @Observable final class CollaborationClient {
-    struct AgentState: Decodable { var sequence: Int; var status: String; var text: String; var truncated: Bool }
+    struct AgentState: Decodable { var sequence: Int; var status: String; var text: String; var truncated: Bool; var operationId: String? }
     private struct Poll: Decodable { var ok: Bool; var command: LiveCommand?; var state: AgentState }
     private struct PromptReceipt: Decodable { var ok: Bool; var status: String; var message: String?; var retryable: Bool? }
     private struct Acknowledgement: Decodable { var ok: Bool }
@@ -64,6 +63,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     private var closed = false
     private struct PendingPrompt {
         var operation: String
+        var thread: String
         var text: String
         var comment: String
         var quote: String?
@@ -73,6 +73,92 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     private var pendingPrompt: PendingPrompt?
     private var retiring: Set<UUID> = []
     private var requestedActivity = false
+    @ObservationIgnored var onPromptState: ((String, String, String, String?) -> Void)?
+    private struct PromptThread {
+        let document: UUID
+        let id: String
+        let quote: String?
+        var lastRequest: String
+        var state: String
+    }
+    private var threads: [String: PromptThread] = [:]
+    private var requestThreads: [String: String] = [:]
+    private var activePromptID: String?
+    private var promptStateKeys: [String: String] = [:]
+    private var bridgePromptInputs: [String: String] = [:]
+    private var bridgePromptResults: [String: Bool] = [:]
+
+    func currentAdmittedThreadId(for document: UUID) -> String? {
+        let active = threads.values.filter { $0.document == document && ["admitted", "working"].contains($0.state) }
+        return active.count == 1 ? active.first?.id : nil
+    }
+
+    private func threadKey(_ thread: String, document: UUID? = nil) -> String {
+        (document ?? self.document).uuidString + ":" + thread
+    }
+
+    private func emitPromptState(_ state: String, detail: String? = nil, request: String? = nil) {
+        guard let request = request ?? activePromptID else { return }
+        let requestKey = threadKey(request)
+        guard let thread = requestThreads[requestKey] else { return }
+        let key = state + ":" + (detail ?? "")
+        guard promptStateKeys[requestKey] != key else { return }
+        promptStateKeys[requestKey] = key
+        let selected = threadKey(thread)
+        if threads[selected]?.lastRequest == request { threads[selected]?.state = state }
+        onPromptState?(request, thread, state, detail)
+    }
+
+    private func registerThread(request: String, thread: String, quote: String?) {
+        let key = threadKey(thread)
+        if threads[key] == nil {
+            threads[key] = PromptThread(document: document, id: thread, quote: quote, lastRequest: request, state: "sending")
+        } else { threads[key]?.lastRequest = request }
+        requestThreads[threadKey(request)] = thread
+    }
+
+    func submitPrompt(requestId: String, threadId: String, text: String, quote: String? = nil) async -> Bool {
+        guard UUID(uuidString: requestId) != nil, UUID(uuidString: threadId) != nil, !closed else { return false }
+        let thread = threads[threadKey(threadId)]
+        guard thread != nil || requestId == threadId else { return false }
+        let originalQuote = thread == nil ? quote : thread?.quote
+        guard var message = Self.annotationMessage(comment: text, quote: originalQuote) else { return false }
+        if requestId != threadId {
+            message = "This follows the earlier request " + threadId + " in this document thread. Keep the original quoted passage as context.\n\n" + message
+        }
+        guard message.utf8.count <= 32768 else { return false }
+        let key = threadKey(requestId)
+        if let previousThread = requestThreads[key], previousThread != threadId { return false }
+        if let previous = bridgePromptInputs[key], !previous.utf8.elementsEqual(message.utf8) { return false }
+        if let result = bridgePromptResults[key] { return result }
+        guard !sending, pendingPrompt == nil || pendingPrompt?.operation == requestId else { return false }
+        guard bridgePromptInputs[key] != nil || bridgePromptInputs.count < 1024 else { return false }
+        bridgePromptInputs[key] = message
+        if pendingPrompt == nil {
+            prompt = text; annotationQuote = originalQuote
+            pendingPrompt = PendingPrompt(operation: requestId, thread: threadId, text: message, comment: text, quote: originalQuote)
+        }
+        registerThread(request: requestId, thread: threadId, quote: originalQuote)
+        activePromptID = requestId
+        await sendPrompt()
+        return bridgePromptResults[key] ?? false
+    }
+
+    private func receiveActivity(_ state: AgentState, document: UUID) {
+        let request: String?
+        if let operation = state.operationId {
+            request = requestThreads[threadKey(operation, document: document)] == nil ? nil : operation
+        } else if let thread = currentAdmittedThreadId(for: document) {
+            request = threads[threadKey(thread, document: document)]?.lastRequest
+        } else { request = nil }
+        guard let request else { return }
+        switch state.status {
+        case "working": emitPromptState("working", detail: state.text.isEmpty ? nil : state.text, request: request)
+        case "answer": emitPromptState("answered", detail: state.text, request: request)
+        case "error": emitPromptState("failed", detail: state.text, request: request)
+        default: break
+        }
+    }
     private struct CommentDraft {
         var text: String
         var quote: String?
@@ -154,7 +240,8 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         let draft = commentDrafts.removeValue(forKey: document)
         prompt = draft?.text ?? ""; annotationQuote = draft?.quote; pendingPrompt = draft?.pending
         selectionQuote = ""; selectionTooLarge = false; annotationPresented = false; promptIssue = nil
-        answer = ""; requestedActivity = pendingPrompt != nil; sending = false
+        answer = ""; requestedActivity = pendingPrompt != nil || currentAdmittedThreadId(for: document) != nil; sending = false
+        activePromptID = pendingPrompt?.operation
         status = pendingPrompt?.status ?? "Connecting…"
         let previous = task
         previous?.cancel(); task = nil; epoch += 1; start(after: previous)
@@ -178,7 +265,8 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
                             guard ack.ok else { throw Failure.response }
                             self.retiring.remove(retired)
                         }
-                        let ack: Acknowledgement = try await self.post("connect", body: self.identity(selected))
+                        var connection = self.identity(selected); connection["live"] = 2
+                        let ack: Acknowledgement = try await self.post("connect", body: connection)
                         guard self.epoch == token, !Task.isCancelled, !self.closed else { return }
                         guard ack.ok else { throw Failure.response }
                         connected = true; self.status = self.pendingPrompt?.status ?? "Agent connected"
@@ -200,7 +288,10 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
                     if self.pendingPrompt == nil {
                         self.status = poll.state.status == "working" ? "Agent at work" : poll.state.status == "error" ? "Agent error" : "Agent connected"
                     }
-                    if self.requestedActivity, !poll.state.text.isEmpty { self.answer = poll.state.text + (poll.state.truncated ? "\n…" : "") }
+                    if self.requestedActivity {
+                        if !poll.state.text.isEmpty { self.answer = poll.state.text + (poll.state.truncated ? "\n…" : "") }
+                    }
+                    self.receiveActivity(poll.state, document: selected)
                     if let command = poll.command {
                         let result = await self.handle(command)
                         guard self.epoch == token, !Task.isCancelled, !self.closed else { return }
@@ -228,11 +319,17 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
             guard let text = Self.annotationMessage(comment: prompt, quote: annotationQuote) else {
                 promptIssue = "Shorten the comment or select a smaller passage."; return
             }
-            pendingPrompt = PendingPrompt(operation: UUID().uuidString, text: text, comment: prompt, quote: annotationQuote)
+            pendingPrompt = PendingPrompt(operation: UUID().uuidString, thread: "", text: text, comment: prompt, quote: annotationQuote)
+        }
+        if pendingPrompt?.thread.isEmpty == true, let operation = pendingPrompt?.operation {
+            pendingPrompt?.thread = operation
+            registerThread(request: operation, thread: operation, quote: pendingPrompt?.quote)
         }
         guard let pending = pendingPrompt else { return }
+        activePromptID = pending.operation
         promptIssue = nil
         sending = true; requestedActivity = true
+        emitPromptState("sending")
         let selected = document, token = epoch
         defer { if token == epoch { sending = false } }
         do {
@@ -245,20 +342,26 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
                 pendingPrompt = nil
                 if prompt.utf8.elementsEqual(pending.comment.utf8), annotationQuote == pending.quote { prompt = "" }
                 status = receipt.status == "admitted" ? "Agent request admitted" : "Agent request sent (admission not confirmed)"
+                bridgePromptResults[selected.uuidString + ":" + pending.operation] = true
+                emitPromptState(receipt.status == "admitted" ? "admitted" : "sent")
             case "rejected":
                 pendingPrompt = nil
                 promptIssue = receipt.message ?? "The request was not admitted. Your comment remains here."
                 status = "Agent request rejected"
+                bridgePromptResults[selected.uuidString + ":" + pending.operation] = false
+                emitPromptState("failed", detail: promptIssue)
             case "uncertain":
                 pendingPrompt?.retryable = receipt.retryable == true
                 status = receipt.message ?? "Admission is unconfirmed. Check the conversation."
                 pendingPrompt?.status = status
+                emitPromptState("unknown", detail: status)
             default: throw Failure.response
             }
         } catch {
             guard token == epoch, !closed else { return }
             status = "Request unconfirmed. Send again to retry the same request."
             pendingPrompt?.status = status
+            emitPromptState("unknown", detail: status)
         }
     }
 
@@ -293,96 +396,5 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
             data.append(byte)
         }
         return try JSONDecoder().decode(Result.self, from: data)
-    }
-}
-
-/// Comment controls and the comment box stay inside the pane's own window. A separate popover
-/// window would activate the application on a click and animate its frame when content changes.
-struct AnnotationControls: View {
-    @Bindable var client: CollaborationClient
-    let hovered: Bool
-    /// Reads the current selection again when the person asks to comment. The passive selection
-    /// only decides whether the action shows; web content can still be applying a gesture.
-    let commentOnSelection: () -> Void
-    var restoreFocus: (() -> Void)?
-    var body: some View {
-        VStack(alignment: .trailing, spacing: 8) {
-            if client.annotationPresented { AnnotationComment(client: client, restoreFocus: restoreFocus) }
-            controls
-        }
-    }
-    private var controls: some View {
-        HStack(spacing: 4) {
-            if !client.selectionQuote.isEmpty || client.selectionTooLarge {
-                Button { commentOnSelection() } label: { Image(systemName: "text.bubble") }
-                    .help(client.selectionTooLarge ? "Select a smaller passage to comment." : "Comment on Selection")
-                    .accessibilityLabel("Comment on Selection")
-                    .disabled(client.selectionTooLarge)
-            }
-            Menu {
-                Button("Ask about Document…") { client.beginAnnotation(quote: nil) }
-                if !client.prompt.isEmpty || client.hasPendingPrompt { Button("Continue Comment…") { client.continueAnnotation() } }
-                if client.activityRelevant { Button("Conversation Activity") { client.annotationPresented = true } }
-            } label: { Image(systemName: client.activityRelevant ? "bubble.left.fill" : "ellipsis.bubble") }
-                .menuStyle(.borderlessButton).fixedSize().help("Document comments")
-                .accessibilityLabel("Document Comments")
-        }
-        .padding(6).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .opacity(visible ? 1 : 0).allowsHitTesting(visible)
-    }
-    private var visible: Bool { hovered || !client.selectionQuote.isEmpty || client.selectionTooLarge || client.annotationPresented || client.activityRelevant || !client.prompt.isEmpty }
-}
-
-private struct AnnotationComment: View {
-    @Bindable var client: CollaborationClient
-    let restoreFocus: (() -> Void)?
-    @FocusState private var commentFocused: Bool
-    private func close() {
-        client.finishAnnotation()
-        restoreFocus?()
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(client.annotationQuote == nil ? "Ask about Document" : "Comment on Selection").font(.headline)
-                Spacer()
-                Button("Close Comment", systemImage: "xmark") { close() }.labelStyle(.iconOnly)
-            }
-            if let quote = client.annotationQuote {
-                ScrollView { Text(quote).font(.callout).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                    .frame(maxHeight: 100).padding(8).background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                Text("Quoted context, not an edit range.").font(.caption).foregroundStyle(.secondary)
-            }
-            // The field stays enabled while a request is in flight, so keyboard focus and Escape
-            // remain in the box; text typed meanwhile becomes the next comment. A failed request
-            // locks the field until its exact retry.
-            TextField("Your comment", text: $client.prompt, axis: .vertical)
-                .lineLimit(3...7).textFieldStyle(.roundedBorder).focused($commentFocused)
-                .disabled(!client.commentFieldEnabled)
-            HStack {
-                Button(client.hasPendingPrompt ? "Retry Request" : "Send Comment") { Task { await client.sendPrompt() } }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(client.isClosed || client.sending || !client.canRetryPrompt || (!client.hasPendingPrompt && client.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-                if client.sending { ProgressView().controlSize(.small) }
-                Spacer()
-                if !client.prompt.isEmpty, !client.hasPendingPrompt, !client.sending {
-                    Button("Discard") { client.discardComment() }
-                }
-            }
-            if let issue = client.promptIssue { Text(issue).font(.caption).foregroundStyle(.orange) }
-            if client.activityRelevant || client.isClosed { Text(client.status).font(.caption).foregroundStyle(.secondary) }
-            if !client.answer.isEmpty {
-                Text("Conversation activity").font(.caption).foregroundStyle(.secondary)
-                ScrollView { Text(client.answer).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 150)
-            }
-        }
-        .padding(14).frame(maxWidth: 300)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(.separator) }
-        .shadow(color: .black.opacity(0.18), radius: 10, y: 3)
-        .accessibilityElement(children: .contain).accessibilityLabel("Comment")
-        .onExitCommand { close() }
-        // Focus moves after the box is attached, also when a control's click opened it.
-        .task(id: client.annotationRequest) { commentFocused = !client.hasPendingPrompt }
     }
 }

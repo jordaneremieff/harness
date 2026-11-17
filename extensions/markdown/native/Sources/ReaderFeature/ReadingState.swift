@@ -13,14 +13,18 @@ public struct ReadingPosition: Codable, Sendable, Equatable {
     public var ratio: Double
     public var revision: Int?
     public var savedAt: Date
+    public var blockStart: Int?
+    public var offsetY: Double?
 
-    public init(blockKey: String?, fraction: Double, anchor: String?, ratio: Double, revision: Int?, savedAt: Date = Date()) {
+    public init(blockKey: String?, fraction: Double, anchor: String?, ratio: Double, revision: Int?, savedAt: Date = Date(), blockStart: Int? = nil, offsetY: Double? = nil) {
         self.blockKey = blockKey
         self.fraction = fraction
         self.anchor = anchor
         self.ratio = ratio
         self.revision = revision
         self.savedAt = savedAt
+        self.blockStart = blockStart
+        self.offsetY = offsetY
     }
 }
 
@@ -38,6 +42,10 @@ struct ReadingStateFile: Codable, Sendable {
     var knownRoots: [String] = []
     var selectedStoreRoot: String?
     var settings = PageSettings()
+    var locks: [String: ReaderBridgeLock]?
+    var appearance: String?
+    var outlineWidth: Double?
+    var outlineOpen: Bool?
 }
 
 public enum ReadingStateFlushResult: Sendable, Equatable {
@@ -141,7 +149,7 @@ public final class ReadingStateStore {
     public private(set) var lastRecovery: URL?
 
     private enum ChangeKey: Hashable {
-        case position(String), recent(String), forgotten(String), root(String), settings, selectedStore
+        case position(String), lock(String), recent(String), forgotten(String), root(String), settings, selectedStore
     }
 
     private struct FlushWaiter {
@@ -155,6 +163,7 @@ public final class ReadingStateStore {
         for key in versions.keys {
             switch key {
             case .position(let key): result.positions.insert(key)
+            case .lock(let key): result.locks.insert(key)
             case .recent(let key): result.recents.insert(key)
             case .forgotten(let key): result.forgotten.insert(key)
             case .root(let root): result.roots.insert(root)
@@ -176,6 +185,7 @@ public final class ReadingStateStore {
     /// forgotten recents, added store roots and the settings.
     struct Changes: Sendable {
         var positions: Set<String> = []
+        var locks: Set<String> = []
         var recents: Set<String> = []
         var forgotten: Set<String> = []
         var roots: Set<String> = []
@@ -193,6 +203,18 @@ public final class ReadingStateStore {
             mark(.settings)
             scheduleSave()
         }
+    }
+
+    public var appearance: String { state.appearance ?? "system" }
+    public var outlineWidth: Double { state.outlineWidth ?? 240 }
+    public var outlineOpen: Bool { state.outlineOpen ?? true }
+
+    public func setPresentation(appearance: String? = nil, outlineWidth: Double? = nil, outlineOpen: Bool? = nil) {
+        if let appearance, ["system", "light", "dark"].contains(appearance) { state.appearance = appearance }
+        if let outlineWidth, outlineWidth.isFinite { state.outlineWidth = min(640, max(120, outlineWidth)) }
+        if let outlineOpen { state.outlineOpen = outlineOpen }
+        mark(.settings)
+        scheduleSave()
     }
 
     /// With a nil directory the state stays in memory. An unreadable state starts empty in memory;
@@ -254,11 +276,20 @@ public final class ReadingStateStore {
             if let other = theirs.positions[key], other.savedAt > mine.savedAt { continue }
             result.positions[key] = mine
         }
+        for key in changes.locks {
+            if result.locks == nil { result.locks = [:] }
+            result.locks?[key] = ours.locks?[key]
+        }
         let kept = theirs.recents.filter { !changes.forgotten.contains($0.id) && !changes.recents.contains($0.id) }
         result.recents = (kept + ours.recents.filter { changes.recents.contains($0.id) }).sorted { $0.openedAt > $1.openedAt }
         let added = ours.knownRoots.filter { changes.roots.contains($0) }
         result.knownRoots = added + theirs.knownRoots.filter { !added.contains($0) }
-        if changes.settings { result.settings = ours.settings }
+        if changes.settings {
+            result.settings = ours.settings
+            result.appearance = ours.appearance
+            result.outlineWidth = ours.outlineWidth
+            result.outlineOpen = ours.outlineOpen
+        }
         if changes.selectedStore { result.selectedStoreRoot = ours.selectedStoreRoot }
         return bounded(result)
     }
@@ -270,6 +301,9 @@ public final class ReadingStateStore {
         if state.positions.count > positionLimit {
             let newest = state.positions.sorted { $0.value.savedAt > $1.value.savedAt }.prefix(positionLimit)
             state.positions = Dictionary(uniqueKeysWithValues: newest.map { ($0.key, $0.value) })
+        }
+        if let locks = state.locks, locks.count > positionLimit {
+            state.locks = Dictionary(uniqueKeysWithValues: locks.sorted { $0.key < $1.key }.prefix(positionLimit).map { ($0.key, $0.value) })
         }
         state.recents = Array(state.recents.prefix(recentLimit))
         state.knownRoots = Array(state.knownRoots.prefix(rootLimit))
@@ -294,6 +328,9 @@ public final class ReadingStateStore {
 
         var kept = ReadingStateFile()
         kept.settings = state.settings
+        kept.appearance = state.appearance
+        kept.outlineWidth = state.outlineWidth
+        kept.outlineOpen = state.outlineOpen
         kept.selectedStoreRoot = state.selectedStoreRoot
         var size = try encoder.encode(kept).count
         if size > fileLimit {
@@ -304,6 +341,13 @@ public final class ReadingStateStore {
             guard bytes <= fileLimit - size else { return false }
             size += bytes
             return true
+        }
+        for (key, value) in (state.locks ?? [:]).sorted(by: { $0.key < $1.key }) {
+            let bytes = try encoder.encode([key: value]).count - 2 + ((kept.locks?.isEmpty ?? true) ? 0 : 1)
+            if fits(bytes) {
+                if kept.locks == nil { kept.locks = [:] }
+                kept.locks?[key] = value
+            }
         }
         for (key, value) in state.positions.sorted(by: {
             $0.value.savedAt == $1.value.savedAt ? $0.key < $1.key : $0.value.savedAt > $1.value.savedAt
@@ -322,6 +366,20 @@ public final class ReadingStateStore {
         data = try encoder.encode(kept)
         guard data.count <= fileLimit else { throw SaveFailure("The encoded state exceeds its byte limit.") }
         return (kept, data)
+    }
+
+    public func draftLock(for documentId: String) -> ReaderBridgeLock {
+        state.locks?[documentId] ?? .writing
+    }
+
+    /// Only draft identities persist an edit lock. Ordinary document opens always start Reading.
+    public func setDraftLock(_ lock: ReaderBridgeLock, for documentId: String) {
+        guard !documentId.isEmpty, documentId.utf8.count <= 256 else { return }
+        if state.locks == nil { state.locks = [:] }
+        state.locks?[documentId] = lock
+        mark(.lock(documentId))
+        state = Self.bounded(state)
+        scheduleSave()
     }
 
     public func position(for reference: DocumentReference) -> ReadingPosition? {

@@ -1,8 +1,8 @@
 import Testing
 @testable import MarkdownCore
 import AppKit
-import SwiftUI
 import EditorFeature
+import ReaderFeature
 @testable import MarkdownReader
 
 /// Runs the production bridge on isolated loopback sockets; the proxy controls only receipt delivery.
@@ -49,6 +49,7 @@ import EditorFeature
           const command = JSON.parse(line);
           if (command.op === 'release') { release(); write({ ok: true }); }
           else if (command.op === 'state') write({ document: bridge.list()[0]?.document, prompts, submissions });
+          else if (command.op === 'publish') { bridge.publish(command.status, command.text, command.operationId); write({ ok: true }); }
           else if (command.op === 'read') write(await bridge.execute(bridge.list()[0].handle, { op: 'read' }));
           else if (command.op === 'connect') {
             const response = await fetch(config.endpoint + '/connect', { method: 'POST',
@@ -91,9 +92,20 @@ import EditorFeature
 
 @Suite(.serialized) @MainActor struct LiveDocumentTests {
     private func directory() throws -> URL {
+        _ = NSApplication.shared
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("live-document-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
+    }
+
+    private func connectPage(_ workspace: EditorWorkspace) {
+        workspace.webReady = true
+        workspace.webAgentApply = { [weak workspace] operation, generation, edits in
+            guard let workspace else { return .refused(reason: "closed") }
+            let change = WebPageChange(baseGeneration: generation, generation: generation + 1, origin: "agent", operationId: operation, edits: edits)
+            do { _ = try await workspace.receivePageChange(change); return .accepted(change) }
+            catch { return .refused(reason: "stale") }
+        }
     }
 
     private func command(_ workspace: EditorWorkspace, source: String, generation: UInt64, edit: LiveTextEdit, operation: String = UUID().uuidString) -> LiveCommand {
@@ -230,83 +242,13 @@ import EditorFeature
         #expect(client.selectionTooLarge && client.selectionQuote.isEmpty)
     }
 
-    @Test func annotationUsesDisplayedNativeSelectionWithoutChangingSource() async throws {
-        _ = NSApplication.shared
-        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = EditorWorkspace(directory: root, store: nil)
-        workspace.add(DraftRecord(source: "Exact **bold** 日本語\n"))
-        let document = try #require(workspace.active)
-        let original = document.text.source
-        let visual = document.text.activeTextView
-        visual.setSelectedRange((visual.string as NSString).range(of: "bold"))
-        #expect(workspace.nativeAnnotationSelection() == "bold")
-        document.setMode(.raw)
-        document.text.activeTextView.setSelectedRange((original as NSString).range(of: "**bold**"))
-        #expect(workspace.nativeAnnotationSelection() == "**bold**")
-        #expect(document.text.source == original)
-        workspace.readActive()
-        #expect(workspace.nativeAnnotationSelection() == "")
-        await workspace.closeViews()
-    }
-
-    @Test func readEditResizeRetainsOneMountedPreviewAndUndo() async throws {
-        _ = NSApplication.shared
-        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = EditorWorkspace(directory: root, store: nil)
-        workspace.add(DraftRecord(source: "# Shared document\n\nExact 日本語 café\n"))
-        let document = try #require(workspace.active)
-        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: EditorWorkspaceView(workspace: workspace))
-        workspace.onEditorFocus = { window.contentView?.layoutSubtreeIfNeeded() }
-        defer { window.close() }
-        func settle(_ mode: EditorMode) async throws {
-            let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-            repeat {
-                window.contentView?.layoutSubtreeIfNeeded()
-                if let layout = document.text.scrollView.superview as? EditorModeSplitView,
-                   layout.window === window, layout.mode == mode, layout.bounds.width > 300,
-                   mode != .rendered || document.preview.draftGeneration == document.session.record.generation { return }
-                try await Task.sleep(for: .milliseconds(20))
-            } while ContinuousClock.now < deadline
-            Issue.record("The document presentation did not retain its mounted native layout.")
-        }
-        try await settle(.visual)
-        let layout = try #require(document.text.scrollView.superview as? EditorModeSplitView)
-        let preview = layout.preview
-        let original = document.text.source
-        document.text.activeTextView.insertText("Local ", replacementRange: NSRange(location: 0, length: 0))
-        document.text.textView.breakUndoCoalescing()
-        let edited = document.text.source, selection = document.text.selectedRange
-        for width: CGFloat in [900, 1400, 480] {
-            workspace.readActive()
-            try await settle(.rendered)
-            #expect(layout.window === window && layout.preview === preview)
-            #expect(document.text.scrollView.superview === layout)
-            #expect(!preview.isHidden && document.text.scrollView.isHidden)
-            window.setContentSize(NSSize(width: width, height: 700))
-            window.contentView?.layoutSubtreeIfNeeded()
-            let edit = try #require(preview.rootView.editActions?.edit)
-            edit()
-            try await settle(.visual)
-            #expect(layout.window === window && layout.preview === preview)
-            #expect(document.text.scrollView.superview === layout)
-            #expect(preview.isHidden && !document.text.activeTextView.isHiddenOrHasHiddenAncestor)
-            #expect(document.text.source == edited && document.text.selectedRange == selection)
-        }
-        document.text.textView.undoManager?.undo()
-        #expect(document.text.source == original)
-        document.text.textView.undoManager?.redo()
-        #expect(document.text.source == edited)
-        await workspace.closeViews()
-    }
-
     @Test func liveEditRetainsOneBufferAcrossReadAndEditAndDeduplicates() async throws {
         _ = NSApplication.shared
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let workspace = EditorWorkspace(directory: root, store: nil)
         workspace.add(DraftRecord(source: "Hello 日本語\n"))
         let document = try #require(workspace.active), controller = document.text
+        connectPage(workspace)
         let request = command(workspace, source: controller.source, generation: controller.generation,
             edit: LiveTextEdit(start: 0, end: 5, expected: "Hello", replacement: "Hi"))
         let result = await workspace.handleLive(request)
@@ -319,7 +261,7 @@ import EditorFeature
         workspace.readActive(); workspace.editActive()
         #expect(workspace.active === document && document.text === controller)
         #expect(controller.source == "Hi 日本語\n")
-        controller.textView.undoManager?.undo()
+        _ = try await workspace.receivePageChange(.init(baseGeneration: generation, generation: generation + 1, origin: "history", edits: [.init(range: NSRange(location: 0, length: 2), expected: "Hi", replacement: "Hello")]))
         #expect(controller.source == "Hello 日本語\n")
         let record = try await workspace.drafts.load(id: document.session.record.id, branch: document.session.record.branch)
         #expect(record.liveReceipts?.first?.operationId == request.operationId)
@@ -332,6 +274,7 @@ import EditorFeature
         let workspace = EditorWorkspace(directory: root, store: nil)
         workspace.add(DraftRecord(source: "🌱 unchanged"))
         let document = try #require(workspace.active)
+        connectPage(workspace)
         var request = command(workspace, source: "old", generation: 0, edit: .init(start: 0, end: 1, expected: "o", replacement: "x"))
         #expect(await workspace.handleLive(request).status == "stale")
         request.document = UUID().uuidString
@@ -351,6 +294,7 @@ import EditorFeature
         let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil, automaticallySaves: true)
         workspace.add(DraftRecord(source: opened.source, destination: .file(opened.base), savedSource: opened.source))
         let document = try #require(workspace.active)
+        connectPage(workspace)
         _ = document.text.apply(range: NSRange(location: 0, length: 6), replacement: "after", selection: NSRange(location: 5, length: 0), actionName: "Edit")
         await document.persistenceTask?.value
         #expect(try String(contentsOf: file, encoding: .utf8) == "after")
@@ -367,6 +311,7 @@ import EditorFeature
         let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil)
         workspace.add(DraftRecord(source: opened.source, destination: .file(opened.base), savedSource: opened.source))
         let document = try #require(workspace.active)
+        connectPage(workspace)
         _ = document.text.apply(range: NSRange(location: 0, length: 5), replacement: "human", selection: NSRange(location: 5, length: 0), actionName: "Edit")
         try Data("first\nagent\n".utf8).write(to: file)
         await workspace.receiveExternalChange(document)
@@ -374,8 +319,7 @@ import EditorFeature
         #expect(document.session.record.savedSource == "first\nagent\n")
         #expect(document.session.record.conflict == nil)
         #expect(document.session.isDirty)
-        document.text.textView.undoManager?.undo()
-        #expect(document.text.source == "human\nsecond\n")
+
         await workspace.closeViews()
     }
 
@@ -399,6 +343,7 @@ import EditorFeature
         let workspace = EditorWorkspace(directory: drafts, store: nil)
         workspace.add(DraftRecord(source: "before"))
         let document = try #require(workspace.active)
+        connectPage(workspace)
         let request = command(workspace, source: "before", generation: 0,
             edit: .init(start: 0, end: 6, expected: "before", replacement: "after"))
         #expect(await workspace.handleLive(request).status == "error")
@@ -427,9 +372,9 @@ import EditorFeature
         #expect(await workspace.handleLive(request).status == "closed")
         #expect(first.text.source == "same")
         #expect(await workspace.prepareToClose())
-        #expect(!first.text.textView.isEditable && !first.text.activeTextView.isEditable)
+        #expect(workspace.closing)
         workspace.resumeEdits()
-        #expect(first.text.textView.isEditable && first.text.activeTextView.isEditable)
+        #expect(!workspace.closing)
         await workspace.closeViews()
     }
 
@@ -460,5 +405,256 @@ import EditorFeature
         for arguments in [["--live", "/private/config.json"], ["--pane", "request", "--live", "relative"], ["--pane", "request", "--live", "/one", "--live", "/two"]] {
             guard case .usage = NativeLaunch.parse(arguments).mode else { Issue.record("Invalid live launch was accepted"); continue }
         }
+    }
+    @Test func pageReadinessBusyAndPersonHoldRefuseWithoutMutation() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = EditorWorkspace(directory: root, store: nil)
+        workspace.add(DraftRecord(source: "before after"))
+        let document = try #require(workspace.active)
+        let request = command(workspace, source: document.text.source, generation: 0,
+            edit: .init(start: 0, end: 6, expected: "before", replacement: "changed"))
+        #expect(await workspace.handleLive(request).status == "busy")
+        connectPage(workspace)
+        workspace.pageBusy = true
+        #expect(await workspace.handleLive(request).status == "busy")
+        workspace.pageBusy = false; workspace.pageHeld = NSRange(location: 0, length: 6)
+        let held = await workspace.handleLive(request)
+        #expect(held.status == "busy" && held.reason == "held")
+        #expect(held.message?.contains("UTF-16 0–6") == true)
+        #expect(document.text.source == "before after")
+        workspace.pageHeld = nil
+        workspace.webAgentApply = { _, _, _ in .refused(reason: "held", range: NSRange(location: 0, length: 6)) }
+        #expect(await workspace.handleLive(request).reason == "held")
+        #expect(document.text.source == "before after")
+        await workspace.closeViews()
+    }
+
+    @Test func acceptedPageResultRequiresTheSameOperationInTheMirror() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = EditorWorkspace(directory: root, store: nil)
+        workspace.add(DraftRecord(source: "before"))
+        let document = try #require(workspace.active)
+        workspace.webReady = true
+        workspace.webAgentApply = { operation, generation, edits in
+            .accepted(.init(baseGeneration: generation, generation: generation + 1, origin: "agent", operationId: operation, edits: edits))
+        }
+        let request = command(workspace, source: "before", generation: 0,
+            edit: .init(start: 0, end: 6, expected: "before", replacement: "after"))
+        #expect(await workspace.handleLive(request).status == "uncertain")
+        #expect(document.text.source == "before" && document.text.generation == 0)
+        #expect(document.session.record.liveReceipts == nil)
+        connectPage(workspace)
+        #expect(await workspace.handleLive(request).status == "applied")
+        var reused = request
+        reused.edits = [.init(start: 0, end: 6, expected: "before", replacement: "other")]
+        #expect(await workspace.handleLive(reused).status == "error")
+        #expect(document.text.source == "after")
+        await workspace.closeViews()
+    }
+
+    @Test func claimsExpireReleaseAndApplyClearsTheHandleClaims() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = EditorWorkspace(directory: root, store: nil)
+        workspace.add(DraftRecord(source: "before after"))
+        connectPage(workspace)
+        var paints: [String] = [], releases: [String] = []
+        workspace.webClaim = { claim, _, label, _ in
+            #expect(label == "Agent edit"); paints.append(claim)
+        }
+        workspace.webRelease = { releases.append($0) }
+        var claim = LiveCommand(requestId: UUID().uuidString, workspace: workspace.id.uuidString,
+            document: workspace.liveDocumentID.uuidString, op: "claim", baseGeneration: 0,
+            baseDigest: Digest.sha256(Data("before after".utf8)), ranges: [.init(start: 0, end: 6)], label: "Agent edit")
+        workspace.pageHeld = NSRange(location: 0, length: 6)
+        #expect(await workspace.handleLive(claim).reason == "held")
+        workspace.pageHeld = nil
+        let first = await workspace.handleLive(claim)
+        #expect(first.status == "claimed" && first.claimId == paints.first)
+        let expiry = try #require(first.expiresAt)
+        #expect(abs(expiry - Date().addingTimeInterval(90).timeIntervalSince1970 * 1000) < 2000)
+        workspace.expireClaims(now: Date().addingTimeInterval(91))
+        #expect(releases == paints)
+        let second = await workspace.handleLive(claim)
+        claim.op = "release"; claim.claimId = second.claimId
+        #expect(await workspace.handleLive(claim).status == "released")
+        claim.op = "claim"
+        let third = await workspace.handleLive(claim)
+        let request = command(workspace, source: "before after", generation: 0,
+            edit: .init(start: 0, end: 6, expected: "before", replacement: "after"))
+        #expect(await workspace.handleLive(request).status == "applied")
+        #expect(releases.contains(try #require(third.claimId)))
+        #expect(workspace.liveClaims.isEmpty)
+        await workspace.closeViews()
+    }
+
+    @Test func bridgePromptIdentitySurvivesTheRetryAndReportsState() async throws {
+        let server = try LiveTestBridge(mode: "lost-receipt"); defer { server.stop() }
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }
+        defer { client.stop() }
+        var states: [(String, String)] = []
+        client.onPromptState = { request, thread, state, _ in
+            #expect(request == thread)
+            states.append((request, state))
+        }
+        client.start()
+        try await eventually { client.status == "Agent connected" }
+        let identity = UUID().uuidString
+        let first = Task { await client.submitPrompt(requestId: identity, threadId: identity, text: "Exact comment", quote: "passage") }
+        try await eventually { client.sending }
+        _ = try await server.request(["op": "release"])
+        #expect(!(await first.value))
+        #expect(await client.submitPrompt(requestId: identity, threadId: identity, text: "Exact comment", quote: "passage"))
+        #expect(await client.submitPrompt(requestId: identity, threadId: identity, text: "Exact comment", quote: "passage"))
+        #expect(!(await client.submitPrompt(requestId: identity, threadId: identity, text: "Changed comment", quote: "passage")))
+        let state = try await server.request(["op": "state"])
+        let prompts = try #require(state["prompts"] as? [[String: String]])
+        #expect(prompts.count == 2 && prompts[0] == prompts[1])
+        #expect(prompts[0]["operationId"] == identity)
+        #expect(states.allSatisfy { $0.0 == identity })
+        #expect(states.contains { $0.1 == "unknown" })
+        #expect(states.contains { $0.1 == "admitted" })
+    }
+    @Test func capturedFirstChangeCreatesOneCopyAndPreservesStoredSource() async throws {
+        let fixture = try PaneRun(); defer { fixture.remove() }
+        let root = URL(fileURLWithPath: fixture.store)
+        let pointer = root.appendingPathComponent("documents/\(fixture.document)/document.json")
+        var record = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: pointer)) as? [String: Any])
+        record["kind"] = "response"
+        try JSONSerialization.data(withJSONObject: record).write(to: pointer)
+        let snapshots = root.appendingPathComponent("snapshots")
+        try FileManager.default.createDirectory(at: snapshots, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: pointer.deletingLastPathComponent(),
+            to: snapshots.appendingPathComponent(fixture.document))
+        let identity = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("store.json"))) as? [String: Any])
+        let storeID = try #require(identity["storeId"] as? String)
+        let reference = DocumentReference.stored(root: fixture.store, storeId: storeID, document: fixture.document)
+        let original = try DocumentLoader.load(reference)
+        _ = NSApplication.shared
+        let application = try PaneTestApplication(sourceBinary: PaneRun.binary)
+        defer { application.remove() }
+        let platform = ReaderPlatform(copyText: { _ in }, openExternal: { _ in false }, reveal: { _ in },
+            returnToTerminal: { _ in TerminalReturnResult(pane: .unavailable("test"), application: .failed("test")) })
+        let host = ReaderModel(reference: reference, platform: platform, state: ReadingStateStore(directory: nil),
+            webRoot: application.web)
+        let workspace = EditorWorkspace(directory: fixture.root.appendingPathComponent("drafts"), store: fixture.store)
+        workspace.webHostModel = host
+        await workspace.openReading(reference)
+        try #require(workspace.reading === host)
+        let liveID = workspace.liveDocumentID
+        connectPage(workspace)
+        let request = command(workspace, source: original.source, generation: 0,
+            edit: .init(start: 0, end: 0, expected: "", replacement: "Added\r\n"))
+        #expect(await workspace.handleLive(request).status == "applied")
+        let copy = try #require(workspace.active)
+        guard case .copy(let base) = copy.session.record.destination else { Issue.record("Captured source did not create a copy"); return }
+        #expect(base.document == fixture.document)
+        #expect(workspace.liveDocumentID == liveID && copy.id == liveID)
+        #expect(copy.text.source.utf8.elementsEqual(("Added\r\n" + original.source).utf8))
+        #expect(try DocumentLoader.load(reference).source.utf8.elementsEqual(original.source.utf8))
+        #expect(workspace.documents.count == 1)
+        #expect(await workspace.handleLive(request).status == "applied")
+        #expect(workspace.documents.count == 1 && copy.text.generation == 1)
+        await workspace.closeViews()
+        await host.close()
+    }
+    @Test func latePageChangeAfterUnknownDeliveryRetainsItsReplayReceipt() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = EditorWorkspace(directory: root, store: nil)
+        workspace.add(DraftRecord(source: "before"))
+        let document = try #require(workspace.active)
+        workspace.webReady = true
+        workspace.webAgentApply = { _, _, _ in .refused(reason: "unknown") }
+        let request = command(workspace, source: "before", generation: 0,
+            edit: .init(start: 0, end: 6, expected: "before", replacement: "after"))
+        #expect(await workspace.handleLive(request).status == "uncertain")
+        let change = WebPageChange(baseGeneration: 0, generation: 1, origin: "agent", operationId: request.operationId,
+            edits: [.init(range: NSRange(location: 0, length: 6), expected: "before", replacement: "after")])
+        #expect(try await workspace.receivePageChange(change).recoveryRetained)
+        #expect(await workspace.handleLive(request).status == "applied")
+        #expect(document.text.generation == 1 && document.session.record.liveReceipts?.count == 1)
+        await workspace.closeViews()
+    }
+
+    @Test func transportFailureAfterMirrorAcceptanceDoesNotLoseTheAppliedResult() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = EditorWorkspace(directory: root, store: nil)
+        workspace.add(DraftRecord(source: "before"))
+        workspace.webReady = true
+        workspace.webAgentApply = { [weak workspace] operation, generation, edits in
+            guard let workspace else { return .refused(reason: "closed") }
+            _ = try? await workspace.receivePageChange(.init(baseGeneration: generation, generation: generation + 1,
+                origin: "agent", operationId: operation, edits: edits))
+            return .refused(reason: "unknown")
+        }
+        let request = command(workspace, source: "before", generation: 0,
+            edit: .init(start: 0, end: 6, expected: "before", replacement: "after"))
+        let result = await workspace.handleLive(request)
+        #expect(result.status == "applied" && result.retained == true)
+        #expect(workspace.active?.text.source == "after")
+        #expect(await workspace.handleLive(request).status == "applied")
+        await workspace.closeViews()
+    }
+
+    @Test func canonicallyEqualUnicodeStillAutosavesExactBytes() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("unicode.md")
+        let original = "café", replacement = "cafe\u{301}"
+        try Data(original.utf8).write(to: file)
+        let opened = try LocalFileSave.open(file)
+        let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil, automaticallySaves: true)
+        workspace.add(DraftRecord(source: original, destination: .file(opened.base), savedSource: original))
+        let document = try #require(workspace.active)
+        let ack = try await workspace.receivePageChange(.init(baseGeneration: 0, generation: 1, origin: "person",
+            edits: [.init(range: NSRange(location: 0, length: original.utf16.count), expected: original, replacement: replacement)]))
+        #expect(ack.recoveryRetained && document.session.isDirty)
+        await document.persistenceTask?.value
+        #expect(try Data(contentsOf: file) == Data(replacement.utf8))
+        #expect(!document.session.isDirty)
+        await workspace.closeViews()
+    }
+    @Test func promptFollowupsKeepThreadQuoteAndUseNewRequestIdentities() async throws {
+        let server = try LiveTestBridge(); defer { server.stop() }
+        let document = UUID()
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: document) { _ in LiveResult(status: "closed") }
+        defer { client.stop() }
+        var states: [(request: String, thread: String, state: String, detail: String?)] = []
+        client.onPromptState = { states.append(($0, $1, $2, $3)) }
+        client.start()
+        try await eventually { client.status == "Agent connected" }
+        let first = UUID().uuidString, followup = UUID().uuidString, other = UUID().uuidString
+        #expect(await client.submitPrompt(requestId: first, threadId: first, text: "Explain", quote: "Original passage"))
+        #expect(client.currentAdmittedThreadId(for: document) == first)
+        #expect(await client.submitPrompt(requestId: followup, threadId: first, text: "Explain more", quote: "Changed selection"))
+        #expect(client.currentAdmittedThreadId(for: document) == first)
+        #expect(await client.submitPrompt(requestId: other, threadId: other, text: "Another thread"))
+        #expect(client.currentAdmittedThreadId(for: document) == nil)
+        let data = try await server.request(["op": "state"])
+        let prompts = try #require(data["prompts"] as? [[String: String]])
+        #expect(prompts.count == 3)
+        #expect(prompts[0]["operationId"] == first && prompts[1]["operationId"] == followup)
+        #expect(prompts[1]["text"]?.contains("earlier request " + first) == true)
+        #expect(prompts[1]["text"]?.contains("Original passage") == true)
+        #expect(prompts[1]["text"]?.contains("Changed selection") == false)
+        _ = try await server.request(["op": "publish", "status": "answer", "text": "The actual answer.", "operationId": followup])
+        try await eventually { states.contains { $0.request == followup && $0.state == "answered" } }
+        #expect(states.contains { $0.thread == first && $0.detail == "The actual answer." })
+        #expect(client.currentAdmittedThreadId(for: document) == other)
+        #expect(!(await client.submitPrompt(requestId: UUID().uuidString, threadId: UUID().uuidString, text: "Unknown thread")))
+    }
+
+    @Test func untiedActivityDoesNotGuessBetweenAdmittedThreads() async throws {
+        let server = try LiveTestBridge(); defer { server.stop() }
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }
+        defer { client.stop() }
+        var answered = 0
+        client.onPromptState = { _, _, state, _ in if state == "answered" { answered += 1 } }
+        client.start()
+        try await eventually { client.status == "Agent connected" }
+        let first = UUID().uuidString, second = UUID().uuidString
+        #expect(await client.submitPrompt(requestId: first, threadId: first, text: "First"))
+        #expect(await client.submitPrompt(requestId: second, threadId: second, text: "Second"))
+        _ = try await server.request(["op": "publish", "status": "answer", "text": "Untied activity"])
+        try await eventually { client.answer == "Untied activity" }
+        #expect(answered == 0)
     }
 }

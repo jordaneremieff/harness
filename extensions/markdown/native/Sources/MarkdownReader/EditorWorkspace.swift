@@ -4,22 +4,19 @@ import MacPlatform
 import MarkdownCore
 import Observation
 import ReaderFeature
-import SwiftUI
 import UniformTypeIdentifiers
-
-enum EditorMode: String, CaseIterable { case visual = "Visual", styled = "Styled", raw = "Source", rendered = "Rendered", split = "Split" }
 
 @MainActor @Observable
 final class WorkingDocument: Identifiable {
     let id: UUID
     let session: EditSession
-    let text: MarkdownEditorTextController
-    let preview: ReaderModel
+    let text: MirrorText
+    private(set) var preview: ReaderModel
+    private(set) var previewIsHost: Bool
     let updates = UpdateObserver()
     @ObservationIgnored private var checkTask: Task<Void, Never>?
     @ObservationIgnored private var checkRequested = false
     @ObservationIgnored private(set) var closed = false
-    var mode: EditorMode = .visual
     var readingDraft = false
     var annotationsEnabled = false
     @ObservationIgnored var onPersistenceNeeded: (() -> Void)?
@@ -28,10 +25,7 @@ final class WorkingDocument: Identifiable {
     @ObservationIgnored var onExternalChange: (() async -> Void)?
     @ObservationIgnored var persistenceTask: Task<Void, Never>?
     @ObservationIgnored var persistenceRequested = false
-    var presentation = MarkdownEditorPresentation()
     var visible = false
-    var pendingMode: EditorMode?
-    var replacing = false { didSet { if !replacing { onPersistenceNeeded?() } } }
     var stagingImages = false { didSet { if !stagingImages { onPersistenceNeeded?() } } }
     var findVisible = false
     var findText = ""
@@ -52,86 +46,49 @@ final class WorkingDocument: Identifiable {
         guard let root = session.record.assetRoot else { return baseResolver }
         return EditorDraftAssetResolver(base: baseResolver, root: URL(fileURLWithPath: root), images: session.record.stagedAssets ?? [])
     }
-    @ObservationIgnored private var composing = false
-    private(set) var splitAvailable = true
-    var showsPreview: Bool { readingDraft || mode == .rendered || (mode == .split && splitAvailable) }
-    var line: Int?
-    var column: Int?
-    var words: Int?
-    var characters: Int?
-    init(record: DraftRecord, drafts: DraftStore, id: UUID = UUID()) {
+    var showsPreview: Bool { true }
+    @ObservationIgnored var onApply: (([MarkdownSourceEdit], UInt64) async -> Bool)?
+    init(record: DraftRecord, drafts: DraftStore, id: UUID = UUID(), hostModel: ReaderModel? = nil) {
         self.id = id
         session = EditSession(record: record, drafts: drafts)
-        text = MarkdownEditorTextController(source: record.source, initialGeneration: record.generation)
-        preview = ReaderModel(reference: .file(path: "draft:" + record.id.uuidString), platform: MacPlatform.operations(), state: ReadingStateStore(directory: nil))
-        preview.outlineVisible = false
+        text = MirrorText(source: record.source, initialGeneration: record.generation)
+        previewIsHost = hostModel != nil
+        preview = hostModel ?? ReaderModel(reference: .file(path: "draft:" + record.id.uuidString), platform: MacPlatform.operations(), state: ReadingStateStore(directory: nil))
+        if !previewIsHost { preview.outlineVisible = false }
         if case .file(let base) = record.destination { baseResolver = DirectoryAssetResolver(directory: URL(fileURLWithPath: base.path).deletingLastPathComponent()) }
         text.select(NSRange(location: record.selection.location, length: record.selection.length))
         text.onChange = { [weak self] snapshot in
             guard let self else { return }
             let changed = snapshot.generation != self.session.record.generation
-            let compositionEnded = self.composing && !snapshot.hasMarkedText
-            self.composing = snapshot.hasMarkedText
             self.session.receive(source: snapshot.source, generation: snapshot.generation,
                                  selection: .init(location: snapshot.selectedRange.location, length: snapshot.selectedRange.length), markedText: snapshot.hasMarkedText)
-            self.updateAnalysis()
             if changed {
                 self.onPersistenceNeeded?()
-                self.preview.invalidateDraftPreview(); self.schedulePreview()
+                if !self.previewIsHost { self.preview.invalidateDraftPreview(); self.schedulePreview() }
                 if self.findVisible { self.refreshFind() }
             }
-            if !snapshot.hasMarkedText, let pending = self.pendingMode { self.setMode(pending) }
-            if compositionEnded {
-                self.onPersistenceNeeded?()
-                if self.showsPreview { self.schedulePreview() }
-            }
         }
-        text.onAnalysis = { [weak self] in self?.updateAnalysis() }
-        text.onError = { [weak session] message in session?.setError(message) }
-        text.onCommand = { [weak self] selector in
-            guard let self else { return false }
-            switch NSStringFromSelector(selector) {
-            case "insertNewline:": return self.text.continueList()
-            case "insertBacktab:": return self.perform(.outdent, reportRefusal: false)
-            default: return false
-            }
-        }
-        presentation.mode = .visual
-        text.setPresentation(presentation)
         observeBase()
     }
 
-    func setMode(_ next: EditorMode) {
-        guard !text.hasMarkedText else { pendingMode = next; return }
-        pendingMode = nil; mode = next
-        presentation.mode = next == .raw ? .raw : next == .visual ? .visual : .styled
-        text.setPresentation(presentation)
-        schedulePreview()
-        if next != .rendered { text.focus() }
-    }
-
-    func setSplitAvailable(_ value: Bool) {
-        guard splitAvailable != value else { return }
-        splitAvailable = value
-        if mode == .split { schedulePreview() }
+    func attachHost(_ model: ReaderModel) {
+        guard preview !== model else { return }
+        previewTask?.cancel()
+        let previous = preview, closePrevious = !previewIsHost
+        preview = model; previewIsHost = true
+        if closePrevious { Task { await previous.close() } }
     }
 
     func setVisible(_ value: Bool) {
         visible = value
-        if !value { preview.invalidateDraftPreview() }
+        if !value, !previewIsHost { preview.invalidateDraftPreview() }
         schedulePreview()
-    }
-
-    func updatePresentation() {
-        text.setPresentation(presentation)
-        if let index = PageSettings.textSizes.firstIndex(of: Int(presentation.fontSize)) {
-            preview.settings = PageSettings(textSize: index, wrapCode: presentation.wrapsLines)
-        }
     }
 
     func setResolver(_ value: any AssetResolving) { baseResolver = value; schedulePreview(force: true) }
 
     func schedulePreview(force: Bool = false) {
+        guard !previewIsHost else { return }
         previewTask?.cancel()
         guard visible, showsPreview, !text.hasMarkedText else { preview.invalidateDraftPreview(); return }
         let snapshot = text.snapshot, title = session.record.displayTitle, resolver = assetResolver
@@ -187,19 +144,42 @@ final class WorkingDocument: Identifiable {
     func close() async {
         closed = true; checkTask?.cancel(); findTask?.cancel(); persistenceTask?.cancel(); updates.stop()
         previewTask?.cancel()
-        await preview.close()
+        if !previewIsHost { await preview.close() }
     }
 
-    private func updateAnalysis() {
-        line = text.sourcePosition?.line; column = text.sourcePosition?.column
-        words = text.counts?.words; characters = text.counts?.characters
+    func applyEdits(_ edits: [MarkdownSourceEdit], generation: UInt64) async -> Bool {
+        guard let onApply else { session.setError("The document page is not ready."); return false }
+        return await onApply(edits, generation)
     }
 }
 
 @MainActor @Observable
 final class EditorWorkspace {
     let id = UUID()
-    var liveDocumentID = UUID()
+    var liveDocumentID = UUID() {
+        didSet {
+            guard oldValue != liveDocumentID else { return }
+            pageHeld = nil; pageBusy = false; observedPageChanges.removeAll(); pendingLiveEdits.removeAll()
+            expireClaims()
+        }
+    }
+    @ObservationIgnored weak var webHostModel: ReaderModel? {
+        didSet { if let webHostModel { for document in documents { document.attachHost(webHostModel) } } }
+    }
+    var webReady = false
+    var pageHeld: NSRange?
+    var pageBusy = false
+    @ObservationIgnored var webAgentApply: ((String, UInt64, [MarkdownSourceEdit]) async -> WebAgentApplyResult)?
+    @ObservationIgnored var webClaim: ((String, [NSRange], String?, Date) -> Void)?
+    @ObservationIgnored var webRelease: ((String) -> Void)?
+    @ObservationIgnored var pageChangeInProgress = false
+    @ObservationIgnored var liveApplyInProgress = false
+    @ObservationIgnored var observedPageChanges: [String: WebObservedChange] = [:]
+    @ObservationIgnored var liveClaims: [String: WebLiveClaim] = [:]
+    @ObservationIgnored var pendingLiveEdits: [String: WebPendingLiveEdit] = [:]
+    @ObservationIgnored var issuedPageOperations: [String: UUID] = [:]
+    @ObservationIgnored var preparedPickedImages: [String: PreparedPickedImage] = [:]
+    @ObservationIgnored var pickingImages = false
     var collaboration: CollaborationClient? {
         didSet { for document in documents { document.annotationsEnabled = collaboration != nil } }
     }
@@ -215,7 +195,6 @@ final class EditorWorkspace {
     var closing = false
     var launchOrigin: LaunchOrigin?
     var reading: ReaderModel?
-    var revisionReview: EditorRevisionReview?
     var publishedLibrary: LibraryModel?
     private let readingState = ReadingStateStore(directory: nil)
     private var navigationGeneration: UInt64 = 0
@@ -238,13 +217,20 @@ final class EditorWorkspace {
             return false
         }
         guard (document ?? active)?.stagingImages != true else { notice = "Wait for the image to reach private storage."; return false }
-        guard (document ?? active)?.replacing != true else { notice = "The document replacement is in progress."; return false }
         return !closing
     }
 
-    func add(_ record: DraftRecord, liveIdentity: UUID? = nil) {
-        guard allowAction("opening another document") else { return }
-        let document = WorkingDocument(record: record, drafts: drafts, id: liveIdentity ?? UUID())
+    @discardableResult func allowNavigation(_ action: String) -> Bool {
+        guard !pageBusy, !pageChangeInProgress, !liveApplyInProgress else {
+            notice = "Wait for page changes before " + action + "."
+            return false
+        }
+        return allowAction(action)
+    }
+
+    func add(_ record: DraftRecord, liveIdentity: UUID? = nil, pagePromotion: Bool = false) {
+        guard pagePromotion ? allowAction("opening another document") : allowNavigation("opening another document") else { return }
+        let document = WorkingDocument(record: record, drafts: drafts, id: liveIdentity ?? UUID(), hostModel: webHostModel)
         document.annotationsEnabled = collaboration != nil
         document.onAnnotationSelection = { [weak self, weak document] quote in
             guard let self, let document, self.annotationReader === document.preview else { return }
@@ -264,19 +250,9 @@ final class EditorWorkspace {
                 await self.receiveExternalChange(document)
             }
         }
-        document.text.onImageFiles = { [weak self, weak document] files in
-            guard let self, let document else { return }
-            self.stageImages(document, files: files)
-        }
-        document.text.onImageData = { [weak self, weak document] data, mediaType in
-            guard let self, let document else { return }
-            let suffix: String
-            switch mediaType {
-            case "image/png": suffix = "png"
-            case "image/tiff": suffix = "tiff"
-            default: document.session.setError("This pasted image type is unsupported."); return
-            }
-            self.stageImages(document, data: data, extension: suffix)
+        document.onApply = { [weak self] edits, generation in
+            guard let self else { return false }
+            return await self.applyThroughPage(edits, generation: generation)
         }
         let closedReading = reading != nil && liveIdentity != liveDocumentID ? liveDocumentID : nil
         leaveReading()
@@ -286,7 +262,7 @@ final class EditorWorkspace {
         document.setVisible(true)
         if case .published(let base) = record.destination { loadResolver(base, document: document) }
         if case .copy(let base) = record.destination { loadResolver(base, document: document) }
-        focusWhenActive(document)
+        if !pagePromotion { focusWhenActive(document) }
     }
 
     func readActive() {
@@ -302,38 +278,25 @@ final class EditorWorkspace {
         guard allowAction("editing this document"), let document = active else { return }
         document.readingDraft = false
         collaboration?.selectQuote("")
-        document.setMode(document.mode == .rendered ? .visual : document.mode)
         onEditorFocus?()
     }
 
     var annotationReader: ReaderModel? {
         guard !closing, !libraryVisible, publishedLibrary == nil else { return nil }
         if let reading { return reading }
-        guard let active, active.readingDraft || active.previewHasFocus else { return nil }
+        guard let active, active.readingDraft else { return nil }
         return active.preview
     }
 
     func nativeAnnotationSelection() -> String? {
-        guard !closing, !libraryVisible, publishedLibrary == nil, reading == nil,
-              let document = active, !document.readingDraft, !document.previewHasFocus,
-              !document.text.hasMarkedText else { return "" }
-        let view = document.text.activeTextView, range = document.text.activeTextView.selectedRange()
-        guard range.length > 0, let selected = Range(range, in: view.string) else { return "" }
-        let quote = String(view.string[selected])
+        guard !closing, let document = active, !document.text.hasMarkedText else { return "" }
+        let source = document.text.source as NSString, range = document.text.selectedRange
+        guard range.length > 0 else { return "" }
+        let quote = source.substring(with: range)
         return quote.utf8.count <= 8192 ? quote : nil
     }
 
-    func nativeSelectionChanged(_ notification: Notification) {
-        guard let view = notification.object as? NSTextView, view === active?.text.activeTextView,
-              annotationReader == nil else { return }
-        collaboration?.selectQuote(nativeAnnotationSelection())
-    }
-
-    /// Returns the keyboard to the visible native text after the comment box closes.
-    func restoreEditorFocus() {
-        guard !closing, reading == nil, let document = active, !document.readingDraft, !document.previewHasFocus else { return }
-        document.text.focus()
-    }
+    func restoreEditorFocus() { onEditorFocus?() }
 
     func annotateSelection() async {
         guard let client = collaboration, !closing, !libraryVisible, publishedLibrary == nil else { return }
@@ -363,13 +326,13 @@ final class EditorWorkspace {
     private func focusWhenActive(_ document: WorkingDocument) {
         Task { @MainActor [weak self, weak document] in
             guard let self, let document, self.active === document, !document.readingDraft, !self.libraryVisible, self.reading == nil, self.publishedLibrary == nil else { return }
-            document.text.focus()
             self.onEditorFocus?()
         }
     }
 
     func closeViews() async {
         closing = true
+        discardUncommittedImages()
         collaboration?.stop()
         for document in documents { document.setVisible(false); await document.close() }
         await reading?.close()
@@ -378,7 +341,7 @@ final class EditorWorkspace {
     func newScratchpad() { add(DraftRecord()) }
 
     func select(_ document: WorkingDocument) {
-        guard allowAction("switching documents") else { return }
+        guard allowNavigation("switching documents") else { return }
         let closedReading = reading == nil ? nil : liveDocumentID
         leaveReading()
         active?.setVisible(false)
@@ -389,11 +352,11 @@ final class EditorWorkspace {
     }
 
     func library(more: Bool = false) async {
-        guard allowAction("opening drafts") else { return }
+        guard allowNavigation("opening drafts") else { return }
         let navigation = navigationGeneration
         do {
             let page = try await drafts.list(offset: more ? (nextDraftOffset ?? 0) : 0)
-            guard navigation == navigationGeneration, allowAction("opening drafts") else { return }
+            guard navigation == navigationGeneration, allowNavigation("opening drafts") else { return }
             leaveReading()
             recovered = more ? recovered + page.records : page.records
             recoveryIssues = page.issues; nextDraftOffset = page.nextOffset; libraryVisible = true
@@ -406,11 +369,11 @@ final class EditorWorkspace {
         if let root = publishedLibrary?.selectedRoot { selectedStore = root }
         let previous = reading
         reading = nil; publishedLibrary = nil
-        if let previous { Task { await previous.close() } }
+        if let previous, previous !== webHostModel { Task { await previous.close() } }
     }
 
     func showPublishedLibrary() async {
-        guard allowAction("opening the library") else { return }
+        guard allowNavigation("opening the library") else { return }
         leaveReading(); active?.setVisible(false); libraryVisible = false
         let model = LibraryModel(state: readingState, extraRoots: selectedStore.map { [$0] } ?? [])
         publishedLibrary = model
@@ -442,9 +405,29 @@ final class EditorWorkspace {
     }
 
     func openReading(_ reference: DocumentReference, revision: Int? = nil, digest: String? = nil, origin: LaunchOrigin? = nil, followsLatest: Bool = false) async {
-        guard allowAction("opening another document") else { return }
+        guard allowNavigation("opening another document") else { return }
         navigationGeneration &+= 1
+        let navigation = navigationGeneration
         let previous = reading
+        if let host = webHostModel {
+            do {
+                let snapshot = try await Task.detached { try DocumentLoader.load(reference, revision: revision, pinnedDigest: digest) }.value
+                guard navigation == navigationGeneration, allowNavigation("opening another document") else { return }
+                host.followsLatest = followsLatest
+                publishedLibrary = nil; libraryVisible = false; active?.setVisible(false); reading = host
+                try await host.showSnapshot(snapshot, origin: origin ?? launchOrigin)
+                guard navigation == navigationGeneration, reading === host else { return }
+                let closedReading = previous == nil ? nil : liveDocumentID
+                liveDocumentID = UUID(); collaboration?.bind(document: liveDocumentID, closing: closedReading)
+                if let previous, previous !== host { await previous.close() }
+                await host.checkForUpdate()
+            } catch {
+                guard navigation == navigationGeneration else { return }
+                reading = previous; notice = "Document not opened: \(error)"
+                if previous == nil { active?.setVisible(true) }
+            }
+            return
+        }
         let next = ReaderModel(reference: reference, platform: MacPlatform.operations(), state: readingState)
         next.followsLatest = followsLatest
         publishedLibrary = nil; libraryVisible = false; active?.setVisible(false); reading = next
@@ -457,12 +440,12 @@ final class EditorWorkspace {
         } else {
             let closedReading = previous == nil ? nil : liveDocumentID
             liveDocumentID = UUID(); collaboration?.bind(document: liveDocumentID, closing: closedReading)
-            await previous?.close()
+            if previous !== webHostModel { await previous?.close() }
         }
     }
 
-    @discardableResult func editReading(copy: Bool) async -> Bool {
-        guard allowAction("opening an edit"), let model = reading, model.phase == .ready, let snapshot = model.snapshot else { return false }
+    @discardableResult func editReading(copy: Bool, pagePromotion: Bool = false) async -> Bool {
+        guard pagePromotion ? allowAction("opening an edit") : allowNavigation("opening an edit"), let model = reading, model.phase == .ready, let snapshot = model.snapshot else { return false }
         let navigation = navigationGeneration
         do {
             let record: DraftRecord
@@ -483,10 +466,32 @@ final class EditorWorkspace {
                   model.snapshot?.digest == snapshot.digest, model.snapshot?.revision == snapshot.revision,
                   allowAction("opening an edit") else { return false }
             if case .stored(let root, _, _) = model.reference { selectedStore = root }
-            add(record, liveIdentity: liveDocumentID)
+            add(record, liveIdentity: liveDocumentID, pagePromotion: pagePromotion)
+            active?.setResolver(snapshot.resolver)
             if let document = active, case .copy = record.destination { schedulePersistence(document) }
             return true
         } catch { notice = "Edit not opened: \(error). The document remains readable."; return false }
+    }
+
+    /// Returns only the pinned stored base; the current draft and its history remain unchanged.
+    func draftReviewBase() async throws -> DocumentSnapshot {
+        guard !closing, reading == nil, let document = active else { throw WebMirrorError.closed }
+        let record = document.session.record
+        let base: StoredEditBase
+        switch record.destination {
+        case .published(let value), .copy(let value): base = value
+        case .file, .scratchpad: throw FileSaveError.invalid("This draft has no stored base revision.")
+        }
+        let identity = liveDocumentID, generation = document.text.generation
+        let snapshot = try await Task.detached {
+            try DocumentLoader.load(.stored(root: base.root, storeId: base.storeId, document: base.document),
+                revision: base.revision, pinnedDigest: base.digest)
+        }.value
+        guard !closing, reading == nil, active === document, liveDocumentID == identity,
+              document.text.generation == generation, document.session.record.destination == record.destination else {
+            throw WebMirrorError.stale
+        }
+        return snapshot
     }
 
     func returnToTerminal() async {
@@ -520,19 +525,12 @@ final class EditorWorkspace {
             notice = "Wait for the image to reach private storage before closing."
             return false
         }
-        guard !documents.contains(where: \.replacing) else {
-            notice = "Wait for the document replacement before closing the workspace."
-            return false
-        }
         guard documents.allSatisfy({ !$0.text.hasMarkedText }) else {
             notice = "Finish composing text before closing the workspace."
             return false
         }
         closing = true
-        for document in documents {
-            document.text.textView.isEditable = false
-            document.text.activeTextView.isEditable = false
-        }
+
         let retained = await retainAll()
         if !retained { resumeEdits() }
         return retained
@@ -540,10 +538,7 @@ final class EditorWorkspace {
 
     func resumeEdits() {
         closing = false
-        for document in documents {
-            document.text.textView.isEditable = true
-            document.text.activeTextView.isEditable = true
-        }
+
     }
 
     func retainAll() async -> Bool {
@@ -667,148 +662,5 @@ final class EditorWorkspace {
         document.session.finishSave(source: request.source, destination: .published(base))
         document.observeBase()
         loadResolver(base, document: document)
-    }
-}
-
-struct EditorWorkspaceView: View {
-    @Bindable var workspace: EditorWorkspace
-    @State private var hovered = false
-    var body: some View {
-        VStack(spacing: 0) {
-            if workspace.reading == nil, workspace.active?.readingDraft != true {
-              HStack {
-                Text(workspace.active?.session.record.displayTitle ?? "Documents").lineLimit(1).font(.headline)
-                Spacer()
-                if workspace.active != nil, workspace.publishedLibrary == nil {
-                    Button("Read", systemImage: "doc.text") { workspace.readActive() }
-                }
-                Menu {
-                        Button("New Scratchpad") { workspace.newScratchpad() }
-                        Button("Open File…") { workspace.openFile() }
-                        Button("Recoverable Drafts") { Task { await workspace.library() } }
-                        Button("Library") { Task { await workspace.showPublishedLibrary() } }
-                        Divider()
-                        Button("Save As…") { workspace.saveAs() }
-                        Button("Duplicate") { if let document = workspace.active { Task { await workspace.duplicate(document) } } }
-                        Button("Insert Image…") { workspace.chooseImage() }
-                        Button("Review / Revert to Saved Version…") {
-                            if let document = workspace.active { Task { await workspace.reviewSavedVersion(document) } }
-                        }
-                        Button("Close Document") { Task { await workspace.closeActive() } }
-                        if workspace.launchOrigin != nil { Button("Return to Rex") { Task { await workspace.returnToTerminal() } } }
-                    } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).fixedSize()
-                if let close = workspace.onClose { Button("Close", systemImage: "xmark", action: close).labelStyle(.iconOnly) }
-              }.padding(10)
-            }
-            if workspace.documents.count > 1 {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 5) {
-                        ForEach(workspace.documents) { document in
-                            Button {
-                                workspace.select(document)
-                            } label: {
-                                Text((document.session.isDirty ? "● " : "") + document.session.record.displayTitle).lineLimit(1)
-                            }.buttonStyle(.bordered).tint(workspace.selected == document.id ? .accentColor : .secondary)
-                        }
-                    }.padding(.horizontal, 10)
-                }.padding(.bottom, 8)
-            }
-            Divider()
-            if let notice = workspace.notice { Text(notice).font(.callout).foregroundStyle(.orange).padding(8) }
-            if let library = workspace.publishedLibrary {
-                LibraryView(model: library, open: { reference in Task { await workspace.openReading(reference) } }, openFile: { workspace.openFile() }, openStore: { workspace.chooseStore() })
-            } else if let reading = workspace.reading {
-                ReaderView(model: reading, chrome: .embedded(close: { if let close = workspace.onClose { close() } else { Task { await workspace.showPublishedLibrary() } } }, release: { workspace.onRelease?() }), editActions: ReaderEditActions(
-                    edit: reading.snapshot?.document?.kind == .published || reading.snapshot?.document == nil ? { Task { await workspace.editReading(copy: false) } } : nil,
-                    editCopy: reading.snapshot?.document?.kind != .published && reading.snapshot?.document != nil ? { Task { await workspace.editReading(copy: true) } } : nil,
-                    isEnabled: reading.snapshot != nil),
-                    selectionChanged: workspace.collaboration == nil ? nil : { quote in
-                        guard workspace.annotationReader === reading else { return }
-                        workspace.collaboration?.selectQuote(quote)
-                    }, commentSelection: workspace.collaboration == nil ? nil : { quote in
-                        guard workspace.annotationReader === reading else { return }
-                        workspace.collaboration?.beginAnnotation(quote: quote)
-                    })
-            } else if workspace.libraryVisible { draftLibrary }
-            else if let document = workspace.active {
-                if let pending = document.session.record.pendingImageReferences, !pending.isEmpty {
-                    Button("Insert \(pending.count) Retained Images") { Task { await workspace.insertImages(document) } }.padding(6)
-                }
-                DocumentEditorView(document: document,
-                    readingChrome: .embedded(close: { workspace.onClose?() }, release: { workspace.onRelease?() }),
-                    editActions: ReaderEditActions(edit: { workspace.editActive() }))
-                Divider()
-                status(document)
-            } else {
-                ContentUnavailableView("Write Markdown", systemImage: "square.and.pencil", description: Text("Start a scratchpad or open a Markdown file."))
-            }
-        }.frame(minWidth: 360, minHeight: 300).disabled(workspace.closing)
-            .onHover { hovered = $0 }
-            .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { workspace.nativeSelectionChanged($0) }
-            .onReceive(NotificationCenter.default.publisher(for: NSText.didChangeNotification)) { workspace.nativeSelectionChanged($0) }
-            .overlay(alignment: .bottomTrailing) {
-                if let client = workspace.collaboration, !workspace.libraryVisible, workspace.publishedLibrary == nil {
-                    AnnotationControls(client: client, hovered: hovered,
-                        commentOnSelection: { Task { await workspace.annotateSelection() } },
-                        restoreFocus: { workspace.restoreEditorFocus() })
-                        .padding(.trailing, 14).padding(.bottom, 42)
-                }
-            }
-            .sheet(item: $workspace.revisionReview) { review in EditorRevisionReviewView(review: review, workspace: workspace) }
-    }
-
-    private var draftLibrary: some View {
-        List {
-            Section("Private recoverable drafts") {
-                Text("Draft recovery is private. Open documents save automatically to their destination.").font(.callout).foregroundStyle(.secondary)
-                ForEach(workspace.recovered, id: \.branch) { record in
-                    Button { workspace.add(record.resumed()) } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(record.displayTitle).font(.headline)
-                            Text(record.source.isEmpty ? "Empty scratchpad" : String(record.source.prefix(120))).lineLimit(2).foregroundStyle(.secondary)
-                            Text(record.updatedAt, style: .relative).font(.caption)
-                            if let parent = record.parentBranch {
-                                Text("Recovered version \(record.branch.uuidString.prefix(8)) from \(parent.uuidString.prefix(8))").font(.caption)
-                            }
-                        }
-                    }.buttonStyle(.plain)
-                }
-                ForEach(workspace.recoveryIssues, id: \.self) { Text($0).foregroundStyle(.orange) }
-                if workspace.nextDraftOffset != nil { Button("Read More Drafts") { Task { await workspace.library(more: true) } } }
-            }
-        }
-    }
-
-    private func status(_ document: WorkingDocument) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let conflict = document.session.record.conflict {
-                HStack {
-                    Label(conflict.message, systemImage: "exclamationmark.triangle")
-                    Button("Review Saved Version") { Task { await workspace.reviewSavedVersion(document) } }
-                    Button("Create a Separate Copy") { Task { await workspace.duplicate(document) } }
-                }.foregroundStyle(.orange)
-            }
-            if let error = document.session.error, error != document.session.record.conflict?.message {
-                Text(error).foregroundStyle(.red)
-            }
-            if case .failed(let reason) = document.updates.state {
-                HStack {
-                    Text("External updates are not observed: \(reason)").foregroundStyle(.orange)
-                    Button("Check Again") { document.observeBase() }
-                }
-            }
-            HStack {
-                Text(document.session.saving ? "Syncing…" : document.session.isDirty ? "Changes retained locally" : "Saved")
-                Text("·")
-                switch document.session.recovery {
-                case .current: EmptyView()
-                case .pending: Text("Retaining…")
-                case .failed(let reason): Button("Recovery failed: \(reason). Retry") { Task { await document.session.persist(); workspace.schedulePersistence(document) } }
-                }
-                Spacer()
-                if let line = document.line, let column = document.column { Text("Line \(line), column \(column)") }
-                if let words = document.words, let characters = document.characters { Text("\(words) words · \(characters) characters") }
-            }.font(.caption).foregroundStyle(.secondary)
-        }.padding(8)
     }
 }

@@ -25,6 +25,38 @@ import Darwin
         #expect(shapes == ShapeMeasurement.allShapes)
     }
 
+    @Test func corpusGenerationKeepsValidUTF8WithinTheByteLimit() {
+        let pieces = [String(repeating: "👩🏽‍💻 e\u{301} Ü", count: 80), "A complete line.\r\nNext line."]
+        for limit in [1, 2, 3, 7, 19, 256, 513, 2048] {
+            let source = Measurement.document(from: pieces, bytes: limit)
+            #expect(source.utf8.count <= limit)
+            #expect(!source.contains("\u{FFFD}"))
+            #expect(String(data: Data(source.utf8), encoding: .utf8) == source)
+        }
+        #expect(Measurement.document(from: [], bytes: 512).isEmpty)
+        #expect(Measurement.document(from: pieces, bytes: 0).isEmpty)
+        #expect(Measurement.document(from: pieces, bytes: -1).isEmpty)
+        #expect(!Measurement.document(from: [""], bytes: 256).isEmpty)
+        for limit in [256, 512, 4096] {
+            let refreshed = Measurement.document(from: pieces, bytes: limit - 64) + "\nAn appended paragraph.\n"
+            #expect(refreshed.utf8.count <= limit)
+        }
+    }
+
+    @Test func generatedStoreCreatesAndReplacesItsRevisionPointer() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("measurement-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try VerifyStore(root: root)
+        let id = VerifyStore.newId()
+        try store.write(id, revision: 1, source: "# First\n")
+        let first = try DocumentLoader.load(store.reference(id))
+        #expect(first.revision == 1 && first.source == "# First\n")
+        try store.write(id, revision: 2, source: "# Second\r\n")
+        let second = try DocumentLoader.load(store.reference(id))
+        #expect(second.revision == 2)
+        #expect(Data(second.source.utf8) == Data("# Second\r\n".utf8))
+    }
+
     @Test func cpuProbeAgreesWithGetrusage() throws {
         func cpu() throws -> Double {
             var usage = rusage()

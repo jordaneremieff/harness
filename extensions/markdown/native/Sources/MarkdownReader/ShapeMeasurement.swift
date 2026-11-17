@@ -173,6 +173,8 @@ struct ShapeMeasurement {
         var start = Self.usage(keep)
         var clock = Date()
         let first = await context.open(store.reference(id), revision: nil, keep: &keep)
+        defer { for window in keep { window.close() } }
+        try CheckRunner.requireReady(first)
         let firstWall = Date().timeIntervalSince(clock) * 1000
         let firstUsage = Self.usage(keep) - start
         let firstOpen = Self.timing(first)
@@ -180,6 +182,7 @@ struct ShapeMeasurement {
         start = Self.usage(keep)
         clock = Date()
         let second = await context.open(store.reference(id), revision: nil, keep: &keep)
+        try CheckRunner.requireReady(second)
         let secondWall = Date().timeIntervalSince(clock) * 1000
         let secondUsage = Self.usage(keep) - start
         let secondOpen = Self.timing(second)
@@ -187,11 +190,11 @@ struct ShapeMeasurement {
         start = Self.usage(keep)
         clock = Date()
         await second.refresh()
+        try CheckRunner.requireReady(second)
         let refreshMs = Date().timeIntervalSince(clock) * 1000
         let refreshUsage = Self.usage(keep) - start
-        second.findQuery = "appended paragraph"
         clock = Date()
-        await second.find()
+        let found = await context.findState(second, query: "appended paragraph")
         let findMs = Date().timeIntervalSince(clock) * 1000
         let idle = await idle(keep, seconds: 3)
         let settledImages = assets.isEmpty ? [] : await first.inspectImages()
@@ -205,7 +208,8 @@ struct ShapeMeasurement {
             "secondOpen": secondOpen.merging(["wallMs": secondWall], uniquingKeysWith: { $1 }).merging(secondUsage.json, uniquingKeysWith: { $1 }),
             "refresh": ["wallMs": refreshMs, "restore": second.lastRestore.rawValue, "revision": second.snapshot?.revision ?? 0].merging(refreshUsage.json, uniquingKeysWith: { $1 }),
             "findNearEndMs": findMs,
-            "findFound": second.findStatus == .found,
+            "findFound": (found?.count ?? 0) > 0,
+            "findCount": found?.count as Any? ?? NSNull(),
             "memoryWithTwoWindows": Self.memory(keep),
             "idleWithTwoWindows": idle,
         ]
@@ -275,12 +279,15 @@ struct ShapeMeasurement {
         try store.write(id, revision: revision, source: base, kind: "file")
         var keep: [NSWindow] = []
         let model = await context.open(store.reference(id), revision: nil, keep: &keep)
+        defer { for window in keep { window.close() } }
+        try CheckRunner.requireReady(model)
 
         revision += 1
         try store.write(id, revision: revision, source: base + "\nRevision \(revision).\n", kind: "file")
         var start = Self.usage(keep)
         var clock = Date()
         await model.refresh()
+        try CheckRunner.requireReady(model)
         let single = ["wallMs": Date().timeIntervalSince(clock) * 1000, "revision": model.snapshot?.revision ?? 0].merging((Self.usage(keep) - start).json, uniquingKeysWith: { $1 })
         let preparationsBefore = model.preparationsStartedForCheck
 
@@ -294,6 +301,7 @@ struct ShapeMeasurement {
             await Task.yield()
         }
         for task in tasks { await task.value }
+        try CheckRunner.requireReady(model)
         let burst: [String: Any] = [
             "refreshes": count,
             "wallMs": Date().timeIntervalSince(clock) * 1000,
@@ -326,18 +334,21 @@ struct ShapeMeasurement {
         return ["shape": "revisions", "bytes": base.utf8.count, "singleRefresh": single, "refreshBurst": burst, "following": following]
     }
 
-    /// Several reader windows with the full reader view: memory, idle CPU with all windows
+    /// Several direct page windows: memory, idle CPU with all windows
     /// shown and with half of them hidden, and CPU during repeated resizing.
     func windowsShape(count: Int) async throws -> [String: Any] {
         let source = Self.sections(count: 600)
         var keep: [NSWindow] = []
         var models: [ReaderModel] = []
         var opens: [Double] = []
+        defer { for window in keep { window.close() } }
         for _ in 0..<count {
             let id = VerifyStore.newId()
             try store.write(id, revision: 1, source: source, kind: "file")
             let clock = Date()
-            models.append(await context.open(store.reference(id), revision: nil, trackedScroll: true, keep: &keep))
+            let model = await context.open(store.reference(id), revision: nil, trackedScroll: true, keep: &keep)
+            try CheckRunner.requireReady(model)
+            models.append(model)
             opens.append(Date().timeIntervalSince(clock) * 1000)
         }
         let memory = Self.memory(keep)

@@ -1,7 +1,6 @@
 import Foundation
 import MarkdownCore
 import Observation
-import SwiftUI
 
 /// Whether the window can tell that a newer revision exists.
 public enum UpdateObservation: Equatable, Sendable {
@@ -133,21 +132,5 @@ final class DirectoryWatcher {
 
     deinit {
         source.cancel()
-    }
-}
-
-/// Says that the window cannot tell whether a newer revision exists, while the shown revision
-/// stays readable, and offers the refresh that checks again.
-struct UpdateObservationBanner: View {
-    let model: ReaderModel
-
-    var body: some View {
-        if case .failed(let reason) = model.updates.state {
-            Banner(systemImage: "eye.slash", tint: .orange) {
-                Text("Updates not observed: \(reason). Refresh to check.")
-            } action: {
-                Button("Refresh") { Task { await model.refresh() } }
-            }
-        }
     }
 }

@@ -43,6 +43,7 @@ public struct LibraryFilter: Sendable {
 public struct SourceSearchBatch: Sendable {
     public var examined: [String] = []
     public var matches: [String] = []
+    public var excerpts: [String: String] = [:]
     public var issues: [ListingIssue] = []
     public var bytes = 0
 }
@@ -50,6 +51,18 @@ public struct SourceSearchBatch: Sendable {
 /// A literal, case-insensitive source search over an explicitly supplied set of revision rows.
 /// Each batch opens at most 20 sources and reads at most 8 MiB. It has no persistent index.
 public enum SourceContentSearch {
+    public static func excerpt(in source: String, query: String) -> String? {
+        guard !query.isEmpty, let match = source.range(of: query, options: [.caseInsensitive], locale: .current) else { return nil }
+        let start = source.index(match.lowerBound, offsetBy: -60, limitedBy: source.startIndex) ?? source.startIndex
+        var excerpt = "", bytes = 0
+        for character in source[start...].prefix(180) {
+            let text = String(character), count = text.utf8.count
+            guard bytes + count <= 2048 else { break }
+            excerpt += text; bytes += count
+        }
+        return excerpt
+    }
+
     public static func search(store: DirectoryStore, records: [DocumentRecord], query: String,
                               limit: Int = 20, byteLimit: Int = 8 * 1024 * 1024) -> SourceSearchBatch {
         var result = SourceSearchBatch()
@@ -63,7 +76,10 @@ public enum SourceContentSearch {
                 let loaded = try store.loadRevision(record.id, revision: record.revision)
                 guard loaded.record.digest == record.digest else { throw StoreError.digestMismatch }
                 result.bytes += loaded.record.bytes
-                if loaded.source.localizedCaseInsensitiveContains(query) { result.matches.append(record.id) }
+                if let excerpt = excerpt(in: loaded.source, query: query) {
+                    result.matches.append(record.id)
+                    result.excerpts[record.id] = excerpt
+                }
             } catch {
                 result.bytes += Limits.sourceBytes
                 result.issues.append(ListingIssue(document: record.id, reason: String(describing: error)))

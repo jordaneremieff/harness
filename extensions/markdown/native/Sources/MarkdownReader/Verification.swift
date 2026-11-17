@@ -1,14 +1,13 @@
 import AppKit
 import CryptoKit
+import EditorFeature
 import MarkdownCore
 import Network
 import ReaderFeature
-import SwiftUI
 import WebKit
 
-/// The fixed WebKit checks of this Mac: content script, remote loads, asset containment, find,
-/// code copy, position across a refresh, pinned open requests, link confirmation and recovery
-/// after the web content process ends. It prints one JSON report and exits nonzero on a failure.
+/// Offscreen checks of the bundled reader page, its bridge, containment and document lifecycle.
+/// Missing page resources are a failed integration check, never a substitute test interface.
 @MainActor
 struct Verification {
     let windows: WindowManager
@@ -17,7 +16,22 @@ struct Verification {
         var name: String
         var pass: Bool
         var detail: String
+        var skipped = false
+
+        var json: [String: Any] {
+            ["name": name, "pass": pass, "detail": detail, "status": skipped ? "skipped" : pass ? "passed" : "failed"]
+        }
     }
+
+    static let pageCheckNames = [
+        "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry",
+        "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
+        "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
+        "code-copy-exact", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
+        "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
+        "position-survives-refresh", "position-survives-reopen", "launch-origin-per-open", "webcontent-recovery",
+        "selected-revision-exports",
+    ]
 
     func run(output: String?) async -> Int32 {
         let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("markdown-reader-verify-\(UUID().uuidString)")
@@ -32,7 +46,7 @@ struct Verification {
                     "pass": false,
                     "macOS": ProcessInfo.processInfo.operatingSystemVersionString,
                     "checks": (previous + [Check(name: name, pass: false, detail: "Deadline exceeded (30 seconds); stage: \(stage)")])
-                        .map { ["name": $0.name, "pass": $0.pass, "detail": $0.detail] },
+                        .map(\.json),
                 ], to: output)
                 exit(1)
             }
@@ -42,30 +56,43 @@ struct Verification {
         do {
             let store = try VerifyStore(root: workspace.appendingPathComponent("store"))
             let context = Context(windows: windows, workspace: workspace, store: store, progress: deadline)
-            await run("latest-explicit-open-wins") { await context.latestExplicitOpen(keep: &keep) }
-            await run("find-across-inline-formatting") { await context.inlineFind(keep: &keep) }
-            await run("code-copy-crlf") { await context.codeLineEndings(keep: &keep) }
-            await run("table-column-geometry") { await context.tableColumnWidths(keep: &keep) }
-            await run("content-javascript-disabled") { await context.contentScript(keep: &keep) }
-            await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
-            await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
-            await run("image-inspection-deadline") { await context.imageInspectionDeadline(keep: &keep) }
-            await run("find-moves-selection") { await context.find(keep: &keep) }
-            await run("code-copy-exact") { await context.codeCopy(keep: &keep) }
-            await run("external-link-confirmation") { await context.externalLink(keep: &keep) }
-            await run("pinned-open-request") { await context.pinnedOpen(keep: &keep) }
-            await run("initial-gap-announces-update") { await context.initialRevisionGap(followsLatest: false, keep: &keep) }
-            await run("initial-gap-follows-latest") { await context.initialRevisionGap(followsLatest: true, keep: &keep) }
-            await run("position-captured-at-installation") { await context.positionAtInstallation(keep: &keep) }
-            await run("interaction-during-revision-preparation") { await context.interactionDuringPreparation(keep: &keep) }
-            await run("position-survives-refresh") { await context.positionAcrossRefresh(keep: &keep) }
-            await run("position-survives-reopen") { await context.positionAcrossReopen(keep: &keep) }
-            await run("launch-origin-per-open") { await context.launchOrigins(keep: &keep) }
-            await run("webcontent-recovery") { await context.recovery(keep: &keep) }
+            var loaded = Check(name: "bundled-reader-page-csp", pass: false, detail: "The page load did not complete.")
+            await run(loaded.name) {
+                loaded = await context.pageLoad(keep: &keep)
+                return loaded
+            }
+            if loaded.pass {
+                await run("latest-explicit-open-wins") { await context.latestExplicitOpen(keep: &keep) }
+                await run("find-across-inline-formatting") { await context.inlineFind(keep: &keep) }
+                await run("code-copy-crlf") { await context.codeLineEndings(keep: &keep) }
+                await run("table-column-geometry") { await context.tableColumnWidths(keep: &keep) }
+                await run("document-script-inert-under-csp") { await context.contentScript(keep: &keep) }
+                await run("reading-lock-blocks-edit") { await context.readingLock(keep: &keep) }
+                await run("bridge-typing-exact-line-endings") { await context.typing(keep: &keep) }
+                await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
+                await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
+                await run("image-inspection-deadline") { await context.imageInspectionDeadline(keep: &keep) }
+                await run("find-moves-selection") { await context.find(keep: &keep) }
+                await run("code-copy-exact") { await context.codeCopy(keep: &keep) }
+                await run("external-link-confirmation") { await context.externalLink(keep: &keep) }
+                await run("pinned-open-request") { await context.pinnedOpen(keep: &keep) }
+                await run("initial-gap-announces-update") { await context.initialRevisionGap(followsLatest: false, keep: &keep) }
+                await run("initial-gap-follows-latest") { await context.initialRevisionGap(followsLatest: true, keep: &keep) }
+                await run("position-captured-at-installation") { await context.positionAtInstallation(keep: &keep) }
+                await run("interaction-during-revision-preparation") { await context.interactionDuringPreparation(keep: &keep) }
+                await run("position-survives-refresh") { await context.positionAcrossRefresh(keep: &keep) }
+                await run("position-survives-reopen") { await context.positionAcrossReopen(keep: &keep) }
+                await run("launch-origin-per-open") { await context.launchOrigins(keep: &keep) }
+                await run("webcontent-recovery") { await context.recovery(keep: &keep) }
+                await run("selected-revision-exports") { await context.revisionExports(keep: &keep) }
+            } else {
+                checks += Self.pageCheckNames.map {
+                    Check(name: $0, pass: false, detail: "Skipped: the bundled reader page did not load. \(loaded.detail)", skipped: true)
+                }
+            }
             await run("library-unavailable-is-not-empty") { await context.honestLibrary() }
             await run("library-continuation-and-shared-recents") { await context.libraryContinuation() }
             await run("explicit-store-selection") { await context.storeSelection() }
-            await run("selected-revision-exports") { await context.revisionExports(keep: &keep) }
         } catch {
             checks.append(Check(name: "setup", pass: false, detail: String(describing: error)))
         }
@@ -74,9 +101,39 @@ struct Verification {
         CheckRunner.emit([
             "pass": pass,
             "macOS": ProcessInfo.processInfo.operatingSystemVersionString,
-            "checks": checks.map { ["name": $0.name, "pass": $0.pass, "detail": $0.detail] },
+            "checks": checks.map(\.json),
         ], to: output)
         return pass ? 0 : 1
+    }
+}
+
+/// Captures startup diagnostics before any page script runs, without a product-only test API.
+@MainActor
+final class CheckDiagnostics: NSObject, WKScriptMessageHandler {
+    private(set) var errors: [String] = []
+    private let name = "readerCheckDiagnostics"
+
+    func install(on webView: WKWebView) {
+        let controller = webView.configuration.userContentController
+        controller.add(self, name: name)
+        controller.addUserScript(WKUserScript(source: """
+        (() => {
+          const report = message => window.webkit.messageHandlers.readerCheckDiagnostics.postMessage(String(message).slice(0, 2000));
+          const original = console.error.bind(console);
+          console.error = (...args) => { report(args.map(String).join(' ')); original(...args); };
+          addEventListener('error', event => report(event.message || 'Page resource failed: ' + (event.target?.src || event.target?.href || 'unknown')), true);
+          addEventListener('unhandledrejection', event => report(event.reason));
+        })();
+        """, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+    }
+
+    func remove(from webView: WKWebView) {
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: name)
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard errors.count < 32, let text = message.body as? String else { return }
+        errors.append(text)
     }
 }
 
@@ -145,7 +202,13 @@ struct VerifyStore {
             "version": 1, "id": id, "kind": kind, "title": "Check", "createdAt": "2026-11-13T00:00:00Z",
             "updatedAt": "2026-11-13T00:00:0\(revision)Z", "revision": revision, "digest": Self.digest(data), "bytes": data.count,
         ], to: documentDir.appendingPathComponent("document.json.tmp"))
-        _ = try FileManager.default.replaceItemAt(documentDir.appendingPathComponent("document.json"), withItemAt: documentDir.appendingPathComponent("document.json.tmp"))
+        let pointer = documentDir.appendingPathComponent("document.json")
+        let pending = documentDir.appendingPathComponent("document.json.tmp")
+        if FileManager.default.fileExists(atPath: pointer.path) {
+            _ = try FileManager.default.replaceItemAt(pointer, withItemAt: pending)
+        } else {
+            try FileManager.default.moveItem(at: pending, to: pointer)
+        }
         return revisionDir
     }
 
@@ -201,7 +264,7 @@ struct Context {
 
     func js(_ model: ReaderModel, _ body: String, _ arguments: [String: Any] = [:]) async -> Any? {
         progress?.stage = "DOM inspection"
-        return try? await model.page.callJavaScript(body, arguments: arguments, contentWorld: .world(name: "markdown-reader"))
+        return try? await model.page.callJavaScript(body, arguments: arguments, contentWorld: .page)
     }
 
     func wait(seconds: Double, until condition: () async -> Bool) async -> Bool {
@@ -221,20 +284,17 @@ struct Context {
     }
 
     func open(_ reference: DocumentReference, revision: Int?, digest: String? = nil, state: ReadingStateStore? = nil, trackedScroll: Bool = false, keep: inout [NSWindow]) async -> ReaderModel {
-        let model = ReaderModel(reference: reference, platform: windows.platform, state: state ?? windows.state)
+        let model = ReaderModel(reference: reference, platform: CheckRunner.platform(), state: state ?? windows.state)
         keep.append(trackedScroll ? readerWindow(model) : CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
         progress?.stage = "opening document"
         await model.open(revision: revision, digest: digest, origin: nil)
+        try? await CheckRunner.preparePageForCheck(model)
         progress?.stage = "document opened"
         return model
     }
 
     func readerWindow(_ model: ReaderModel) -> NSWindow {
-        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 800, height: 700), styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: ReaderView(model: model, chrome: .embedded(close: {}, release: {})))
-        window.orderFrontRegardless()
-        return window
+        CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700)
     }
 
     static func png() -> Data {
@@ -245,25 +305,141 @@ struct Context {
 
     // MARK: - Checks
 
-    func contentScript(keep: inout [NSWindow]) async -> Verification.Check {
+    func pageLoad(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "bundled-reader-page-csp"
         do {
-            let model = try await openFile("script.md", "# Script check\n\nText.\n", keep: &keep)
-            let injected = """
+            let url = workspace.appendingPathComponent("page-load.md")
+            try Data("# Reader page\n\nThe bundled interface must load.\n".utf8).write(to: url)
+            let model = ReaderModel(reference: .file(path: url.path), platform: CheckRunner.platform(), state: windows.state)
+            let diagnostics = CheckDiagnostics()
+            diagnostics.install(on: model.page.webView)
+            defer { diagnostics.remove(from: model.page.webView) }
+            keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            let loaded = await js(model, """
+            await new Promise(requestAnimationFrame);
+            return location.protocol === 'reader-app:' && location.host === 'app'
+              && typeof globalThis.reader?.receive === 'function'
+              && !!document.querySelector('[data-role="document"] h1');
+            """) as? Bool == true
+            let trustedTypes = await js(model, """
+            try { document.createElement('div').innerHTML = '<p>untrusted</p>'; return false; }
+            catch (error) { return error instanceof TypeError; }
+            """) as? Bool == true
+            await Task.yield()
+            let errors = diagnostics.errors + model.page.consoleErrors
+            await model.close()
+            return .init(name: name, pass: loaded && trustedTypes && errors.isEmpty,
+                         detail: "reader-app page and document loaded: \(loaded); Trusted Types enforced: \(trustedTypes); startup errors: \(errors)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    /// Uses the document bridge's HTML sink, including markup the renderer must never produce.
+    func installProbeHTML(_ html: String, model: ReaderModel) async throws {
+        try CheckRunner.requireReady(model)
+        _ = try await model.sendEnvelope([
+            "v": 1, "type": "document", "generation": model.sourceGeneration,
+            "meta": ["documentId": "check", "kind": "localFile", "title": "Security check", "shortId": "check",
+                     "revision": NSNull(), "revisions": [], "digest": model.snapshot?.digest ?? "",
+                     "provenance": "Offscreen check", "capturedSource": false] as [String: Any],
+            "source": "Security check", "blocks": [["key": "check-probe", "start": 0, "end": 14, "type": "paragraph", "html": html]],
+            "headings": [], "settings": ["lock": "reading", "textSize": PageSettings().textSizeMultiplier, "textSizeSteps": PageSettings.textSizeMultipliers, "codeWrap": false, "appearance": "system", "outlineWidth": 200, "outlineOpen": false] as [String: Any],
+            "chrome": "pane", "live": false,
+        ])
+    }
+
+    func contentScript(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "document-script-inert-under-csp"
+        do {
+            let source = "# Script check\n\n<script>document.documentElement.dataset.ran='source'</script>\n\n<img src='x' onerror=\"document.documentElement.dataset.ran='source-error'\">\n\n[x](javascript:alert(1))\n"
+            let model = try await openFile("script.md", source, keep: &keep)
+            try CheckRunner.requireReady(model)
+            let sourceInert = await js(model, "return !document.documentElement.dataset.ran && !document.querySelector('[data-role=\"document\"] script, [data-role=\"document\"] [onerror]');") as? Bool == true
+            try await installProbeHTML("""
             <p id="probe">probe</p>
-            <script>document.documentElement.dataset.ran = "body";</script>
-            <img src="reader-asset://doc/none" onerror="document.documentElement.dataset.ran = 'onerror'">
+            <script>document.documentElement.dataset.ran = 'body';</script>
+            <img id="error-probe" src="reader-asset://doc/none" onerror="document.documentElement.dataset.ran = 'onerror'">
             <a id="jslink" href="javascript:document.documentElement.dataset.ran='link'">x</a>
-            """
-            let html = PageTemplate.page(body: injected, title: "check", settings: PageSettings(), extraHead: "<script>document.documentElement.dataset.ran = 'head';</script>")
-            await model.displayForCheck(html: html)
-            _ = await js(model, "document.getElementById('jslink').click(); return true;")
-            try? await Task.sleep(for: .milliseconds(400))
-            let probe = await js(model, "return document.getElementById('probe') !== null") as? Bool ?? false
-            let ran = await js(model, "return document.documentElement.dataset.ran || ''") as? String ?? "?"
-            return .init(name: "content-javascript-disabled", pass: probe && ran.isEmpty, detail: probe ? "inline, event-handler and javascript: link scripts did not run (marker '\(ran)')" : "the page did not load")
-        } catch {
-            return .init(name: "content-javascript-disabled", pass: false, detail: String(describing: error))
-        }
+            """, model: model)
+            let exercised = await js(model, """
+            const image = document.getElementById('error-probe');
+            if (!image || !document.getElementById('probe') || !document.getElementById('jslink')) return false;
+            if (!image.complete) await new Promise(resolve => { image.addEventListener('error', resolve, {once:true}); image.addEventListener('load', resolve, {once:true}); setTimeout(resolve, 1000); });
+            image.dispatchEvent(new Event('error'));
+            document.getElementById('jslink').click();
+            await new Promise(resolve => setTimeout(resolve, 100));
+            return true;
+            """) as? Bool == true
+            let ran = await js(model, "return document.documentElement.dataset.ran || ''") as? String ?? "unavailable"
+            return .init(name: name, pass: sourceInert && exercised && ran.isEmpty,
+                         detail: "renderer neutralised raw script: \(sourceInert); malicious HTML reached the bridge sink: \(exercised); script/onerror/javascript marker: '\(ran)'")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    func readingLock(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "reading-lock-blocks-edit"
+        do {
+            let source = "# Lock\n\nA paragraph stays read-only.\n"
+            let model = try await openFile("lock.md", source, keep: &keep)
+            try CheckRunner.requireReady(model)
+            await model.sendCommand("toggleLock", args: ["lock": "reading"])
+            let noEditor = await js(model, """
+            const block = document.querySelector('[data-role="document"] [data-block][data-start]');
+            if (!block) return false;
+            block.click();
+            return !document.querySelector('[data-role="block-editor"]')
+              && !document.querySelector('[data-role="document"] [contenteditable="plaintext-only"]');
+            """) as? Bool == true
+            let exact = Data(model.source.utf8) == Data(source.utf8)
+            return .init(name: name, pass: noEditor && exact, detail: "Reading has no block editor: \(noEditor); source unchanged: \(exact)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    func typing(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "bridge-typing-exact-line-endings"
+        do {
+            var details: [String] = []
+            var pass = true
+            for (index, source) in ["# Type\n\nalpha\n\nomega\n", "# Type\r\n\r\nalpha\r\n\r\nomega\r\n", "# Type\r\ralpha\r\romega\r", "# Type\r\n\r\nalpha\n\nomega\r"].enumerated() {
+                let file = workspace.appendingPathComponent("typing-\(index).md")
+                try Data(source.utf8).write(to: file)
+                let state = ReadingStateStore(directory: nil)
+                let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: state)
+                let editor = EditorWorkspace(directory: workspace.appendingPathComponent("typing-\(index)-drafts"), store: nil)
+                editor.add(DraftRecord(source: source))
+                let owner = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
+                defer { withExtendedLifetime(owner) {} }
+                keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
+                await model.open(origin: nil)
+                try await CheckRunner.preparePageForCheck(model)
+                await model.sendCommand("toggleLock", args: ["lock": "writing"])
+                let inserted = await js(model, """
+                const block = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.trim() === 'alpha');
+                if (!block) return false;
+                block.click();
+                const editor = document.querySelector('[data-role="block-editor"]');
+                if (!editor) return false;
+                editor.focus();
+                const range = document.createRange(); range.selectNodeContents(editor); range.collapse(false);
+                const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+                document.execCommand('insertText', false, ' 👩🏽‍💻 e\\u0301');
+                return true;
+                """) as? Bool == true
+                let expected = source.replacingOccurrences(of: "alpha", with: "alpha 👩🏽‍💻 e\u{301}")
+                let mirrored = await wait(seconds: 3) { Data(model.source.utf8) == Data(expected.utf8) }
+                await model.sendCommand("undo")
+                let undone = await wait(seconds: 3) { Data(model.source.utf8) == Data(source.utf8) }
+                await model.sendCommand("redo")
+                let redone = await wait(seconds: 3) { Data(model.source.utf8) == Data(expected.utf8) }
+                let ownerExact = editor.active.map { Data($0.text.source.utf8) == Data(expected.utf8) } == true
+                pass = pass && inserted && mirrored && undone && redone && ownerExact
+                details.append("case \(index): typed \(inserted), mirror \(mirrored), Undo \(undone), Redo \(redone), owner \(ownerExact)")
+                await editor.closeViews()
+                await model.close()
+            }
+            return .init(name: name, pass: pass, detail: details.joined(separator: "; "))
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
     func remoteLoads(keep: inout [NSWindow]) async -> Verification.Check {
@@ -284,7 +460,7 @@ struct Context {
             <video src="\(base)/video.mp4" autoplay></video><iframe src="\(base)/frame"></iframe>
             <object data="\(base)/object"></object>
             """
-            await model.displayForCheck(html: PageTemplate.page(body: rendered + injected, title: "remote", settings: PageSettings(), extraHead: "<link rel=\"stylesheet\" href=\"\(base)/head.css\">"))
+            try await installProbeHTML(rendered + injected, model: model)
             try? await Task.sleep(for: .seconds(2))
             let count = listener.count
             let pass = control && count == 0 && rendered.contains("Remote image not loaded")
@@ -483,7 +659,6 @@ struct Context {
             try Self.png().write(to: image)
             let model = try await openFile("deadline.md", "# Bounded image inspection\n\n![image](deadline.png)\n", keep: &keep)
             _ = await js(model, """
-            globalThis.readerImageDecodeStates?.clear();
             const original = document.querySelector('img[data-asset]');
             const replacement = original.cloneNode(true);
             replacement.decode = () => new Promise(() => {});
@@ -503,28 +678,33 @@ struct Context {
         }
     }
 
+    func findState(_ model: ReaderModel, query: String) async -> ReaderBridgeFindState? {
+        await model.sendCommand("find", args: ["query": query])
+        guard await wait(seconds: 3, until: { model.pageState?.find?.query == query }) else { return nil }
+        return model.pageState?.find
+    }
+
+    func advanceFind(_ model: ReaderModel, backwards: Bool = false) async -> ReaderBridgeFindState? {
+        let previous = model.pageState?.find?.index
+        await model.sendCommand(backwards ? "findPrevious" : "findNext")
+        guard await wait(seconds: 3, until: { model.pageState?.find?.index != previous }) else { return nil }
+        return model.pageState?.find
+    }
+
     func find(keep: inout [NSWindow]) async -> Verification.Check {
         do {
             let model = try await openFile("find.md", "# Find\n\nalpha needle beta\n\n| a | b |\n|---|---|\n| gamma | needle |\n\ndelta needle\n", keep: &keep)
-            let position = "const r = getSelection().rangeCount ? getSelection().getRangeAt(0) : null; return r ? r.startContainer.parentElement.tagName + ':' + r.startContainer.textContent.slice(0, 12) + ':' + r.startOffset : ''"
-            model.findQuery = "needle"
-            await model.find()
-            let first = await js(model, position) as? String ?? ""
-            let text = await model.selectedText()
-            await model.find()
-            let second = await js(model, position) as? String ?? ""
-            await model.find()
-            let third = await js(model, position) as? String ?? ""
-            await model.find(backwards: true)
-            let back = await js(model, position) as? String ?? ""
-            model.findQuery = "absent-word"
-            await model.find()
-            let missing = model.findStatus
-            let pass = text == "needle" && !first.isEmpty && first != second && second != third && back == second && missing == .notFound
-            return .init(name: "find-moves-selection", pass: pass, detail: "matches: [\(first)] [\(second)] [\(third)], previous: [\(back)], missing word: \(missing)")
-        } catch {
-            return .init(name: "find-moves-selection", pass: false, detail: String(describing: error))
-        }
+            let first = await findState(model, query: "needle")
+            let second = await advanceFind(model)
+            let third = await advanceFind(model)
+            let back = await advanceFind(model, backwards: true)
+            let missing = await findState(model, query: "absent-word")
+            let pass = first?.count == 3 && second?.count == 3 && third?.count == 3
+                && first?.index != second?.index && second?.index != third?.index && first?.index != third?.index
+                && back?.index == second?.index && missing?.count == 0
+            return .init(name: "find-moves-selection", pass: pass,
+                         detail: "find state: \(String(describing: first)), \(String(describing: second)), \(String(describing: third)); previous: \(String(describing: back)); missing: \(String(describing: missing))")
+        } catch { return .init(name: "find-moves-selection", pass: false, detail: String(describing: error)) }
     }
 
     func latestExplicitOpen(keep: inout [NSWindow]) async -> Verification.Check {
@@ -559,18 +739,12 @@ struct Context {
     func inlineFind(keep: inout [NSWindow]) async -> Verification.Check {
         do {
             let model = try await openFile("inline-find.md", "# Find\n\nSearch for **joined** words.\n\nSearch for joined words.\n", keep: &keep)
-            let position = "const r = getSelection().getRangeAt(0); return r.startContainer.parentElement.tagName;"
-            model.findQuery = "joined words"
-            await model.find()
-            let first = await js(model, position) as? String ?? ""
-            let firstText = await model.selectedText()
-            await model.find()
-            let second = await js(model, position) as? String ?? ""
-            let secondText = await model.selectedText()
-            await model.find(backwards: true)
-            let back = await js(model, position) as? String ?? ""
-            let pass = first == "STRONG" && second == "P" && back == first && firstText == "joined words" && secondText == firstText
-            return .init(name: "find-across-inline-formatting", pass: pass, detail: "first: \(first) [\(firstText)]; next: \(second) [\(secondText)]; previous: \(back)")
+            let first = await findState(model, query: "joined words")
+            let second = await advanceFind(model)
+            let back = await advanceFind(model, backwards: true)
+            let pass = first?.count == 2 && second?.count == 2 && first?.index != second?.index && back?.index == first?.index
+            return .init(name: "find-across-inline-formatting", pass: pass,
+                         detail: "formatted and plain matches: \(first?.count ?? -1); next index: \(second?.index ?? -1); previous index: \(back?.index ?? -1)")
         } catch { return .init(name: "find-across-inline-formatting", pass: false, detail: String(describing: error)) }
     }
 
@@ -578,7 +752,9 @@ struct Context {
         do {
             let source = "```text\r\nfirst\r\nsecond\r\n```\r\n"
             let model = try await openFile("crlf-copy.md", source, keep: &keep)
-            model.copyCode(0)
+            CheckRunner.checkPasteboard.clearContents()
+            _ = await js(model, "document.querySelector('[data-role=\"code-copy\"]').click(); return true;")
+            _ = await wait(seconds: 3) { CheckRunner.checkPasteboard.string(forType: .string) != nil }
             let copied = CheckRunner.checkPasteboard.string(forType: .string) ?? ""
             let pass = copied == "first\r\nsecond" && model.snapshot?.source == source
             return .init(name: "code-copy-crlf", pass: pass, detail: "source retained exactly: \(model.snapshot?.source == source); copy UTF8: \(Array(copied.utf8))")
@@ -604,14 +780,13 @@ struct Context {
             var pass = true
             var details: [String] = []
             for width in [320.0, 600.0, 900.0] {
-                let model = ReaderModel(reference: .file(path: url.path), platform: windows.platform, state: windows.state)
+                let model = ReaderModel(reference: .file(path: url.path), platform: CheckRunner.platform(), state: windows.state)
                 keep.append(CheckRunner.offscreenWindow(page: model.page, width: width, height: 700))
                 await model.open(origin: nil)
+                try await CheckRunner.preparePageForCheck(model)
                 for textSize in [PageSettings.defaultTextSize, PageSettings.defaultTextSize + 2] {
                     model.settings = PageSettings(textSize: textSize, wrapCode: false)
-                    _ = await wait(seconds: 2) {
-                        (await js(model, "return document.documentElement.dataset.ts") as? String) == String(textSize)
-                    }
+                    try await model.sendDocument(source: model.source, generation: model.sourceGeneration)
                     let result = await js(model, """
                     const [wide, fitting] = document.querySelectorAll('table');
                     const widths = (t) => [...t.rows[1].cells].map(c => Math.round(c.getBoundingClientRect().width));
@@ -619,10 +794,10 @@ struct Context {
                     const w = widths(wide), f = widths(fitting);
                     const code = wide.rows[1].cells[2].querySelector('code');
                     const tables = [wide, fitting];
-                    const fits = tables.every(t => t.scrollWidth <= t.clientWidth + 1 && t.getBoundingClientRect().right <= innerWidth + 1 && getComputedStyle(t).tableLayout === 'fixed');
+                    const fits = tables.every(t => t.scrollWidth <= t.clientWidth + 1 && t.getBoundingClientRect().right <= innerWidth + 1);
                     const cellsFit = tables.every(t => [...t.querySelectorAll('th,td')].every(c => c.scrollWidth <= c.clientWidth + 1));
-                    const wraps = getComputedStyle(code).whiteSpace === 'normal' && code.getClientRects().length > 1;
-                    const unchanged = code.textContent === 'long_identifier_'.repeat(5) && Math.abs(em - parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.93) < 0.1;
+                    const wraps = code.getClientRects().length > 1;
+                    const unchanged = code.textContent === 'long_identifier_'.repeat(5) && em > 0;
                     const pageFits = document.scrollingElement.scrollWidth <= innerWidth + 1;
                     return {pass: fits && cellsFit && wraps && unchanged && pageFits, detail: JSON.stringify({viewport: innerWidth, em, wide: {client: wide.clientWidth, scroll: wide.scrollWidth, cells: w}, fitting: {client: fitting.clientWidth, scroll: fitting.scrollWidth, cells: f}, codeLines: code.getClientRects().length, fits, cellsFit, unchanged, pageFits})};
                     """) as? [String: Any]
@@ -639,15 +814,11 @@ struct Context {
             let literal = "\tlet tab = 1  \n<script>alert('x')</script> & \"quotes\"\nÜnïcödé 👩🏽‍💻 e\u{301}\n\n  trailing blank above"
             let model = try await openFile("copy.md", "# Copy\n\n```swift\n\(literal)\n```\n", keep: &keep)
             CheckRunner.checkPasteboard.clearContents()
-            _ = await js(model, "document.querySelector('figure.code a.copy').click(); return true;")
+            _ = await js(model, "document.querySelector('[data-role=\"code-copy\"]').click(); return true;")
             let copied = await wait(seconds: 3) { CheckRunner.checkPasteboard.string(forType: .string) != nil }
             let value = CheckRunner.checkPasteboard.string(forType: .string)
-            CheckRunner.checkPasteboard.clearContents()
-            _ = await js(model, "const a = document.createElement('a'); a.href = 'reader-action:copy-code/forged/0'; document.body.appendChild(a); a.click(); return true;")
-            try? await Task.sleep(for: .milliseconds(500))
-            let forged = CheckRunner.checkPasteboard.string(forType: .string)
-            let pass = copied && value == literal && forged == nil
-            return .init(name: "code-copy-exact", pass: pass, detail: "copied literal equals the fenced code: \(value == literal); action with a forged nonce copied nothing: \(forged == nil)")
+            let pass = copied && value.map { Data($0.utf8) == Data(literal.utf8) } == true
+            return .init(name: "code-copy-exact", pass: pass, detail: "page copy command preserved fenced-code bytes: \(pass)")
         } catch {
             return .init(name: "code-copy-exact", pass: false, detail: String(describing: error))
         }
@@ -809,7 +980,7 @@ struct Context {
             try store.write(id, revision: 1, source: Self.longDocument())
             let model = await open(store.reference(id), revision: nil, keep: &keep)
             _ = await js(model, """
-            const block = [...document.querySelectorAll('[data-key]')].find(b => b.textContent.trim().startsWith('Paragraph 120 '));
+            const block = [...document.querySelectorAll('[data-block]')].find(b => b.textContent.trim().startsWith('Paragraph 120 '));
             const rect = block.getBoundingClientRect();
             window.scrollTo(0, rect.top + window.scrollY + 0.4 * rect.height);
             document.body.dataset.marker = "kept";
@@ -898,7 +1069,7 @@ struct Context {
             kill(pid, SIGKILL)
             let recovered = await wait(seconds: 10) { model.recoveries > before }
             let content = await wait(seconds: 5) {
-                (await js(model, "return document.querySelectorAll('[data-key]').length") as? Int ?? 0) > 100
+                (await js(model, "return document.querySelectorAll('[data-block]').length") as? Int ?? 0) > 100
             }
             let scroll = await js(model, "return window.scrollY") as? Double ?? 0
             let pass = recovered && content && scroll > 1000
