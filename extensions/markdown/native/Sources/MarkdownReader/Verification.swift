@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -74,6 +74,8 @@ struct Verification {
                 await run("escape-layers-notices-and-focus") { await context.escapeLayers(keep: &keep) }
                 await run("agent-hold-change-panel-find-and-code") { await context.agentPanels(keep: &keep) }
                 await run("ask-card-keeps-newest-exchange-in-view") { await context.askCardLatest(keep: &keep) }
+                await run("ask-from-open-block-and-let-it") { await context.askFromOpenBlock(keep: &keep) }
+                await run("narrow-writing-bar-keeps-save-icon") { await context.narrowWritingBar(keep: &keep) }
                 await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
                 await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
                 await run("image-inspection-deadline") { await context.imageInspectionDeadline(keep: &keep) }
@@ -693,6 +695,144 @@ struct Context {
             await model.close()
             return .init(name: name, pass: opened && first && second && prompts.count == 2 && geometry == "visible",
                          detail: "card open \(opened); question sent \(first); follow-up sent \(second); prompts \(prompts.count); newest answer \(geometry)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    /// The person's own request from the ask card never waits on his open block, and Let it after
+    /// a held refusal of a request that has ended asks the agent again in the same thread.
+    func askFromOpenBlock(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "ask-from-open-block-and-let-it"
+        do {
+            let source = "# Ask\n\nAgent passage before.\n\nOther passage.\n"
+            let state = ReadingStateStore(directory: nil)
+            let file = workspace.appendingPathComponent("ask-open.md")
+            try Data(source.utf8).write(to: file)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: state)
+            let editor = EditorWorkspace(directory: workspace.appendingPathComponent("ask-open-drafts"), store: nil)
+            editor.add(DraftRecord(source: source))
+            let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
+            defer { withExtendedLifetime(surface) {} }
+            keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            _ = await wait(seconds: 5) { editor.webReady && model.source == source }
+            guard let document = editor.active else { return .init(name: name, pass: false, detail: "the draft did not open") }
+            let forward = model.page.onMessage
+            var prompts: [(request: String, thread: String, text: String)] = []
+            model.page.onMessage = { message in
+                if message["type"] as? String == "prompt", let request = message["requestId"] as? String,
+                   let thread = message["threadId"] as? String, let text = message["text"] as? String {
+                    prompts.append((request, thread, text)); return ["accepted": true]
+                }
+                // The page bridge hands each message to one handler; forwarding passes it on unchanged.
+                nonisolated(unsafe) let body = message
+                return try await forward?(body) ?? [:]
+            }
+            await model.sendCommand("toggleLock", args: ["lock": "writing"])
+            func openAndType(_ passage: String) async -> Bool {
+                await js(model, """
+                const block = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.includes(passage));
+                if (!block) return false;
+                const rect = block.getBoundingClientRect();
+                // Left edge of the passage: the open ask card can lie over its right part.
+                const point = { bubbles: true, cancelable: true, button: 0, clientX: rect.left + 4, clientY: rect.top + rect.height / 2 };
+                block.dispatchEvent(new PointerEvent('pointerdown', { ...point, buttons: 1, pointerType: 'mouse', isPrimary: true }));
+                block.dispatchEvent(new PointerEvent('pointerup', { ...point, pointerType: 'mouse', isPrimary: true }));
+                block.dispatchEvent(new MouseEvent('click', point));
+                await new Promise(r => setTimeout(r, 0));
+                const editor = document.querySelector('[data-role="block-editor"]');
+                if (!editor) { lastOpenFailure = `no editor: lock ${document.getElementById('app').dataset.mode}, target ${document.elementFromPoint(point.clientX, point.clientY)?.className}`; return false; }
+                editor.focus();
+                const range = document.createRange(); range.selectNodeContents(editor); range.collapse(false);
+                getSelection().removeAllRanges(); getSelection().addRange(range);
+                document.execCommand('insertText', false, ' Note');
+                return true;
+                """, ["passage": passage]) as? Bool == true
+            }
+            func apply(_ old: String, _ new: String) async -> LiveResult {
+                let text = document.text.source as NSString, range = text.range(of: old)
+                guard range.location != NSNotFound else { return LiveResult(status: "error", message: "missing text") }
+                return await editor.handleLive(LiveCommand(requestId: UUID().uuidString, workspace: editor.id.uuidString,
+                    document: editor.liveDocumentID.uuidString, op: "apply", operationId: UUID().uuidString,
+                    baseGeneration: document.text.generation, baseDigest: Digest.sha256(Data(document.text.source.utf8)),
+                    edits: [LiveTextEdit(start: range.location, end: NSMaxRange(range), expected: old, replacement: new)]))
+            }
+            let askScript = """
+            document.getElementById('b-ask').click();
+            await new Promise(r => setTimeout(r, 30));
+            const item = [...document.querySelectorAll('#activity button')].find(b => b.textContent.includes('Ask about this document'));
+            if (!item) return false;
+            item.click();
+            await new Promise(r => setTimeout(r, 30));
+            const field = document.querySelector('[data-role="ask-card"] textarea');
+            field.value = text;
+            field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+            const send = document.querySelector('[data-role="ask-card"] .send');
+            if (send.disabled) return false;
+            send.click();
+            return true;
+            """
+            // (a) A request sent from the card while a block is open.
+            let typedA = await openAndType("Agent passage before.")
+            _ = await wait(seconds: 3) { editor.pageHeld != nil }
+            let heldBefore = editor.pageHeld != nil
+            let sentA = await js(model, askScript, ["text": "Replace the agent passage."]) as? Bool == true
+            let releasedA = await wait(seconds: 3) { prompts.count == 1 && editor.pageHeld == nil }
+            let appliedA = await apply("Agent passage before. Note", "Agent passage after.")
+            let landedA = await wait(seconds: 3) { (await js(model, "return [...document.querySelectorAll('[data-role=\"notice\"]')].some(n => n.textContent.includes('The agent changed') && n.textContent.includes('Show changes') && n.textContent.includes('Undo'));") as? Bool) == true }
+            // (b) A held refusal while the request works, then the request ends, then Let it.
+            if let first = prompts.first {
+                _ = try await model.sendEnvelope(["v": 1, "type": "promptState", "requestId": first.request, "threadId": first.thread, "state": "working"])
+            }
+            let typedB = await openAndType("Other passage.")
+            _ = await wait(seconds: 3) { editor.pageHeld != nil && document.text.source.contains("Other passage. Note") }
+            let heldB = await apply("Other passage. Note", "Other passage changed.")
+            let noticeB = await wait(seconds: 3) { (await js(model, "return [...document.querySelectorAll('[data-role=\"notice\"]')].some(n => n.textContent.includes('The agent wants to change this passage'));") as? Bool) == true }
+            if let first = prompts.first {
+                _ = try await model.sendEnvelope(["v": 1, "type": "promptState", "requestId": first.request, "threadId": first.thread, "state": "answered", "detail": "No change applied: the passage is open."])
+            }
+            let pressed = await js(model, """
+            const notice = [...document.querySelectorAll('[data-role="notice"]')].find(n => n.textContent.includes('The agent wants to change this passage'));
+            const button = notice && [...notice.querySelectorAll('button')].find(b => b.textContent.trim() === 'Let it');
+            if (!button) return false;
+            button.click();
+            return true;
+            """) as? Bool == true
+            let retried = await wait(seconds: 3) { prompts.count == 2 && editor.pageHeld == nil }
+            let sameThread = prompts.count == 2 && prompts[1].thread == prompts[0].thread && prompts[1].request != prompts[0].request
+            let appliedB = await apply("Other passage. Note", "Other passage changed.")
+            let pass = typedA && heldBefore && sentA && releasedA && appliedA.status == "applied" && landedA
+                && typedB && heldB.reason == "held" && noticeB && pressed && retried && sameThread && appliedB.status == "applied"
+            await editor.closeViews()
+            await model.close()
+            let openFailure = await js(model, "return globalThis.lastOpenFailure ?? ''") as? String ?? ""
+            return .init(name: name, pass: pass, detail: "typed \(typedA)/\(typedB) \(openFailure); (a) block held \(heldBefore), sent \(sentA), hold released \(releasedA), agent edit \(appliedA.status), notice with Show changes and Undo \(landedA); (b) held \(heldB.status)/\(heldB.reason ?? ""), notice \(noticeB), Let it \(pressed), retry in the same thread \(retried && sameThread) (\(prompts.last?.text ?? "")), agent edit \(appliedB.status)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    /// At a narrow pane width in Writing, the save state keeps its whole icon in the bar.
+    func narrowWritingBar(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "narrow-writing-bar-keeps-save-icon"
+        do {
+            let file = workspace.appendingPathComponent("narrow.md")
+            try Data("# A long title for a narrow pane that must truncate\n\nText.\n".utf8).write(to: file)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: ReadingStateStore(directory: nil))
+            keep.append(CheckRunner.offscreenWindow(page: model.page, width: 452, height: 700))
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            await model.sendCommand("toggleLock", args: ["lock": "writing"])
+            let size = await js(model, """
+            await new Promise(r => setTimeout(r, 50));
+            const status = document.querySelector('[data-role="status"]');
+            const icon = status && status.querySelector('svg');
+            if (!icon) return [];
+            const s = status.getBoundingClientRect(), i = icon.getBoundingClientRect();
+            // The status must not shrink below its icon when the bar runs short of room.
+            return [s.width, i.width, i.left >= s.left - 0.5 && i.right <= s.right + 0.5 ? 1 : 0, innerWidth, getComputedStyle(status).flexShrink === '0' ? 1 : 0];
+            """) as? [Double] ?? []
+            await model.close()
+            let whole = size.count == 5 && size[1] >= 12 && size[2] == 1 && size[0] >= size[1] && size[4] == 1
+            return .init(name: name, pass: whole, detail: "status width, icon width, icon inside, page width, cannot shrink: \(size)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
