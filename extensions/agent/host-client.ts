@@ -555,7 +555,10 @@ class HostConnectionImpl implements HostConnection {
 
 	onClose(callback: () => void): () => void {
 		if (this.closeNotified) {
-			queueMicrotask(callback);
+			queueMicrotask(() => {
+				try { callback(); }
+				catch { /* A listener failure never changes connection state. */ }
+			});
 			return () => {};
 		}
 		this.closeListeners.add(callback);
@@ -567,7 +570,10 @@ class HostConnectionImpl implements HostConnection {
 	private notifyClosed(): void {
 		if (this.closeNotified) return;
 		this.closeNotified = true;
-		for (const listener of [...this.closeListeners]) listener();
+		for (const listener of [...this.closeListeners]) {
+			try { listener(); }
+			catch { /* One listener failure never stops the others. */ }
+		}
 		this.closeListeners.clear();
 	}
 
@@ -922,7 +928,10 @@ class HostConnectionImpl implements HostConnection {
 			const callbacks = [...this.pendingChanges];
 			this.pendingChanges.clear();
 			for (const entry of callbacks) {
-				if (!this.closedValue && !entry.disposed && entry.frame && entry.binding && this.client.connected && !this.ownerReleasedValue) entry.listener(entry.frame);
+				if (!this.closedValue && !entry.disposed && entry.frame && entry.binding && this.client.connected && !this.ownerReleasedValue) {
+					try { entry.listener(entry.frame); }
+					catch { /* One listener failure never stops the others. */ }
+				}
 			}
 		});
 	}

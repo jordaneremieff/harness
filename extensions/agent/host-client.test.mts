@@ -351,6 +351,36 @@ it("reports initial and changed state and stops on cancel", { timeout: 30000 }, 
 	await connection.close();
 });
 
+it("keeps change listeners independent when one callback throws", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const connection = await openHost(t, root);
+	t.after(() => connection.close());
+	const changes = eventLog<void>();
+	let failures = 0;
+	await subscribeChanges(connection, () => { failures++; throw new Error("listener failed"); });
+	await subscribeChanges(connection, () => changes.push(undefined));
+	await changes.waitForCount(1);
+	await connection.request("report");
+	await changes.waitForCount(2);
+	assert.ok(failures >= 2, "the failed listener remains subscribed");
+	assert.equal(connection.closed, false);
+});
+
+it("notifies every close listener even when one callback throws", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const connection = await openHost(t, root);
+	t.after(() => connection.close());
+	let notified = 0;
+	connection.onClose(() => { throw new Error("listener failed"); });
+	connection.onClose(() => { notified++; });
+	await assert.doesNotReject(connection.close());
+	assert.equal(notified, 1);
+	await connection.close();
+	assert.equal(notified, 1, "close notification stays once-only");
+	connection.onClose(() => { throw new Error("late listener failed"); });
+	await new Promise<void>((resolve) => connection.onClose(resolve));
+});
+
 it("rebinds change subscriptions after an owned failed exit with retryable work", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
