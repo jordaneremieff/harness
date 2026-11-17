@@ -78,7 +78,8 @@
 		return parts;
 	}
 	function changeContext(source: string, span: ReaderRange, edit: ReaderRange & { oldText: string; newText: string }) {
-		if (edit.start < span.start || edit.end > span.end || source.slice(edit.start, edit.end) !== edit.newText) return null;
+		if (edit.start < span.start || edit.end > span.end || source.slice(edit.start, edit.end) !== edit.newText)
+			return null;
 		return {
 			oldText: source.slice(span.start, edit.start) + edit.oldText + source.slice(edit.end, span.end),
 			newText: source.slice(span.start, span.end),
@@ -121,7 +122,12 @@
 	// The page's own context menu: the actions that apply where the person clicked, in groups.
 	// Items that cannot run here are disabled when they belong to the standard set (Cut, Copy,
 	// Paste), and left out otherwise. An empty result means no menu.
-	const menuItem = (id: string, label: string, key = "", enabled = true): ReaderMenuEntry => ({ id, label, key, enabled });
+	const menuItem = (id: string, label: string, key = "", enabled = true): ReaderMenuEntry => ({
+		id,
+		label,
+		key,
+		enabled,
+	});
 	function inputGroups(t: ReaderMenuTarget) {
 		return [
 			[
@@ -145,7 +151,12 @@
 	function formatGroups(t: ReaderMenuTarget) {
 		if (t.lock !== "writing" || !(t.editor || t.selectionInOneBlock)) return [];
 		return [
-			[menuItem("bold", "Bold", "⌘B"), menuItem("italic", "Italic", "⌘I"), menuItem("code", "Code", "⇧⌘K"), menuItem("link", "Link", "⌘K")],
+			[
+				menuItem("bold", "Bold", "⌘B"),
+				menuItem("italic", "Italic", "⌘I"),
+				menuItem("code", "Code", "⇧⌘K"),
+				menuItem("link", "Link", "⌘K"),
+			],
 			[
 				t.heading ? menuItem("bodyText", "Body Text") : menuItem("heading", "Heading"),
 				menuItem("bulletList", "Bulleted List"),
@@ -161,12 +172,25 @@
 		return [menuItem("openLink", "Open Link"), menuItem("copyLink", "Copy Link Address")];
 	}
 	function targetGroup(t: ReaderMenuTarget) {
-		const image = t.image ? [menuItem("inspectImage", "Inspect Image"), ...(t.imageAlt ? [menuItem("copyImageText", "Copy Image Description")] : [])] : [];
-		const rendered = t.editor ? [] : [...(t.code ? [menuItem("copyCode", "Copy Code")] : []), ...(t.table ? [menuItem("copyTable", "Copy Table as Markdown")] : [])];
+		const image = t.image
+			? [
+					menuItem("inspectImage", "Inspect Image"),
+					...(t.imageAlt ? [menuItem("copyImageText", "Copy Image Description")] : []),
+				]
+			: [];
+		const rendered = t.editor
+			? []
+			: [
+					...(t.code ? [menuItem("copyCode", "Copy Code")] : []),
+					...(t.table ? [menuItem("copyTable", "Copy Table as Markdown")] : []),
+				];
 		return [...linkItems(t), ...image, ...rendered];
 	}
 	function documentGroup(t: ReaderMenuTarget) {
-		const edit = t.block && !t.editor ? [t.selection ? menuItem("editSelection", "Edit Selection") : menuItem("editHere", "Edit Here")] : [];
+		const edit =
+			t.block && !t.editor
+				? [t.selection ? menuItem("editSelection", "Edit Selection") : menuItem("editHere", "Edit Here")]
+				: [];
 		return [
 			...edit,
 			menuItem("find", t.selection ? "Find Selection" : "Find…", "⌘F"),
@@ -174,7 +198,9 @@
 		];
 	}
 	function documentGroups(t: ReaderMenuTarget) {
-		const ask = t.selection ? menuItem("ask", "Ask about this", "⇧⌘M") : menuItem("askDocument", "Ask about this document", "⌥⌘M");
+		const ask = t.selection
+			? menuItem("ask", "Ask about this", "⇧⌘M")
+			: menuItem("askDocument", "Ask about this document", "⌥⌘M");
 		return [[ask], clipboardGroup(t), ...formatGroups(t), targetGroup(t), documentGroup(t)];
 	}
 	function contextMenuItems(t: ReaderMenuTarget): ReaderMenuEntry[] {
@@ -187,7 +213,11 @@
 		return entries;
 	}
 	// Opens the menu at the pointer, flipped left or up where it would leave the pane.
-	function menuPlacement(point: { x: number; y: number }, size: { width: number; height: number }, pane: { width: number; height: number }) {
+	function menuPlacement(
+		point: { x: number; y: number },
+		size: { width: number; height: number },
+		pane: { width: number; height: number },
+	) {
 		const margin = 6;
 		let left = point.x + 2,
 			top = point.y + 2;
@@ -199,7 +229,32 @@
 			maxHeight: pane.height - 2 * margin,
 		};
 	}
+	// The selection strip sits above the selected lines, or below them when the bar leaves no
+	// room above; it never covers them. Only a selection taller than the visible page leaves no
+	// free side, and then the strip takes the side with more room, inside the page.
+	function stripPlacement(
+		selection: { top: number; bottom: number; left: number; right: number },
+		strip: { width: number; height: number },
+		pane: { width: number; height: number; top: number },
+	) {
+		const gap = 8,
+			margin = 8;
+		const above = selection.top - gap - strip.height,
+			below = selection.bottom + gap;
+		const aboveFits = above >= pane.top + margin,
+			belowFits = below + strip.height <= pane.height - margin;
+		const side =
+			aboveFits || (!belowFits && selection.top - pane.top >= pane.height - selection.bottom) ? ("above" as const) : ("below" as const);
+		const top = side === "above" ? above : below;
+		const centre = (selection.left + selection.right) / 2 - strip.width / 2;
+		return {
+			left: Math.max(margin, Math.min(centre, pane.width - strip.width - margin)),
+			top: Math.max(pane.top + margin, Math.min(top, pane.height - strip.height - margin)),
+			side,
+		};
+	}
 	api.uiLogic = {
+		stripPlacement,
 		contextMenuItems,
 		menuPlacement,
 		cardPlacement,

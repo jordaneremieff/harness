@@ -329,3 +329,28 @@ test("the context menu opens at the pointer and stays inside the pane", () => {
 	const tall = logic.menuPlacement({ x: 10, y: 10 }, { width: 240, height: 1000 }, pane);
 	assert.ok(tall.top >= 6 && tall.maxHeight === 868);
 });
+
+test("the selection strip never covers the selected lines", () => {
+	const strip = { width: 220, height: 30 },
+		pane = { width: 775, height: 880, top: 46 };
+	const low = logic.stripPlacement({ top: 300, bottom: 320, left: 300, right: 360 }, strip, pane);
+	assert.equal(low.side, "above");
+	assert.equal(low.top, 300 - 8 - 30);
+	assert.equal(low.left, 330 - 110);
+	// Right under the bar: no room above, so the strip goes below the line.
+	const top = logic.stripPlacement({ top: 64, bottom: 93, left: 300, right: 360 }, strip, pane);
+	assert.equal(top.side, "below");
+	assert.equal(top.top, 93 + 8);
+	assert.ok(top.top >= 93 && top.top + strip.height <= pane.height);
+	// Near the bottom edge, above still wins.
+	assert.equal(logic.stripPlacement({ top: 840, bottom: 860, left: 10, right: 40 }, strip, pane).side, "above");
+	// The strip stays inside the pane sideways.
+	assert.equal(logic.stripPlacement({ top: 300, bottom: 320, left: 0, right: 10 }, strip, pane).left, 8);
+	assert.equal(logic.stripPlacement({ top: 300, bottom: 320, left: 760, right: 770 }, strip, pane).left, 775 - 220 - 8);
+	// A selection taller than the page takes the side with more room, inside the page.
+	const tall = logic.stripPlacement({ top: 60, bottom: 2000, left: 100, right: 600 }, strip, pane);
+	assert.equal(tall.side, "above");
+	assert.ok(tall.top >= pane.top + 8 && tall.top + strip.height <= pane.height - 8);
+	const tallLow = logic.stripPlacement({ top: 300, bottom: 2000, left: 100, right: 600 }, strip, pane);
+	assert.deepEqual([tallLow.side, tallLow.top], ["above", 300 - 8 - 30]);
+});

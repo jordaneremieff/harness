@@ -242,10 +242,18 @@
 			showKind();
 			hideSelection();
 		}
-		function historyLabel(description: { origin: "person" | "agent" | "history"; blockStart: number } | null, verb: string) {
+		function historyLabel(
+			description: { origin: "person" | "agent" | "history"; blockStart: number } | null,
+			verb: string,
+		) {
 			if (!description) return verb;
 			const section = headings().findLast((h) => h.start <= description.blockStart)?.text ?? "this passage";
-			const change = description.origin === "agent" ? "the agent's change" : description.origin === "person" ? "your edit" : "the change";
+			const change =
+				description.origin === "agent"
+					? "the agent's change"
+					: description.origin === "person"
+						? "your edit"
+						: "the change";
 			return `${verb} ${change} in ${section}`;
 		}
 		function historyState() {
@@ -329,7 +337,7 @@
 			const range = s.getRangeAt(0),
 				rect = range.getBoundingClientRect(),
 				box = app.getBoundingClientRect();
-			if (rect.bottom < box.top + 46 || rect.top > box.bottom) {
+			if (rect.bottom < bar.getBoundingClientRect().bottom || rect.top > box.bottom) {
 				hideSelection();
 				return;
 			}
@@ -338,8 +346,19 @@
 			strip.dataset.ctx = controller.blocks.some((b) => b.start <= selected.start && b.end >= selected.end)
 				? "rendered"
 				: "multi";
-			strip.style.left = `${Math.max(8, Math.min(rect.left - box.left + rect.width / 2 - strip.offsetWidth / 2, box.width - strip.offsetWidth - 8))}px`;
-			strip.style.top = `${Math.max(50, rect.top - box.top - strip.offsetHeight - 10)}px`;
+			const place = api.uiLogic.stripPlacement(
+				{
+					top: rect.top - box.top,
+					bottom: rect.bottom - box.top,
+					left: rect.left - box.left,
+					right: rect.right - box.left,
+				},
+				{ width: strip.offsetWidth, height: strip.offsetHeight },
+				{ width: box.width, height: box.height, top: bar.getBoundingClientRect().bottom - box.top },
+			);
+			strip.style.left = `${place.left}px`;
+			strip.style.top = `${place.top}px`;
+			strip.dataset.side = place.side;
 		}
 		function command(name: string, args: Record<string, unknown> = {}) {
 			const local: Record<string, () => void> = {
@@ -363,7 +382,9 @@
 					if (result?.status === "blocked")
 						notice("A later edit overlaps this change. The document stays as it is.", "warn");
 				},
-				redo: () => { controller.redo(); },
+				redo: () => {
+					controller.redo();
+				},
 				format: () => {
 					if (controller.lock === "writing") editor.format(args as { command: string; level?: number });
 				},
@@ -459,7 +480,8 @@
 			await actions[id]?.();
 		}
 		function formatAction(id: string) {
-			const command = id === "heading" ? { command: "heading", level: 2 } : id === "bodyText" ? { command: "heading", level: 0 } : id;
+			const command =
+				id === "heading" ? { command: "heading", level: 2 } : id === "bodyText" ? { command: "heading", level: 0 } : id;
 			if (!editor.hasCaret() && !editSelection()) return;
 			editor.format(command);
 		}
@@ -481,7 +503,8 @@
 		}
 		function copyBlockSource(block: HTMLElement | null) {
 			const data = controller.blocks.find((b) => b.key === block?.dataset.block);
-			if (data && controller.doc) copyText(controller.doc.source.slice(data.start, data.end), "Copied table as Markdown");
+			if (data && controller.doc)
+				copyText(controller.doc.source.slice(data.start, data.end), "Copied table as Markdown");
 		}
 		async function runMenu(id: string, c: ReaderMenuContext) {
 			if (c.input) {

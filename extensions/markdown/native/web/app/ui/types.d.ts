@@ -79,6 +79,11 @@ declare global {
 			size: { width: number; height: number },
 			pane: { width: number; height: number },
 		): { left: number; top: number; maxHeight: number };
+		stripPlacement(
+			selection: { top: number; bottom: number; left: number; right: number },
+			strip: { width: number; height: number },
+			pane: { width: number; height: number; top: number },
+		): { left: number; top: number; side: "above" | "below" };
 		cardPlacement(
 			anchor: { top: number; bottom: number; left: number },
 			card: { width: number; height: number },
