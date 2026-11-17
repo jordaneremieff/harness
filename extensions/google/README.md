@@ -336,7 +336,10 @@ profile and operation calls use that same selected context even if settings or
 the parent environment change during the operation. It refuses a plaintext
 `credentials.json` in the configuration directory. One file lock per
 configuration directory serialises tool operations across Pi sessions; `gws`
-commands run outside the extension do not take it.
+commands run outside the extension do not take it. Upload and download staging
+files live below that private working directory: `gws` requires `--upload` and
+`--output` paths to resolve within its current directory. The extension removes
+those staging files after the operation, including a failed send-ledger write.
 
 ## Durable agents
 

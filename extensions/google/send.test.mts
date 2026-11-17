@@ -28,7 +28,7 @@ test("a staging failure leaves no send record and permits a retry after the loca
 	const fake = await createFake({ responses: { [SEND]: { stdout: { id: "g1" } } } });
 	try {
 		await fake.runtime.run({ local: true }, undefined, async () => ({ schemaVersion: 1, status: "ok" }));
-		const mimeDir = join(fake.configDir, "pi-extension", "mime");
+		const mimeDir = join(fake.configDir, "pi-extension", "work", "mime");
 		await writeFile(mimeDir, "not a directory");
 		assert.equal((await fake.tool("gmail_send", { operationId: "op-stage", mail: MAIL })).status, "error");
 		assert.equal(methodCalls(await fake.calls(), SEND).length, 0);
@@ -37,6 +37,38 @@ test("a staging failure leaves no send record and permits a retry after the loca
 		const retry = await fake.tool("gmail_send", { operationId: "op-stage", mail: MAIL });
 		assert.equal(retry.status, "ok", JSON.stringify(retry));
 		assert.equal(methodCalls(await fake.calls(), SEND).length, 1);
+	} finally {
+		await fake.cleanup();
+	}
+});
+
+test("draft creation, replacement and send use backend-local MIME files", async () => {
+	const fake = await createFake({
+		responses: {
+			"gmail users drafts create": { stdout: { id: "draft", message: { id: "rev-1" } } },
+			"gmail users drafts update": { stdout: { id: "draft", message: { id: "rev-2" } } },
+			"gmail users drafts get": [
+				{ stdout: { id: "draft", message: { id: "rev-1" } } },
+				{ stdout: { id: "draft", message: { id: "rev-2", raw: base64url("To: friend@example.org\r\nSubject: Plan\r\n\r\nHello") } } },
+			],
+			"gmail users drafts send": { stdout: { id: "sent-draft" } },
+		},
+	});
+	try {
+		const created = await fake.tool("gmail_draft_create", { mail: MAIL });
+		assert.equal(created.status, "ok", JSON.stringify(created));
+		const updated = await fake.tool("gmail_draft_update", { draftId: "draft", expectedMessageId: "rev-1", mail: MAIL });
+		assert.equal(updated.status, "ok", JSON.stringify(updated));
+		const args = { operationId: "op-draft", draftId: "draft", expectedMessageId: "rev-2" };
+		const sent = await fake.tool("gmail_draft_send", args);
+		assert.equal(sent.status, "ok", JSON.stringify(sent));
+		assert.equal((await fake.tool("gmail_draft_send", args)).status, "ok");
+		const calls = await fake.calls();
+		for (const method of ["create", "update", "send"]) {
+			const uploads = methodCalls(calls, `gmail users drafts ${method}`);
+			assert.equal(uploads.length, 1);
+			assert.match(uploads[0].upload ?? "", /Subject: Plan/);
+		}
 	} finally {
 		await fake.cleanup();
 	}

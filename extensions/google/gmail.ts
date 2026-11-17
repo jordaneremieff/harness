@@ -258,7 +258,7 @@ async function prepareMail(operation: Operation, mail: Compose, forcedMessageId?
 	return buildMime(mail, operation.auth.account, attachments, reply, forcedMessageId);
 }
 async function staged(operation: Operation, bytes: Buffer): Promise<string> {
-	return stageBytes(join(operation.stateDir, "mime"), bytes, ".eml");
+	return stageBytes(join(operation.stateDir, "work", "mime"), bytes, ".eml");
 }
 
 async function reconcile(operation: Operation, record: SendRecord): Promise<Result<unknown>> {

@@ -53,6 +53,19 @@ for (const key of ["GOOGLE_WORKSPACE_CLI_CONFIG_DIR", "GOOGLE_WORKSPACE_CLI_KEYR
 	if (process.env[key] !== undefined) env[key] = process.env[key];
 }
 const call = { args, cwd: process.cwd(), env };
+for (const flag of ["--upload", "--output"]) {
+	const at = args.indexOf(flag);
+	if (at < 0) continue;
+	const file = args[at + 1];
+	const resolved = fs.existsSync(file)
+		? fs.realpathSync(file)
+		: path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
+	const relative = path.relative(fs.realpathSync(process.cwd()), resolved);
+	if (relative === ".." || relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) {
+		process.stdout.write(JSON.stringify({ error: { code: 400, message: flag + " path is outside the current directory" } }));
+		process.exit(3);
+	}
+}
 const uploadAt = args.indexOf("--upload");
 if (uploadAt >= 0) {
 	call.upload = fs.readFileSync(args[uploadAt + 1], "utf8");

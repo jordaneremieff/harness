@@ -130,8 +130,8 @@ export const driveTools: ToolSpec[] = [
 			execute: async (value, runtime, signal) =>
 				runtime.run({ scopes: read }, signal, async (operation) => {
 					const args = value as { fileId: string; path: string; mimeType?: string };
-					await ensurePrivateDir(join(operation.stateDir, "downloads"));
-					const staged = join(operation.stateDir, "downloads", `${crypto.randomUUID()}.download`);
+					await ensurePrivateDir(join(operation.stateDir, "work", "downloads"));
+					const staged = join(operation.stateDir, "work", "downloads", `${crypto.randomUUID()}.download`);
 					try {
 						await operation.call("drive", ["files", item.method], {
 							params: { fileId: args.fileId, ...(item.export ? { mimeType: args.mimeType } : { alt: "media" }) },
@@ -173,7 +173,7 @@ export const driveTools: ToolSpec[] = [
 				const snapshot = await readSnapshot(args.path, ATTACHMENT_MAX_BYTES);
 				const name = args.name ?? snapshot.name;
 				requiredName(name);
-				const staged = await stageBytes(join(operation.stateDir, "uploads"), snapshot.bytes);
+				const staged = await stageBytes(join(operation.stateDir, "work", "uploads"), snapshot.bytes);
 				try {
 					const response = await operation.call<Record<string, unknown>>("drive", ["files", "create"], {
 						params: { fields: fileFields },

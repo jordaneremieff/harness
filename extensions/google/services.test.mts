@@ -46,6 +46,30 @@ test("drive_file_download publishes the downloaded bytes and refuses an existing
 	}
 });
 
+test("Drive upload and export keep backend files inside its controlled working directory", async () => {
+	const fake = await createFake({
+		responses: {
+			"drive files create": { stdout: { id: "uploaded", name: "source.txt" } },
+			"drive files export": { output: "exported text", stdout: "" },
+		},
+	});
+	try {
+		const source = join(fake.root, "source.txt");
+		await writeFile(source, "upload bytes");
+		const uploaded = await fake.tool("drive_file_upload", { path: source });
+		assert.equal(uploaded.status, "ok", JSON.stringify(uploaded));
+		const target = join(fake.root, "exported.txt");
+		const exported = await fake.tool("drive_file_export", { fileId: "doc", path: target, mimeType: "text/plain" });
+		assert.equal(exported.status, "ok", JSON.stringify(exported));
+		assert.equal(await readFile(target, "utf8"), "exported text");
+		const calls = await fake.calls();
+		assert.equal(methodCalls(calls, "drive files create")[0]?.upload, "upload bytes");
+		assert.equal(methodCalls(calls, "drive files export").length, 1);
+	} finally {
+		await fake.cleanup();
+	}
+});
+
 test("sheets_values_get returns bounded rows as external data", async () => {
 	const rows = Array.from({ length: 5 }, (_, index) => [`r${index}`, '=IMPORTDATA("x")']);
 	const fake = await createFake({
