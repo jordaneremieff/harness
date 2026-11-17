@@ -158,7 +158,7 @@ function noFollow(): number {
 }
 
 /** Classify one bounded read of the book. */
-function parseReadState(raw: string): PlaceReadState {
+function parseReadState(raw: string, tolerateInvalidBindings: boolean): PlaceReadState {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
@@ -169,10 +169,12 @@ function parseReadState(raw: string): PlaceReadState {
 		return { kind: "corrupt", reason: "the file is not a place book object" };
 	const places = (parsed as Partial<PlaceFile>).places;
 	if (!Array.isArray(places)) return { kind: "corrupt", reason: "the file has no places array" };
+	if (!tolerateInvalidBindings && !places.every(isBinding))
+		return { kind: "corrupt", reason: "the places array contains a malformed binding" };
 	return { kind: "ok", bindings: places.filter(isBinding) };
 }
 
-function readPlaceFile(fd: number): PlaceReadState {
+function readPlaceFile(fd: number, tolerateInvalidBindings: boolean): PlaceReadState {
 	const stat = fstatSync(fd);
 	if (!stat.isFile()) return { kind: "corrupt", reason: "the path is not a regular file" };
 	if (stat.size > PLACE_FILE_MAX_BYTES)
@@ -186,7 +188,7 @@ function readPlaceFile(fd: number): PlaceReadState {
 	}
 	if (offset > stat.size || fstatSync(fd).size !== stat.size)
 		return { kind: "corrupt", reason: "the file changed size during the read" };
-	return parseReadState(buffer.subarray(0, offset).toString("utf8"));
+	return parseReadState(buffer.subarray(0, offset).toString("utf8"), tolerateInvalidBindings);
 }
 
 /**
@@ -207,6 +209,10 @@ export class PlaceBook {
 
 	/** Bounded read state; corruption is explicit instead of an empty book. */
 	readState(): PlaceReadState {
+		return this.load(false);
+	}
+
+	private load(tolerateInvalidBindings: boolean): PlaceReadState {
 		let fd: number;
 		try {
 			fd = openSync(this.file, constants.O_RDONLY | constants.O_NONBLOCK | noFollow());
@@ -219,7 +225,7 @@ export class PlaceBook {
 			};
 		}
 		try {
-			return readPlaceFile(fd);
+			return readPlaceFile(fd, tolerateInvalidBindings);
 		} catch (error) {
 			return {
 				kind: "corrupt",
@@ -232,7 +238,7 @@ export class PlaceBook {
 
 	/** Tolerant bindings for lookup callers; see `readState` for explicit corruption. */
 	read(): PlaceBinding[] {
-		const state = this.readState();
+		const state = this.load(true);
 		return state.kind === "ok" ? state.bindings : [];
 	}
 
