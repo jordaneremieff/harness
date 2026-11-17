@@ -1271,6 +1271,10 @@ function selectedSource(root: string, args: NoteRequest, signal?: AbortSignal) {
 	return { identity, directory, file, source, digest, text };
 }
 
+function readNextOffset(slice: PageSlice): number | null {
+	return slice.hasMore ? slice.nextOffset : null;
+}
+
 function runNote(root: string, args: NoteRequest, signal?: AbortSignal): Record<string, unknown> {
 	const { identity, directory, file, source, digest, text } = selectedSource(root, args, signal);
 	const totalCodePoints = codePointCount(text);
@@ -1299,7 +1303,7 @@ function runNote(root: string, args: NoteRequest, signal?: AbortSignal): Record<
 		maxSourceBytes: SOURCE_READ_BYTES,
 		digest,
 		offset: args.offset,
-		nextOffset: slice.nextOffset,
+		nextOffset: readNextOffset(slice),
 		totalCodePoints,
 		contentCodePoints: slice.contentCodePoints,
 		hasMore: slice.hasMore,
@@ -1314,7 +1318,7 @@ function runNote(root: string, args: NoteRequest, signal?: AbortSignal): Record<
 		const trimmed = sliceByCodePoints(text, args.offset, contentCodePoints);
 		result.content = trimmed.content;
 		result.contentCodePoints = trimmed.contentCodePoints;
-		result.nextOffset = trimmed.nextOffset;
+		result.nextOffset = readNextOffset(trimmed);
 		result.hasMore = trimmed.hasMore;
 	}
 	if (contentCodePoints === 0 && args.offset < totalCodePoints) {

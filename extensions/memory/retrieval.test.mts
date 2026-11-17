@@ -639,11 +639,31 @@ test("reads original note and README source, preserving BOM and code-point pages
 	const end = await read(root, { slug: "unicode", offset: Array.from(source).length, digest: string(pages[0].digest) });
 	assert.equal(end.content, "");
 	assert.equal(end.hasMore, false);
+	assert.equal(end.nextOffset, null);
+	assert.equal(pages.at(-1)?.nextOffset, null);
 	await rejects(
 		readMemory(root, { slug: "unicode", offset: Array.from(source).length + 1, digest: string(pages[0].digest) }),
 		"input",
 		/beyond/,
 	);
+});
+
+test("a nonzero-offset read loop terminates on a null nextOffset", async () => {
+	const source = `${ACTIVE}${"x".repeat(25000)}`;
+	const root = corpus({ "README.md": README, "long-note.md": source });
+	const first = await read(root, { slug: "long-note" });
+	let offset: number | null = 12000;
+	let content = "";
+	let calls = 0;
+	while (offset !== null && calls < 4) {
+		const page = await read(root, { slug: "long-note", offset, digest: string(first.digest) });
+		content += string(page.content);
+		offset = page.nextOffset as number | null;
+		calls++;
+	}
+	assert.equal(offset, null);
+	assert.equal(calls, 2);
+	assert.equal(content, source.slice(12000));
 });
 
 test("binds search evidence and every continuation to the source digest", async () => {
@@ -656,7 +676,7 @@ test("binds search evidence and every continuation to the source digest", async 
 	assert.equal(page.content, source);
 	writeFileSync(join(root, "good.md"), `${ACTIVE}\nreplacement phrase\n`);
 	await rejects(readMemory(root, { slug: "good", digest }), "changed", /Restart memory_read with \{"slug":"good","offset":0\} without digest/);
-	await rejects(readMemory(root, { slug: "good", offset: number(page.nextOffset), digest }), "changed", /changed/);
+	await rejects(readMemory(root, { slug: "good", offset: number(page.totalCodePoints), digest }), "changed", /changed/);
 	assert.equal((await search(root, { query: '"body phrase"' })).totalMatches, 0);
 	assert.equal((await search(root, { query: "replacement phrase" })).totalMatches, 1);
 	rmSync(join(root, "good.md"));

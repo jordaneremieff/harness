@@ -195,6 +195,8 @@ test("registered jobs round-trip source evidence and serialize concurrent update
 		digest: first.details.digest as string,
 	});
 	assert.ok(JSON.stringify(read.details).includes("Use editor A."));
+	assert.equal(read.details.hasMore, false);
+	assert.equal(read.details.nextOffset, null);
 	const updates = await Promise.allSettled([
 		call(writer, { ...input, summary: "Use editor B.", expectedDigest: first.details.digest as string }),
 		call(writer, { ...input, summary: "Use editor C.", expectedDigest: first.details.digest as string }),

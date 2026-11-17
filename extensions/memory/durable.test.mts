@@ -299,6 +299,8 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 
 		const readPage = JSON.parse(messageText(read)) as Record<string, unknown>;
 		assert.equal(readPage.kind, "note");
+		assert.equal(readPage.hasMore, false);
+		assert.equal(readPage.nextOffset, null);
 		assert.deepEqual(nativeDetails(read), readPage);
 		assert.equal(Object.hasOwn(nativeDetails(read), "structuredContent"), false);
 
