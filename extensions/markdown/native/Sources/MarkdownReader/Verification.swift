@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -72,6 +72,7 @@ struct Verification {
                 await run("bridge-typing-exact-line-endings") { await context.typing(keep: &keep) }
                 await run("published-writing-undo-matches-source") { await context.publishedWritingUndo(keep: &keep) }
                 await run("escape-layers-notices-and-focus") { await context.escapeLayers(keep: &keep) }
+                await run("agent-hold-change-panel-find-and-code") { await context.agentPanels(keep: &keep) }
                 await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
                 await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
                 await run("image-inspection-deadline") { await context.imageInspectionDeadline(keep: &keep) }
@@ -418,7 +419,7 @@ struct Context {
         let name = "published-writing-undo-matches-source"
         do {
             let id = VerifyStore.newId()
-            let original = "# Published\n\nThe status waits for evidence from real use.\n\nA closing paragraph.\n"
+            let original = "# Published review of the Markdown extension with a long working title\n\nThe status waits for evidence from real use.\n\nA closing paragraph.\n"
             try store.write(id, revision: 1, source: original)
             let state = ReadingStateStore(directory: nil)
             let model = ReaderModel(reference: store.reference(id), platform: CheckRunner.platform(), state: state)
@@ -428,6 +429,8 @@ struct Context {
             keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
             await model.open(origin: nil)
             try await CheckRunner.preparePageForCheck(model)
+            let lockPlace = "const r = document.getElementById('b-edit').getBoundingClientRect(); return [r.left, r.top, r.width];"
+            let readingPlace = await js(model, lockPlace) as? [Double] ?? []
             await model.sendCommand("toggleLock", args: ["lock": "writing"])
             let typed = await js(model, """
             const block = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.includes('evidence'));
@@ -452,6 +455,8 @@ struct Context {
             """) as? Bool == true
             let edited = original.replacingOccurrences(of: "from real use.", with: "from real use.ZZQ")
             let mirrored = await wait(seconds: 5) { Data(model.source.utf8) == Data(edited.utf8) }
+            let writingPlace = await js(model, lockPlace) as? [Double] ?? []
+            let lockFixed = readingPlace.count == 3 && readingPlace == writingPlace
             let undoReady = await wait(seconds: 3) {
                 await js(model, "const b = document.getElementById('b-undo'); return !!b && !b.disabled;") as? Bool == true
             }
@@ -465,10 +470,10 @@ struct Context {
             }
             let notices = await js(model, "return [...document.querySelectorAll('[data-role=\"notice\"], .notice')].map(n => n.textContent.trim()).filter(Boolean).join(' | ');") as? String ?? "unavailable"
             let failureNotice = notices.contains("did not complete") || notices.contains("ReaderBridgeError")
-            let pass = typed && mirrored && undone && restored && shown && !failureNotice
+            let pass = typed && mirrored && lockFixed && undone && restored && shown && !failureNotice
             await surface.waitForPendingChanges()
             await model.close()
-            return .init(name: name, pass: pass, detail: "typed \(typed); mirror after edits \(mirrored); bar Undo \(undone) (\(undoState)); mirror restored \(restored); rendered block matches restored source \(shown); notices '\(notices)'")
+            return .init(name: name, pass: pass, detail: "typed \(typed); mirror after edits \(mirrored); edit control fixed \(lockFixed) (\(readingPlace) -> \(writingPlace)); bar Undo \(undone) (\(undoState)); mirror restored \(restored); rendered block matches restored source \(shown); notices '\(notices)'")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
@@ -519,6 +524,88 @@ struct Context {
             await model.close()
             return .init(name: name, pass: layered && order && returnedOnce && collapsed,
                          detail: "menu and block open \(layered); first Escape closed the menu only, second the block \(order); keyboard returned once after the third \(returnedOnce) (\(returned)); repeats \(repeated); notices \(notices)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    /// A draft in a pane surface with the native live route: an agent edit refused by the
+    /// person's hold shows the hold notice; an applied agent edit's change panel survives a press
+    /// and release on its Undo, which restores the source; typing a find query reveals a match below
+    /// the view; a code block has one copy control.
+    func agentPanels(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "agent-hold-change-panel-find-and-code"
+        do {
+            let filler = (1...60).map { "Filler paragraph \($0) keeps the target below the view." }.joined(separator: "\n\n")
+            let source = "# Panels\n\nHuman passage stays.\n\nAgent passage changes.\n\n```swift\nlet value = 1\n```\n\n" + filler + "\n\nDistant needle here.\n"
+            let state = ReadingStateStore(directory: nil)
+            let file = workspace.appendingPathComponent("panels.md")
+            try Data(source.utf8).write(to: file)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: state)
+            let editor = EditorWorkspace(directory: workspace.appendingPathComponent("panels-drafts"), store: nil)
+            editor.add(DraftRecord(source: source))
+            let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
+            defer { withExtendedLifetime(surface) {} }
+            keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            _ = await wait(seconds: 5) { editor.webReady && model.source == source }
+            guard let document = editor.active else { return .init(name: name, pass: false, detail: "the draft did not open") }
+            let code = await js(model, "const f = document.querySelector('figure.code'); return f ? [f.querySelectorAll('[data-role=\"code-copy\"]').length, f.querySelectorAll('a.copy').length, f.querySelector('figcaption').textContent.trim()] : [];") as? [Any] ?? []
+            let oneCopy = code.count == 3 && code[0] as? Int == 1 && code[1] as? Int == 0 && code[2] as? String == "swift"
+            func apply(_ old: String, _ new: String) async -> LiveResult {
+                let text = document.text.source as NSString, range = text.range(of: old)
+                return await editor.handleLive(LiveCommand(requestId: UUID().uuidString, workspace: editor.id.uuidString,
+                    document: editor.liveDocumentID.uuidString, op: "apply", operationId: UUID().uuidString,
+                    baseGeneration: document.text.generation, baseDigest: Digest.sha256(Data(document.text.source.utf8)),
+                    edits: [LiveTextEdit(start: range.location, end: NSMaxRange(range), expected: old, replacement: new)]))
+            }
+            editor.pageHeld = (document.text.source as NSString).range(of: "Human passage stays.")
+            let held = await apply("Human passage stays.", "Agent rewrote it.")
+            let holdNotice = await wait(seconds: 3) {
+                (await js(model, "return [...document.querySelectorAll('[data-role=\"notice\"]')].some(n => n.textContent.includes('The agent wants to change this passage') && n.textContent.includes('Let it'));") as? Bool) == true
+            }
+            editor.pageHeld = nil
+            let applied = await apply("Agent passage changes.", "Agent passage changed by the agent.")
+            let afterAgent = document.text.source
+            let panel = await js(model, """
+            const notice = [...document.querySelectorAll('[data-role="notice"]')].find(n => n.textContent.includes('The agent changed'));
+            const show = notice && [...notice.querySelectorAll('button')].find(b => b.textContent.trim() === 'Show changes');
+            if (!show) return 'no show';
+            show.click();
+            await new Promise(r => setTimeout(r, 50));
+            const diff = document.querySelector('.inline-diff');
+            const undo = diff && [...diff.querySelectorAll('button')].find(b => b.textContent.trim() === 'Undo');
+            if (!undo) return 'no undo';
+            const r = undo.getBoundingClientRect();
+            const point = { bubbles: true, cancelable: true, button: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+            undo.dispatchEvent(new PointerEvent('pointerdown', { ...point, buttons: 1, pointerType: 'mouse', isPrimary: true }));
+            undo.dispatchEvent(new MouseEvent('mousedown', { ...point, buttons: 1 }));
+            getSelection().collapse(diff.querySelector('.diff-head span').firstChild, 1);
+            await new Promise(r => setTimeout(r, 150));
+            const same = document.querySelector('.inline-diff') === diff && undo.isConnected;
+            undo.dispatchEvent(new PointerEvent('pointerup', { ...point, pointerType: 'mouse', isPrimary: true }));
+            undo.dispatchEvent(new MouseEvent('mouseup', point));
+            undo.click();
+            return same ? 'kept' : 'replaced';
+            """) as? String ?? "unavailable"
+            let undone = await wait(seconds: 5) { document.text.source == source }
+            _ = await js(model, "document.getElementById('page').scrollTop = 0; return true;")
+            await model.sendCommand("find")
+            let find = await js(model, """
+            await new Promise(r => setTimeout(r, 50));
+            const field = document.querySelector('[data-role="find-field"] input, input[data-role="find-field"]');
+            if (!field) return 'no field';
+            field.value = 'Distant needle';
+            field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: 'Distant needle' }));
+            await new Promise(r => setTimeout(r, 100));
+            const view = document.getElementById('page').getBoundingClientRect();
+            const hit = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.includes('Distant needle'));
+            const rect = hit.getBoundingClientRect();
+            return rect.top >= view.top && rect.bottom <= view.bottom ? 'revealed' : 'hidden at ' + Math.round(rect.top);
+            """) as? String ?? "unavailable"
+            let pass = oneCopy && held.reason == "held" && holdNotice && applied.status == "applied" && afterAgent != source && panel == "kept" && undone && find == "revealed"
+            await editor.closeViews()
+            await model.close()
+            return .init(name: name, pass: pass, detail: "code \(code); hold \(held.status)/\(held.reason ?? "") notice \(holdNotice); agent edit \(applied.status); change panel \(panel); panel Undo restored \(undone); find \(find)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
