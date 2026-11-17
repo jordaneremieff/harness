@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -73,6 +73,7 @@ struct Verification {
                 await run("published-writing-undo-matches-source") { await context.publishedWritingUndo(keep: &keep) }
                 await run("escape-layers-notices-and-focus") { await context.escapeLayers(keep: &keep) }
                 await run("agent-hold-change-panel-find-and-code") { await context.agentPanels(keep: &keep) }
+                await run("ask-card-keeps-newest-exchange-in-view") { await context.askCardLatest(keep: &keep) }
                 await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
                 await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
                 await run("image-inspection-deadline") { await context.imageInspectionDeadline(keep: &keep) }
@@ -618,6 +619,80 @@ struct Context {
             await editor.closeViews()
             await model.close()
             return .init(name: name, pass: pass, detail: "code \(code); closed menus inert \(closedLayersInert); hold \(held.status)/\(held.reason ?? "") notice \(holdNotice); ask card open \(cardOpen); agent edit \(applied.status); change panel \(panel); panel Undo restored \(undone); find \(find)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    /// Sends a question and a follow-up through the page's prompt route and answers both through
+    /// the native prompt-state messages; the newest answer must be fully visible above the
+    /// card's actions and composer.
+    func askCardLatest(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "ask-card-keeps-newest-exchange-in-view"
+        do {
+            let file = workspace.appendingPathComponent("ask.md")
+            try Data("# Ask\n\nA paragraph about the work.\n".utf8).write(to: file)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: ReadingStateStore(directory: nil))
+            var prompts: [(request: String, thread: String)] = []
+            model.page.onMessage = { message in
+                if message["type"] as? String == "prompt", let request = message["requestId"] as? String, let thread = message["threadId"] as? String {
+                    prompts.append((request, thread))
+                    return ["accepted": true]
+                }
+                return [:]
+            }
+            keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            func send(_ text: String) async -> Bool {
+                await js(model, """
+                const field = document.querySelector('[data-role="ask-card"] textarea');
+                if (!field) return false;
+                field.value = text;
+                field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+                const send = document.querySelector('[data-role="ask-card"] .send');
+                if (!send || send.disabled) return false;
+                send.click();
+                return true;
+                """, ["text": text]) as? Bool == true
+            }
+            func answer(_ index: Int, _ text: String) async throws {
+                let prompt = prompts[index]
+                for state in ["sent", "working"] {
+                    _ = try await model.sendEnvelope(["v": 1, "type": "promptState", "requestId": prompt.request, "threadId": prompt.thread, "state": state])
+                }
+                _ = try await model.sendEnvelope(["v": 1, "type": "promptState", "requestId": prompt.request, "threadId": prompt.thread, "state": "answered", "detail": text])
+            }
+            let opened = await js(model, """
+            document.getElementById('b-ask').click();
+            await new Promise(r => setTimeout(r, 30));
+            const item = [...document.querySelectorAll('#activity button')].find(b => b.textContent.includes('Ask about this document'));
+            if (!item) return false;
+            item.click();
+            await new Promise(r => setTimeout(r, 30));
+            return document.querySelector('[data-role="ask-card"]').hasAttribute('data-open');
+            """) as? Bool == true
+            let long = (1...8).map { "Sentence \($0) of a long first answer that fills several lines in the card." }.joined(separator: " ")
+            let first = await send("Summarise the document.")
+            _ = await wait(seconds: 3) { prompts.count == 1 }
+            if prompts.count == 1 { try await answer(0, long) }
+            let second = await send("Shorter, please.")
+            _ = await wait(seconds: 3) { prompts.count == 2 }
+            if prompts.count == 2 { try await answer(1, "Follow-up answer: two lines at most.") }
+            let geometry = await js(model, """
+            await new Promise(r => setTimeout(r, 50));
+            const card = document.querySelector('[data-role="ask-card"]');
+            const replies = [...card.querySelectorAll('.reply')];
+            const latest = replies.at(-1);
+            if (!latest || !latest.textContent.includes('Follow-up answer')) return 'latest answer missing: ' + replies.map(r => r.textContent.slice(0, 20)).join(' | ');
+            const r = latest.getBoundingClientRect();
+            const limit = Math.min(...[...card.querySelectorAll('.composer, .ask-actions')].map(e => e.getBoundingClientRect().top));
+            const scroller = latest.closest('.ask-messages') ?? card;
+            const view = scroller.getBoundingClientRect();
+            const top = Math.max(view.top, card.getBoundingClientRect().top);
+            return r.top >= top - 0.5 && r.bottom <= Math.min(limit, view.bottom) + 0.5 ? 'visible' : `answer ${Math.round(r.top)}-${Math.round(r.bottom)}, visible area ${Math.round(top)}-${Math.round(Math.min(limit, view.bottom))}`;
+            """) as? String ?? "unavailable"
+            await model.close()
+            return .init(name: name, pass: opened && first && second && prompts.count == 2 && geometry == "visible",
+                         detail: "card open \(opened); question sent \(first); follow-up sent \(second); prompts \(prompts.count); newest answer \(geometry)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
