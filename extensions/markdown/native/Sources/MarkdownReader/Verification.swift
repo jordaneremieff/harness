@@ -550,6 +550,7 @@ struct Context {
             _ = await wait(seconds: 5) { editor.webReady && model.source == source }
             guard let document = editor.active else { return .init(name: name, pass: false, detail: "the draft did not open") }
             let code = await js(model, "const f = document.querySelector('figure.code'); return f ? [f.querySelectorAll('[data-role=\"code-copy\"]').length, f.querySelectorAll('a.copy').length, f.querySelector('figcaption').textContent.trim()] : [];") as? [Any] ?? []
+            let closedLayersInert = await js(model, "return [...document.querySelectorAll('[popover]:not(:popover-open)')].every(p => getComputedStyle(p).display === 'none');") as? Bool == true
             let oneCopy = code.count == 3 && code[0] as? Int == 1 && code[1] as? Int == 0 && code[2] as? String == "swift"
             func apply(_ old: String, _ new: String) async -> LiveResult {
                 let text = document.text.source as NSString, range = text.range(of: old)
@@ -564,6 +565,15 @@ struct Context {
                 (await js(model, "return [...document.querySelectorAll('[data-role=\"notice\"]')].some(n => n.textContent.includes('The agent wants to change this passage') && n.textContent.includes('Let it'));") as? Bool) == true
             }
             editor.pageHeld = nil
+            let cardOpen = await js(model, """
+            document.getElementById('b-ask').click();
+            await new Promise(r => setTimeout(r, 30));
+            const item = [...document.querySelectorAll('#activity button')].find(b => b.textContent.includes('Ask about this document'));
+            if (!item) return false;
+            item.click();
+            await new Promise(r => setTimeout(r, 30));
+            return document.querySelector('[data-role="ask-card"]').hasAttribute('data-open');
+            """) as? Bool == true
             let applied = await apply("Agent passage changes.", "Agent passage changed by the agent.")
             let afterAgent = document.text.source
             let panel = await js(model, """
@@ -575,17 +585,19 @@ struct Context {
             const diff = document.querySelector('.inline-diff');
             const undo = diff && [...diff.querySelectorAll('button')].find(b => b.textContent.trim() === 'Undo');
             if (!undo) return 'no undo';
+            await new Promise(r => setTimeout(r, 100));
             const r = undo.getBoundingClientRect();
-            const point = { bubbles: true, cancelable: true, button: 0, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
-            undo.dispatchEvent(new PointerEvent('pointerdown', { ...point, buttons: 1, pointerType: 'mouse', isPrimary: true }));
-            undo.dispatchEvent(new MouseEvent('mousedown', { ...point, buttons: 1 }));
-            getSelection().collapse(diff.querySelector('.diff-head span').firstChild, 1);
-            await new Promise(r => setTimeout(r, 150));
-            const same = document.querySelector('.inline-diff') === diff && undo.isConnected;
-            undo.dispatchEvent(new PointerEvent('pointerup', { ...point, pointerType: 'mouse', isPrimary: true }));
-            undo.dispatchEvent(new MouseEvent('mouseup', point));
-            undo.click();
-            return same ? 'kept' : 'replaced';
+            const x = r.left + r.width / 2, y = r.top + r.height / 2;
+            // A quick physical click: whatever the pointer lands on receives the whole sequence.
+            const target = document.elementFromPoint(x, y);
+            if (!target || !undo.contains(target)) return 'covered by ' + (target?.closest('[class]')?.className || target?.nodeName || 'nothing') + ' in ' + (target?.closest('[id]')?.id || '-') + ' at ' + Math.round(x) + ',' + Math.round(y);
+            const point = { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y };
+            target.dispatchEvent(new PointerEvent('pointerdown', { ...point, buttons: 1, pointerType: 'mouse', isPrimary: true }));
+            target.dispatchEvent(new MouseEvent('mousedown', { ...point, buttons: 1 }));
+            target.dispatchEvent(new PointerEvent('pointerup', { ...point, pointerType: 'mouse', isPrimary: true }));
+            target.dispatchEvent(new MouseEvent('mouseup', point));
+            target.dispatchEvent(new MouseEvent('click', point));
+            return 'clicked';
             """) as? String ?? "unavailable"
             let undone = await wait(seconds: 5) { document.text.source == source }
             _ = await js(model, "document.getElementById('page').scrollTop = 0; return true;")
@@ -602,10 +614,10 @@ struct Context {
             const rect = hit.getBoundingClientRect();
             return rect.top >= view.top && rect.bottom <= view.bottom ? 'revealed' : 'hidden at ' + Math.round(rect.top);
             """) as? String ?? "unavailable"
-            let pass = oneCopy && held.reason == "held" && holdNotice && applied.status == "applied" && afterAgent != source && panel == "kept" && undone && find == "revealed"
+            let pass = oneCopy && closedLayersInert && cardOpen && held.reason == "held" && holdNotice && applied.status == "applied" && afterAgent != source && panel == "clicked" && undone && find == "revealed"
             await editor.closeViews()
             await model.close()
-            return .init(name: name, pass: pass, detail: "code \(code); hold \(held.status)/\(held.reason ?? "") notice \(holdNotice); agent edit \(applied.status); change panel \(panel); panel Undo restored \(undone); find \(find)")
+            return .init(name: name, pass: pass, detail: "code \(code); closed menus inert \(closedLayersInert); hold \(held.status)/\(held.reason ?? "") notice \(holdNotice); ask card open \(cardOpen); agent edit \(applied.status); change panel \(panel); panel Undo restored \(undone); find \(find)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
@@ -1133,6 +1145,7 @@ struct Context {
             let settled = await wait(seconds: 2) { !model.isScrollingForCheck }
             gate.release()
             let followed = await wait(seconds: 5) { model.snapshot?.revision == 2 && !model.isLoadingForCheck }
+            _ = await wait(seconds: 3) { model.lastRestore == .block }
             let restored = await model.capturePositionForCheck()
             let preserved = Self.sameSourcePosition(moved, restored) && stale?.blockStart != restored?.blockStart
             let pass = reached && settled && followed && preserved && model.lastRestore == .block
@@ -1159,6 +1172,7 @@ struct Context {
             let deferred = await wait(seconds: 0.2) { !model.isLoadingForCheck }
                 && model.snapshot?.revision == 1
             let followed = await wait(seconds: 5) { model.snapshot?.revision == 2 }
+            _ = await wait(seconds: 3) { model.lastRestore == .block }
             let restored = await model.capturePositionForCheck()
             let preserved = Self.sameSourcePosition(moved, restored) && stale?.blockStart != restored?.blockStart
             let selectionGate = RevisionPreparationGate()
@@ -1174,7 +1188,7 @@ struct Context {
             let selectionKept = !selected.isEmpty && selected == retainedSelection
                 && model.snapshot?.revision == 2 && model.update == .revision(3)
             let pass = prepared && deferred && followed && preserved && selectionPrepared && finished && selectionKept
-            let detail = "scroll preparation gated: \(prepared); deferred while scrolling: \(deferred); followed after settling: \(followed); new position restored: \(preserved); selection preparation gated: \(selectionPrepared); selection retained with update notice: \(selectionKept) (selected \(selected.utf16.count) units, retained equal \(selected == retainedSelection), page selection \(model.pageState?.hasSelection == true), shown revision \(model.snapshot?.revision ?? 0), update \(String(describing: model.update)))"
+            let detail = "scroll preparation gated: \(prepared); deferred while scrolling: \(deferred); followed after settling: \(followed); new position restored: \(preserved) (\(moved?.blockStart ?? -1):\(moved?.offsetY ?? -1) -> \(restored?.blockStart ?? -1):\(restored?.offsetY ?? -1), restore \(model.lastRestore.rawValue)); selection preparation gated: \(selectionPrepared); selection retained with update notice: \(selectionKept) (selected \(selected.utf16.count) units, retained equal \(selected == retainedSelection), page selection \(model.pageState?.hasSelection == true), shown revision \(model.snapshot?.revision ?? 0), update \(String(describing: model.update)))"
             await model.close()
             return .init(name: "interaction-during-revision-preparation", pass: pass, detail: detail)
         } catch {
