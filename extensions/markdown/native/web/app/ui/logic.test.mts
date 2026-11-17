@@ -57,6 +57,17 @@ test("find status never reports a current match beyond its count", () => {
 	assert.equal(logic.findStatus(2, -1), "1 of 2");
 });
 
+test("text zoom follows host steps and resets to the base size", () => {
+	const steps = [0.8125, 0.875, 0.9375, 1, 1.0625, 1.125, 1.25, 1.375, 1.5, 1.6875];
+	assert.equal(logic.zoomStep(1, steps, 1), 1.0625);
+	assert.equal(logic.zoomStep(1, steps, -1), 0.9375);
+	assert.equal(logic.zoomStep(1.6875, steps, 1), 1.6875);
+	assert.equal(logic.zoomStep(0.8125, steps, -1), 0.8125);
+	assert.equal(logic.zoomStep(1.5, steps, null), 1);
+	assert.equal(logic.zoomStep(1, [], 1), 1);
+	assert.equal(logic.zoomStep(1, [NaN, 0, -1, 1, 1.25], 1), 1.25);
+});
+
 test("outline current row follows measured heading positions without a delay", () => {
 	assert.equal(logic.currentHeading([], 74), -1);
 	assert.equal(

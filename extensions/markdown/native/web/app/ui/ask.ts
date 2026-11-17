@@ -27,13 +27,60 @@
 				(n) => Number((n as HTMLElement).dataset.start) <= start && Number((n as HTMLElement).dataset.end) >= start,
 			) as HTMLElement | undefined;
 		}
+		function passagePoint(offset: number) {
+			const node = blockAt(offset),
+				block = controller.blocks.find((block) => block.key === node?.dataset.block),
+				source = controller.doc?.source;
+			if (!node || !block || source === undefined) return null;
+			let display: number;
+			if (controller.doc?.active?.blockId === block.key)
+				display = api.sourceModel.sourceToDisplay(
+					new api.exact.LineMap(source.slice(block.start, block.end)),
+					offset - block.start,
+				);
+			else {
+				const map = api.sourceModel.map(block, source, node);
+				display = map.boundaries.findIndex((position) => position !== null && position >= offset);
+				if (display < 0) display = map.text.length;
+			}
+			return api.sourceModel.point(node, display);
+		}
+		function threadRange() {
+			if (!current) return undefined;
+			return current.range ?? operations(current).at(-1)?.edits[0];
+		}
+		function mapThread(thread: ReaderThread, edits: ReaderEdit[]) {
+			if (!thread.range) return;
+			try {
+				const [mapped] = api.exact.mapEdits(
+					[{ ...thread.range, expected: thread.quote ?? "", text: thread.quote ?? "" }],
+					edits,
+				);
+				thread.range = { start: mapped.start, end: mapped.end };
+			} catch {
+				thread.range = undefined;
+			}
+		}
 		function rangeFor(range?: ReaderRange) {
 			if (!range) return null;
-			const start = blockAt(range.start);
-			if (!start) return null;
-			const r = document.createRange();
-			r.selectNodeContents(start);
-			return r;
+			const start = passagePoint(range.start),
+				end = passagePoint(range.end);
+			if (!start || !end) return null;
+			const result = document.createRange();
+			result.setStart(start.node, start.offset);
+			result.setEnd(end.node, end.offset);
+			return result;
+		}
+		function revealPassage(limit: number) {
+			const rect = rangeFor(threadRange())?.getBoundingClientRect();
+			if (!rect) return;
+			const top = app.getBoundingClientRect().top + 64;
+			if (rect.height > limit - top) {
+				page.scrollTop += rect.top - top;
+				return;
+			}
+			if (rect.bottom > limit) page.scrollTop += rect.bottom - limit;
+			if (rect.top < top) page.scrollTop += rect.top - top;
 		}
 		function position() {
 			if (!visible) return;
@@ -41,9 +88,10 @@
 			if (box.width < 560) {
 				card.style.left = "";
 				card.style.top = "";
+				revealPassage(card.getBoundingClientRect().top - 12);
 				return;
 			}
-			const rect = rangeFor(current?.range)?.getBoundingClientRect() ?? get("#b-ask").getBoundingClientRect();
+			const rect = rangeFor(threadRange())?.getBoundingClientRect() ?? get("#b-ask").getBoundingClientRect();
 			const width = card.offsetWidth,
 				height = card.offsetHeight;
 			card.style.left = `${Math.max(12, Math.min(rect.left - box.left, box.width - width - 12))}px`;
@@ -53,7 +101,7 @@
 			card.style.top = `${Math.max(56, Math.min(top, box.height - height - 12))}px`;
 		}
 		function paintPassage() {
-			const range = visible ? rangeFor(current?.range) : null;
+			const range = visible ? rangeFor(threadRange()) : null;
 			editor.highlight("passage", range ? [range] : []);
 		}
 		function action(label: string, run: () => void) {
@@ -138,21 +186,7 @@
 				el("div", { class: "foot" }, el("span", { class: "hint" }, "⌘↩ to send"), send),
 			);
 		}
-		function draw() {
-			if (!current || !visible) {
-				card.removeAttribute("data-open");
-				paintPassage();
-				return;
-			}
-			const thread = current,
-				focused =
-					document.activeElement instanceof HTMLTextAreaElement && card.contains(document.activeElement)
-						? { start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd }
-						: null;
-			card.replaceChildren();
-			card.dataset.state = activeMessage(thread)?.state ?? "draft";
-			card.toggleAttribute("data-collapsed", thread.collapsed);
-			card.setAttribute("data-open", "");
+		function drawHead(thread: ReaderThread) {
 			const head = el(
 				"div",
 				{ class: "ask-head" },
@@ -168,7 +202,85 @@
 					}),
 					head.lastChild,
 				);
-			card.append(head);
+			return head;
+		}
+		function drawStatus(message: ReaderAskMessage, changeCount: number) {
+			const glyph = ({ failed: "info", answered: "check" } as Record<string, string>)[message.state] ?? "spark";
+			let label = api.uiLogic.promptLabel(message.state);
+			if (changeCount) label = `Changed ${changeCount} ${changeCount === 1 ? "passage" : "passages"}`;
+			return el(
+				"div",
+				{ class: `ask-status${message.state === "failed" ? " fail" : ""}`, role: "status" },
+				icon(glyph),
+				el("span", {}, label),
+			);
+		}
+		function drawMessages(thread: ReaderThread) {
+			const log = el("div", { class: "ask-messages" });
+			for (const m of thread.messages) {
+				log.append(el("div", { class: "ask-question" }, el("span", { class: "from" }, "You"), m.text));
+				if (m.state === "answered" && m.detail)
+					log.append(
+						el("div", { class: "reply" }, el("span", { class: "from" }, "Agent · in the conversation"), m.detail),
+					);
+			}
+			return log;
+		}
+		function deliveryMessage(message: ReaderAskMessage) {
+			if (message.state === "failed")
+				card.append(
+					el(
+						"p",
+						{ class: "send-failure" },
+						"Not sent: the conversation did not accept the message. Your text is kept.",
+					),
+					action("Retry", () => void sendMessage(message)),
+				);
+			if (message.state === "unknown")
+				card.append(
+					el(
+						"p",
+						{ class: "send-failure" },
+						"Delivery is not confirmed. Your text is kept. The reader will not send it twice.",
+					),
+				);
+		}
+		function drawConversation(thread: ReaderThread) {
+			const message = activeMessage(thread);
+			if (!message) return;
+			const ops = operations(thread),
+				changeCount = ops.reduce((n, op) => n + op.edits.length, 0),
+				id = ops.at(-1)?.operationId;
+			card.append(drawStatus(message, changeCount), drawMessages(thread));
+			if (changeCount)
+				card.append(
+					el(
+						"div",
+						{ class: "ask-actions" },
+						action("Show changes", () => ask.showChanges(id)),
+						action("Undo", () => undo(id)),
+					),
+				);
+			deliveryMessage(message);
+		}
+		function focusedComposer() {
+			const field = document.activeElement;
+			if (!(field instanceof HTMLTextAreaElement) || !card.contains(field)) return null;
+			return { start: field.selectionStart, end: field.selectionEnd };
+		}
+		function draw() {
+			if (!current || !visible) {
+				card.removeAttribute("data-open");
+				paintPassage();
+				return;
+			}
+			const thread = current,
+				focused = focusedComposer();
+			card.replaceChildren();
+			card.dataset.state = activeMessage(thread)?.state ?? "draft";
+			card.toggleAttribute("data-collapsed", thread.collapsed);
+			card.setAttribute("data-open", "");
+			card.append(drawHead(thread));
 			if (thread.collapsed) {
 				position();
 				return;
@@ -180,61 +292,8 @@
 					el("span", {}, thread.quote ?? `About ${String(controller.payload?.meta.title ?? "this document")}`),
 				),
 			);
-			const message = activeMessage(thread),
-				ops = operations(thread),
-				changeCount = ops.reduce((n, op) => n + op.edits.length, 0);
-			if (message) {
-				const status = el(
-					"div",
-					{ class: `ask-status${message.state === "failed" ? " fail" : ""}`, role: "status" },
-					icon(message.state === "failed" ? "info" : message.state === "answered" ? "check" : "spark"),
-					el(
-						"span",
-						{},
-						changeCount
-							? `Changed ${changeCount} ${changeCount === 1 ? "passage" : "passages"}`
-							: api.uiLogic.promptLabel(message.state),
-					),
-				);
-				card.append(status);
-				const log = el("div", { class: "ask-messages" });
-				for (const m of thread.messages) {
-					log.append(el("div", { class: "ask-question" }, el("span", { class: "from" }, "You"), m.text));
-					if (m.state === "answered" && m.detail)
-						log.append(
-							el("div", { class: "reply" }, el("span", { class: "from" }, "Agent · in the conversation"), m.detail),
-						);
-				}
-				card.append(log);
-				if (changeCount)
-					card.append(
-						el(
-							"div",
-							{ class: "ask-actions" },
-							action("Show changes", () => ask.showChanges(ops.at(-1)?.operationId)),
-							action("Undo", () => undo(ops.at(-1)?.operationId)),
-						),
-					);
-				if (message.state === "failed") {
-					card.append(
-						el(
-							"p",
-							{ class: "send-failure" },
-							"Not sent: the conversation did not accept the message. Your text is kept.",
-						),
-						action("Retry", () => void sendMessage(message)),
-					);
-				}
-				if (message.state === "unknown")
-					card.append(
-						el(
-							"p",
-							{ class: "send-failure" },
-							"Delivery is not confirmed. Your text is kept. The reader will not send it twice.",
-						),
-					);
-			}
-			card.append(composer(thread, !!message));
+			drawConversation(thread);
+			card.append(composer(thread, !!activeMessage(thread)));
 			position();
 			paintPassage();
 			if (focused) {
@@ -254,9 +313,20 @@
 			if (msg.detail) message.detail = msg.detail;
 			ask.refresh();
 		}
+		function promptPayload(thread: ReaderThread, message: ReaderAskMessage) {
+			return {
+				requestId: message.requestId,
+				threadId: thread.threadId,
+				text: message.text,
+				...(thread.quote ? { quote: thread.quote } : {}),
+				...(thread.range ? { quoteRange: thread.range } : {}),
+				generation: controller.doc?.generation ?? 0,
+			};
+		}
 		async function sendMessage(retry?: ReaderAskMessage) {
 			const thread = current;
-			if (!thread || (!retry && !thread.draft.trim()) || (!retry && pending(thread))) return;
+			if (!thread) return;
+			if (!retry && (!thread.draft.trim() || pending(thread))) return;
 			const message = retry ?? {
 				requestId: crypto.randomUUID(),
 				text: thread.draft,
@@ -266,18 +336,15 @@
 			if (!retry) {
 				thread.messages.push(message);
 				thread.draft = "";
-				payloads.set(message.requestId, {
-					requestId: message.requestId,
-					threadId: thread.threadId,
-					text: message.text,
-					...(thread.quote ? { quote: thread.quote } : {}),
-					...(thread.range ? { quoteRange: thread.range } : {}),
-					generation: controller.doc?.generation ?? 0,
-				});
+				payloads.set(message.requestId, promptPayload(thread, message));
 			}
 			message.state = "sending";
 			draw();
 			ask.refresh();
+			await deliverMessage(message);
+			ask.refresh();
+		}
+		async function deliverMessage(message: ReaderAskMessage) {
 			try {
 				const receipt = (await host.request("prompt", payloads.get(message.requestId) ?? {})) as {
 					accepted: boolean;
@@ -293,7 +360,6 @@
 				message.state = api.uiLogic.promptTransition(message.state, "unknown");
 				message.detail = String(error);
 			}
-			ask.refresh();
 		}
 		function undo(id?: string) {
 			if (!id) return;
@@ -315,6 +381,26 @@
 			for (const diff of doc.querySelectorAll(".inline-diff")) diff.remove();
 			for (const block of doc.querySelectorAll(".has-diff")) block.classList.remove("has-diff");
 		}
+		function moveChange(delta: number, total: number) {
+			changeIndex = (changeIndex + delta + total) % total;
+			drawDiff();
+			const diff = doc.querySelector(".inline-diff");
+			if (diff) navigation.jumpElement(diff);
+		}
+		function diffBody(edit: { oldText: string; newText: string }) {
+			const body = el("div", { class: "diff-words" });
+			for (const part of api.uiLogic.diffWords(edit.oldText, edit.newText))
+				body.append(
+					el(
+						({ removed: "del", added: "ins", same: "span" } as Record<string, keyof HTMLElementTagNameMap>)[
+							part.kind
+						] ?? "span",
+						{},
+						part.text,
+					),
+				);
+			return body;
+		}
 		function drawDiff() {
 			clearDiff();
 			if (!operationId) return;
@@ -325,26 +411,14 @@
 				block = edit ? blockAt(edit.start) : undefined;
 			if (!block || !edit) return;
 			const diff = el("section", { class: "inline-diff", "data-reader-control": "", "aria-label": "Agent change" }),
-				body = el("div", { class: "diff-words" });
-			for (const part of api.uiLogic.diffWords(edit.oldText, edit.newText))
-				body.append(el(part.kind === "removed" ? "del" : part.kind === "added" ? "ins" : "span", {}, part.text));
+				body = diffBody(edit);
 			diff.append(
 				el(
 					"div",
 					{ class: "diff-head" },
 					el("span", {}, `Change ${changeIndex + 1} of ${operation.edits.length}`),
-					action("Previous", () => {
-						changeIndex = (changeIndex - 1 + operation.edits.length) % operation.edits.length;
-						drawDiff();
-						const current = doc.querySelector(".inline-diff");
-						if (current) navigation.jumpElement(current);
-					}),
-					action("Next", () => {
-						changeIndex = (changeIndex + 1) % operation.edits.length;
-						drawDiff();
-						const current = doc.querySelector(".inline-diff");
-						if (current) navigation.jumpElement(current);
-					}),
+					action("Previous", () => moveChange(-1, operation.edits.length)),
+					action("Next", () => moveChange(1, operation.edits.length)),
 					action("Undo", () => undo(operation.operationId)),
 					button(
 						"Close changes",
@@ -364,8 +438,7 @@
 		}
 		function markers() {
 			for (const marker of doc.querySelectorAll(".change-marker")) marker.remove();
-			for (const op of controller.agentOperations.values()) {
-				if (!op.unread) continue;
+			for (const op of [...controller.agentOperations.values()].filter((op) => op.unread)) {
 				const block = blockAt(op.edits[0]?.start ?? -1);
 				if (!block || block.dataset.role === "block-editor") continue;
 				const marker = button("Show changes", "spark", () => ask.showChanges(op.operationId), {
@@ -436,6 +509,9 @@
 		};
 		off.push(
 			host.on("promptState", receivePrompt),
+			controller.on("change", (change) => {
+				for (const thread of threads) mapThread(thread, change.edits);
+			}),
 			controller.on("agentOperations", () => ask.refresh()),
 			controller.on("view", () => {
 				markers();

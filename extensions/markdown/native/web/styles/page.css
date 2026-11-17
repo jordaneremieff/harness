@@ -33,7 +33,6 @@
     grid-template-columns: var(--outline-w) minmax(0, 1fr);
   }
   #app[data-outline="closed"] .shell { grid-template-columns: 0 minmax(0, 1fr); }
-  #app[data-preview="narrow"] { max-width: 450px; margin: 0 auto; box-shadow: 0 0 0 1px var(--line-strong); }
 
   .page {
     grid-column: 2;

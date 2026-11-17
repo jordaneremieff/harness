@@ -7,7 +7,7 @@
 		cursor?: string;
 		limited?: boolean;
 		store?: { label: string };
-		coverage?: { searched: number; total: number; stopped: boolean; reason?: string };
+		coverage?: { searched: number; total: number | null; stopped: boolean; reason?: string };
 	};
 	const kindIcon = (kind: string) =>
 		({ draft: "pen", response: "response", file: "file", localFile: "file", published: "doc" })[kind] ?? "doc";
@@ -32,7 +32,8 @@
 			imageIndex = 0,
 			openIndex = 0,
 			items: ({ row: Row } | { heading: ReaderHeading })[] = [],
-			zoom = 1;
+			zoom = 1,
+			textSizeSteps = [1];
 		const off: (() => void)[] = [];
 		function item(label: string, image: string, run: () => void, key = "", attributes: Record<string, string> = {}) {
 			const b = button(
@@ -54,13 +55,15 @@
 			const time = typeof value === "string" ? Date.parse(value) : Number(value);
 			if (!Number.isFinite(time)) return "";
 			const minutes = Math.max(0, Math.floor((Date.now() - time) / 60000));
-			return minutes < 1
-				? "now"
-				: minutes < 60
-					? `${minutes} min ago`
-					: minutes < 1440
-						? `${Math.floor(minutes / 60)} h ago`
-						: `${Math.floor(minutes / 1440)} d ago`;
+			if (minutes < 1) return "now";
+			if (minutes < 60) return `${minutes} min ago`;
+			if (minutes < 1440) return `${Math.floor(minutes / 60)} h ago`;
+			return `${Math.floor(minutes / 1440)} d ago`;
+		}
+		function menuIndex(key: string, index: number, length: number) {
+			if (key === "Home") return 0;
+			if (key === "End") return length - 1;
+			return (index + (key === "ArrowDown" ? 1 : -1) + length) % length;
 		}
 		function menuKeys(event: KeyboardEvent) {
 			if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -68,26 +71,26 @@
 			if (!buttons.length) return;
 			event.preventDefault();
 			let index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-			index =
-				event.key === "Home"
-					? 0
-					: event.key === "End"
-						? buttons.length - 1
-						: (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+			index = menuIndex(event.key, index, buttons.length);
 			buttons[index].focus();
 		}
 		menu.addEventListener("keydown", menuKeys);
 		off.push(() => menu.removeEventListener("keydown", menuKeys));
+		function positiveNumber(value: unknown): value is number {
+			return typeof value === "number" && Number.isFinite(value) && value > 0;
+		}
+		function applyTextSize(value: unknown) {
+			zoom = positiveNumber(value) ? value : 1;
+			document.documentElement.style.setProperty("--zoom", String(zoom));
+		}
 		function applySettings(patch: Record<string, unknown>) {
-			if (typeof patch.textSize === "number") {
-				zoom = patch.textSize;
-				document.documentElement.style.setProperty("--zoom", String(zoom));
-			}
+			if (Array.isArray(patch.textSizeSteps)) textSizeSteps = patch.textSizeSteps.filter(positiveNumber);
+			if ("textSize" in patch) applyTextSize(patch.textSize);
 			if (typeof patch.appearance === "string") document.documentElement.dataset.theme = patch.appearance;
 			if (typeof patch.codeWrap === "boolean") app.toggleAttribute("data-wrap", patch.codeWrap);
 		}
-		function size(next: number) {
-			zoom = Math.max(0.8, Math.min(1.6, Math.round(next * 20) / 20));
+		function size(direction: number | null) {
+			zoom = api.uiLogic.zoomStep(zoom, textSizeSteps, direction);
 			applySettings({ textSize: zoom });
 			void ctx.hostCommand("saveSettings", { patch: { textSize: zoom } });
 			ctx.toast(`Text size ${Math.round(zoom * 100)}%`);
@@ -97,16 +100,23 @@
 			palette.close();
 			void ctx.hostCommand("open", { ref: row.ref });
 		}
+		function fillHeadings(query: string) {
+			items = ctx
+				.headings()
+				.filter((h) => h.text.toLocaleLowerCase().includes(query.slice(1).trim().toLocaleLowerCase()))
+				.map((heading) => ({ heading }));
+			drawOpen();
+		}
+		function openError(token: number, list: HTMLElement, error: unknown) {
+			if (token === openSequence)
+				list.replaceChildren(el("p", { class: "query-error" }, `The open list is unavailable: ${String(error)}`));
+		}
 		async function fillOpen(query: string) {
 			const token = ++openSequence,
 				list = get("#pal-list");
 			openIndex = 0;
 			if (query.startsWith("#")) {
-				items = ctx
-					.headings()
-					.filter((h) => h.text.toLocaleLowerCase().includes(query.slice(1).trim().toLocaleLowerCase()))
-					.map((heading) => ({ heading }));
-				drawOpen();
+				fillHeadings(query);
 				return;
 			}
 			list.replaceChildren(el("div", { class: "grp" }, "Reading your documents…"));
@@ -120,19 +130,21 @@
 				if (token !== openSequence) return;
 				items = results.flatMap((result) => result.rows.map((row) => ({ row })));
 				list.replaceChildren();
-				let offset = 0;
-				results.forEach((result, i) => {
-					if (result.rows.length) list.append(el("div", { class: "grp" }, ["Drafts", "Recent", "Published"][i]));
-					for (const row of result.rows) list.append(openOption({ row }, offset++));
-					if (result.limited)
-						list.append(el("p", { class: "query-limit" }, "More documents are available in the library."));
-				});
+				appendOpenResults(results, list);
 				if (!items.length)
 					list.append(el("p", { class: "empty" }, "No documents match. Search document text from the library."));
 			} catch (error) {
-				if (token === openSequence)
-					list.replaceChildren(el("p", { class: "query-error" }, `The open list is unavailable: ${String(error)}`));
+				openError(token, list, error);
 			}
+		}
+		function appendOpenResults(results: Library[], list: HTMLElement) {
+			let offset = 0;
+			results.forEach((result, i) => {
+				if (result.rows.length) list.append(el("div", { class: "grp" }, ["Drafts", "Recent", "Published"][i]));
+				for (const row of result.rows) list.append(openOption({ row }, offset++));
+				if (result.limited)
+					list.append(el("p", { class: "query-limit" }, "More documents are available in the library."));
+			});
 		}
 		function openOption(item: { row: Row } | { heading: ReaderHeading }, index: number) {
 			const b = el("button", {
@@ -159,7 +171,9 @@
 		function drawOpen() {
 			const list = get("#pal-list");
 			list.replaceChildren(el("div", { class: "grp" }, "Headings in this document"));
-			items.forEach((item, index) => list.append(openOption(item, index)));
+			items.forEach((item, index) => {
+				list.append(openOption(item, index));
+			});
 			if (!items.length) list.append(el("p", { class: "empty" }, "No matching headings"));
 		}
 		function chooseOpen(index: number) {
@@ -169,6 +183,19 @@
 			else {
 				palette.close();
 				navigation.jump(item.heading.start);
+			}
+		}
+		function openKeys(event: KeyboardEvent) {
+			if (event.isComposing) return;
+			const delta = { ArrowDown: 1, ArrowUp: -1 }[event.key];
+			if (delta) {
+				event.preventDefault();
+				moveOpen(delta);
+				return;
+			}
+			if (event.key === "Enter") {
+				event.preventDefault();
+				chooseOpen(openIndex);
 			}
 		}
 		function moveOpen(delta: number) {
@@ -192,6 +219,31 @@
 			const list = el("dl", { class: "facts" });
 			for (const row of rows) list.append(el("dt", {}, row.label), el("dd", {}, row.value));
 			return list;
+		}
+		function libraryRow(row: Row) {
+			const b = button("", kindIcon(row.kind), () => openRow(row), { className: "library-row" });
+			b.append(
+				el(
+					"span",
+					{ class: "library-row-text" },
+					el("b", {}, row.title),
+					el("span", {}, row.excerpt ?? row.subtitle ?? kindName(row.kind)),
+				),
+				el("span", { class: "meta" }, row.age ?? ""),
+			);
+			return b;
+		}
+		function coverageText(result: Library) {
+			const c = result.coverage;
+			if (!c)
+				return result.limited
+					? "The library shows a bounded set of documents. Read the next documents to continue."
+					: "";
+			const scope =
+				c.total === null
+					? `Source search: searched ${c.searched} documents.`
+					: `Source search: ${c.searched} of ${c.total} documents checked.`;
+			return [scope, c.stopped ? "Search stopped at its limit." : "", c.reason ?? ""].filter(Boolean).join(" ");
 		}
 		async function libraryView(container: HTMLElement) {
 			let collection = "drafts",
@@ -218,7 +270,9 @@
 					"",
 					() => {
 						collection = value;
-						tabs.querySelectorAll("button").forEach((node) => node.setAttribute("aria-pressed", String(node === b)));
+						tabs.querySelectorAll("button").forEach((node) => {
+							node.setAttribute("aria-pressed", String(node === b));
+						});
 						void load();
 					},
 					{ className: "filter-button" },
@@ -265,14 +319,32 @@
 					void load();
 				}
 			});
+			function beginLoad(append: boolean) {
+				next.disabled = true;
+				if (append) return;
+				cursor = undefined;
+				results.replaceChildren();
+				coverage.textContent = "Reading the library…";
+			}
+			function showLibrary(result: Library, append: boolean) {
+				store.textContent = result.store?.label ?? "Library";
+				if (!append) results.replaceChildren();
+				for (const row of result.rows) results.append(libraryRow(row));
+				if (!results.children.length) results.append(el("p", { class: "empty" }, "No documents match."));
+				cursor = result.cursor;
+				next.hidden = !cursor;
+				next.disabled = false;
+				coverage.textContent = coverageText(result);
+			}
+			function libraryCurrent(token: number) {
+				return token === request && kind === "library";
+			}
+			function libraryError(token: number, error: unknown) {
+				if (token === request) coverage.textContent = `The library is unavailable: ${String(error)}`;
+			}
 			async function load(append = false) {
 				const token = ++request;
-				next.disabled = true;
-				if (!append) {
-					cursor = undefined;
-					results.replaceChildren();
-					coverage.textContent = "Reading the library…";
-				}
+				beginLoad(append);
 				try {
 					const result = (await host.request("query", {
 						kind: "library",
@@ -281,33 +353,10 @@
 						match,
 						...(cursor ? { cursor } : {}),
 					})) as Library;
-					if (token !== request || kind !== "library") return;
-					store.textContent = result.store?.label ?? "Library";
-					if (!append) results.replaceChildren();
-					for (const row of result.rows) {
-						const b = button("", kindIcon(row.kind), () => openRow(row), { className: "library-row" });
-						b.append(
-							el(
-								"span",
-								{ class: "library-row-text" },
-								el("b", {}, row.title),
-								el("span", {}, row.excerpt ?? row.subtitle ?? kindName(row.kind)),
-							),
-							el("span", { class: "meta" }, row.age ?? ""),
-						);
-						results.append(b);
-					}
-					if (!results.children.length) results.append(el("p", { class: "empty" }, "No documents match."));
-					cursor = result.cursor;
-					next.hidden = !cursor;
-					next.disabled = false;
-					coverage.textContent = result.coverage
-						? `Source search: ${result.coverage.searched} of ${result.coverage.total} documents checked.${result.coverage.stopped ? " Search stopped at its limit." : ""}${result.coverage.reason ? ` ${result.coverage.reason}` : ""}`
-						: result.limited
-							? "The library shows a bounded set of documents. Read the next documents to continue."
-							: "";
+					if (!libraryCurrent(token)) return;
+					showLibrary(result, append);
 				} catch (error) {
-					if (token === request) coverage.textContent = `The library is unavailable: ${String(error)}`;
+					libraryError(token, error);
 				}
 			}
 			await load();
@@ -323,56 +372,122 @@
 				return body;
 			}
 			const result = (await host.request("query", { kind: view, ...args })) as Record<string, unknown>;
-			if (view === "review") {
-				if (result.summary) body.append(el("p", { class: "review-summary" }, String(result.summary)));
-				const rendered = el("article", { class: "doc review-doc" });
-				api.setRenderedHTML(rendered, String(result.html ?? ""));
-				body.append(rendered);
-			}
-			if (view === "details") {
-				body.append(facts((result.rows as { label: string; value: string }[]) ?? []));
-				for (const image of (result.images as { index: number; state: string; reason?: string }[]) ?? [])
-					body.append(
-						button(
-							`Image ${image.index} · ${image.state}${image.reason ? `: ${image.reason}` : ""}`,
-							"image",
-							() => views.show("image", { index: image.index }),
-							{ className: "library-row" },
-						),
-					);
-			}
-			if (view === "image") {
-				imageIndex = Number(args.index ?? 0);
-				imageMode = String(args.zoom ?? "fit");
-				const stage = el("div", { class: "image-stage", "data-zoom": imageMode });
-				const address = String(result.address ?? "");
-				if (address.startsWith("reader-asset:") || address.startsWith("data:image/"))
-					stage.append(
-						el("img", {
-							src: address,
-							alt: String(result.alt ?? "Image inspection"),
-							width: String(result.width ?? 0),
-							height: String(result.height ?? 0),
-						}),
-					);
-				else stage.append(el("p", {}, "This image is not available for display."));
+			return resultContent(view, body, result, args);
+		}
+		function reviewContent(body: HTMLElement, result: Record<string, unknown>) {
+			if (result.summary)
 				body.append(
-					el(
-						"div",
-						{ class: "image-controls" },
-						button("Previous", "back", () => views.show("image", { index: Math.max(0, imageIndex - 1) })),
-						button("Next", "forward", () => views.show("image", { index: imageIndex + 1 })),
-						button("Fit", "", () => views.imageZoom("fit")),
-						button("Actual size", "", () => views.imageZoom("actual")),
-						button("Copy reference", "copy", () => {
-							void ctx.hostCommand("copy", { text: address });
-						}),
+					reviewSummary(
+						result.summary as {
+							base: number;
+							target: number | null;
+							changedRegions: number;
+							addedLines: number;
+							removedLines: number;
+							partial: boolean;
+						},
 					),
-					stage,
-					facts((result.facts as { label: string; value: string }[]) ?? []),
 				);
-			}
+			const rendered = el("article", { class: "doc review-doc" });
+			api.setRenderedHTML(rendered, String(result.html ?? ""));
+			body.append(rendered);
 			return body;
+		}
+		function reviewSummary(summary: {
+			base: number;
+			target: number | null;
+			changedRegions: number;
+			addedLines: number;
+			removedLines: number;
+			partial: boolean;
+		}) {
+			const target = summary.target === null ? "Your draft" : `Revision ${summary.target}`;
+			return el(
+				"div",
+				{ class: "review-summary" },
+				el("h3", {}, `Revision ${summary.base} → ${target}`),
+				el(
+					"p",
+					{},
+					`${summary.changedRegions} changed passages, ${summary.addedLines} lines added, ${summary.removedLines} removed.`,
+				),
+				summary.partial ? el("p", {}, "This comparison covers part of the source.") : null,
+			);
+		}
+		function detailsContent(body: HTMLElement, result: Record<string, unknown>) {
+			body.append(facts((result.rows as { label: string; value: string }[]) ?? []));
+			for (const image of (result.images as { index: number; state: string; reason?: string }[]) ?? [])
+				body.append(
+					button(
+						`Image ${image.index} · ${image.state}${image.reason ? `: ${image.reason}` : ""}`,
+						"image",
+						() => views.show("image", { index: image.index }),
+						{ className: "library-row" },
+					),
+				);
+			return body;
+		}
+		function imageContent(body: HTMLElement, result: Record<string, unknown>, args: Record<string, unknown>) {
+			imageIndex = Number(args.index ?? 0);
+			imageMode = String(args.zoom ?? "fit");
+			const stage = el("div", { class: "image-stage", "data-zoom": imageMode });
+			const address = String(result.address ?? "");
+			if (address.startsWith("reader-asset:") || address.startsWith("data:image/"))
+				stage.append(
+					el("img", {
+						src: address,
+						alt: String(result.alt ?? "Image inspection"),
+						width: String(result.width ?? 0),
+						height: String(result.height ?? 0),
+					}),
+				);
+			else stage.append(el("p", {}, "This image is not available for display."));
+			body.append(
+				el(
+					"div",
+					{ class: "image-controls" },
+					button("Previous", "back", () => views.show("image", { index: Math.max(0, imageIndex - 1) })),
+					button("Next", "forward", () => views.show("image", { index: imageIndex + 1 })),
+					button("Fit", "", () => views.imageZoom("fit")),
+					button("Actual size", "", () => views.imageZoom("actual")),
+					button("Copy reference", "copy", () => {
+						void ctx.hostCommand("copy", { text: address });
+					}),
+				),
+				stage,
+				facts((result.facts as { label: string; value: string }[]) ?? []),
+			);
+			return body;
+		}
+		function resultContent(
+			view: string,
+			body: HTMLElement,
+			result: Record<string, unknown>,
+			args: Record<string, unknown>,
+		) {
+			if (view === "review") return reviewContent(body, result);
+			if (view === "details") return detailsContent(body, result);
+			if (view === "image") return imageContent(body, result, args);
+			return body;
+		}
+		function reviewAgainst() {
+			const meta = controller.payload?.meta;
+			return meta?.kind === "draft" || meta?.capturedSource ? "base" : "previous";
+		}
+		function appendRevisions(revisions: { n: number; createdAt: unknown; current: boolean }[]) {
+			for (const revision of revisions) {
+				const b = item(
+					`Revision ${revision.n}${revision.current ? " · current" : ""}`,
+					"check",
+					() => {
+						void ctx.hostCommand("showRevision", { n: revision.n });
+					},
+					"",
+					{ role: "menuitemradio", "aria-checked": String(revision.current) },
+				);
+				b.append(el("span", { class: "meta" }, age(revision.createdAt)));
+				menu.append(b);
+			}
 		}
 		const views: ReaderViewsUI = {
 			menu() {
@@ -382,21 +497,9 @@
 					el("div", { class: "sec" }, `${kindName(kind)} · ${String(meta.shortId ?? meta.documentId ?? "")}`),
 					item(controller.lock === "writing" ? "Done" : "Edit", "pen", () => ctx.command("toggleLock"), "⌘E"),
 				);
-				for (const revision of (meta.revisions as { n: number; createdAt: unknown; current: boolean }[]) ?? []) {
-					const b = item(
-						`Revision ${revision.n}${revision.current ? " · current" : ""}`,
-						"check",
-						() => {
-							void ctx.hostCommand("showRevision", { n: revision.n });
-						},
-						"",
-						{ role: "menuitemradio", "aria-checked": String(revision.current) },
-					);
-					b.append(el("span", { class: "meta" }, age(revision.createdAt)));
-					menu.append(b);
-				}
+				appendRevisions((meta.revisions as { n: number; createdAt: unknown; current: boolean }[]) ?? []);
 				menu.append(
-					item("Review changes", "compare", () => views.show("review", { against: "previous" }), "⌘D"),
+					item("Review changes", "compare", () => views.show("review", { against: reviewAgainst() }), "⌘D"),
 					el("div", { class: "sep" }),
 					item("Copy Markdown", "copy", () => ctx.command("copyMarkdown"), "⇧⌘C"),
 					item("Copy passage with source", "quote", () => ctx.command("copyPassage"), "⌥⌘C"),
@@ -447,9 +550,9 @@
 					stepper = el(
 						"span",
 						{ class: "stepper" },
-						button("Smaller text", "minus", () => size(zoom - 0.05), { iconOnly: true }),
+						button("Smaller text", "minus", () => size(-1), { iconOnly: true }),
 						out,
-						button("Bigger text", "plus", () => size(zoom + 0.05), { iconOnly: true }),
+						button("Bigger text", "plus", () => size(1), { iconOnly: true }),
 					);
 				const wrap = el("input", { type: "checkbox", class: "switch", "aria-label": "Wrap code lines" });
 				wrap.checked = app.hasAttribute("data-wrap");
@@ -485,17 +588,7 @@
 					"aria-controls": "pal-list",
 				});
 				query.addEventListener("input", () => void fillOpen(query.value));
-				query.addEventListener("keydown", (event) => {
-					if (event.isComposing) return;
-					if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-						event.preventDefault();
-						moveOpen(event.key === "ArrowDown" ? 1 : -1);
-					}
-					if (event.key === "Enter") {
-						event.preventDefault();
-						chooseOpen(openIndex);
-					}
-				});
+				query.addEventListener("keydown", openKeys);
 				palette.append(
 					el("div", { class: "q" }, icon("search"), query),
 					el("div", { class: "list", id: "pal-list", role: "listbox" }),
@@ -519,7 +612,9 @@
 				void fillOpen("");
 			},
 			show(view, args = {}) {
-				const token = ++sequence;
+				const token = ++sequence,
+					previousKind = kind;
+				kind = view;
 				controller.state({ overlay: view });
 				void content(view, args)
 					.then((body) => {
@@ -539,9 +634,11 @@
 						);
 						overlay.hidden = false;
 						app.dataset.overlay = view;
+						navigation.refreshFind();
 					})
 					.catch((error) => {
 						if (token !== sequence) return;
+						kind = previousKind;
 						controller.state({ overlay: kind });
 						ctx.notice(`This view did not open: ${String(error)}`, "warn");
 					});
@@ -558,7 +655,11 @@
 				overlay.replaceChildren();
 				delete app.dataset.overlay;
 				controller.state({ overlay: null });
+				navigation.refreshFind();
 				return true;
+			},
+			textZoom(delta) {
+				size(delta);
 			},
 			imageZoom(mode) {
 				if (kind !== "image") return;
@@ -574,17 +675,12 @@
 		off.push(
 			controller.on("document", (payload) => {
 				views.close();
-				applySettings(payload.settings);
+				applySettings({ textSize: 1, textSizeSteps: [1], ...payload.settings });
 				views.appearance();
 			}),
 			controller.on("settings", (patch) => {
 				applySettings(patch);
 				views.appearance();
-			}),
-			controller.on("command", (command) => {
-				if (command.name === "zoomIn") size(zoom + 0.05);
-				if (command.name === "zoomOut") size(zoom - 0.05);
-				if (command.name === "zoomReset") size(1);
 			}),
 		);
 		const toggle = (event: Event) => {

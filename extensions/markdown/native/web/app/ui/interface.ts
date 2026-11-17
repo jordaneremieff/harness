@@ -73,26 +73,31 @@
 			target.addEventListener(type, handler, options);
 			off.push(() => target.removeEventListener(type, handler, options));
 		}
+		let headingBlocks: ReaderMappedBlock[] | undefined,
+			headingRows: ReaderHeading[] = [];
+		function sourceHeadingText(block: ReaderMappedBlock) {
+			return controller.doc?.source.slice(block.start, block.end).replace(/^#{1,6}\s+|\s+#+$/gu, "") ?? "";
+		}
+		function headingRow(block: ReaderMappedBlock): ReaderHeading[] {
+			const matches = /^heading([1-6])$/.exec(block.type);
+			if (!matches) return [];
+			const node = doc.querySelector<HTMLElement>(`[data-block="${CSS.escape(block.key)}"]`);
+			if (!node) return [];
+			const heading = node.querySelector("h1,h2,h3,h4,h5,h6");
+			return [
+				{
+					level: Number(matches[1]),
+					text: heading?.textContent ?? sourceHeadingText(block),
+					anchor: heading?.id ?? block.key,
+					start: block.start,
+				},
+			];
+		}
 		function headings(): ReaderHeading[] {
-			const rows: ReaderHeading[] = [];
-			for (const block of controller.blocks) {
-				const node = doc.querySelector<HTMLElement>(`[data-block="${CSS.escape(block.key)}"]`);
-				if (!node) continue;
-				const matches = /^heading([1-6])$/.exec(block.type);
-				if (matches) {
-					const heading = node.querySelector("h1,h2,h3,h4,h5,h6");
-					rows.push({
-						level: Number(matches[1]),
-						text:
-							heading?.textContent ??
-							controller.doc?.source.slice(block.start, block.end).replace(/^#{1,6}\s+|\s+#+$/gu, "") ??
-							"",
-						anchor: heading?.id ?? block.key,
-						start: block.start,
-					});
-				}
-			}
-			return rows;
+			if (headingBlocks === controller.blocks) return headingRows;
+			headingBlocks = controller.blocks;
+			headingRows = controller.blocks.flatMap(headingRow);
+			return headingRows;
 		}
 		async function hostCommand(name: string, args: Record<string, unknown> = {}) {
 			try {
@@ -113,13 +118,15 @@
 					box.hidden = true;
 				}, 2000);
 		}
-		function removeNotice(id?:string) {for(const child of [...notices.children])if((child as HTMLElement).dataset.noticeId===id)child.remove();}
+		function removeNotice(id?: string) {
+			for (const child of [...notices.children]) if ((child as HTMLElement).dataset.noticeId === id) child.remove();
+		}
 		function notice(text: string, tone = "info", actions: { label: string; run: () => void }[] = [], id?: string) {
-			if(id)removeNotice(id);
+			if (id) removeNotice(id);
 			const item = el(
 				"div",
 				{ class: "notice", "data-role": "notice", "data-tone": tone === "warning" ? "warn" : tone, role: "status" },
-				icon(({agent:'spark',draft:'pen'})[tone]??'info'),
+				icon({ agent: "spark", draft: "pen" }[tone] ?? "info"),
 				el("span", { class: "tx" }, text),
 			);
 			if (id) item.dataset.noticeId = id;
@@ -161,14 +168,14 @@
 			const title = String(meta.title ?? "Untitled");
 			name.textContent = title + (copy ? " (copy)" : "");
 			document.title = title;
-			glyph.dataset.kind = ({localFile:'file'})[kind]??kind;
+			glyph.dataset.kind = { localFile: "file" }[kind] ?? kind;
 			glyph.replaceChildren(
 				icon({ draft: "pen", file: "file", localFile: "file", response: "response", published: "doc" }[kind] ?? "doc"),
 			);
 			app.toggleAttribute("data-copy", !!copy);
 			copyNotice(!!copy);
 		}
-		function copyNotice(copy:boolean){
+		function copyNotice(copy: boolean) {
 			if (copy)
 				notice(
 					"You are writing in a copy. The captured source stays as it was.",
@@ -177,13 +184,25 @@
 						{
 							label: "Show original",
 							run: () => {
-								void hostCommand("showOriginal");
+								views.show("review", { against: "base" });
 							},
 						},
 					],
 					"captured-copy",
 				);
-			else removeNotice('captured-copy');
+			else removeNotice("captured-copy");
+		}
+		function saveStatus(state: string) {
+			const label =
+				(
+					{ saving: "Saving", saved: "Saved", retrying: "Kept on this Mac", conflict: "Kept on this Mac" } as Record<
+						string,
+						string
+					>
+				)[state] ?? "Saved";
+			status.dataset.state = state;
+			status.replaceChildren(icon(state === "saved" ? "check" : "info"), el("span", { class: "save-word" }, label));
+			status.setAttribute("aria-label", label);
 		}
 		function lockState() {
 			const writing = controller.lock === "writing";
@@ -245,11 +264,29 @@
 			hideSelection();
 			return opened;
 		}
-		function selectionButtons(selected:ReaderSelection){
-			strip.replaceChildren(button('Ask','spark',()=>ask.open(selected),{className:'ask'}),el('span',{class:'sep'}),button('Copy with source','copy',copyPassage,{className:'copy-selection'}));
-			if(controller.lock==='reading'){strip.append(button('Edit','pen',()=>editSelection(),{className:'selection-edit'}));return;}
-			if(!controller.blocks.some(b=>b.start<=selected.start&&b.end>=selected.end))return;
-			for(const [format,key]of [['bold','⌘B'],['italic','⌘I'],['code','⇧⌘K'],['link','⌘K']])strip.append(button(format[0].toUpperCase()+format.slice(1),format,()=>editSelection(format),{iconOnly:true,key}));
+		function selectionButtons(selected: ReaderSelection) {
+			strip.replaceChildren(
+				button("Ask", "spark", () => ask.open(selected), { className: "ask" }),
+				el("span", { class: "sep" }),
+				button("Copy with source", "copy", copyPassage, { className: "copy-selection" }),
+			);
+			if (controller.lock === "reading") {
+				strip.append(button("Edit", "pen", () => editSelection(), { className: "selection-edit" }));
+				return;
+			}
+			if (!controller.blocks.some((b) => b.start <= selected.start && b.end >= selected.end)) return;
+			for (const [format, key] of [
+				["bold", "⌘B"],
+				["italic", "⌘I"],
+				["code", "⇧⌘K"],
+				["link", "⌘K"],
+			])
+				strip.append(
+					button(format[0].toUpperCase() + format.slice(1), format, () => editSelection(format), {
+						iconOnly: true,
+						key,
+					}),
+				);
 		}
 		function selectionTools(selected: ReaderSelection | null) {
 			selection = selected;
@@ -314,12 +351,22 @@
 				},
 				copyPassage,
 				open: () => views.open(),
-				showReview: () => views.show("review", { against: args.against ?? "previous" }),
+				showReview: () =>
+					views.show("review", {
+						against:
+							args.against ??
+							(controller.payload?.meta.kind === "draft" || controller.payload?.meta.capturedSource
+								? "base"
+								: "previous"),
+					}),
 				showDetails: () => views.show("details"),
 				showSource: () => views.show("source"),
 				showLibrary: () => views.show("library"),
 				inspectImage: () => views.show("image", args),
 				imageZoom: () => views.imageZoom(String(args.mode ?? "fit")),
+				zoomIn: () => views.textZoom(0.05),
+				zoomOut: () => views.textZoom(-0.05),
+				zoomReset: () => views.textZoom(null),
 				back: () => navigation.back(),
 				forward: () => navigation.back(true),
 				latest: () => {
@@ -359,7 +406,11 @@
 					"Copy code",
 					"copy",
 					() => {
-						void hostCommand("copy", { text: text.replace(/\n$/u, "") });
+						const value = text.replace(/\n$/u, "");
+						const source = controller.doc?.source ?? "";
+						void hostCommand("copy", {
+							text: source.includes("\r\n") && !/(?<!\r)\n/u.test(source) ? value.replaceAll("\n", "\r\n") : value,
+						});
 						toast("Copied code");
 					},
 					{ className: "copy code-copy" },
@@ -377,21 +428,22 @@
 				node.classList.remove("agent-claimed");
 			}
 			const ranges: Range[] = [];
-			for (const claim of controller.claims.values()) ranges.push(...claim.ranges.flatMap(range=>paintClaim(range,claim.label)));
-			editor.highlight('agent-claim',ranges);
+			for (const claim of controller.claims.values())
+				ranges.push(...claim.ranges.flatMap((range) => paintClaim(range, claim.label)));
+			editor.highlight("agent-claim", ranges);
 		}
-		function paintClaim(range:ReaderRange,label?:string):Range[]{
-					const block = [...doc.children].find(
-						(n) =>
-							Number((n as HTMLElement).dataset.start) <= range.start &&
-							Number((n as HTMLElement).dataset.end) >= range.start,
-					) as HTMLElement | undefined;
-					if (!block || block.dataset.role === "block-editor") return [];
-					block.classList.add("agent-claimed");
-					block.dataset.claimLabel = label ?? "Agent is working here";
-					const painted = document.createRange();
-					painted.selectNodeContents(block);
-					return [painted];
+		function paintClaim(range: ReaderRange, label?: string): Range[] {
+			const block = [...doc.children].find(
+				(n) =>
+					Number((n as HTMLElement).dataset.start) <= range.start &&
+					Number((n as HTMLElement).dataset.end) >= range.start,
+			) as HTMLElement | undefined;
+			if (!block || block.dataset.role === "block-editor") return [];
+			block.classList.add("agent-claimed");
+			block.dataset.claimLabel = label ?? "Agent is working here";
+			const painted = document.createRange();
+			painted.selectNodeContents(block);
+			return [painted];
 		}
 		listen(strip, "pointerdown", (event) => event.preventDefault());
 		listen(
@@ -426,6 +478,7 @@
 					image = target.closest<HTMLImageElement>("img");
 				if (image && !target.closest("a")) {
 					event.preventDefault();
+					event.stopImmediatePropagation();
 					const images = [...doc.querySelectorAll("img")];
 					views.show("image", { index: images.indexOf(image) });
 				}
@@ -469,8 +522,6 @@
 			controller.on("history", historyState),
 			controller.on("selection", selectionTools),
 			controller.on("view", () => {
-				navigation.rebuild();
-				navigation.refreshFind();
 				codeControls();
 				claims();
 			}),
@@ -494,17 +545,14 @@
 			controller.on("document", () => {
 				notices.replaceChildren();
 				selection = null;
-				status.textContent = "Saved";
+				saveStatus("saved");
 				codeControls();
 			}),
 		);
 		off.push(
 			host.on("saveState", (value) => {
 				const msg = value as { state: string; detail?: string };
-				status.dataset.state = msg.state;
-				status.textContent =
-					{ saving: "Saving", saved: "Saved", retrying: "Kept on this Mac", conflict: "Kept on this Mac" }[msg.state] ??
-					"Saved";
+				saveStatus(msg.state);
 				if (msg.state === "conflict")
 					notice(
 						msg.detail ?? "The file changed where you edited. Your version is kept; the other version is a draft.",

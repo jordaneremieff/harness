@@ -36,6 +36,7 @@ declare global {
 		collapsed: boolean;
 	}
 	interface ReaderUILogic {
+		zoomStep(current: number, steps: readonly number[], direction: number | null): number;
 		keyCommand(key: ReaderKey, context: { writing: boolean; input: boolean }): ReaderUICommand | null;
 		findStatus(count: number, index: number): string;
 		currentHeading(rows: { start: number; top: number }[], threshold: number): number;
@@ -101,6 +102,7 @@ declare global {
 		show(kind: string, args?: Record<string, unknown>): void;
 		close(): boolean;
 		imageZoom(mode: string): void;
+		textZoom(delta: number | null): void;
 		dispose(): void;
 	}
 	interface ReaderUI {

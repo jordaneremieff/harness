@@ -76,7 +76,14 @@
 		add("same", old.slice(old.length - end));
 		return parts;
 	}
+	function zoomStep(current: number, steps: readonly number[], direction: number | null) {
+		if (direction === null) return 1;
+		const valid = steps.filter((step) => Number.isFinite(step) && step > 0);
+		if (direction > 0) return valid.find((step) => step > current) ?? valid.at(-1) ?? 1;
+		return valid.findLast((step) => step < current) ?? valid[0] ?? 1;
+	}
 	api.uiLogic = {
+		zoomStep,
 		keyCommand,
 		promptTransition,
 		diffWords,

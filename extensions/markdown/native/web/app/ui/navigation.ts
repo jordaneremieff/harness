@@ -64,10 +64,44 @@
 		function narrow() {
 			return app.clientWidth < 720;
 		}
+		let blockElements = new Map<number, HTMLElement>();
 		function block(start: number) {
-			return [...doc.children].find((node) => Number((node as HTMLElement).dataset.end) >= start) as
-				| HTMLElement
-				| undefined;
+			return blockElements.get(start) ?? [...blockElements.values()].find((node) => Number(node.dataset.end) >= start);
+		}
+		function overlayBody() {
+			return get("#overlay").querySelector<HTMLElement>(".review-doc,.source-text");
+		}
+		function overlayMatches(query: string) {
+			const root = overlayBody();
+			if (!root || !query) return [];
+			const source = api.sourceModel
+					.textNodes(root)
+					.map((node) => node.data)
+					.join(""),
+				text = source.toLocaleLowerCase(),
+				needle = query.toLocaleLowerCase(),
+				found: ReturnType<ReaderEditor["find"]> = [];
+			let at = text.indexOf(needle);
+			while (at >= 0) {
+				const start = api.sourceModel.point(root, at),
+					end = api.sourceModel.point(root, at + needle.length),
+					range = document.createRange();
+				range.setStart(start.node, start.offset);
+				range.setEnd(end.node, end.offset);
+				found.push({ key: "overlay", start: at, end: at + needle.length, ranges: [range] });
+				at = text.indexOf(needle, at + needle.length);
+			}
+			return found;
+		}
+		function findScroll(range: Range) {
+			if (overlayBody()) {
+				range.startContainer.parentElement?.scrollIntoView({ block: "center" });
+				return;
+			}
+			saveJump();
+			const rect = range.getBoundingClientRect();
+			page.scrollTop += rect.top - page.getBoundingClientRect().top - page.clientHeight * 0.35;
+			finishJump();
 		}
 		function position() {
 			const top = page.getBoundingClientRect().top + 46;
@@ -108,9 +142,17 @@
 			if (cursor >= 0 && cursor < history.length - 1)
 				root.append(button("Forward", "forward", () => nav.back(true), { className: "back" }));
 		}
-		function sectionHits(){
-			const counts=new Map<number,number>(),hs=ctx.headings(),byKey=new Map(controller.blocks.map(b=>[b.key,b]));
-			for(const match of matches){const b=byKey.get(match.key);if(!b)continue;const h=hs.findLast(h=>h.start<=b.start);if(h)counts.set(h.start,(counts.get(h.start)??0)+1);}return counts;
+		function sectionHits() {
+			const counts = new Map<number, number>(),
+				hs = ctx.headings(),
+				byKey = new Map(controller.blocks.map((b) => [b.key, b]));
+			for (const match of matches) {
+				const b = byKey.get(match.key);
+				if (!b) continue;
+				const h = hs.findLast((h) => h.start <= b.start);
+				if (h) counts.set(h.start, (counts.get(h.start) ?? 0) + 1);
+			}
+			return counts;
 		}
 		function hitCounts() {
 			const counts = sectionHits();
@@ -140,10 +182,7 @@
 			if (scroll && matches[index]) {
 				const range = matches[index].ranges[0];
 				if (range) {
-					saveJump();
-					const rect = range.getBoundingClientRect();
-					page.scrollTop += rect.top - page.getBoundingClientRect().top - page.clientHeight * 0.35;
-					finishJump();
+					findScroll(range);
 				}
 			}
 		}
@@ -156,28 +195,88 @@
 					patch: { outlineWidth: value, outlineOpen: app.dataset.outline !== "closed" },
 				});
 		}
-		function outlineLink(h:ReaderHeading,minimum:number){const a=el('a',{href:`#${h.anchor}`,'data-heading-start':String(h.start),'data-level':String(h.level-minimum+1)},el('span',{class:'t'},h.text),el('span',{class:'n'}));a.style.setProperty('--lvl',String(h.level-minimum));a.addEventListener('click',event=>{event.preventDefault();nav.jump(h.start);nav.closeSheet();});return a;}
-		function setCurrentRow(row:HTMLElement,current:boolean){
-			row.toggleAttribute('aria-current',current);row.toggleAttribute('data-role',current);
-			if(!current)return;row.setAttribute('aria-current','true');row.dataset.role='outline-current';if(hover)return;const r=row.getBoundingClientRect(),box=rows.getBoundingClientRect();if(r.top<box.top||r.bottom>box.bottom)row.scrollIntoView({block:'nearest'});
+		function outlineLink(h: ReaderHeading, minimum: number) {
+			const a = el(
+				"a",
+				{ href: `#${h.anchor}`, "data-heading-start": String(h.start), "data-level": String(h.level - minimum + 1) },
+				el("span", { class: "t" }, h.text),
+				el("span", { class: "n" }),
+			);
+			a.style.setProperty("--lvl", String(h.level - minimum));
+			a.addEventListener("click", (event) => {
+				event.preventDefault();
+				nav.jump(h.start);
+				nav.closeSheet();
+			});
+			return a;
 		}
-		function toggleSheet(){app.dataset.sheet=app.dataset.sheet==='open'?'closed':'open';if(app.dataset.sheet==='open')filter.focus({preventScroll:true});return app.dataset.sheet==='open';}
-		function toggleDock(){app.dataset.outline=app.dataset.outline==='closed'?'open':'closed';void ctx.hostCommand('saveSettings',{patch:{outlineOpen:app.dataset.outline==='open'}});return app.dataset.outline==='open';}
-		function sourceEdit(match:ReturnType<ReaderEditor['find']>[number],source:string):ReaderEdit|null{
-			const b=controller.blocks.find(b=>b.key===match.key);if(!b)return null;const node=block(b.start);if(!node)return null;
-			let start:number|null,end:number|null;
-			if(controller.doc?.active?.blockId===b.key){const map=new api.exact.LineMap(source.slice(b.start,b.end));start=b.start+map.toSource(match.start);end=b.start+map.toSource(match.end);}else{const map=api.sourceModel.map(b,source,node);start=map.boundaries[match.start];end=map.boundaries[match.end];}
-			if(start==null||end==null)return null;return {start,end,text:replacement.value,expected:source.slice(start,end)};
+		function setCurrentRow(row: HTMLElement, current: boolean) {
+			row.toggleAttribute("aria-current", current);
+			row.toggleAttribute("data-role", current);
+			if (!current) return;
+			row.setAttribute("aria-current", "true");
+			row.dataset.role = "outline-current";
+			if (hover) return;
+			const r = row.getBoundingClientRect(),
+				box = rows.getBoundingClientRect();
+			if (r.top < box.top || r.bottom > box.bottom) row.scrollIntoView({ block: "nearest" });
 		}
-		function replacementEdits(source:string){const edits:ReaderEdit[]=[];for(const match of matches){const edit=sourceEdit(match,source);if(!edit){ctx.notice('The rendered match has no exact source range. Open its block to replace it.','warn');return null;}edits.push(edit);}return edits;}
+		function toggleSheet() {
+			app.dataset.sheet = app.dataset.sheet === "open" ? "closed" : "open";
+			if (app.dataset.sheet === "open") filter.focus({ preventScroll: true });
+			return app.dataset.sheet === "open";
+		}
+		function toggleDock() {
+			app.dataset.outline = app.dataset.outline === "closed" ? "open" : "closed";
+			void ctx.hostCommand("saveSettings", { patch: { outlineOpen: app.dataset.outline === "open" } });
+			return app.dataset.outline === "open";
+		}
+		function sourceEdit(match: ReturnType<ReaderEditor["find"]>[number], source: string): ReaderEdit | null {
+			const b = controller.blocks.find((b) => b.key === match.key);
+			if (!b) return null;
+			const node = block(b.start);
+			if (!node) return null;
+			let start: number | null, end: number | null;
+			if (controller.doc?.active?.blockId === b.key) {
+				const map = new api.exact.LineMap(source.slice(b.start, b.end));
+				start = b.start + map.toSource(match.start);
+				end = b.start + map.toSource(match.end);
+			} else {
+				const map = api.sourceModel.map(b, source, node);
+				start = map.boundaries[match.start];
+				end = map.boundaries[match.end];
+			}
+			if (start == null || end == null) return null;
+			return { start, end, text: replacement.value, expected: source.slice(start, end) };
+		}
+		function replacementEdits(source: string) {
+			const edits: ReaderEdit[] = [];
+			for (const match of matches) {
+				const edit = sourceEdit(match, source);
+				if (!edit) {
+					ctx.notice("The rendered match has no exact source range. Open its block to replace it.", "warn");
+					return null;
+				}
+				edits.push(edit);
+			}
+			return edits;
+		}
+		function outlineSettings(patch: Record<string, unknown>) {
+			if (typeof patch.outlineWidth === "number") setWidth(patch.outlineWidth, false);
+			if (typeof patch.outlineOpen === "boolean") app.dataset.outline = patch.outlineOpen ? "open" : "closed";
+		}
 		const nav: ReaderNavigation = {
 			rebuild() {
+				blockElements = new Map(
+					[...doc.children].map((node) => [Number((node as HTMLElement).dataset.start), node as HTMLElement]),
+				);
 				const headings = ctx.headings(),
 					minimum = Math.min(6, ...headings.map((h) => h.level)),
 					query = filter.value.trim().toLocaleLowerCase();
 				rows.replaceChildren();
 				count.textContent = headings.length ? String(headings.length) : "";
-				for(const h of headings.filter(h=>h.text.toLocaleLowerCase().includes(query)))rows.append(outlineLink(h,minimum));
+				for (const h of headings.filter((h) => h.text.toLocaleLowerCase().includes(query)))
+					rows.append(outlineLink(h, minimum));
 				if (!rows.children.length)
 					rows.append(
 						el("div", { class: "empty" }, headings.length ? "No matching headings" : "This document has no headings"),
@@ -194,11 +293,11 @@
 				const at = api.uiLogic.currentHeading(positions, page.getBoundingClientRect().top + 74),
 					start = headings[at]?.start;
 				for (const row of rows.querySelectorAll<HTMLElement>("[data-heading-start]")) {
-					setCurrentRow(row,Number(row.dataset.headingStart)===start);
+					setCurrentRow(row, Number(row.dataset.headingStart) === start);
 				}
 			},
 			toggleOutline() {
-				get('#b-outline').setAttribute('aria-pressed',String(narrow()?toggleSheet():toggleDock()));
+				get("#b-outline").setAttribute("aria-pressed", String(narrow() ? toggleSheet() : toggleDock()));
 			},
 			closeSheet() {
 				if (app.dataset.sheet !== "open") return false;
@@ -209,7 +308,7 @@
 			find(args = {}) {
 				findOpen = true;
 				app.setAttribute("data-find", "");
-				if (args.replace) app.setAttribute("data-replace", "");
+				if (args.replace && !app.dataset.overlay) app.setAttribute("data-replace", "");
 				if (typeof args.query === "string") field.value = args.query;
 				else {
 					const selection = editor.selection();
@@ -238,13 +337,16 @@
 			},
 			refreshFind() {
 				if (!findOpen) return;
-				matches = editor.find(field.value);
+				matches = overlayBody() ? overlayMatches(field.value) : editor.find(field.value);
+				const replace = findbar.querySelector<HTMLButtonElement>('[aria-label="Replace"]');
+				if (replace) replace.disabled = !!app.dataset.overlay;
+				if (app.dataset.overlay) app.removeAttribute("data-replace");
 				index = Math.min(index, Math.max(0, matches.length - 1));
 				paintFind();
 			},
 			replace() {
-				if (!matches.length || !controller.doc) return;
-				const edits=replacementEdits(controller.doc.source);
+				if (!matches.length || !controller.doc || app.dataset.overlay) return;
+				const edits = replacementEdits(controller.doc.source);
 				if (!edits?.length) return;
 				editor.close();
 				controller.setLock("writing");
@@ -346,7 +448,8 @@
 			setWidth(width);
 		}) as EventListener);
 		off.push(
-			controller.on("document", () => {
+			controller.on("document", (payload) => {
+				outlineSettings(payload.settings);
 				history = [];
 				cursor = -1;
 				drawBack();
@@ -357,10 +460,7 @@
 				nav.rebuild();
 				nav.refreshFind();
 			}),
-			controller.on("settings", (patch) => {
-				if (typeof patch.outlineWidth === "number") setWidth(patch.outlineWidth, false);
-				if (typeof patch.outlineOpen === "boolean") app.dataset.outline = patch.outlineOpen ? "open" : "closed";
-			}),
+			controller.on("settings", outlineSettings),
 		);
 		return nav;
 	};
