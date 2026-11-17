@@ -19,7 +19,7 @@ export type LiveResult = { status: "ok"; source: string; generation: number; dig
 	| { status: "claimed"; claimId: string; expiresAt: number }
 	| { status: "released"; claimId: string }
 	| { status: "stale" | "busy" | "closed" | "error" | "uncertain"; message: string };
-export interface LiveState { sequence: number; status: "idle" | "queued" | "working" | "answer" | "error"; text: string; truncated: boolean }
+export interface LiveState { sequence: number; status: "idle" | "queued" | "working" | "answer" | "error"; text: string; truncated: boolean; operationId?: string }
 export const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 export const liveId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/iu.test(value);
 export const liveDigest = (value: unknown): value is string => typeof value === "string" && /^sha256:[a-f0-9]{64}$/u.test(value);

@@ -72,7 +72,7 @@ export class LiveBridge {
 		if (this.closed) return;
 		const handle = operationId ? this.prompts.get(operationId)?.handle : this.focused;
 		if (!handle || this.retired.has(handle)) return;
-		this.states.set(handle, { sequence: ++this.sequence, status, ...boundedText(text) });
+		this.states.set(handle, { sequence: ++this.sequence, status, ...boundedText(text), ...(operationId ? { operationId } : {}) });
 		this.wakes.get(handle)?.();
 	}
 	private stateFor(handle: string): LiveState { return this.states.get(handle) ?? { sequence: 0, status: "idle", text: "", truncated: false }; }

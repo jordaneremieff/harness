@@ -75,7 +75,9 @@ test("selection deactivates a handle without retiring its prompt receipts, while
 		assert.equal((await bridge.execute(handle, { op: "read" })).status, "closed");
 		bridge.publish("answer", "Answer while deselected", prompt.operationId);
 		assert.equal((await post(config, "/connect", pane)).status, 200);
-		assert.equal((await post(config, "/poll", { ...pane, after: 0 })).data.state.text, "Answer while deselected");
+		const deselected = (await post(config, "/poll", { ...pane, after: 0 })).data.state;
+		assert.equal(deselected.text, "Answer while deselected");
+		assert.equal(deselected.operationId, prompt.operationId);
 		await post(config, "/prompt", prompt);
 		assert.equal(submitted, 1);
 		await post(config, "/connect", other);
@@ -239,6 +241,7 @@ test("a live poll wakes on progress and cancelled commands do not dispatch", { t
 		const result = await polling;
 		assert.equal(result.data.command, null);
 		assert.equal(result.data.state.text, "Current answer");
+		assert.equal(result.data.state.operationId, undefined);
 	} finally { bridge.close(); }
 });
 test("an explicit identical edit retry restores delivery after an aborted lost-poll wait", { timeout: 10000 }, async () => {
