@@ -67,6 +67,7 @@
   @container app (width < 560px) { .doc .agent-claimed { padding-top:8px; }.doc .agent-claimed::before { position:static;display:block;text-align:right;margin-bottom:4px; } }
 }
 ::highlight(find) { background-color:var(--mark);color:var(--heading); }
+[data-repaint] { filter: opacity(0.999); }
 ::highlight(find-current) { background-color:var(--mark-current);color:oklch(15% .02 60); }
 ::highlight(agent-claim) { background-color:var(--agent-soft); }
 ::highlight(passage) { background-color:var(--agent-soft);text-decoration:underline;text-decoration-color:color-mix(in oklch,var(--agent) 55%,transparent);text-decoration-thickness:1.5px;text-underline-offset:.2em; }

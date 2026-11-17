@@ -849,9 +849,33 @@
 					CSS: { highlights: Map<string, unknown> };
 					Highlight: new (...ranges: Range[]) => unknown;
 				};
-				w.CSS.highlights.set(name, new w.Highlight(...ranges));
+				const previous = painted.get(name) ?? [];
+				if (ranges.length) w.CSS.highlights.set(name, new w.Highlight(...ranges));
+				else w.CSS.highlights.delete(name);
+				painted.set(name, ranges);
+				repaintAfterHighlight(previous);
 			},
 		};
+		// WebKit can keep painting a removed highlight on screen until its text repaints. Each block
+		// that held a removed range is repainted once: a visually neutral filter for one task.
+		const painted = new Map<string, Range[]>();
+		function rangeBlock(range: Range) {
+			const node = range.commonAncestorContainer;
+			const element = node.nodeType === 1 ? (node as Element) : node.parentElement;
+			return element?.closest<HTMLElement>("[data-block]") ?? null;
+		}
+		function repaintAfterHighlight(ranges: Range[]) {
+			const blocks = new Set<HTMLElement>();
+			for (const range of ranges) {
+				const element = rangeBlock(range);
+				if (element?.isConnected) blocks.add(element);
+			}
+			for (const block of blocks) block.setAttribute("data-repaint", "");
+			if (blocks.size)
+				setTimeout(() => {
+					for (const block of blocks) block.removeAttribute("data-repaint");
+				}, 0);
+		}
 		function documentTarget(event: Event) {
 			const target = eventElement(event);
 			return target?.closest("[data-reader-control]") ? null : target;

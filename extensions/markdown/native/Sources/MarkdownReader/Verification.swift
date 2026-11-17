@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "find-close-clears-highlights",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -78,6 +78,7 @@ struct Verification {
                 await run("narrow-writing-bar-keeps-save-icon") { await context.narrowWritingBar(keep: &keep) }
                 await run("agent-change-keeps-reading-position") { await context.agentChangeKeepsPlace(keep: &keep) }
                 await run("context-menu-ask-floats-beside-selection") { await context.contextMenuAsk(keep: &keep) }
+                await run("find-close-clears-highlights") { await context.findCloseClears(keep: &keep) }
                 await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
                 await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
                 await run("image-inspection-deadline") { await context.imageInspectionDeadline(keep: &keep) }
@@ -1034,6 +1035,72 @@ struct Context {
             } catch { pass = false; results.append("\(index): \(error)") }
         }
         return .init(name: name, pass: pass, detail: results.joined(separator: "; "))
+    }
+
+    /// Closing find with Escape in Reading removes the find highlights from the registry and repaints
+    /// the block that held the current match, so nothing stale stays painted until a re-render.
+    /// The pixel sample uses WebKit's snapshot, which paints afresh; a stale on-screen paint shows
+    /// only in a visible window.
+    func findCloseClears(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "find-close-clears-highlights"
+        do {
+            let file = workspace.appendingPathComponent("find-close.md")
+            try Data("# Find\n\nHuman passage stays here.\n\nAnother human passage below.\n".utf8).write(to: file)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: ReadingStateStore(directory: nil))
+            keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            let sizes = "return ['find', 'find-current'].map(n => CSS.highlights.get(n)?.size ?? 0);"
+            await model.sendCommand("find", args: ["query": "Human passage"])
+            _ = await js(model, "await new Promise(r => setTimeout(r, 80)); return true;")
+            let open = await js(model, sizes) as? [Int] ?? []
+            // The current match's rectangle in the page, for a pixel sample of what is painted.
+            let rect = await js(model, """
+            const p = [...document.querySelectorAll('[data-role="document"] p')].find(p => p.textContent.startsWith('Human passage'));
+            const range = document.createRange(); range.setStart(p.firstChild, 0); range.setEnd(p.firstChild, 13);
+            const r = range.getBoundingClientRect();
+            return [r.left, r.top, r.width, r.height];
+            """) as? [Double] ?? []
+            let before = await matchTint(model, rect)
+            let repainted = await js(model, """
+            const block = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.trim().startsWith('Human passage'));
+            if (!block) return false;
+            const seen = [];
+            const watcher = new MutationObserver(list => { for (const m of list) if (m.target === block && block.hasAttribute('data-repaint')) seen.push(1); });
+            watcher.observe(block, { attributes: true, attributeFilter: ['data-repaint'] });
+            const field = document.querySelector('input[data-role="find-field"]');
+            field.focus();
+            field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+            await new Promise(r => setTimeout(r, 120));
+            watcher.disconnect();
+            return seen.length > 0 && !block.hasAttribute('data-repaint');
+            """) as? Bool == true
+            let removed = await js(model, "return !CSS.highlights.has('find') && !CSS.highlights.has('find-current');") as? Bool == true
+            let closed = await js(model, sizes) as? [Int] ?? []
+            let after = await matchTint(model, rect)
+            let findOpen = await js(model, "return document.getElementById('app').hasAttribute('data-find');") as? Bool ?? true
+            await model.close()
+            let pass = open.count == 2 && open[0] > 0 && open[1] > 0 && closed == [0, 0] && removed && repainted && !findOpen && before > 0.08 && after < 0.03
+            return .init(name: name, pass: pass, detail: "highlight ranges (find, current) open \(open), after Escape \(closed); highlights removed \(removed); highlighted block repainted once \(repainted); find bar open \(findOpen); painted warm tint of the current match before \(String(format: "%.3f", before)), after \(String(format: "%.3f", after))")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    /// The mean amount by which red exceeds blue in a rectangle of the page as WebKit paints it;
+    /// the find highlights are amber, the page and text are neutral.
+    func matchTint(_ model: ReaderModel, _ rect: [Double]) async -> Double {
+        guard rect.count == 4, rect[2] > 0, rect[3] > 0 else { return -1 }
+        let configuration = WKSnapshotConfiguration()
+        configuration.rect = CGRect(x: rect[0], y: rect[1], width: rect[2], height: rect[3])
+        guard let image = try? await model.page.webView.takeSnapshot(configuration: configuration),
+              let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) else { return -1 }
+        var sum = 0.0, count = 0.0
+        for x in stride(from: 0, to: bitmap.pixelsWide, by: 2) {
+            for y in stride(from: 0, to: bitmap.pixelsHigh, by: 2) {
+                guard let colour = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                sum += max(0, colour.redComponent - colour.blueComponent); count += 1
+            }
+        }
+        return count > 0 ? sum / count : -1
     }
 
     func typing(keep: inout [NSWindow]) async -> Verification.Check {
