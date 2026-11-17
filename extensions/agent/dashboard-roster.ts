@@ -344,6 +344,11 @@ interface DerivedRoster {
 
 const rosterCaches = new WeakMap<readonly AgentConversationSummary[], WeakMap<Theme, Map<string, DerivedRoster>>>();
 
+/** Model facts and theme values can change without replacing the observed rows. */
+export function invalidateRoster(rows: readonly AgentConversationSummary[]): void {
+	rosterCaches.delete(rows);
+}
+
 /** A section heading: the quiet label and its count, after one blank row unless it opens the window. */
 function groupHeading(group: RosterGroup, count: number, theme: Theme): string {
 	return ` ${theme.bold(theme.fg("muted", GROUP_LABEL[group]))} ${theme.fg("dim", String(count))}`;

@@ -44,7 +44,7 @@ import type { AgentObservationSource } from "./agent-observation.ts";
 import { AgentConsole } from "./agent-console.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
 import { clamp, MAX_ROSTER_COLUMNS, MIN_COMPOSER_ROWS, MIN_DETAIL_COLUMNS, MIN_ROSTER_COLUMNS, dashboardGeometry, dashboardRule, fitLine } from "./dashboard-layout.ts";
-import { currentFault, dashboardRecords, groupRows, listedRow, listReason, modelLabel, recoveryHint, rosterLines, sessionAppearance, titleOf, needsAttention, unplacedText } from "./dashboard-roster.ts";
+import { currentFault, dashboardRecords, groupRows, invalidateRoster, listedRow, listReason, modelLabel, recoveryHint, rosterLines, sessionAppearance, titleOf, needsAttention, unplacedText } from "./dashboard-roster.ts";
 import type { AgentCardLookup } from "./tool-cards.ts";
 import { agentState, dashboardSessionState, updateDraft, notifyAgentState, type DashboardState, type DashboardLayout } from "./dashboard-state.ts";
 import { agentDisplayName } from "./action-outcome.ts";
@@ -2356,6 +2356,7 @@ export class AgentDashboard implements Component, Focusable {
 	}
 
 	invalidate(): void {
+		invalidateRoster(this.rows);
 		this.hits.clear();
 		this.console?.conversation.invalidate();
 		this.console?.composer.invalidate();

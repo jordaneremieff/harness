@@ -291,6 +291,25 @@ it("model metadata comes from the selected host's model list, read once per sele
 	await f.controller.close();
 });
 
+it("a delayed model list refreshes the already painted roster", async () => {
+	const f = fixture();
+	const models = deferred<unknown>();
+	f.responses.set("models", models.promise);
+	const s = screenFixture(f.controller);
+	try {
+		await settle(() => s.text().includes("test/model [high]"), "the initial unknown-model roster");
+		models.resolve({
+			models: [{ provider: "test", modelId: "model", reasoning: false, contextWindow: 64000 }],
+			source: "available-snapshot", observedAt: new Date().toISOString(),
+		});
+		await f.controller.displaySettled();
+		assert.doesNotMatch(s.text(), /test\/model \[high\]/, "the host's nonreasoning model replaces the cached unknown-model label");
+	} finally {
+		s.screen.dispose();
+		await f.controller.close();
+	}
+});
+
 it("Connect starts the host and rereads the selected owner modules", async () => {
 	const f = fixture();
 	f.controller.select("a");

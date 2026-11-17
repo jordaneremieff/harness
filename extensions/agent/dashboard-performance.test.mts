@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { fixture, source, row, turn, theme, conversationFrame } from "./dashboard-test-fixture.mts";
 import { manualClock } from "./observation-clock-fixture.mts";
-import { rosterLines } from "./dashboard-roster.ts";
+import { invalidateRoster, rosterLines } from "./dashboard-roster.ts";
 import { AgentConsole } from "./agent-console.ts";
 import { ConversationHistory } from "./conversation-view.ts";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
@@ -60,6 +60,20 @@ it("roster derivation reuses lines until the minute, selection or width changes"
 	const beforeWidth = reads;
 	paint(60000, "two", 40);
 	assert.ok(reads > beforeWidth, "a width change derives newly clipped lines");
+});
+
+it("roster invalidation refreshes delayed model facts without a roster change", () => {
+	const rows = [row("one", { model: { provider: "test", modelId: "model", thinkingLevel: "high" } })];
+	let reasoning: boolean | undefined;
+	const viewport = { reasons: () => reasoning };
+	const paint = () => rosterLines(rows, "one", 80, 16, 0, theme, viewport).join("\n");
+	assert.match(paint(), /test\/model \[high\]/);
+	reasoning = false;
+	invalidateRoster(rows);
+	assert.doesNotMatch(paint(), /\[high\]/, "a loaded nonreasoning model removes the earlier unknown-model label");
+	reasoning = true;
+	invalidateRoster(rows);
+	assert.match(paint(), /test\/model \[high\]/, "a new invalidation replaces the earlier cached projection");
 });
 
 it("selection reads follow key dispatch instead of blocking it", async () => {

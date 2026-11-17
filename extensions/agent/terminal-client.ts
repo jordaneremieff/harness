@@ -552,6 +552,7 @@ export class TerminalScreen implements Component {
 
 	private changed(): void {
 		if (this.disposed) return;
+		this.view.invalidate();
 		this.view.setToolDisplay(this.controller.toolDisplay);
 		this.projectStatus(this.view.selectedRow);
 	}
