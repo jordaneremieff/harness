@@ -49,6 +49,7 @@ declare global {
 		inverse: ReaderEdit[];
 	}
 	interface ReaderRedoRecord {
+		operationId?: string;
 		origin: "person" | "agent";
 		blockId: string | null;
 		steps: ReaderEdit[][];

@@ -131,11 +131,28 @@
 			keys.add(b.key);
 		}
 	}
+	function multiplier(value: unknown): value is number {
+		return typeof value === "number" && Number.isFinite(value) && value > 0;
+	}
+	function sizeSteps(value: unknown) {
+		return (
+			Array.isArray(value) &&
+			value.length > 0 &&
+			value.every((step, index) => multiplier(step) && (index === 0 || step > value[index - 1]))
+		);
+	}
 	function settings(value: unknown, complete = false) {
 		const s = object(value);
+		if (complete)
+			ensure(
+				["textSize", "textSizeSteps", "codeWrap", "appearance", "outlineWidth", "outlineOpen"].every(
+					(key) => s[key] !== undefined,
+				),
+			);
 		ensure(optional(s.lock, (v) => one(v, ["reading", "writing"])) && (!complete || s.lock !== undefined));
 		ensure(
-			optional(s.textSize, number) &&
+			optional(s.textSize, multiplier) &&
+				optional(s.textSizeSteps, sizeSteps) &&
 				optional(s.codeWrap, (v) => typeof v === "boolean") &&
 				optional(s.appearance, (v) => one(v, ["system", "light", "dark"])),
 		);
@@ -330,6 +347,7 @@
 		"pickImage",
 		"newDraft",
 		"saveSettings",
+		"chooseStore",
 	];
 	function hostCommand(m: Fields) {
 		ensure(one(m.name, hostCommands));
@@ -343,7 +361,7 @@
 		export: (a) => ensure(one(a.format, ["archive", "sharing", "pdf"])),
 		open: (a) => ensure(optional(a.ref, (v) => string(v, 8192))),
 		showRevision: (a) => ensure(integer(a.n)),
-		reviewChanges: (a) => ensure(a.against === "previous" || integer(a.against)),
+		reviewChanges: (a) => ensure(one(a.against, ["previous", "base"]) || integer(a.against)),
 		inspectImage: (a) => ensure(integer(a.index)),
 		pickImage(a) {
 			ensure(integer(a.generation));
@@ -353,13 +371,14 @@
 	};
 	function query(m: Fields) {
 		ensure(one(m.kind, ["review", "details", "image", "library"]));
-		if (m.kind === "review") ensure(m.against === "previous" || integer(m.against));
+		if (m.kind === "review") ensure(one(m.against, ["previous", "base"]) || integer(m.against));
 		if (m.kind === "image") ensure(integer(m.index));
 		if (m.kind === "library")
 			ensure(
 				one(m.collection, ["drafts", "recent", "published"]) &&
 					optional(m.query, (v) => string(v, 8192, true)) &&
-					optional(m.cursor, (v) => string(v, 8192)),
+					optional(m.cursor, (v) => string(v, 8192)) &&
+					optional(m.match, (v) => one(v, ["title", "source"])),
 			);
 	}
 	const pageValidators: Record<string, (m: Fields) => void> = {
@@ -406,25 +425,73 @@
 		validate(m);
 		return m;
 	}
+	function reviewSummary(value: unknown) {
+		const s = object(value);
+		ensure(
+			integer(s.base) &&
+				(s.target === null || integer(s.target)) &&
+				optional(s.targetLabel, (v) => string(v, 8192, true)),
+		);
+		for (const field of ["changedRegions", "addedLines", "removedLines", "assetChanges"]) ensure(integer(s[field]));
+		ensure(typeof s.partial === "boolean" && string(s.line, 8192, true));
+	}
+	function labelledRows(value: unknown) {
+		ensure(Array.isArray(value));
+		for (const row of value) {
+			const r = object(row);
+			ensure(string(r.label, 8192, true) && string(r.value, 8192, true));
+		}
+	}
+	function store(value: unknown) {
+		ensure(string(object(value).label, 8192));
+	}
+	function coverage(value: unknown) {
+		const c = object(value);
+		ensure(
+			integer(c.searched) &&
+				(c.total === null || integer(c.total)) &&
+				typeof c.stopped === "boolean" &&
+				optional(c.reason, (v) => string(v, 8192, true)),
+		);
+	}
+	function libraryReply(m: Fields, fields: Fields) {
+		ensure(Array.isArray(m.rows) && typeof m.limited === "boolean" && optional(m.cursor, (v) => string(v, 8192)));
+		store(m.store);
+		if (m.coverage !== undefined) coverage(m.coverage);
+		if (fields.match === "source") ensure(m.coverage !== undefined);
+		for (const row of m.rows) {
+			const r = object(row);
+			ensure(
+				string(r.ref, 8192) &&
+					string(r.kind, 80) &&
+					string(r.title, 8192, true) &&
+					string(r.subtitle, 8192, true) &&
+					r.age !== undefined &&
+					optional(r.excerpt, (v) => string(v, 8192, true)),
+			);
+		}
+	}
 	function queryReply(m: Fields, fields: Fields) {
 		if (fields.kind === "review") {
 			ensure(string(m.html, BODY, true));
-			ensure(m.summary !== undefined);
+			reviewSummary(m.summary);
 			return;
 		}
 		if (fields.kind === "details") {
-			ensure(Array.isArray(m.rows) && Array.isArray(m.images));
+			labelledRows(m.rows);
+			ensure(Array.isArray(m.images));
+			for (const image of m.images) {
+				const r = object(image);
+				ensure(integer(r.index) && string(r.state, 80) && optional(r.reason, (v) => string(v, 8192, true)));
+			}
 			return;
 		}
 		if (fields.kind === "image") {
-			ensure(string(m.address, META) && Array.isArray(m.facts) && number(m.width) && number(m.height));
+			ensure(string(m.address, META) && number(m.width) && number(m.height));
+			labelledRows(m.facts);
 			return;
 		}
-		ensure(Array.isArray(m.rows) && typeof m.limited === "boolean" && optional(m.cursor, (v) => string(v, 8192)));
-		for (const row of m.rows) {
-			const r = object(row);
-			ensure(string(r.ref, 8192) && string(r.kind, 80) && string(r.title, 8192, true));
-		}
+		libraryReply(m, fields);
 	}
 	function replyBody(kind: string, fields: Fields) {
 		if (kind === "render") return "blocks";
@@ -438,6 +505,13 @@
 		}
 		ensure(integer(m.generation));
 		edits(m.edits);
+	}
+	function commandReply(m: Fields, fields: Fields) {
+		if (fields.name === "pickImage") imageReply(m);
+		if (fields.name === "chooseStore") {
+			ensure(typeof m.changed === "boolean");
+			if (m.store !== undefined) store(m.store);
+		}
 	}
 	function reply(value: unknown, id: string, kind: string, fields: Fields) {
 		const m = envelope(value);
@@ -453,7 +527,7 @@
 		}
 		if (kind === "prompt") ensure(typeof m.accepted === "boolean" && optional(m.detail, (v) => string(v, 8192, true)));
 		if (kind === "query") queryReply(m, fields);
-		if (kind === "command" && fields.name === "pickImage") imageReply(m);
+		if (kind === "command") commandReply(m, fields);
 		return m;
 	}
 	api.bridge = { native, page, reply };

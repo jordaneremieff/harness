@@ -124,6 +124,34 @@ test("render, queries and custom image staging return validated replies", async 
 	assert.equal(host.source, "abcdef");
 	host.dispose();
 });
+test("settings retain native multipliers without source changes", () => {
+	const { host } = setup();
+	assert.equal(host.document.settings.textSize, 1);
+	host.send("command", { name: "saveSettings", args: { patch: { textSize: 1.1 } } });
+	assert.equal(host.document.settings.textSize, 1.1);
+	assert.equal(host.recovery().settings.textSize, 1.1);
+	host.emit("command", { name: "applySettings", args: { textSize: 1.2 } });
+	assert.equal(host.document.settings.textSize, 1.2);
+	assert.equal(host.source, "abcdef");
+	assert.equal(host.generation, 0);
+	host.dispose();
+});
+test("review, source search and store replies match their current shapes", async () => {
+	const { host } = setup();
+	const review = (await host.request("query", { kind: "review", against: "base" })) as { summary: { line: string } };
+	assert.equal(review.summary.line, "No changes.");
+	const library = (await host.request("query", {
+		kind: "library",
+		collection: "drafts",
+		match: "source",
+		query: "needle",
+	})) as { store: { label: string }; coverage: { total: number } };
+	assert.equal(library.store.label, "Fixture");
+	assert.equal(library.coverage.total, 0);
+	const choice = (await host.request("command", { name: "chooseStore" })) as { changed: boolean };
+	assert.equal(choice.changed, false);
+	host.dispose();
+});
 test("listeners unsubscribe and disposal rejects later work", async () => {
 	const { host } = setup();
 	let count = 0;

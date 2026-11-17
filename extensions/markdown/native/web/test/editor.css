@@ -1,0 +1,10 @@
+html { font: 18px/1.6 Georgia, serif; overflow-anchor: none; }
+body { margin: 0; padding: 32px 100px; }
+#document { width: 700px; margin: auto; }
+.reader-block { margin: 0 0 22px; }
+p, h1, h2, h3, ul { margin: 0; }
+h2 { font-size: 30px; }
+ul { padding-left: 0; list-style-position: outside; }
+[data-role="block-editor"] { background: #f8f7f3; }
+::highlight(agent-claim) { background: #dac8e8; }
+::highlight(find) { background: #ffeaa6; }

@@ -33,18 +33,30 @@
 			} catch {
 				return false;
 			}
-			if (type === "document") acceptDocument(message as unknown as ReaderDocument);
+			acceptInbound(message);
 			messages.push(message);
 			inbound.push(message);
 			for (const handler of handlers.get(type) ?? []) handler(message);
 			return true;
 		};
+		function acceptInbound(message: ReaderHostMessage) {
+			if (message.type === "document") acceptDocument(message as unknown as ReaderDocument);
+			if (message.type === "command" && message.name === "applySettings") storeSettings(message.args as Fields);
+		}
+		function acceptCommand(message: ReaderHostMessage) {
+			if (message.name === "saveSettings") storeSettings((message.args as Fields).patch as Fields);
+		}
 		function acceptDocument(document: ReaderDocument) {
 			payload = clone(document);
 			mirror.source = document.source;
 			mirror.generation = document.generation;
 			mirror.meta = clone(document.meta);
 			retained = clone(document);
+		}
+		function storeSettings(patch: Fields) {
+			payload.settings = { ...payload.settings, ...clone(patch) };
+			retained.settings = clone(payload.settings);
+			if (draft) draft.settings = clone(payload.settings);
 		}
 		function snapshot(): ReaderDocument {
 			return { ...clone(payload), source: mirror.source, generation: mirror.generation, meta: clone(mirror.meta) };
@@ -54,7 +66,7 @@
 			emit("document", snapshot());
 		}
 		function copyMeta() {
-			if (!mirror.meta.capturedSource) return;
+			if (!mirror.meta.capturedSource) return false;
 			mirror.meta = {
 				...mirror.meta,
 				kind: "draft",
@@ -63,6 +75,7 @@
 				copyOf: mirror.meta.documentId,
 				capturedSource: false,
 			};
+   return true;
 		}
 		function matching(edits: ReaderEdit[]) {
 			return edits.every((e) => e.end <= mirror.source.length && mirror.source.slice(e.start, e.end) === e.expected);
@@ -88,16 +101,16 @@
 				refuse("size");
 				return;
 			}
-			copyMeta();
+   const copied=copyMeta();
 			mirror.source = next;
 			mirror.generation = m.generation as number;
-			payload = snapshot();
-			retained = clone(payload);
-			if (input.meta.capturedSource) draft = clone(payload);
+   payload={...payload,source:mirror.source,generation:mirror.generation,meta:mirror.meta};
+   retained={...payload};
+   if(input.meta.capturedSource)draft={...payload};
 			emit("ack", {
 				generation: mirror.generation,
 				digest: `memory-${mirror.generation}`,
-				meta: clone(mirror.meta),
+    ...(copied?{meta:clone(mirror.meta)}:{}),
 				recovery: "retained",
 			});
 		}
@@ -109,6 +122,7 @@
 			if (type === "edits") mirrorEdit(message);
 			else if (type === "ready") emit("document", snapshot());
 			else if (type === "lock") payload.settings.lock = fields.lock as "reading" | "writing";
+			else if (type === "command") acceptCommand(message);
 		}
 		async function request(type: string, fields: Fields = {}) {
 			if (disposed) throw new Error("Memory host is disposed.");
@@ -129,6 +143,7 @@
 				case "prompt":
 					return { accepted: true };
 				case "command":
+					if (fields.name === "chooseStore") return { changed: false, store: { label: "Fixture" } };
 					return fields.name === "pickImage" ? { cancelled: true } : {};
 				case "query":
 					return queryResponse(fields);
@@ -136,8 +151,24 @@
 					throw new Error("Unsupported memory request.");
 			}
 		}
+		function reviewResponse(): Fields {
+			return {
+				summary: {
+					base: 1,
+					target: payload.meta.kind === "draft" ? null : payload.meta.revision,
+					targetLabel: payload.meta.title,
+					changedRegions: 0,
+					addedLines: 0,
+					removedLines: 0,
+					assetChanges: 0,
+					partial: false,
+					line: "No changes.",
+				},
+				html: "<p>No changes.</p>",
+			};
+		}
 		function queryResponse(fields: Fields): Fields {
-			if (fields.kind === "review") return { summary: "Fixture review", html: "<p>No changes.</p>" };
+			if (fields.kind === "review") return reviewResponse();
 			if (fields.kind === "details") return { rows: [{ label: "Document", value: "Fixture" }], images: [] };
 			if (fields.kind === "image")
 				return {
@@ -146,7 +177,12 @@
 					width: 1,
 					height: 1,
 				};
-			return { rows: [], limited: false };
+			return {
+				rows: [],
+				limited: false,
+				store: { label: "Fixture" },
+				...(fields.match === "source" ? { coverage: { searched: 0, total: 0, stopped: false } } : {}),
+			};
 		}
 		const host: ReaderMemoryHost = {
 			capabilities,

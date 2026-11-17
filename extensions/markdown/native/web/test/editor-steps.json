@@ -1,0 +1,34 @@
+[
+  {
+    "name": "activation-alignment",
+    "js": "const t=editorTest; t.load(); const rows=t.alignment(); if(rows.some(r=>!r.opened||r.shift!==0))throw Error(JSON.stringify(rows)); return rows"
+  },
+  {
+    "name": "typing-500kb",
+    "js": "const t=editorTest; const size=t.load(); const typing=t.benchmark(); if(typing.accepted!==200||typing.restyles!==0||typing.median>=16)throw Error(JSON.stringify(typing)); return {size,typing,exact:t.check()}"
+  },
+  {
+    "name": "structural-restyle-caret",
+    "js": "const t=editorTest; t.load(); const typing=t.benchmark(true); if(typing.accepted!==200||typing.restyles!==200)throw Error(JSON.stringify(typing)); const selection=t.editor.selection(); return {typing,exact:t.check(),selection}"
+  },
+  {
+    "name": "composition-browser-mutation",
+    "js": "const t=editorTest; t.load(); t.editor.open(t.controller.blocks[0].key,0); const el=document.querySelector('[data-role=block-editor]'); t.select(4); const g=t.controller.doc.generation, n=t.editor.restyles; el.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true})); document.execCommand('insertText',false,'*'); if(t.controller.doc.generation!==g||t.editor.restyles!==n)throw Error('Composition changed application state'); const held=!!t.controller.doc.heldRange(Date.now()+10000); el.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})); if(t.controller.doc.generation!==g+1||!held)throw Error('Composition did not commit'); return {applicationRestylesDuringComposition:0,held,exact:t.check()}"
+  },
+  {
+    "name": "enter-and-webkit-undo",
+    "js": "const t=editorTest; t.load('one\\r\\n\\r\\ntwo'); t.editor.open(t.controller.blocks[0].key,3); const before=t.controller.doc.source, el=document.querySelector('[data-role=block-editor]'); el.dispatchEvent(new InputEvent('beforeinput',{inputType:'insertParagraph',bubbles:true,cancelable:true})); if(t.controller.doc.source!=='one\\r\\n\\r\\n\\r\\ntwo')throw Error(JSON.stringify(t.controller.doc.source)); t.check(); let intercepted=0; el.addEventListener('beforeinput',e=>{if(e.inputType==='historyUndo'&&e.defaultPrevented)intercepted++}); document.execCommand('insertText',false,'x'); document.execCommand('undo'); if(t.controller.doc.source!=='one\\r\\n\\r\\n\\r\\ntwo'||!intercepted)throw Error('WebKit undo escaped'); t.controller.undo(); if(t.controller.doc.source!==before)throw Error('Exact undo failed'); return {newBreak:'CRLF',intercepted,exact:t.check()}"
+  },
+  {
+    "name": "cross-block-delete",
+    "js": "const t=editorTest;t.load('one **bold words**\\r\\n\\r\\ntwo\\r\\n\\r\\nthree');const els=document.querySelectorAll('[data-block]');const model=reader.sourceModel;const x=model.point(els[0],6),y=model.point(els[2],2);getSelection().setBaseAndExtent(x.node,x.offset,y.node,y.offset);const selected=t.editor.selection(),before=t.controller.doc.source,g=t.controller.doc.generation;if(!selected)throw Error('No source map');if(!t.editor.replaceSelection('Z'))throw Error('Refused selection');if(t.controller.doc.generation!==g+1||t.controller.doc.source!==before.slice(0,selected.start)+'Z'+before.slice(selected.end))throw Error('Wrong transaction');t.check();t.controller.undo();if(t.controller.doc.source!==before)throw Error('Undo failed');await t.frames();return {selection:selected,oneChange:true,exact:t.check()}"
+  },
+  {
+    "name": "hold-agent-scroll",
+    "js": "const t=editorTest;t.load(); const b=t.controller.blocks[35];t.editor.open(b.key,3);document.execCommand('insertText',false,'x');await t.frames();const el=document.querySelector('[data-role=block-editor]');el.scrollIntoView();scrollBy(0,100);const node=el.firstChild,html=el.innerHTML,selection=getSelection().toString(),top=el.getBoundingClientRect().top;const held=t.controller.doc.heldRange();const generation=t.controller.doc.generation;t.host.emit('agentApply',{operationId:'held',baseGeneration:generation,edits:[{start:held.start,end:held.start+1,text:'!',expected:t.controller.doc.source.slice(held.start,held.start+1)}]});if(t.controller.doc.generation!==generation)throw Error('Agent changed held range');const head=t.controller.blocks[0],old=t.controller.doc.source.slice(head.start,head.end);t.host.emit('agentApply',{operationId:'above',baseGeneration:generation,edits:[{start:head.start,end:head.end,text:old+'\\r\\n'+('taller line\\r\\n').repeat(8),expected:old}]});await t.frames();const drift=el.getBoundingClientRect().top-top;const unchanged=el.firstChild===node&&el.innerHTML===html&&getSelection().toString()===selection;if(Math.abs(drift)>.5||!unchanged)throw Error(JSON.stringify({drift,unchanged}));return {heldRefused:true,anchorDrift:drift,activeDOMUnchanged:unchanged,exact:t.check()}"
+  },
+  {
+    "name": "format-find-and-lock",
+    "js": "const t=editorTest;t.load('word\\r\\n\\r\\nremote');t.editor.open(t.controller.blocks[0].key,0);t.select(0,4);if(!t.editor.format('bold')||t.controller.doc.source!=='**word**\\r\\n\\r\\nremote')throw Error('Format failed');const matches=t.editor.find('word');if(matches.length!==1)throw Error('Find failed');t.editor.highlight('find',matches.flatMap(m=>m.ranges));t.controller.setLock('reading');if(document.querySelector('[data-role=block-editor]'))throw Error('Reading remains editable');await t.frames();return {matches:matches.length,lock:t.controller.lock,exact:t.check(),errors:t.errors}"
+  }
+]

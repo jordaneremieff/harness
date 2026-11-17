@@ -76,7 +76,15 @@ function documentMessage(source = "") {
 			provenance: {},
 			capturedSource: false,
 		},
-		settings: { lock: "reading" },
+		settings: {
+			lock: "reading",
+			textSize: 1,
+			textSizeSteps: [0.9, 1, 1.1],
+			codeWrap: true,
+			appearance: "system",
+			outlineWidth: 240,
+			outlineOpen: true,
+		},
 		blocks: [] as ReaderBlock[],
 		headings: [],
 		chrome: "pane",
@@ -115,7 +123,23 @@ test("document blocks and matching render replies have a separate exact JSON bou
 });
 test("review HTML has the large bound only for a matching review request", () => {
 	const api = bridge(),
-		message = { v: 1, type: "reply", id: "review", ok: true, summary: "Fixture", html: "a".repeat(16 * 1024 * 1024) };
+		message = {
+			v: 1,
+			type: "reply",
+			id: "review",
+			ok: true,
+			summary: {
+				base: 1,
+				target: 2,
+				changedRegions: 0,
+				addedLines: 0,
+				removedLines: 0,
+				assetChanges: 0,
+				partial: false,
+				line: "Fixture",
+			},
+			html: "a".repeat(16 * 1024 * 1024),
+		};
 	assert.equal(typeof api.bridge.reply(message, "review", "query", { kind: "review" }).html, "string");
 	assert.throws(() => api.bridge.reply(message, "other", "query", { kind: "review" }), /Unexpected reader reply/);
 	assert.throws(() => api.bridge.reply(message, "review", "query", { kind: "details" }), /byte limit/);
@@ -139,6 +163,28 @@ test("edits use their exact compact JSON bound independently of metadata", () =>
 	);
 	edits[1].text += "x";
 	assert.throws(() => api.bridge.page(page), /byte limit/);
+});
+test("large document groups do not enlarge the remaining metadata allowance", () => {
+	const api = bridge(),
+		message = { ...documentMessage("é".repeat(1024 * 1024)), padding: "" };
+	const rest: Record<string, unknown> = { ...message };
+	delete rest.source;
+	delete rest.blocks;
+	message.padding = "a".repeat(256 * 1024 - Buffer.byteLength(JSON.stringify(rest)));
+	assert.equal(api.bridge.native(message).type, "document");
+	message.padding += "a";
+	assert.throws(() => api.bridge.native(message), /byte limit/);
+});
+test("text settings use positive multipliers and ordered multiplier steps", () => {
+	const api = bridge();
+	const valid = { v: 1, type: "command", name: "applySettings", args: { textSize: 1.1, textSizeSteps: [0.9, 1, 1.1] } };
+	assert.equal(api.bridge.native(valid).type, "command");
+	assert.throws(() => api.bridge.native({ ...valid, args: { textSize: 0 } }));
+	assert.throws(() => api.bridge.native({ ...valid, args: { textSizeSteps: [1, 0.9] } }));
+	assert.throws(() => api.bridge.native({ ...valid, args: { textSizeSteps: [1, 1] } }));
+	const doc = documentMessage();
+	const incomplete = { ...doc, settings: { lock: "reading", textSize: 1 } };
+	assert.throws(() => api.bridge.native(incomplete));
 });
 test("block maps refuse malformed source ranges and block order", () => {
 	const api = bridge(),
