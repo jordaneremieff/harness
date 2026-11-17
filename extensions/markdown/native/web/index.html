@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Markdown Reader</title>
+<link rel="stylesheet" href="styles/tokens.css">
+<link rel="stylesheet" href="styles/page.css">
+<link rel="stylesheet" href="styles/document.css">
+<link rel="stylesheet" href="styles/components.css">
+<script defer src="app/host/native.js"></script>
+<script defer src="app/core/exact.js"></script>
+<script defer src="app/core/source-model.js"></script>
+<script defer src="app/core/controller.js"></script>
+<script defer src="app/core/render-html.js"></script>
+<script defer src="app/editor/block-editor.js"></script>
+<script defer src="app/ui/logic.js"></script>
+<script defer src="app/ui/dom.js"></script>
+<script defer src="app/ui/navigation.js"></script>
+<script defer src="app/ui/ask.js"></script>
+<script defer src="app/ui/views.js"></script>
+<script defer src="app/ui/interface.js"></script>
+<script defer src="app/main.js"></script>
+</head>
+<body>
+<div id="app" data-outline="open" data-mode="reading">
+ <div class="shell">
+  <header class="bar" role="toolbar" aria-label="Document"></header>
+  <nav class="outline" id="outline" data-role="outline" aria-label="Contents"></nav>
+  <div class="grip" id="grip" role="separator" aria-orientation="vertical" aria-label="Contents width" aria-valuemin="120" aria-valuemax="460" aria-valuenow="252" tabindex="0"></div>
+  <div class="scrim" id="scrim"></div>
+  <main class="page" id="page"><article class="doc" id="doc" data-role="document" aria-label="Document"></article></main>
+ </div>
+ <div class="notices" id="notices" aria-live="polite"></div>
+ <div class="seltools" id="seltools" data-role="selection-strip" role="toolbar" aria-label="Selection"></div>
+ <div class="link-card" id="linkcard" hidden></div>
+ <section class="ask-card" id="askcard" data-role="ask-card" role="dialog" aria-label="Ask the agent"></section>
+ <div popover id="docmenu" class="menu" role="menu" aria-label="Document menu"></div>
+ <div popover id="viewpanel" class="panel" aria-label="Text and appearance"></div>
+ <div popover id="activity" class="menu" aria-label="Agent activity"></div>
+ <dialog class="palette" id="palette" aria-label="Open"></dialog>
+ <section class="overlay" id="overlay" hidden aria-label="Document view"></section>
+ <nav class="jump-history" id="jumps" aria-label="Reading position"></nav>
+ <div class="toast" id="toast" role="status" hidden></div>
+ <div class="tip" id="tip" role="tooltip" hidden></div>
+</div>
+</body>
+</html>

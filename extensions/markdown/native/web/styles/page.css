@@ -1,0 +1,91 @@
+@layer base {
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font: 15px/1.5 var(--font);
+    color: var(--ink);
+    background: var(--paper);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: default; }
+  input, textarea { font: inherit; color: inherit; }
+  svg.i { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  ::selection { background: color-mix(in oklch, var(--accent) 24%, transparent); }
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in oklch, var(--ink-3) 40%, transparent) transparent; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  kbd { font: 500 11.5px/1 var(--font); color: var(--ink-3); letter-spacing: .02em; }
+}
+
+/* ------------------------------------------------------------------ layout */
+@layer layout {
+  #app {
+    container: app / size;
+    position: relative;
+    height: 100dvh;
+    background: var(--paper);
+  }
+  .shell {
+    position: relative;
+    height: 100%;
+    display: grid;
+    grid-template-columns: var(--outline-w) minmax(0, 1fr);
+  }
+  #app[data-outline="closed"] .shell { grid-template-columns: 0 minmax(0, 1fr); }
+  #app[data-preview="narrow"] { max-width: 450px; margin: 0 auto; box-shadow: 0 0 0 1px var(--line-strong); }
+
+  .page {
+    grid-column: 2;
+    overflow: auto;
+    scroll-padding-top: calc(var(--bar-h) + 12px);
+    overscroll-behavior: contain;
+    overflow-anchor: none;
+  }
+
+  .outline {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    overflow: hidden;
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    padding-top: var(--bar-h);
+  }
+  #app[data-outline="closed"] .outline { visibility: hidden; border: 0; }
+
+  .grip {
+    position: absolute; top: var(--bar-h); bottom: 0; z-index: 4;
+    left: calc(var(--outline-w) - 4px); width: 8px; cursor: col-resize;
+    &::after { content: ""; position: absolute; inset: 0 3.5px; border-radius: 1px; transition: background .15s; }
+    &:hover::after, #app[data-resizing] &::after { background: color-mix(in oklch, var(--accent) 60%, transparent); }
+  }
+  #app[data-outline="closed"] .grip { display: none; }
+  #app[data-resizing], #app[data-resizing] * { user-select: none; cursor: col-resize !important; }
+
+  /* Narrow panes: the outline becomes a sheet over the page. */
+  @container app (width < 720px) {
+    .shell, #app[data-outline="closed"] .shell { grid-template-columns: 0 minmax(0, 1fr); }
+    .outline {
+      position: absolute; z-index: 8; top: var(--bar-h); bottom: 0; left: 0; padding-top: 6px;
+      width: min(320px, 86cqw);
+      box-shadow: var(--shadow-l);
+      border-right: 0;
+      translate: -102% 0;
+      transition: translate .22s var(--ease), visibility 0s .22s;
+      visibility: hidden;
+    }
+    #app[data-sheet="open"] .outline { translate: 0 0; visibility: visible; transition: translate .22s var(--ease); }
+    .grip { display: none; }
+    .shell .scrim { display: block; }
+  }
+  .scrim {
+    display: none; position: absolute; inset: var(--bar-h) 0 0 0; z-index: 7;
+    background: light-dark(rgb(16 20 30 / .18), rgb(0 0 0 / .45));
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  #app[data-sheet="open"] .scrim { opacity: 1; pointer-events: auto; }
+}
+

@@ -1,0 +1,76 @@
+@layer tokens, base, layout, doc, components, states;
+
+@layer tokens {
+  :root {
+    color-scheme: light dark;
+    --zoom: 1;
+    font-size: calc(16px * var(--zoom));
+
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+    /* Surfaces: the page is paper; panels sit one step off it; menus and cards are raised. */
+    --paper: light-dark(oklch(99.4% 0.002 250), oklch(17.2% 0.007 262));
+    --panel: light-dark(oklch(97.5% 0.004 255), oklch(19.6% 0.009 262));
+    --raised: light-dark(#fff, oklch(23.2% 0.011 262));
+    --sunk: light-dark(oklch(96.3% 0.005 255), oklch(21.2% 0.01 262));
+    --hover: light-dark(oklch(94.6% 0.006 255), oklch(25.5% 0.012 262));
+    --pressed: light-dark(oklch(92.4% 0.008 255), oklch(28.5% 0.014 262));
+    --line: light-dark(oklch(91.6% 0.006 255), oklch(28.4% 0.012 262));
+    --line-strong: light-dark(oklch(85.5% 0.008 255), oklch(35% 0.014 262));
+
+    /* Text tiers. The faintest tier still reads at 4.5:1 on every surface above. */
+    --heading: light-dark(oklch(17% 0.02 266), oklch(97.4% 0.004 262));
+    --ink: light-dark(oklch(23% 0.016 266), oklch(91.5% 0.006 262));
+    --ink-2: light-dark(oklch(40% 0.015 266), oklch(79% 0.009 262));
+    --ink-3: light-dark(oklch(51% 0.013 266), oklch(67% 0.011 262));
+
+    /* Meaning. Accent: links, primary actions, the current section. Agent: anything the agent does. */
+    --accent: light-dark(oklch(53% 0.19 262), oklch(74% 0.13 258));
+    --accent-ink: light-dark(#fff, oklch(18% 0.03 262));
+    --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
+    --accent-text: light-dark(oklch(45% 0.17 262), oklch(80% 0.11 258));
+    --agent: light-dark(oklch(53% 0.21 300), oklch(75% 0.14 300));
+    --agent-soft: color-mix(in oklch, var(--agent) 13%, transparent);
+    --agent-text: light-dark(oklch(45% 0.19 300), oklch(82% 0.11 300));
+    --ok: light-dark(oklch(52% 0.13 152), oklch(76% 0.14 152));
+    --warn: light-dark(oklch(58% 0.14 68), oklch(80% 0.13 78));
+    --err: light-dark(oklch(54% 0.19 25), oklch(72% 0.16 25));
+    --code-ink: light-dark(oklch(48% 0.16 12), oklch(80% 0.09 15));
+    --mark: light-dark(oklch(90% 0.13 95), oklch(52% 0.11 85));
+    --mark-current: light-dark(oklch(80% 0.17 75), oklch(68% 0.16 70));
+
+    /* Document kinds carry colour and a glyph, not a label. */
+    --kind-response: var(--agent);
+    --kind-published: var(--accent);
+    --kind-file: light-dark(oklch(52% 0.1 192), oklch(76% 0.1 190));
+    --kind-draft: light-dark(oklch(58% 0.14 62), oklch(80% 0.13 72));
+
+    /* Code colours. */
+    --syn-key: light-dark(oklch(50% 0.2 300), oklch(76% 0.13 300));
+    --syn-str: light-dark(oklch(50% 0.13 150), oklch(78% 0.13 150));
+    --syn-num: light-dark(oklch(56% 0.15 55), oklch(80% 0.12 60));
+    --syn-com: var(--ink-3);
+    --syn-type: light-dark(oklch(50% 0.11 200), oklch(78% 0.1 195));
+    --syn-fn: light-dark(oklch(50% 0.16 255), oklch(77% 0.11 250));
+
+    --toolbar-bg: light-dark(oklch(25% 0.02 266), oklch(30% 0.016 266));
+    --toolbar-ink: oklch(96% 0.005 262);
+
+    --r-s: 6px;
+    --r: 9px;
+    --r-l: 14px;
+    --shadow: 0 1px 2px light-dark(rgb(0 0 0 / .05), rgb(0 0 0 / .3)), 0 6px 20px light-dark(rgb(16 24 40 / .07), rgb(0 0 0 / .32));
+    --shadow-l: 0 2px 6px light-dark(rgb(0 0 0 / .06), rgb(0 0 0 / .4)), 0 22px 56px light-dark(rgb(16 24 40 / .17), rgb(0 0 0 / .55));
+
+    --bar-h: 46px;
+    --outline-w: 252px;
+    --measure: 44rem;
+    --copy-space: 0px;
+    --ease: cubic-bezier(.2, .7, .2, 1);
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
+}
+
