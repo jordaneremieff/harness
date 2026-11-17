@@ -71,19 +71,12 @@ async function bootstrap(metadata: HostMetadata, controller: AbortController, ex
 		}),
 		askPrimary: async (cwd) => {
 			const root = dirname(dirname(metadata.storagePath));
-			const catalog = new AgentCatalog(root);
-			let ownerId = metadata.ownerId;
-			for (let depth = 0; ownerId !== undefined && depth < 32; depth++) {
-				const target = ownerId;
-				try { ownerId = catalog.read(target).ownerId; }
-				catch (error) {
-					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-					const channel = await connectPrimaryChannel({ id: target, sessionsRoot: root });
-					try { return await channel.trustPrompt(cwd, controller.signal); } finally { await channel.close(); }
-				}
-			}
-			return undefined;
+			const primary = new AgentCatalog(root).ordinaryOwner(metadata.ownerId);
+			if (primary === undefined) return undefined;
+			const channel = await connectPrimaryChannel({ id: primary, sessionsRoot: root });
+			try { return await channel.trustPrompt(cwd, controller.signal); } finally { await channel.close(); }
 		},
+		ordinarySession: () => new AgentCatalog(dirname(dirname(metadata.storagePath))).ordinaryOwner(metadata.ownerId),
 		onReport: (error) => { process.stderr.write(`Durable host: ${String(error)}\n`); },
 		...(execution ? { buildBuiltin: async (host) => { const { createDurableExecution } = await import("./durable-execution.ts"); return createDurableExecution(host); } } : {}),
 	});

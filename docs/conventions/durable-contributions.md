@@ -110,6 +110,14 @@ interface DurableContributionHost {
   readonly inventory: DurableInventory;
   /** Commit independent contributed work without an answer route to this host. */
   readonly launchIndependent: IndependentCommandLaunch;
+  /**
+   * The ordinary Pi session at the top of this storage's chain of creating
+   * owners: the first creating owner that names no agent storage. Every
+   * conversation of the storage shares it; undefined when the chain ends
+   * without one. Read at each call. Provenance for presentation, such as the
+   * tab where an agent's panes appear, not authority or a reply route.
+   */
+  ordinarySession(): string | undefined;
 }
 
 interface DurableInventory {

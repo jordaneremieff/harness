@@ -134,6 +134,11 @@ export interface RexCoreOptions {
 	maxWaitMs?: number;
 	maxRecords?: number;
 	isCallActive?: (ownerId: string, callId: string) => boolean;
+	/**
+	 * What the inherited launch context in `env` names, for the environment report, and the refusal of an inherited
+	 * target when it names nothing. Absent: the process's own launch environment.
+	 */
+	launch?: { readonly description: string; readonly unavailable?: string };
 }
 
 /** Aggregate envelope budget shared by domain results and host model-output limits. */
@@ -239,7 +244,7 @@ export class RexCore {
 	/** Lua and actions need a real session when they take inherited context; they never fall back to focus. */
 	private validateNativeContext(request: RexRequest, target: ResolvedTarget): void {
 		if (request.op !== "native" || (request.kind !== "lua" && request.kind !== "action")) return;
-		if (target.source === "inherited" && !target.sessionId) validateDefaultTarget(target.source, "session");
+		if (target.source === "inherited" && !target.sessionId) validateDefaultTarget(target.source, "session", this.options.launch?.unavailable);
 	}
 
 	private dispatchTarget(request: RexRequest, target: ResolvedTarget, context: RexCallContext): Promise<RexResult> {
@@ -406,7 +411,7 @@ export class RexCore {
 		}
 		if (query !== undefined && required) await this.lookup(required, query, base, context);
 		else if (required && !base[targetKey(required)]) {
-			validateDefaultTarget(source, required);
+			validateDefaultTarget(source, required, this.options.launch?.unavailable);
 			await this.lookup(required, "", base, context);
 		}
 		return base;
@@ -477,7 +482,7 @@ export class RexCore {
 					block: this.env.REX_BLOCK,
 					client: this.env.REX_CLIENT,
 				},
-				inheritedContext: "Launch environment only. It is not operator focus or ownership proof.",
+				inheritedContext: this.options.launch?.description ?? "Launch environment only. It is not operator focus or ownership proof.",
 				luaLocality:
 					"Lua and rex.exec run in the CLI process host. Rex API calls target the selected server; explicit rex.server calls select other configured hosts.",
 			},
@@ -1593,9 +1598,9 @@ function selectors(
 		["client", intent?.client ?? env.REX_CLIENT],
 	];
 }
-function validateDefaultTarget(source: string, kind: TargetKind): void {
+function validateDefaultTarget(source: string, kind: TargetKind, inheritedUnavailable?: string): void {
 	if (source === "inherited")
-		throw new Error(`No inherited Rex ${kind} exists. Select a resource explicitly; focus is not a substitute.`);
+		throw new Error(inheritedUnavailable ?? `No inherited Rex ${kind} exists. Select a resource explicitly; focus is not a substitute.`);
 	if (source === "explicit" && kind === "block")
 		throw new Error(
 			"Select an explicit block, or request source focus. An explicit session does not authorise its focused block.",

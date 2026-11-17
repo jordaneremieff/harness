@@ -3085,7 +3085,12 @@ a token request after close.
   a conversation owned by a background task in that storage. An agent created at
   a different cwd gets new storage and its own cwd-bound services and host.
   Native documents retain the creating owner as provenance. Each task's results
-  return to its own reply recipient as deduplicated follow-ups. A separate root
+  return to its own reply recipient as deduplicated follow-ups. The host gives
+  every contribution the ordinary Pi session at the top of its storage's chain
+  of creating owners (`ordinarySession` in the
+  [contribution contract](../../docs/conventions/durable-contributions.md#shape)),
+  found along the same catalogue chain as the route of a project-trust prompt.
+  Rex opens an agent's panes on that session's tab. A separate root
   gets new storage; a handle always selects an independent root, even at the same cwd.
 - Observations of another storage reuse its reachable host or read a retained
   snapshot without starting a writer. This applies to inspection, status,

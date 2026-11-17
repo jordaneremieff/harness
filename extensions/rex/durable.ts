@@ -7,6 +7,7 @@ import { liveCalls, resultChannels, type RexAdapterOptions } from "./config.ts";
 import { initialOwnershipState, validateOwnershipState, type OwnershipState, type OwnershipStore } from "./ownership.ts";
 import { REX_GUIDANCE, ResultSchema, toolSpecs, validateRequest, type StatusRequest } from "./schema.ts";
 import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
+import { readSessionPane, processAlive } from "./session-pane.ts";
 import { rexStatus, validateStatusBinding, type HostActivity, type RexExecutor, type StatusStore } from "./status.ts";
 
 export interface DurableContributionHost {
@@ -17,6 +18,8 @@ export interface DurableContributionHost {
 	readonly harness: Durable.Harness;
 	readonly signal: AbortSignal;
 	onClose(dispose: () => void | Promise<void>): void;
+	/** The ordinary Pi session at the top of this storage's chain of creating owners. */
+	ordinarySession(): string | undefined;
 }
 export interface DurableContribution {
 	readonly name: string;
@@ -87,6 +90,45 @@ export function nativeStatusStore(api: Durable.ToolExecutionApi, token: Durable.
 	};
 }
 
+/** The inherited launch context of a native tool call, and what it names. */
+export interface DurableLaunch {
+	readonly env: Record<string, string | undefined>;
+	readonly launch: { readonly description: string; readonly unavailable?: string };
+}
+
+/**
+ * A native conversation has no pane of its own. Its inherited launch context is the registered pane of the ordinary
+ * Pi session at the top of its storage's chain of creating owners, so the panes it opens appear on that session's tab.
+ * The host process's own Rex session, block and client describe whichever process started the host, never a
+ * conversation, so they are never used. Its server stays the selection when no ordinary pane is known.
+ */
+export function durableLaunch(host: Pick<DurableContributionHost, "agentDir" | "ordinarySession">, env: Readonly<Record<string, string | undefined>> = process.env, alive: (pid: number) => boolean = processAlive): DurableLaunch {
+	const base: Record<string, string | undefined> = { ...env };
+	delete base.REX_SESSION;
+	delete base.REX_BLOCK;
+	delete base.REX_CLIENT;
+	const unknown = (reason: string): DurableLaunch => ({
+		env: base,
+		launch: {
+			description: `No pane is inherited: ${reason}. It is not operator focus or ownership proof.`,
+			unavailable: `No pane of this agent's ordinary session is known: ${reason}. Select a resource explicitly, or request source focus to use the operator's current focus.`,
+		},
+	});
+	let sessionId: string | undefined;
+	try { sessionId = host.ordinarySession(); }
+	catch (error) { return unknown(`its chain of creating owners could not be read (${error instanceof Error ? error.message : String(error)})`); }
+	if (sessionId === undefined) return unknown("its chain of creating owners names no ordinary session");
+	let found: ReturnType<typeof readSessionPane>;
+	try { found = readSessionPane(host.agentDir, sessionId, alive); }
+	catch (error) { return unknown(`the pane record of ordinary session ${sessionId} could not be read (${error instanceof Error ? error.message : String(error)})`); }
+	if (!found.ok) return unknown(found.reason === "ended" ? `its ordinary session ${sessionId} has ended` : `its ordinary session ${sessionId} has no registered Rex pane`);
+	delete base.REX_SERVER;
+	return {
+		env: { ...base, ...(found.pane.server === undefined ? {} : { REX_SERVER: found.pane.server }), REX_SESSION: found.pane.session, REX_BLOCK: found.pane.block },
+		launch: { description: `The pane of ordinary Pi session ${sessionId}, at the top of this agent's chain of creating owners. It is not operator focus or ownership proof.` },
+	};
+}
+
 function nativeResult(result: RexResult, maxBytes: number): Durable.ToolExecutionResult<Durable.JsonObject> {
 	const channels = resultChannels(boundResult(result, maxBytes));
 	return { output: channels.content, structuredOutput: channels.structuredContent, isError: channels.isError, details: channels.details };
@@ -147,7 +189,7 @@ export function rexContribution(source: string, bus: SettingsBus, stopFactoryPub
 						context = withAbortSignal(budget.signal, context);
 						const ownerId = `${host.storageId}:${api.conversationId}`;
 						const store = nativeOwnershipStore(api, ownership, ownerId, settings.maxRecords, context, budget);
-						const coreOptions = { ...settings, store, isCallActive: invocations.isCallActive };
+						const coreOptions = { ...settings, store, isCallActive: invocations.isCallActive, ...durableLaunch(host) };
 						const core = options.createCore?.(coreOptions) ?? new RexCore(coreOptions);
 						const release = invocations.enter(ownerId, api.callId);
 						active.add(core);

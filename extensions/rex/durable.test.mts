@@ -10,7 +10,8 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import * as Durable from "@earendil-works/pi-durable";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { createRexBudget } from "./deadline.ts";
-import { nativeOwnershipStore, nativeStatusStore, rexContribution } from "./durable.ts";
+import { durableLaunch, nativeOwnershipStore, nativeStatusStore, rexContribution } from "./durable.ts";
+import { registerSessionPane } from "./session-pane.ts";
 import { beginOwnership, requestDigest } from "./ownership.ts";
 import { deadlineResult, RexCore, type RexRequest, type RexResult } from "./core.ts";
 import type { CliResult, RexTransport } from "./transport.ts";
@@ -186,7 +187,7 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		}),
 	});
 	try {
-		const extension = await contribution.create({ durable: Durable, cwd: agentDir, agentDir, storageId: "test-storage", harness, signal: controller.signal, onClose: (close) => closers.push(close) });
+		const extension = await contribution.create({ durable: Durable, cwd: agentDir, agentDir, storageId: "test-storage", harness, signal: controller.signal, onClose: (close) => closers.push(close), ordinarySession: () => undefined });
 		assert.ok(extension.tools?.every((tool) => tool.replay === "unsafe"));
 		assert.ok(extension.tools?.every((tool) => tool.structuredOutputSchema !== undefined));
 		registry.install(extension);
@@ -306,5 +307,75 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		else process.env.PI_REX_MAX_RECORDS = previousRecords;
 		if (previousOutput === undefined) delete process.env.PI_REX_MAX_OUTPUT_BYTES;
 		else process.env.PI_REX_MAX_OUTPUT_BYTES = previousOutput;
+	}
+});
+
+const paneSession = "session:11111111-1111-4111-8111-111111111111";
+const paneBlock = "block:33333333-3333-4333-8333-333333333333";
+const hostEnv = { PATH: "/bin", REX_SERVER: "unix:///host.sock", REX_SESSION: "session:44444444-4444-4444-8444-444444444444", REX_BLOCK: "block:55555555-5555-4555-8555-555555555555", REX_CLIENT: "client:66666666-6666-4666-8666-666666666666" };
+
+test("a native conversation inherits the registered pane of its storage's ordinary session, never the host's own", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "rex-native-launch-"));
+	try {
+		registerSessionPane({ agentDir, sessionId: "ordinary", pid: 4242, pane: { server: "unix:///pane.sock", session: paneSession, block: paneBlock }, alive: () => true });
+		const known = durableLaunch({ agentDir, ordinarySession: () => "ordinary" }, hostEnv, () => true);
+		assert.deepEqual(known.env, { PATH: "/bin", REX_SERVER: "unix:///pane.sock", REX_SESSION: paneSession, REX_BLOCK: paneBlock });
+		assert.match(known.launch.description, /pane of ordinary Pi session ordinary/);
+		assert.equal(known.launch.unavailable, undefined);
+		const cases: Array<[Parameters<typeof durableLaunch>[0], (pid: number) => boolean, RegExp]> = [
+			[{ agentDir, ordinarySession: () => "ordinary" }, () => false, /its ordinary session ordinary has ended/],
+			[{ agentDir, ordinarySession: () => "other" }, () => true, /its ordinary session other has no registered Rex pane/],
+			[{ agentDir, ordinarySession: () => undefined }, () => true, /names no ordinary session/],
+			[{ agentDir, ordinarySession: () => { throw new Error("catalog unreadable"); } }, () => true, /could not be read \(catalog unreadable\)/],
+		];
+		for (const [host, alive, reason] of cases) {
+			const launch = durableLaunch(host, hostEnv, alive);
+			assert.deepEqual(launch.env, { PATH: "/bin", REX_SERVER: "unix:///host.sock" }, "the host's own session, block and client never reach a conversation");
+			assert.match(launch.launch.unavailable ?? "", reason);
+			assert.match(launch.launch.unavailable ?? "", /request source focus to use the operator's current focus\.$/);
+			assert.match(launch.launch.description, reason);
+		}
+	} finally { await rm(agentDir, { recursive: true, force: true }); }
+});
+
+test("each native tool call builds its core from the current ordinary pane", { timeout: 30000 }, async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "rex-native-pane-"));
+	const models = createModels();
+	const faux = fauxProvider();
+	models.setProvider(faux.provider);
+	const registry = Durable.createRegistry();
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+	const controller = new AbortController();
+	const closers: Array<() => void | Promise<void>> = [];
+	const launches: Array<{ block?: string; unavailable?: string }> = [];
+	const contribution = rexContribution("/test/rex/index.ts", createEventBus(), () => {}, {
+		createCore: (options) => ({
+			dispose: () => {},
+			execute: async (request) => {
+				launches.push({ ...(options.env?.REX_BLOCK === undefined ? {} : { block: options.env.REX_BLOCK }), ...(options.launch?.unavailable === undefined ? {} : { unavailable: options.launch.unavailable }) });
+				return { ...ok({ operation: request.op }), target };
+			},
+		}),
+	});
+	try {
+		const extension = await contribution.create({ durable: Durable, cwd: agentDir, agentDir, storageId: "test-storage", harness, signal: controller.signal, onClose: (close) => closers.push(close), ordinarySession: () => "ordinary" });
+		registry.install(extension);
+		const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+		const run = async () => {
+			faux.setResponses([fauxAssistantMessage(fauxToolCall("rex_terminal", { op: "create", kind: "float", label: "reader", command: ["reader"], keepFloating: true }), { stopReason: "toolUse" }), fauxAssistantMessage("Shown.")]);
+			await (await root.submit({ type: "input", content: "Show the document." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		};
+		await run();
+		registerSessionPane({ agentDir, sessionId: "ordinary", pid: process.pid, pane: { session: paneSession, block: paneBlock }, alive: () => true });
+		await run();
+		assert.equal(launches.length, 2);
+		assert.match(launches[0]?.unavailable ?? "", /its ordinary session ordinary has no registered Rex pane/);
+		assert.equal(launches[0]?.block, undefined);
+		assert.deepEqual(launches[1], { block: paneBlock }, "a pane registered after the host started applies to the next call");
+	} finally {
+		controller.abort();
+		for (const close of closers.reverse()) await close();
+		await harness.close(BACKGROUND_CONTEXT);
+		await rm(agentDir, { recursive: true, force: true });
 	}
 });

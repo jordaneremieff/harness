@@ -273,6 +273,7 @@ it("installs native built-in extras from buildBuiltin before contributions", asy
 		storageId: "fixture-builtin",
 		extensionPaths: [f.emitPath, f.silentPath],
 		trusted: true,
+		ordinarySession: () => "ordinary-session",
 		buildBuiltin: (host) => {
 			observedInventory = host.inventory;
 			observedHost = host;
@@ -289,6 +290,7 @@ it("installs native built-in extras from buildBuiltin before contributions", asy
 	try {
 		assert.equal(observedHost, services.contributionHost);
 		assert.equal(typeof (observedHost as { onClose?: unknown }).onClose, "function");
+		assert.equal(services.contributionHost.ordinarySession(), "ordinary-session", "contributions read the storage's ordinary session through the host");
 		assert.deepEqual(observedInventory, services.inventory);
 		assert.deepEqual(services.registry.snapshot().installed().map((extension) => extension.name), ["pi.host", "fixture.builtin-a", "fixture.builtin-b", "fixture.emit"]);
 		assert.equal(extrasClosed, false);
@@ -305,6 +307,7 @@ it("installs native built-in extras from buildBuiltin before contributions", asy
 	});
 	const plainInstalled = await installedHarness(plain);
 	try {
+		assert.equal(plain.contributionHost.ordinarySession(), undefined, "a host without a chain of creating owners names no ordinary session");
 		assert.deepEqual(plain.registry.snapshot().installed().map((extension) => extension.name), ["pi.host", "fixture.builtin-plain"]);
 	} finally {
 		await plainInstalled.close();

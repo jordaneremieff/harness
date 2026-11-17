@@ -189,6 +189,7 @@ test("ordinary registration publishes only identical display references and clea
 	const options = {
 		createCore: () => { executions++; throw new Error("Display requests must not execute tools."); },
 		createTabLabelProjector: () => ({ start: () => {}, refresh: () => {}, input: () => {}, idle: async () => {}, shutdown: async () => {} }),
+		createSessionPaneRegistrar: () => ({ start: () => {}, shutdown: () => {} }),
 	};
 	registerRex(pi, options);
 	try {
@@ -256,7 +257,11 @@ test("ordinary registration wires tab labels without changing the tool surface",
 		idle: async () => {},
 		shutdown: async () => { events.push("keeper shutdown"); },
 	};
-	registerRex(pi, { createTabLabelProjector: () => projector, createConversationKeeper: () => keeper });
+	const panes = {
+		start: (ctx: { mode?: string }) => { events.push(`panes start ${ctx.mode}`); },
+		shutdown: () => { events.push("panes shutdown"); },
+	};
+	registerRex(pi, { createTabLabelProjector: () => projector, createConversationKeeper: () => keeper, createSessionPaneRegistrar: () => panes });
 	assert.deepEqual([...tools.keys()], ["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status"]);
 	assert.deepEqual([...handlers.keys()].sort(), ["agent_settled", "input", "session_info_changed", "session_shutdown", "session_start", "ui_prompt_start"]);
 	const answer = { type: "message", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "The result." }] } };
@@ -274,7 +279,7 @@ test("ordinary registration wires tab labels without changing the tool surface",
 	handlers.get("agent_settled")?.({ type: "agent_settled", aborted: false }, ctx);
 	handlers.get("ui_prompt_start")?.({ type: "ui_prompt_start" }, ctx);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
-	assert.deepEqual(events, ["start", "keeper start", "refresh", "input", "attention", "attention", "shutdown", "keeper shutdown"], "an answer and a dialog need the operator; an aborted run and a run that ended in a tool call do not");
+	assert.deepEqual(events, ["start", "keeper start", "panes start tui", "refresh", "input", "attention", "attention", "panes shutdown", "shutdown", "keeper shutdown"], "an answer and a dialog need the operator; an aborted run and a run that ended in a tool call do not; the session's pane record follows the session");
 });
 
 test("a confirmed floating pane that rex_terminal creates is handed to the conversation keeper", async () => {
@@ -355,6 +360,7 @@ test("ordinary tab label wiring runs no process for an unchanged name event and 
 			projector = created;
 			return created;
 		},
+		createSessionPaneRegistrar: () => ({ start: () => {}, shutdown: () => {} }),
 	});
 	const ctx = { mode: "tui", cwd: "/work/fixture", ui: { notify: () => {} } } as unknown as ExtensionContext;
 	try {

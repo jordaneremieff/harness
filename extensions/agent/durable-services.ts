@@ -137,6 +137,11 @@ export interface DurableContributionHost {
 	readonly inventory: DurableInventory;
 	/** Admit independent contributed work, with no answer route to this storage. */
 	readonly launchIndependent: IndependentCommandLaunch;
+	/**
+	 * The ordinary Pi session at the top of this storage's chain of creating owners, read at each call. Every
+	 * conversation of the storage shares it. Provenance for presentation, not authority or a reply route.
+	 */
+	ordinarySession(): string | undefined;
 }
 
 /** What the host installs, complete before the first contribution `create()` call. */
@@ -217,6 +222,8 @@ export interface CreateDurableServicesOptions {
 	 */
 	readonly onReport?: (error: unknown) => void;
 	readonly launchIndependent?: IndependentCommandLaunch;
+	/** The ordinary Pi session at the top of the storage's chain of creating owners. Absent: none. */
+	readonly ordinarySession?: () => string | undefined;
 }
 
 /** Native built-in extensions plus the release for the resources they hold. */
@@ -969,6 +976,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 			},
 			signal: controller.signal,
 			launchIndependent: options.launchIndependent ?? (async () => { throw new Error("This host has no independent launch capability"); }),
+			ordinarySession: () => options.ordinarySession?.(),
 			onClose,
 			inventory,
 		};

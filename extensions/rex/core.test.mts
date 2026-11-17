@@ -105,7 +105,7 @@ function resolveReply(data: Record<string, unknown>): CliResult {
 		],
 	});
 }
-function fixture(options: { server?: string; maxRecords?: number; maxOutputBytes?: number; maxWaitMs?: number; isCallActive?: (ownerId: string, callId: string) => boolean; env?: Readonly<Record<string, string | undefined>> } = {}) {
+function fixture(options: { server?: string; maxRecords?: number; maxOutputBytes?: number; maxWaitMs?: number; isCallActive?: (ownerId: string, callId: string) => boolean; env?: Readonly<Record<string, string | undefined>>; launch?: { description: string; unavailable?: string } } = {}) {
 	const store = storeFixture();
 	const transport = new FakeTransport();
 	const core = new RexCore({
@@ -1051,6 +1051,21 @@ test("missing inherited context fails instead of falling back to focus", async (
 	assert.match(response.error ?? "", /No inherited Rex session exists/);
 	assert.equal(f.transport.calls.some((call) => call.method === "target.resolve"), false);
 	assert.equal(f.transport.calls.some((call) => call.args.includes("do")), false);
+});
+
+test("a host's launch description names its inherited context and the remedy when it names nothing", async () => {
+	const launch = { description: "The pane of ordinary Pi session S.", unavailable: "No pane of this agent's ordinary session is known: it has ended. Request source focus." };
+	const f = fixture({ env: { REX_SERVER: "launch" }, launch });
+	const created = await f.core.execute({ op: "create", kind: "float", label: "reader", command: ["reader"] }, context);
+	assert.equal(created.ok, false);
+	assert.equal(created.error, launch.unavailable);
+	assert.equal(created.effects.state, "none");
+	const action = await f.core.execute({ op: "native", kind: "action", action: "com.superlogical.terminal.reset", target: { source: "inherited" } }, { ...context, callId: "action" });
+	assert.equal(action.error, launch.unavailable);
+	assert.equal(f.transport.calls.some((call) => call.method === "target.resolve" || call.method === "session.new_layer"), false);
+	const environment = await f.core.execute({ op: "environment" }, { ...context, callId: "environment" });
+	assert.equal(environment.ok, true, environment.error);
+	assert.equal((environment.data as { inheritedContext?: string }).inheritedContext, launch.description);
 });
 
 test("explicit native IDs stay authoritative over the launch context", async () => {

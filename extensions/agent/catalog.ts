@@ -385,6 +385,21 @@ export class AgentCatalog {
 		publishCatalogChange(this.root, record.storageId);
 		return "removed";
 	}
+	/**
+	 * The first identity in a chain of creating owners that names no agent storage: normally the ordinary Pi session
+	 * whose agent started the chain. Undefined when a record in the chain has no owner or the chain exceeds 32 steps.
+	 */
+	ordinaryOwner(ownerId: string | undefined): string | undefined {
+		for (let depth = 0; ownerId !== undefined && depth < 32; depth++) {
+			const target: string = ownerId;
+			try { ownerId = this.read(target).ownerId; }
+			catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				return target;
+			}
+		}
+		return undefined;
+	}
 	/** Read the storage already assigned to one creation request, without resolving defaults again. */
 	readRequest(ownerId: string, requestId: string): CatalogRecord | undefined {
 		try { return this.read(requestStorageId(JSON.stringify([ownerId, requestId]))); }

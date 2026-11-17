@@ -40,6 +40,21 @@ function fixture(t: { after(fn: () => void): void }) {
 	};
 }
 
+it("finds the ordinary session at the top of a chain of creating owners", (t) => {
+	const { catalog, input } = fixture(t);
+	const ordinary = "01a1ea73-1222-73e9-af05-a382cd28b29f";
+	const root = catalog.create({ ...input, ownerId: ordinary });
+	const nested = catalog.create({ ...input, ownerId: `${root.storageId}:3` });
+	const deeper = catalog.create({ ...input, ownerId: nested.storageId });
+	assert.equal(catalog.ordinaryOwner(deeper.storageId), ordinary);
+	assert.equal(catalog.ordinaryOwner(`${nested.storageId}:7`), ordinary, "a conversation follows the chain of its storage");
+	assert.equal(catalog.ordinaryOwner(ordinary), ordinary, "an identity that names no storage ends the chain");
+	assert.equal(catalog.ordinaryOwner(undefined), undefined);
+	const { ownerId: _owner, ...unowned } = input;
+	assert.equal(catalog.ordinaryOwner(catalog.create(unowned).storageId), undefined, "a chain that ends without an owner names no ordinary session");
+	assert.throws(() => catalog.ordinaryOwner("not an identity"), /Invalid Durable agent identity/u);
+});
+
 it("shares raw record and claim reads while preserving caller-specific priorities and cursors", async (t) => {
 	const { catalog, input } = fixture(t);
 	const records = [catalog.create({ ...input, ownerId: "first" }), catalog.create({ ...input, ownerId: "second" }), catalog.create(input)];

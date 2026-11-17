@@ -228,6 +228,12 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 	assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /^Saved new document md-[a-f0-9]{20} revision 1 \(7 bytes, sha256:[a-f0-9]{64}\)\. No window opened\.\n/u);
 	assert.ok(tool.outputSchema);
 	assert.match(tool.promptGuidelines?.join("\n") ?? "", /^Before you send a reply with headings, a table, three or more explained points, or more than about ten lines, publish it with markdown_publish and run its show command in a floating pane/u, "the reply decision itself carries the publication rule");
+	for (const guidance of [tool.description, NATIVE_PUBLISH_GUIDANCE, tool.promptGuidelines?.join("\n") ?? ""]) {
+		assert.match(guidance, /floating pane that stays (?:where it is|in place)/u);
+		assert.match(guidance, /no target/u, "the pane opens on the tab where the work belongs, not wherever the operator looks");
+		assert.doesNotMatch(guidance, /operator's (?:focus|tab)/u);
+	}
+	assert.match(NATIVE_PUBLISH_GUIDANCE, /tab of the ordinary session that started your chain of agents/u);
 	for (const guidance of [tool.description, NATIVE_PUBLISH_GUIDANCE]) {
 		assert.doesNotMatch(guidance, /not every reply|do not publish every reply|explicitly requested document/u, "no wording limits publication to requested documents");
 		assert.match(guidance, /floating pane/u);

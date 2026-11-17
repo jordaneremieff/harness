@@ -43,18 +43,10 @@ function identity(value: unknown, field: string): asserts value is string {
 
 /** Resolve an unresolved trust ask through the creator's existing primary route. */
 export async function askCreatorTrust(root: string, creatorId: string, cwd: string): Promise<ProjectTrustDecision | undefined> {
-	const catalog = new AgentCatalog(root);
-	let owner: string | undefined = creatorId;
-	for (let depth = 0; owner !== undefined && depth < 32; depth++) {
-		const target: string = owner;
-		try { owner = catalog.read(target).ownerId; }
-		catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			const channel = await connectPrimaryChannel({ id: target, sessionsRoot: root });
-			try { return await channel.trustPrompt(cwd); } finally { await channel.close(); }
-		}
-	}
-	return undefined;
+	const primary = new AgentCatalog(root).ordinaryOwner(creatorId);
+	if (primary === undefined) return undefined;
+	const channel = await connectPrimaryChannel({ id: primary, sessionsRoot: root });
+	try { return await channel.trustPrompt(cwd); } finally { await channel.close(); }
 }
 
 /** Validate and capture the exact wire input before asynchronous setup. */

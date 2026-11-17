@@ -12,10 +12,12 @@ import { REX_GUIDANCE, ResultSchema, toolSpecs, validateRequest, type StatusRequ
 import { rexStatus, type RexExecutor } from "./status.ts";
 import { createTabLabelProjector, type TabLabelProjectorOptions } from "./tab-label.ts";
 import { createConversationKeeper, runAnswered, type ConversationKeeperOptions, type FloatedPane } from "./keep-visible.ts";
+import { createSessionPaneRegistrar, type SessionPaneRegistrarOptions } from "./session-pane.ts";
 
 type RegistrationOptions = RexAdapterOptions & {
 	createTabLabelProjector?: (options: TabLabelProjectorOptions) => ReturnType<typeof createTabLabelProjector>;
 	createConversationKeeper?: (options: ConversationKeeperOptions) => ReturnType<typeof createConversationKeeper>;
+	createSessionPaneRegistrar?: (options: SessionPaneRegistrarOptions) => ReturnType<typeof createSessionPaneRegistrar>;
 };
 
 /** Blocks of a confirmed floating pane that a `rex_terminal` create returned, with the bounds it requested; a pane created to stay floating is never handed over. */
@@ -38,6 +40,8 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 		getSessionName: () => pi.getSessionName(),
 	});
 	const keeper = (options.createConversationKeeper ?? createConversationKeeper)({ settings });
+	// The agents of this session open their panes on its tab: their inherited launch context is this record.
+	const panes = (options.createSessionPaneRegistrar ?? createSessionPaneRegistrar)({ agentDir });
 	const serialise = serialiseOwners();
 	const active = new Set<RexExecutor>();
 	const invocations = liveCalls();
@@ -82,7 +86,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 		pi.registerTool(tool);
 	}
 	const stopDisplay = publishRexToolDisplay(pi.events, tools);
-	pi.on("session_start", async (_event, ctx) => { await stopCalls(); lifetime = new AbortController(); tabLabels.start(ctx); keeper.start(ctx); });
+	pi.on("session_start", async (_event, ctx) => { await stopCalls(); lifetime = new AbortController(); tabLabels.start(ctx); keeper.start(ctx); panes.start(ctx); });
 	// The conversation needs the operator when its run ends with an answer or an error, or a dialog waits.
 	// A run that ends quietly in a tool call leaves the arrangement alone: its work can still be running.
 	pi.on("agent_settled", (event, ctx) => { if (runAnswered(ctx.sessionManager.getBranch(), event.aborted)) keeper.attention(ctx); });
@@ -90,6 +94,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 	pi.on("session_info_changed", (_event, ctx) => { tabLabels.refresh(ctx); });
 	pi.on("input", (event, ctx) => { if (event.source === "interactive") tabLabels.input(ctx); });
 	pi.on("session_shutdown", async () => {
+		panes.shutdown();
 		const labelsStopped = tabLabels.shutdown();
 		const keeperStopped = keeper.shutdown();
 		try { await stopCalls(); }

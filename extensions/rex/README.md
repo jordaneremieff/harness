@@ -160,6 +160,8 @@ These represent different facts:
 
 - An explicit selector expresses requested intent. A label must resolve uniquely.
 - `source: "inherited"` uses the verified launch context, not operator focus or ownership.
+  An agent without a pane of its own inherits the pane of the ordinary session that started
+  its chain of agents; see [Agents inherit their session's pane](#agents-inherit-their-sessions-pane).
 - `source: "focus"` explicitly asks for current focus, optionally within a named session.
 - A resolved target carries the selected server endpoint, host and instance IDs,
   plus full resource IDs. Retain those IDs for later work.
@@ -290,6 +292,40 @@ For content that the operator reads for a while, such as a document, create a fl
 pane with `keepFloating: true`. It stays where it is until the operator moves or closes
 it. To show new content in an earlier pane of yours, send that pane's program the input
 that it accepts for this instead of opening another pane.
+
+## Agents inherit their session's pane
+
+An agent without a pane of its own, such as a native Durable conversation, opens its panes on
+the tab of the ordinary session that started its chain of agents. A request without a target,
+such as a floating reader pane, then appears beside the conversation that the work belongs to,
+not on whatever tab the operator looks at.
+
+Ordinary interactive Pi records its pane when a session starts and its inherited `REX_SESSION`
+and `REX_BLOCK` name a full session and block ID. RPC, JSON and print sessions record nothing.
+The record lives in `<agentDir>/rex/session-panes/`, in a `0600` file named by the SHA-256 of the
+Pi session ID inside a `0700` directory. It holds `version` 1, `sessionId`, the process `pid`,
+the launch `server` when `REX_SERVER` is set, `session`, `block` and `updatedAt`. A later process
+of the same session replaces it through a temporary file and an atomic rename. Session shutdown,
+including a session switch or reload, removes the record while it still names this process. Each
+registration also removes, among the first 512 directory entries, records whose process no
+longer runs, invalid records, and temporary files older than one day.
+
+A native conversation asks its agent host for the ordinary session at the top of its storage's
+chain of creating owners (`ordinarySession` in the
+[Durable contribution contract](../../docs/conventions/durable-contributions.md#shape)). At each
+tool call its inherited server, session and block are that session's recorded pane while the
+recorded process runs. The host process's own `REX_SESSION`, `REX_BLOCK` and `REX_CLIENT` describe
+whichever process started the host, so a native call never uses them; the host's `REX_SERVER`
+stays the server selection only when no pane is known. `rex_environment` names the source of the
+inherited context. The terminal-input guard protects that pane: an agent never sends input to the
+conversation of its ordinary session.
+
+When no pane is known, an inherited request fails before it resolves or creates anything and names the reason: the
+chain of creating owners names no ordinary session or cannot be read, that session recorded no pane,
+or its process ended. The
+error names the explicit remedy: select a resource, or request `source: "focus"` to use the
+operator's current focus. Inheritance never falls back to focus by itself. A standing agent keeps
+the ordinary session that created it, even when another session sends it work.
 
 ## Pane stacking feed
 
