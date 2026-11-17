@@ -94,7 +94,7 @@ async function readBytes(path: string, limit: number): Promise<Buffer> {
 		return bytes.subarray(0, length);
 	} finally { await handle.close(); }
 }
-async function readJson<T>(path: string, limit = 8 * 1024 * 1024): Promise<T> { return JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await readBytes(path, limit))) as T; }
+async function readJson<T>(path: string, limit = LIMITS.recordBytes): Promise<T> { return JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await readBytes(path, limit))) as T; }
 export type StoreIdentity = { version: 1; storeId: string };
 function validIdentity(value: StoreIdentity): boolean { return value?.version === 1 && typeof value.storeId === "string" && /^[0-9a-f]{32}$/.test(value.storeId); }
 function listingRecord(record: DocumentRecord, name: string, kind: DocumentKind): boolean { return validPointer(record, name) && record.kind === kind; }

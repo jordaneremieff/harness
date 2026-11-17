@@ -18,6 +18,19 @@ test("identity reads do not create a store or take the writer lock", () => fixtu
 	await writeFile(join(root, "store.json"), "not json"); await assert.rejects(store.identity(), code("store-failure"));
 	await writeFile(join(root, "store.json"), JSON.stringify({ version: 1, storeId: "wrong" })); await assert.rejects(store.identity(), code("store-failure"));
 }));
+test("oversized store records are refused before document reads and listing", () => fixture(async (store, root) => {
+	const saved = await store.create(input());
+	const base = join(root, "documents", saved.document.id);
+	const revisionPath = join(base, "revisions/1/revision.json");
+	await writeFile(revisionPath, JSON.stringify({ ...saved.revision, padding: "x".repeat(LIMITS.recordBytes) }));
+	await assert.rejects(store.get(saved.document.id), code("store-failure"));
+	await writeFile(revisionPath, JSON.stringify(saved.revision));
+	await writeFile(join(base, "document.json"), JSON.stringify({ ...saved.document, padding: "x".repeat(LIMITS.recordBytes) }));
+	await assert.rejects(store.get(saved.document.id), code("store-failure"));
+	const listed = await store.list();
+	assert.equal(listed.unreadable, 1);
+	assert.deepEqual(listed.documents, []);
+}));
 test("create, snapshots, updates, old revisions, distinct creates and reuse", () => fixture(async (store) => {
 	const first = await store.create(input());
 	assert.equal(first.source, input().source); assert.equal(first.document.revision, 1);
