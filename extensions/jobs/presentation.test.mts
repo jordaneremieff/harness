@@ -109,6 +109,20 @@ test("a durable record without command identity stays unknown rather than blank"
 	assert.equal(present.cwd, "/work");
 	assert.equal(present.owner, "storage:9");
 	assert.equal(present.status, "lost");
+	assert.equal(present.observedAt, 160);
+});
+
+test("a retained delivery result uses the read clock rather than the completion clock", () => {
+	const result = { status: "succeeded", startedAt: 100, endedAt: 140, outputBytes: 0 };
+	const record = {
+		id: 5, conversationId: 9, kind: "jobs.run",
+		input: { conversationId: 9, command: "fixture", createdAt: 100, requestId: "r" },
+		abortRequested: false,
+		state: { status: "running", checkpoint: { phase: "deliver", result } },
+	};
+	assert.equal(jobFromRecord(record as never, 160).observedAt, 160);
+	assert.equal(jobFromRecord(record as never, 200).observedAt, 200);
+	assert.equal(jobFromRecord(record as never).observedAt, undefined);
 });
 
 test("cards keep accepted, requested, settled, timeout, loss, and unavailable output distinct", () => {

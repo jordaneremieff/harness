@@ -229,10 +229,10 @@ export function jobFromRecord(record: JobRecord, observedAt?: number): Completio
 	};
 	const state = record.state;
 	if (state.status !== "terminal" && state.status !== "completing") {
-		return state.checkpoint.phase === "deliver" ? { ...base, ...jobOf(Number(record.id), record.input, state.checkpoint.result) } : { ...base, status: "running" };
+		return state.checkpoint.phase === "deliver" ? { ...base, ...jobOf(Number(record.id), record.input, state.checkpoint.result), observedAt } : { ...base, status: "running" };
 	}
 	const outcome = state.outcome;
-	if (outcome.status === "completed") return { ...base, ...jobOf(Number(record.id), record.input, outcome.result), cancellationRequested: base.cancellationRequested || outcome.result.status === "timed_out" };
+	if (outcome.status === "completed") return { ...base, ...jobOf(Number(record.id), record.input, outcome.result), observedAt, cancellationRequested: base.cancellationRequested || outcome.result.status === "timed_out" };
 	if (outcome.status === "aborted") return { ...base, status: "cancelled", cancellationRequested: true };
 	const error = outcome.status === "orphaned" ? outcome.reason : outcome.error.message;
 	return { ...base, status: "failed", error: boundedError(error) };
@@ -241,7 +241,7 @@ export function jobFromRecord(record: JobRecord, observedAt?: number): Completio
 /** The settled result of one shell execution; an abort is not a result and is handled by the caller. */
 function resultOf(exec: { ok: true; value: ShellExecResult } | { ok: false; error: ExecutionError }, startedAt: number, endedAt: number, outputBytes: number): JobResult {
 	if (exec.ok) return { status: exec.value.exitCode === 0 ? "succeeded" : "failed", exitCode: exec.value.exitCode, startedAt, endedAt, outputBytes };
-	if (exec.error.code === "timeout") return { status: "timed_out", startedAt, endedAt, outputBytes };
+	if (exec.error.code === "timeout") return { status: "timed_out", error: boundedError(exec.error), startedAt, endedAt, outputBytes };
 	return { status: "failed", error: boundedError(exec.error), startedAt, endedAt, outputBytes };
 }
 

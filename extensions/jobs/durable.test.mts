@@ -11,6 +11,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
+import { ExecutionError } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createBashTool } from "@earendil-works/pi-durable/tools";
@@ -476,6 +477,33 @@ test("a finite background command continues its conversation once with its outco
 	} finally {
 		await close();
 	}
+});
+
+test("a timed-out background command retains its backend diagnostic in status and completion", { timeout: 30_000 }, async () => {
+	const diagnostic = "Command deadline exceeded; backend cleanup detail";
+	const { harness, close } = await openHarness(new Durable.MemoryStorage(), (userText, toolResult) => {
+		if (userText === "START" && toolResult === undefined)
+			return fauxAssistantMessage([fauxToolCall("bash", { command: "fixture", background: true, timeout: 1 })], { stopReason: "toolUse" });
+		return fauxAssistantMessage("Done.");
+	}, { env: (target) => {
+		const env = new NodeExecutionEnv({ cwd: target.cwd ?? root });
+		env.exec = async () => ({ ok: false, error: new ExecutionError("timeout", diagnostic) });
+		return env;
+	} });
+	try {
+		const conversation = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } });
+		await say(conversation, "START");
+		await until(async () => (await completionEntries(conversation)).length === 1, "the timeout completion arrives");
+		await harness.waitForIdle(context);
+		const [completion] = await completionEntries(conversation);
+		assert.equal(completion.job.status, "timed_out");
+		assert.equal(completion.job.error, diagnostic);
+		assert.match((await userTexts(conversation)).at(-1) ?? "", /Backend error after timeout: Command deadline exceeded; backend cleanup detail/);
+		await until(async () => (await taskRecord(harness, completion.job.id)).state.status === "terminal", "the timeout result settles");
+		const record = await taskRecord(harness, completion.job.id);
+		const status = (record.state.outcome as { result: { error?: string } }).result;
+		assert.equal(status.error, diagnostic);
+	} finally { await close(); }
 });
 
 async function boundedBarrier(promise: Promise<void>): Promise<void> {
