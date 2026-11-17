@@ -1437,35 +1437,25 @@ load.
 
 The roster reads bounded host-published metadata through `dashboard-types.ts`.
 It parses no ordinary JSONL, opens no conversation database, and starts no host.
-Roster blocks show the state glyph and one bold label with the last-change time
-at the right, then one muted fact line: the error reason for an agent with an
-error, the current tool and model for a working agent, otherwise the model,
-thinking level and cost. The wide list and the narrow strip use the same
-blocks. The provider belongs in the selected header, not in each roster block.
-A continuous marker and background identify the selected block. State glyphs
-retain their state colors. Working and Done labels do not repeat the glyph. The
-footer distinguishes loaded rows outside the window, the error filter, the
-scope and Find filters, and the Load more agents catalog action.
-Times default to `just now`, `15m ago`, `3h ago`, or `1d ago`, with no seconds
-counter. These ages describe recorded changes, not current activity.
-Press `i` in the roster or a thread, or click a visible time in fullscreen mode,
-to switch every dashboard time to the absolute local date and time, such as
-`Oct 4, 2026, 12:01 PM`. Neither form has an `Updated` label or a local suffix.
-Exact time shares the fact line at the right of each roster block; the facts
-shorten to fit, and the label keeps its own row. Both time modes keep
-three-row blocks. The same
-choice applies to thread event times and survives close and reopen in the same
-Pi session and process; it is not saved to disk. The display name is the label;
-a retained `@handle` labels an agent without one and stays searchable through
-Find. A historical first input is a quoted fallback, never a standing role.
-Duplicate labels receive unique identity suffixes. Unknown cost shows `$?`; a known partial cost shows a trailing
-`+`, such as `$1.00+`, in the selected-agent footer and roster rows. Roster totals
-use the same marker, such as `$1.50+ retained`, for a known subtotal with incomplete
-cost or inventory coverage. These totals keep their roster scope.
+The [agent work view](#agent-work-view) owns its list layout: two rows per agent
+under Working, Recent and Earlier headings. Each model row includes the provider.
+The selected agent's header and footer hold its state, error, activity and cost
+facts; the list itself shows no timestamps, error text or cost totals.
 
-The roster is one flat list. Live hosts and records created by the caller come
-first, then other records. Each group uses catalog file modification time and
-identity as the tie-breaker; displayed row times remain source-published facts. State glyphs replace group headers. Failure text uses the actual
+Press `i` outside a text field, or click a visible time in fullscreen mode,
+to switch dashboard times between coarse ages and absolute local dates.
+The choice applies to thread event times and survives close and reopen in the
+same Pi session and process; it is not saved to disk. These ages describe
+recorded changes, not current activity. Plain-text roster summaries show unknown
+cost as `$?`. The selected-agent footer omits unknown cost and estimates below
+half a cent. A known partial cost shows a trailing `+`, such as `$1.00+`.
+Plain-text roster totals use the same marker for a known subtotal with incomplete
+cost or inventory coverage and keep their roster scope.
+
+Within each section, the initial roster order puts live hosts and records
+created by the caller first, then other records. Each priority group uses catalog
+file modification time and identity as the tie-breaker. A quiet section heading
+includes its agent count. Failure text in the selected header and Details uses the actual
 retained error, without a `Work failed:` prefix. The host publishes the native
 unanswered submission's error detail, the last assistant error, or the native
 `pi.live.runFailure` reason and detail, in the existing error field. An idle
@@ -1474,8 +1464,9 @@ when the run was aborted) until a later run starts. A delivery receipt defines t
 newer input supersedes it; an unowned report still changes the current outcome.
 An error reason exists for unavailable or conflicted storage, a host error,
 failed compaction, failed work with an error, or exhausted retries; the list
-marks these rows with the error colour on their glyph, and More's error filter
-(`e`) lists only them. A failed run stays failed until a new input,
+marks current host faults with the error colour and retained failed runs with the
+warning colour on their glyph. More's error filter (`e`) lists these rows.
+A failed run stays failed until a new input,
 so an old failure keeps its reason and age instead of reading as a new alarm.
 Done and deliberately stopped work have no error reason by themselves. The
 manager joins the host-published intervention hint (`provider-blocked`,
@@ -1628,7 +1619,10 @@ agents and partial costs.
 
 Place mutations hold one exclusive book lock. Every existing lock refuses
 mutation, including an orphan. Offline recovery requires all relevant writers
-and launchers stopped. A proposed book must fit the reader's serialized UTF-8
+and launchers stopped. Lookups retain valid binding rows from a partially malformed
+book, but every mutation refuses that book without replacing its bytes or starting
+its place operation. `readState` reports the malformed binding as corruption.
+A proposed book must fit the reader's serialized UTF-8
 byte cap before publication. Creating a place reserves those exact binding
 fields under the lock before catalogue publication or host launch. Capacity
 refusal preserves the original readable bytes and starts no host. Reads use
