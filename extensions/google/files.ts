@@ -108,7 +108,7 @@ export async function writeNewFile(
 	if (!isAbsolute(destination)) throw new GoogleError("INVALID_ARGUMENT", "The destination path must be absolute.");
 	const parent = dirname(destination);
 	const parentInfo = await stat(parent).catch((error: NodeJS.ErrnoException) => {
-		throw new GoogleError("FILE_ERROR", `Destination parent is unavailable: ${error.message}`);
+		throw new GoogleError("FILE_ERROR", `The destination parent directory must already exist: ${error.message}`);
 	});
 	if (!parentInfo.isDirectory()) throw new GoogleError("FILE_ERROR", "The destination parent must be a directory.");
 	const existing = await lstat(destination).catch((error: NodeJS.ErrnoException) =>

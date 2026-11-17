@@ -112,6 +112,13 @@ test("gmail_attachment_download writes a new file only", async () => {
 			path: "relative.pdf",
 		});
 		assert.equal(errorCode(relative), "INVALID_ARGUMENT");
+		const missingParent = await fake.tool("gmail_attachment_download", {
+			messageId: "m",
+			partId: "1",
+			path: join(downloads, "absent", "report.pdf"),
+		});
+		assert.equal(errorCode(missingParent), "FILE_ERROR");
+		assert.match((missingParent.error as { message: string }).message, /parent directory must already exist/);
 		const target = join(downloads, "report.pdf");
 		const written = await fake.tool("gmail_attachment_download", { messageId: "m", partId: "1", path: target });
 		assert.equal(written.status, "ok");

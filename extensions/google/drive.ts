@@ -106,13 +106,13 @@ export const driveTools: ToolSpec[] = [
 			{
 				name: "drive_file_download",
 				method: "get",
-				description: "Download Drive file bytes to an explicit new absolute file.",
+				description: "Download Drive file bytes to an explicit new absolute file. The parent directory must already exist.",
 				export: false,
 			},
 			{
 				name: "drive_file_export",
 				method: "export",
-				description: "Export a Google Workspace file to an explicit new absolute file.",
+				description: "Export a Google Workspace file to an explicit new absolute file. The parent directory must already exist.",
 				export: true,
 			},
 		] as const

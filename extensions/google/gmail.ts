@@ -744,7 +744,7 @@ export const gmailTools: ToolSpec[] = [
 	{
 		name: "gmail_attachment_download",
 		label: "Gmail attachment download",
-		description: "Download one Gmail attachment to an explicit new absolute file.",
+		description: "Download one Gmail attachment to an explicit new absolute file. The parent directory must already exist.",
 		parameters: obj({
 			messageId: str({ minLength: 1, maxLength: 200 }),
 			partId: str({ minLength: 1, maxLength: 200 }),
