@@ -164,14 +164,14 @@
 		ensure(
 			string(m.title, META, true) &&
 				string(m.shortId, 200) &&
-				integer(m.revision) &&
+				(m.revision === null || integer(m.revision)) &&
 				string(m.digest, 200) &&
 				typeof m.capturedSource === "boolean",
 		);
 		ensure(Array.isArray(m.revisions));
 		for (const row of m.revisions) {
 			const r = object(row);
-			ensure(integer(r.n) && string(r.createdAt, 100) && typeof r.current === "boolean");
+			ensure(integer(r.n) && string(r.createdAt, 100, true) && typeof r.current === "boolean");
 		}
 	}
 	function documentMessage(m: Fields) {

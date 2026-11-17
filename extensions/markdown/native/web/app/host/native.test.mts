@@ -100,6 +100,16 @@ test("document source uses raw UTF-8 rather than escaped JSON bytes", () => {
 	const escaped = documentMessage('"'.repeat(2 * 1024 * 1024));
 	assert.equal(api.bridge.native(escaped).type, "document");
 });
+test("local files without a stored revision and revisions without a creation time are accepted", () => {
+	const api = bridge(),
+		message = documentMessage("# Local\n");
+	Object.assign(message.meta, { kind: "localFile", revision: null });
+	assert.equal(api.bridge.native(message).type, "document");
+	Object.assign(message.meta, { kind: "published", revision: 2, revisions: [{ n: 2, createdAt: "", current: true }] });
+	assert.equal(api.bridge.native(message).type, "document");
+	Object.assign(message.meta, { revision: "2" });
+	assert.throws(() => api.bridge.native(message));
+});
 test("document blocks and matching render replies have a separate exact JSON bound", () => {
 	const api = bridge(),
 		message = documentMessage(),

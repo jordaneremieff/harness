@@ -54,6 +54,7 @@
 		let disposed = false,
 			stateTimer: ReturnType<typeof setTimeout> | undefined,
 			claimTimer: ReturnType<typeof setTimeout> | undefined;
+		let animationFrame = false;
 		let frame: ReturnType<typeof setTimeout> | number | undefined,
 			rendering = false,
 			wanted = false,
@@ -224,7 +225,10 @@
 					frame = undefined;
 					void render();
 				};
-				frame = typeof requestAnimationFrame === "function" ? requestAnimationFrame(run) : setTimeout(run, 0);
+				// Check mode runs in windows that receive no animation frames.
+				animationFrame =
+					typeof requestAnimationFrame === "function" && !globalThis.document?.documentElement?.hasAttribute("data-check-mode");
+				frame = animationFrame ? requestAnimationFrame(run) : setTimeout(run, 0);
 			},
 			dispose() {
 				disposed = true;
@@ -235,7 +239,7 @@
 				clearTimeout(stateTimer);
 				clearTimeout(claimTimer);
 				if (frame !== undefined) {
-					if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame as number);
+					if (animationFrame) cancelAnimationFrame(frame as number);
 					else clearTimeout(frame as ReturnType<typeof setTimeout>);
 				}
 			},
@@ -243,6 +247,27 @@
 		function historyChanged() {
 			c.emit("history", c.nextHistory());
 			c.state();
+		}
+		// The bridge refuses a state message with any field outside its contract, so the
+		// wire copy carries exactly the contract fields whatever components add locally.
+		const wireFlags = ["lock", "overlay", "canUndo", "canRedo", "canBack", "canForward", "hasSelection", "findOpen"];
+		const wireObjects: Record<string, string[]> = {
+			held: ["start", "end"],
+			activeBlock: ["start", "end"],
+			scroll: ["blockStart", "offsetY"],
+			find: ["query", "count", "index"],
+			selection: ["text", "start", "end"],
+		};
+		function pick(value: Record<string, unknown>, keys: string[]) {
+			return Object.fromEntries(keys.map((key) => [key, value[key]]));
+		}
+		function wireState(state: Record<string, unknown>) {
+			const wire = pick(state, wireFlags.filter((key) => state[key] !== undefined));
+			for (const [key, fields] of Object.entries(wireObjects)) {
+				const value = state[key];
+				if (value) wire[key] = pick(value as Record<string, unknown>, fields);
+			}
+			return wire;
 		}
 		function publishState() {
 			clearTimeout(stateTimer);
@@ -262,7 +287,7 @@
 				...(held ? { held } : {}),
 				...(doc.active ? { activeBlock: { start: doc.active.start, end: doc.active.end } } : {}),
 			};
-			host.send("state", state);
+			host.send("state", wireState(state));
 			c.emit("state", state);
 			c.emit("hold", held);
 			c.emit("history", c.nextHistory());

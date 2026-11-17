@@ -971,7 +971,10 @@
 			if (controller.doc) controller.doc.caretPresent = !!caret() && owner.activeElement === active?.el;
 			const selected = selection();
 			controller.emit("selection", selected);
-			controller.state({ hasSelection: !!selected, selection: selected ?? undefined });
+			controller.state({
+				hasSelection: !!selected,
+				selection: selected ? { text: selected.text, start: selected.start, end: selected.end } : undefined,
+			});
 		});
 		listen(root, "focusout", () => {
 			if (controller.doc) controller.doc.caretPresent = false;

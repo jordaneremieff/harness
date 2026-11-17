@@ -53,6 +53,7 @@
 			index = 0,
 			findOpen = false,
 			hover = false;
+		let pendingPosition: { blockStart: number; offsetY: number } | null = null;
 		let history: { blockStart: number; offsetY: number; scrollTop: number }[] = [],
 			cursor = -1;
 		const off: (() => void)[] = [];
@@ -412,7 +413,8 @@
 			() => {
 				app.toggleAttribute("data-scrolled", page.scrollTop > 2);
 				nav.updateCurrent();
-				controller.state({ scroll: position() });
+				const { blockStart, offsetY } = position();
+				controller.state({ scroll: { blockStart, offsetY } });
 			},
 			{ passive: true },
 		);
@@ -445,6 +447,7 @@
 		off.push(
 			controller.on("document", (payload) => {
 				outlineSettings(payload.settings);
+				pendingPosition = (payload.position as { blockStart: number; offsetY: number } | undefined) ?? null;
 				history = [];
 				cursor = -1;
 				drawBack();
@@ -454,6 +457,13 @@
 			controller.on("view", () => {
 				nav.rebuild();
 				nav.refreshFind();
+				if (pendingPosition) {
+					const restored = pendingPosition;
+					pendingPosition = null;
+					restore({ ...restored, scrollTop: 0 });
+					const { blockStart, offsetY } = position();
+					controller.state({ scroll: { blockStart, offsetY } });
+				}
 			}),
 			controller.on("settings", outlineSettings),
 		);

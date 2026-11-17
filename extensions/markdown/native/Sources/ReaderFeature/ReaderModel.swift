@@ -154,6 +154,8 @@ public final class ReaderModel {
     @ObservationIgnored private var failedRevision: Int?
     @ObservationIgnored private var interactionGeneration = 0
     @ObservationIgnored private var latestScroll: ReaderBridgeScroll?
+    /// The start of the delivered block that contains the requested point; the page restores there.
+    @ObservationIgnored private var requestedBlockStart: Int?
     @ObservationIgnored private var requestedScroll: ReaderBridgeScroll?
     @ObservationIgnored private var positionSourceLength: Int?
     /// Suspends a preparation result before installation or failure handling.
@@ -329,10 +331,13 @@ public final class ReaderModel {
         positionSourceLength = (envelope["source"] as? String)?.utf16.count
         latestScroll = nil
         requestedScroll = nil
+        requestedBlockStart = nil
         lastRestore = .none
         if let position = envelope["position"] as? [String: Any],
            let start = position["blockStart"] as? Int, let offset = position["offsetY"] as? Double {
             requestedScroll = ReaderBridgeScroll(blockStart: start, offsetY: offset)
+            let starts = (envelope["blocks"] as? [[String: Any]] ?? []).compactMap { $0["start"] as? Int }
+            requestedBlockStart = starts.last(where: { $0 <= start }) ?? start
         }
     }
 
@@ -405,7 +410,8 @@ public final class ReaderModel {
                 pageState = next
                 if next.scroll.blockStart <= (positionSourceLength ?? source.utf16.count) {
                     latestScroll = next.scroll
-                    if requestedScroll == next.scroll {
+                    if let requested = requestedScroll, abs(requested.offsetY - next.scroll.offsetY) < 1,
+                       requested.blockStart == next.scroll.blockStart || requestedBlockStart == next.scroll.blockStart {
                         lastRestore = .block
                         requestedScroll = nil
                     }

@@ -301,6 +301,28 @@ test("agent traces retain old/new text, optional thread identity, unread state a
 	dispose();
 });
 
+test("state publication sends only the bridge contract's fields", () => {
+	const { host, clock, controller: c, dispose } = setup();
+	const states = () => host.sent.filter((message) => message.type === "state");
+	c.state({
+		localOnly: true,
+		hasSelection: true,
+		selection: { text: "a", start: 0, end: 1, anchor: 0, focus: 1 },
+		scroll: { blockStart: 0, offsetY: 4, scrollTop: 90 },
+	});
+	clock.advance(100);
+	const sent = plain(states().at(-1)) as Record<string, unknown>;
+	assert.equal(Object.hasOwn(sent, "localOnly"), false);
+	assert.deepEqual(sent.selection, { text: "a", start: 0, end: 1 });
+	assert.deepEqual(sent.scroll, { blockStart: 0, offsetY: 4 });
+	for (const key of Object.keys(sent).filter((name) => !["v", "type", "id"].includes(name)))
+		assert.ok(
+			["lock", "overlay", "canUndo", "canRedo", "canBack", "canForward", "hasSelection", "findOpen", "held", "activeBlock", "scroll", "find", "selection"].includes(key),
+			key,
+		);
+	dispose();
+});
+
 test("state publication coalesces patches at 100 ms and omits absent held and active ranges", () => {
 	const { api, host, clock, controller: c, dispose } = setup();
 	const states = () => host.sent.filter((message) => message.type === "state");
