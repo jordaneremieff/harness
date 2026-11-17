@@ -126,6 +126,47 @@ describe("byte-identified rule reductions", () => {
 		available = true;
 		assert.equal((await reg.snapshot()).records.get("sample.rule")?.matcherAvailable, true);
 	});
+	it("copies proposals and data only when inspected, once per snapshot", async (t) => {
+		const reg = registry(await directory(t));
+		await reg.proposeAdd(candidate(), "Bound output.", agent);
+		const data = { name: "sample", kind: "table" as const, source: "test", capturedAt: 1, rows: [{ key: "key", value: "original" }] };
+		await reg.setData({ ...data, revision: namedDataRevision(data) }, null, sessionAudit());
+		await reg.snapshot();
+		const copy = t.mock.method(globalThis, "structuredClone");
+		const snapshot = await reg.snapshot();
+		preparedPolicyFor(snapshot);
+		assert.equal(copy.mock.callCount(), 0);
+		assert.equal(snapshot.pending.length, 1);
+		assert.equal(snapshot.pending, snapshot.pending);
+		assert.equal(snapshot.data.get("sample")?.rows[0].value, "original");
+		assert.equal(snapshot.data, snapshot.data);
+		assert.equal(copy.mock.callCount(), 2);
+		const replacement = new Map();
+		snapshot.data = replacement;
+		snapshot.pending = [];
+		assert.equal(snapshot.data, replacement);
+		assert.equal(snapshot.pending.length, 0);
+	});
+	it("keeps uninspected snapshot fields bound to their captured store bytes", async (t) => {
+		const reg = registry(await directory(t));
+		const first = await reg.proposeAdd(candidate(), "Bound output.", agent);
+		const data = { name: "sample", kind: "table" as const, source: "test", capturedAt: 1, rows: [{ key: "key", value: "original" }] };
+		const originalData = { ...data, revision: namedDataRevision(data) };
+		await reg.setData(originalData, null, sessionAudit());
+		const before = await reg.snapshot();
+		await reg.proposeAdd(candidate("operator.other"), "Bound output.", agent);
+		const changed = { ...data, rows: [{ key: "key", value: "replacement" }] };
+		await reg.setData({ ...changed, revision: namedDataRevision(changed) }, originalData.revision, sessionAudit());
+		const after = await reg.snapshot();
+		assert.equal(after.pending.length, 2);
+		assert.equal(after.data.get("sample")?.rows[0].value, "replacement");
+		assert.deepEqual(before.pending.map(({ id }) => id), [first.id]);
+		const binding = before.data.get("sample");
+		assert.ok(binding);
+		assert.equal(binding.rows[0].value, "original");
+		binding.rows[0].value = "caller change";
+		assert.equal((await reg.snapshot()).data.get("sample")?.rows[0].value, "replacement");
+	});
 	it("replays changed bytes even when size and timestamps stay the same", async (t) => {
 		const dir = await directory(t);
 		const reg = registry(dir, [row("sample.rule", "First note.")]);

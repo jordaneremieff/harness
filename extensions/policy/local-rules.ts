@@ -1967,9 +1967,19 @@ export class RuleRegistry {
 				health.incompleteFinalLine = store.incompleteFinalLine;
 				health.message = this.reportIncomplete(store.incompleteFinalLine);
 			}
+			let pending: PendingProposal[] | undefined;
+			let data: Map<string, NamedData> | undefined;
 			const snapshot = {
-				pending: clone(store.reduction.pending),
-				data: clone(store.reduction.data),
+				get pending() {
+					pending ??= clone(store.reduction.pending);
+					return pending;
+				},
+				set pending(value: PendingProposal[]) { pending = value; },
+				get data() {
+					data ??= clone(store.reduction.data);
+					return data;
+				},
+				set data(value: Map<string, NamedData>) { data = value; },
 				health,
 			} as unknown as RuleSnapshot;
 			let records: Map<string, RuleRecord> | undefined;
