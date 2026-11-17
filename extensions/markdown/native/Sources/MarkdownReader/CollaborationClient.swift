@@ -89,7 +89,9 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     private var bridgePromptResults: [String: Bool] = [:]
 
     func currentAdmittedThreadId(for document: UUID) -> String? {
-        let active = threads.values.filter { $0.document == document && ["admitted", "working"].contains($0.state) }
+        // An ordinary conversation reports a request without admission ("sent") and its activity
+        // without a request identity; that request still owns the activity until it is answered.
+        let active = threads.values.filter { $0.document == document && ["sent", "admitted", "working"].contains($0.state) }
         return active.count == 1 ? active.first?.id : nil
     }
 

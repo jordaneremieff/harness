@@ -19,8 +19,9 @@
 			return thread.messages.at(-1);
 		}
 		function pending(thread: ReaderThread) {
+			// A follow-up waits only while the conversation has not taken the last message.
 			const state = activeMessage(thread)?.state;
-			return !!state && !["answered", "failed"].includes(state);
+			return state === "sending" || state === "unknown";
 		}
 		function blockAt(start: number) {
 			return [...doc.children].find(
@@ -165,7 +166,11 @@
 		function composer(thread: ReaderThread, followUp: boolean) {
 			const field = el("textarea", {
 				"aria-label": followUp ? "Follow-up message" : "Message to the agent",
-				placeholder: followUp ? "Follow up in this conversation" : "Ask about this passage or ask for a change",
+				placeholder: followUp
+					? "Follow up in this conversation"
+					: thread.quote
+						? "Ask about this passage or ask for a change"
+						: "Ask about this document or ask for a change",
 				rows: "2",
 			});
 			field.value = thread.draft;
@@ -429,16 +434,29 @@
 			}
 			target.block.append(diff);
 		}
-		function drawDiff() {
-			clearDiff();
-			if (!operationId) return;
-			const operation = controller.agentOperations.get(operationId);
-			if (!operation) return;
-			changeIndex = Math.min(changeIndex, operation.edits.length - 1);
-			const target = diffTarget(operation);
-			if (!target) return;
-			const diff = el("section", { class: "inline-diff", "data-reader-control": "", "aria-label": "Agent change" }),
-				body = diffBody(target.context ?? target.edit);
+		// Redrawing replaces the panel's buttons; an unchanged panel stays in place, so a
+		// redraw between a press and its release never swallows the click.
+		function diffSignature(operation: ReaderAgentOperation, target: NonNullable<ReturnType<typeof diffTarget>>) {
+			return JSON.stringify([operation.operationId, changeIndex, operation.conflicted, target.block.dataset.block, target.context ?? target.edit]);
+		}
+		function diffMounted(operation: ReaderAgentOperation, target: ReturnType<typeof diffTarget>) {
+			const mounted = doc.querySelector<HTMLElement>(".inline-diff");
+			return !!target && !!mounted && mounted.dataset.signature === diffSignature(operation, target) && target.block.contains(mounted);
+		}
+		function conflictWarning() {
+			return el("p", { class: "diff-warning" }, "Original agent change. Later edits overlap this passage.");
+		}
+		function diffPanel(operation: ReaderAgentOperation, target: NonNullable<ReturnType<typeof diffTarget>>) {
+			const diff = el("section", { class: "inline-diff", "data-reader-control": "", "aria-label": "Agent change" });
+			const close = button(
+				"Close changes",
+				"x",
+				() => {
+					operationId = null;
+					clearDiff();
+				},
+				{ iconOnly: true },
+			);
 			diff.append(
 				el(
 					"div",
@@ -447,21 +465,27 @@
 					action("Previous", () => moveChange(-1, operation.edits.length)),
 					action("Next", () => moveChange(1, operation.edits.length)),
 					action("Undo", () => undo(operation.operationId)),
-					button(
-						"Close changes",
-						"x",
-						() => {
-							operationId = null;
-							clearDiff();
-						},
-						{ iconOnly: true },
-					),
+					close,
 				),
-				body,
+				diffBody(target.context ?? target.edit),
 			);
+			diff.dataset.signature = diffSignature(operation, target);
 			diff.addEventListener("click", (event) => event.stopPropagation());
-			if (operation.conflicted) diff.prepend(el("p", { class: "diff-warning" }, "Original agent change. Later edits overlap this passage."));
-			mountDiff(diff, target);
+			if (operation.conflicted) diff.prepend(conflictWarning());
+			return diff;
+		}
+		function drawDiff() {
+			const operation = operationId ? controller.agentOperations.get(operationId) : undefined;
+			if (!operation) {
+				clearDiff();
+				return;
+			}
+			changeIndex = Math.min(changeIndex, operation.edits.length - 1);
+			const target = diffTarget(operation);
+			if (diffMounted(operation, target)) return;
+			clearDiff();
+			if (!target) return;
+			mountDiff(diffPanel(operation, target), target);
 		}
 		function markers() {
 			for (const marker of doc.querySelectorAll(".change-marker")) marker.remove();

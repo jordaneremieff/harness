@@ -25,6 +25,7 @@ import ReaderFeature
           submissions++;
           if (mode === 'rejected') return { status: 'rejected', message: 'This request was not admitted.' };
           if (mode === 'uncertain') throw new Error('Admission unavailable');
+          if (mode === 'ordinary') return { status: 'requested' };
           return { status: 'admitted', submissionId: 'fixture' };
         } }, 2000, 100);
         const config = await bridge.start();
@@ -138,6 +139,35 @@ import ReaderFeature
         #expect(prompts[0] == prompts[1])
         #expect(prompts[0]["text"] == CollaborationClient.annotationMessage(comment: "Original comment", quote: "Exact quote"))
         #expect(state["submissions"] as? Int == 1)
+    }
+
+    /// The ordinary conversation route confirms only that it requested the turn and publishes
+    /// activity without a request identity; the sent thread still follows it to its answer.
+    @Test func ordinaryConversationActivityReachesTheSentThreadAndAllowsAFollowUp() async throws {
+        let server = try LiveTestBridge(mode: "ordinary"); defer { server.stop() }
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }
+        defer { client.stop() }
+        var states: [(request: String, thread: String, state: String, detail: String?)] = []
+        client.onPromptState = { states.append(($0, $1, $2, $3)) }
+        client.start()
+        try await eventually { client.status == "Agent connected" }
+        let thread = UUID().uuidString
+        #expect(await client.submitPrompt(requestId: thread, threadId: thread, text: "Shorten this", quote: "Long passage"))
+        #expect(states.last?.state == "sent")
+        _ = try await server.request(["op": "publish", "status": "working", "text": ""])
+        try await eventually { states.last?.state == "working" }
+        _ = try await server.request(["op": "publish", "status": "answer", "text": "Live conversation activity (not a document-specific receipt):\n\nShortened."])
+        try await eventually { states.last?.state == "answered" }
+        #expect(states.last?.request == thread && states.last?.thread == thread)
+        #expect(states.last?.detail?.hasSuffix("Shortened.") == true)
+        _ = try await server.request(["op": "publish", "status": "answer", "text": "Unrelated later activity"])
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(states.last?.detail?.hasSuffix("Shortened.") == true)
+        let followUp = UUID().uuidString
+        #expect(await client.submitPrompt(requestId: followUp, threadId: thread, text: "Shorter again"))
+        #expect(states.last?.request == followUp && states.last?.state == "sent")
+        _ = try await server.request(["op": "publish", "status": "answer", "text": "Shorter."])
+        try await eventually { states.last?.request == followUp && states.last?.state == "answered" }
     }
 
     @Test func rejectedCommentUnlocksDraftAndUncertainAdmissionDoesNotResubmit() async throws {
@@ -417,9 +447,12 @@ import ReaderFeature
         connectPage(workspace)
         workspace.pageBusy = true
         #expect(await workspace.handleLive(request).status == "busy")
+        var heldNotices = 0
+        workspace.webHeldRefusal = { heldNotices += 1 }
         workspace.pageBusy = false; workspace.pageHeld = NSRange(location: 0, length: 6)
         let held = await workspace.handleLive(request)
         #expect(held.status == "busy" && held.reason == "held")
+        #expect(heldNotices == 1)
         #expect(held.message?.contains("UTF-16 0–6") == true)
         #expect(document.text.source == "before after")
         workspace.pageHeld = nil

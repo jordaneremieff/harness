@@ -111,6 +111,10 @@ final class ReaderSurface: NSView {
             if let label { message["label"] = label }
             Task { _ = try? await self?.model.sendEnvelope(message) }
         }
+        workspace.webHeldRefusal = { [weak self] in
+            Task { _ = try? await self?.model.sendEnvelope(["v": 1, "type": "notice", "tone": "agent",
+                "text": "The agent wants to change this passage.", "actions": [["id": "releaseHold", "label": "Let it"]]]) }
+        }
         workspace.webRelease = { [weak self] id in
             Task { _ = try? await self?.model.sendEnvelope(["v": 1, "type": "release", "claimId": id]) }
         }

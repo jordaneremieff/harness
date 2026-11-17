@@ -193,6 +193,7 @@ extension EditorWorkspace {
     }
 
     private func heldResult() -> LiveResult {
+        webHeldRefusal?()
         let range = pageHeld ?? NSRange(location: 0, length: 0)
         return LiveResult(status: "busy", message: "The person is typing in this passage (UTF-16 \(range.location)–\(NSMaxRange(range))). Read again after a pause, or edit elsewhere.", reason: "held")
     }
