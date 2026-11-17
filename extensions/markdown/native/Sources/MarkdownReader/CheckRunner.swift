@@ -85,6 +85,10 @@ struct CheckRunner {
         }
     }
 
+    /// Waits for one display frame, or 60 ms when the window does not draw frames. WebKit
+    /// delivers no animation frames to the off-screen windows that check modes use.
+    static let settleFrame = "await Promise.race([new Promise(r => requestAnimationFrame(r)), new Promise(r => setTimeout(r, 60))]); return true;"
+
     static func preparePageForCheck(_ model: ReaderModel) async throws {
         try requireReady(model)
         _ = try await model.page.callJavaScript("document.documentElement.setAttribute('data-check-mode', ''); return true;")
@@ -196,7 +200,7 @@ struct CheckRunner {
             let height = min(max(fullHeight, 400), maxHeight)
             window.setContentSize(NSSize(width: width, height: height))
             window.contentView?.layoutSubtreeIfNeeded()
-            _ = try await page.callJavaScript("await new Promise(requestAnimationFrame); return true;")
+            _ = try await page.callJavaScript(Self.settleFrame)
             let configuration = WKSnapshotConfiguration()
             configuration.rect = CGRect(x: 0, y: 0, width: width, height: height)
             configuration.snapshotWidth = NSNumber(value: width)

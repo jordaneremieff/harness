@@ -305,7 +305,7 @@ struct Context {
 
     func scroll(_ model: ReaderModel, to y: Double) async -> ReadingPosition? {
         let previous = model.pageState?.scroll
-        guard await js(model, "window.scrollTo(0, y); return true;", ["y": y]) as? Bool == true,
+        guard await js(model, "document.querySelector('[data-role=\"scroller\"]').scrollTo(0, y); return true;", ["y": y]) as? Bool == true,
               await wait(seconds: 3, until: { model.pageState?.scroll != previous }) else { return nil }
         return await model.capturePositionForCheck()
     }
@@ -331,7 +331,7 @@ struct Context {
             await model.open(origin: nil)
             try await CheckRunner.preparePageForCheck(model)
             let loaded = await js(model, """
-            await new Promise(requestAnimationFrame);
+            await Promise.race([new Promise(r => requestAnimationFrame(r)), new Promise(r => setTimeout(r, 60))]);
             return location.protocol === 'reader-app:' && location.host === 'app'
               && typeof globalThis.reader?.receive === 'function'
               && !!document.querySelector('[data-role="document"] h1');
@@ -430,7 +430,12 @@ struct Context {
                 let inserted = await js(model, """
                 const block = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.trim() === 'alpha');
                 if (!block) return false;
-                block.click();
+                const rect = block.getBoundingClientRect();
+                const point = { bubbles: true, cancelable: true, button: 0, clientX: rect.left + 4, clientY: rect.top + rect.height / 2 };
+                block.dispatchEvent(new PointerEvent('pointerdown', { ...point, buttons: 1, pointerType: 'mouse', isPrimary: true }));
+                block.dispatchEvent(new PointerEvent('pointerup', { ...point, pointerType: 'mouse', isPrimary: true }));
+                block.dispatchEvent(new MouseEvent('click', point));
+                await new Promise(resolve => setTimeout(resolve, 0));
                 const editor = document.querySelector('[data-role="block-editor"]');
                 if (!editor) return false;
                 editor.focus();
@@ -969,7 +974,7 @@ struct Context {
             let selectionKept = !selected.isEmpty && selected == retainedSelection
                 && model.snapshot?.revision == 2 && model.update == .revision(3)
             let pass = prepared && deferred && followed && preserved && selectionPrepared && finished && selectionKept
-            let detail = "scroll preparation gated: \(prepared); deferred while scrolling: \(deferred); followed after settling: \(followed); new position restored: \(preserved); selection preparation gated: \(selectionPrepared); selection retained with update notice: \(selectionKept)"
+            let detail = "scroll preparation gated: \(prepared); deferred while scrolling: \(deferred); followed after settling: \(followed); new position restored: \(preserved); selection preparation gated: \(selectionPrepared); selection retained with update notice: \(selectionKept) (selected \(selected.utf16.count) units, retained equal \(selected == retainedSelection), page selection \(model.pageState?.hasSelection == true), shown revision \(model.snapshot?.revision ?? 0), update \(String(describing: model.update)))"
             await model.close()
             return .init(name: "interaction-during-revision-preparation", pass: pass, detail: detail)
         } catch {
@@ -986,23 +991,28 @@ struct Context {
             _ = await js(model, """
             const block = [...document.querySelectorAll('[data-block]')].find(b => b.textContent.trim().startsWith('Paragraph 120 '));
             const rect = block.getBoundingClientRect();
-            window.scrollTo(0, rect.top + window.scrollY + 0.4 * rect.height);
+            const scroller = document.querySelector('[data-role="scroller"]');
+            scroller.scrollTo(0, rect.top - scroller.getBoundingClientRect().top + scroller.scrollTop + 0.4 * rect.height);
             document.body.dataset.marker = "kept";
             return true;
             """)
             _ = await wait(seconds: 3) { model.pageState?.scroll != previous }
             let before = await model.capturePositionForCheck()
-            let scrollBefore = await js(model, "return window.scrollY") as? Double ?? -1
+            let scrollBefore = await js(model, "return document.querySelector('[data-role=\"scroller\"]').scrollTop") as? Double ?? -1
             _ = await js(model, "const p = [...document.querySelectorAll('p')].find(p => p.textContent.startsWith('Paragraph 121 ')); getSelection().selectAllChildren(p); return true;")
             try store.write(id, revision: 2, source: Self.longDocument(insert: "An inserted paragraph.\n\nAnother inserted paragraph.\n", change: 30))
             let watched = await wait(seconds: 3) { model.update == .revision(2) }
             let marker = await js(model, "return document.body.dataset.marker || ''") as? String
-            let scrollDuring = await js(model, "return window.scrollY") as? Double ?? -2
+            let scrollDuring = await js(model, "return document.querySelector('[data-role=\"scroller\"]').scrollTop") as? Double ?? -2
             let selection = await model.selectedText()
             await model.refresh()
+            _ = await wait(seconds: 3) { model.lastRestore == .block }
             let after = await model.capturePositionForCheck()
             let shown = model.snapshot?.revision
-            let samePlace = Self.sameSourcePosition(before, after)
+            // Text above the reading place changed, so source offsets differ between revisions;
+            // the same place is the same paragraph at the same distance from the top.
+            let afterText = await js(model, "const b = document.querySelector(`[data-block][data-start=\"${start}\"]`); return b ? b.textContent.trim() : '';", ["start": after?.blockStart ?? -1]) as? String ?? ""
+            let samePlace = afterText.hasPrefix("Paragraph 120 ") && abs((before?.offsetY ?? 0) - (after?.offsetY ?? 1000)) < 1
             let pass = watched && model.update == nil && marker == "kept" && scrollDuring == scrollBefore && selection.hasPrefix("Paragraph 121") && shown == 2 && model.lastRestore == .block && samePlace
             return .init(name: "position-survives-refresh", pass: pass, detail: "update noticed by the watcher: \(watched); page untouched until refresh (marker \(marker ?? "?"), scroll \(scrollBefore) -> \(scrollDuring), selection kept: \(selection.hasPrefix("Paragraph 121"))); after refresh revision \(shown ?? 0), restore \(model.lastRestore.rawValue), source point \(before?.blockStart ?? -1):\(before?.offsetY ?? -1) -> \(after?.blockStart ?? -1):\(after?.offsetY ?? -1)")
         } catch {
@@ -1029,7 +1039,7 @@ struct Context {
             }
             let second = await open(store.reference(id), revision: nil, state: ReadingStateStore(directory: stateDirectory), keep: &keep)
             let restored = await second.capturePositionForCheck()
-            let scroll = await js(second, "return window.scrollY") as? Double ?? 0
+            let scroll = await js(second, "return document.querySelector('[data-role=\"scroller\"]').scrollTop") as? Double ?? 0
             let pass = second.lastRestore == .block && Self.sameSourcePosition(saved, restored) && abs(scroll - 3100) < 40
             return .init(name: "position-survives-reopen", pass: pass, detail: "closed at scroll 3100 (source point \(saved?.blockStart ?? -1):\(saved?.offsetY ?? -1)); reopened at \(Int(scroll)) (source point \(restored?.blockStart ?? -1):\(restored?.offsetY ?? -1), restore \(second.lastRestore.rawValue))")
         } catch {
@@ -1071,7 +1081,7 @@ struct Context {
             let content = await wait(seconds: 5) {
                 (await js(model, "return document.querySelectorAll('[data-block]').length") as? Int ?? 0) > 100
             }
-            let scroll = await js(model, "return window.scrollY") as? Double ?? 0
+            let scroll = await js(model, "return document.querySelector('[data-role=\"scroller\"]').scrollTop") as? Double ?? 0
             let restored = await model.capturePositionForCheck()
             let pass = recovered && content && scroll > 1000 && Self.sameSourcePosition(saved, restored)
             return .init(name: "webcontent-recovery", pass: pass, detail: "killed \(processes.count) content process(es); reloaded: \(recovered); content back: \(content); scroll position after reload: \(Int(scroll)) (was 2400); saved \(String(describing: model.savedPositionForCheck)); restore \(model.lastRestore.rawValue)")
