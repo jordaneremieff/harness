@@ -199,10 +199,10 @@ import Testing
         #expect(mappedPairs(listBlock, source: list, rendered: "\n\none\ntwo\n\n") == [["one", "one"], ["two", "two"]])
     }
 
-    @Test func codeBlocksMapLiteralButNotFenceLanguageOrCopyControl() throws {
+    @Test func codeBlocksMapLiteralButNotFenceLanguage() throws {
         let source = "```swift\r\na😀\r\nb\r\n```\r\n"
         let block = try #require(render(source).blocks.first)
-        #expect(mappedPairs(block, source: source, rendered: "\nswiftCopya😀\nb\n") == [
+        #expect(mappedPairs(block, source: source, rendered: "\nswifta😀\nb\n") == [
             ["a😀", "a😀"], ["\n", "\r\n"], ["b", "b"]
         ])
     }

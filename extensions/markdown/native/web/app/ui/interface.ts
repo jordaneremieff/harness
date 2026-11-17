@@ -254,7 +254,8 @@
 			redo.dataset.tip = historyLabel(next.redo, "Redo");
 			undo.setAttribute("aria-label", undo.dataset.tip);
 			redo.setAttribute("aria-label", redo.dataset.tip);
-			history.hidden = controller.lock === "reading" && !next.undo && !next.redo;
+			// Idle controls keep their space so the edit control never moves when Writing starts.
+			history.classList.toggle("idle", controller.lock === "reading" && !next.undo && !next.redo);
 		}
 		function copyPassage() {
 			const selected = editor.selection() ?? selection;
@@ -442,7 +443,9 @@
 				b.dataset.blockStart = block.dataset.start;
 				b.setAttribute("data-reader-control", "");
 				b.addEventListener("click", (event) => event.stopPropagation());
-				pre.append(b);
+				// Appended last so rendered text offsets before it stay exact; CSS places it on the
+				// caption row beside the language label.
+				(pre.closest("figure.code") ?? pre).append(b);
 			}
 		}
 		function claims() {

@@ -435,7 +435,6 @@ public enum MarkdownRenderer {
 
     static func codeFigure(index: Int, label: String, literal: String, nonce: String, mappedLiteral: String? = nil) -> String {
         "<figure class=\"code\" data-code=\"\(index)\"><figcaption><span class=\"lang\">\(escape(label))</span>"
-            + "<a class=\"copy\" href=\"\(actionScheme):copy-code/\(nonce)/\(index)\" title=\"Copy code\" aria-label=\"Copy code\">Copy</a>"
             + "</figcaption><pre><code>\(mappedLiteral ?? escape(literal))</code></pre></figure>"
     }
 

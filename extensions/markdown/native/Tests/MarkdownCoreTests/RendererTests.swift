@@ -147,7 +147,7 @@ private func render(_ source: String, resolver: AssetResolving = NoAssetResolver
         #expect(rendered.codeBlocks[0].info == "swift title=x")
         #expect(rendered.body.contains("<span class=\"lang\">swift</span>"))
         #expect(rendered.body.contains("&lt;b&gt;&amp;amp;&lt;/b&gt;"))
-        #expect(rendered.body.contains("href=\"reader-action:copy-code/n0/0\""))
+        #expect(!rendered.body.contains("copy-code"))
         #expect(rendered.codeBlocks[1].literal == "indented")
         #expect(rendered.body.contains("<span class=\"lang\">code</span>"))
     }

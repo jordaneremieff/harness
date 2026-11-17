@@ -93,6 +93,16 @@
 			}
 			return found;
 		}
+		// While the query changes, the current match comes into view only when it is outside the
+		// visible page, so typing never scrolls a match that the person can already see.
+		function revealCurrentMatch() {
+			const range = matches[index]?.ranges[0];
+			if (!range || overlayBody()) return;
+			const rect = range.getBoundingClientRect(),
+				view = page.getBoundingClientRect();
+			if (rect.top >= view.top + 50 && rect.bottom <= view.bottom - 8) return;
+			findScroll(range);
+		}
 		function findScroll(range: Range) {
 			if (overlayBody()) {
 				range.startContainer.parentElement?.scrollIntoView({ block: "center" });
@@ -399,6 +409,7 @@
 		listen(field, "input", () => {
 			index = 0;
 			nav.refreshFind();
+			revealCurrentMatch();
 		});
 		listen(field, "keydown", ((e: KeyboardEvent) => {
 			if (e.key === "Enter" && !e.isComposing) {

@@ -348,7 +348,7 @@
   #b-ask { anchor-name: --ask; }
   .bar .status { position: static; display: inline-flex; gap: 5px; align-items: center; color: var(--ink-3); white-space: nowrap; font: 500 11.5px/1.2 var(--font); }
   .bar .status .i { width: 13px; height: 13px; }
-  #app[data-mode="reading"] .bar .status { display:none; }
+  #app[data-mode="reading"] .bar .status, .history-controls.idle { visibility:hidden; }
   .history-controls { display: flex; gap: 2px; }
   .btn-i:disabled { opacity: .35; pointer-events: none; }
   .toc a .t { display:block; overflow:visible; white-space:normal; overflow-wrap:anywhere; -webkit-line-clamp:unset; }
