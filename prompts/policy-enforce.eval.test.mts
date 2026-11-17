@@ -206,6 +206,7 @@ it("explicit variant modes ignore ambient enforcement and retain falsifiable con
 	assert.ok(observeResult?.type === "tool_result");
 	assert.ok(enforceResult.error);
 	assert.match(String(enforceResult.content), /^\[policy\] Rule form\.find-discovery:/);
+	assert.ok(String(enforceResult.content).includes(`Matched command: ${policyFixture.command}`));
 	assert.equal(observeResult.error, undefined);
 	assert.equal(observeResult.content, `./${policyFixture.fileName}\n`);
 	const enforceChecks = runDeterministicChecks("", evaluationCase.checks, enforceEvents, evaluationCase.id);
@@ -229,6 +230,11 @@ it("explicit variant modes ignore ambient enforcement and retain falsifiable con
 		observeChecks.filter((check) => !check.passed).map((check) => check.checkId),
 		["policy-block-returned"],
 	);
+	for (const content of ["[policy] Rule form.find-discovery:", `Matched command: ${policyFixture.command}`]) {
+		const partial = enforceEvents.map((event) => event.type === "tool_result" ? { ...event, content } : event);
+		const checks = runDeterministicChecks("", evaluationCase.checks, partial, evaluationCase.id);
+		assert.equal(checks.find((check) => check.checkId === "policy-block-returned")?.passed, false);
+	}
 
 	t.diagnostic(
 		`enforce checks: ${enforceChecks.map((check) => `${check.checkId}=${check.passed ? "pass" : "fail"}`).join(", ")}`,

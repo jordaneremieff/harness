@@ -421,12 +421,12 @@ const PREDICATE_RULES: PredicateRule[] = [
 	},
 	{
 		id: "form.find-discovery",
-		note: "Use rg --files, fd, or git ls-files for discovery: fd --max-results 50 -e ts src/.",
+		note: "Use fd or rg --files for discovery: fd --max-results 50 -e ts src/. git ls-files lists tracked files only. For fd or rg to include ignored entries, add --no-ignore; for hidden entries, add --hidden.",
 		matches: ({ stage }) => stage.command === "find",
 	},
 	{
 		id: "form.ls-recursive",
-		note: "Use rg --files or fd for a recursive listing: fd --max-results 50 . src/.",
+		note: "Use rg --files or fd for a recursive listing: fd --max-results 50 . src/. For fd or rg to include ignored entries, add --no-ignore; for hidden entries, add --hidden.",
 		matches: ({ stage }) => isRecursiveLs(stage),
 	},
 	{

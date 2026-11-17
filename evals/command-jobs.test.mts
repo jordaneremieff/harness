@@ -161,10 +161,11 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 			{ command: "printf launched > denied-marker; find . -maxdepth 1 -name input.txt -print -quit", background: true },
 			true,
 		);
-		assert.deepEqual(denied.content, [{
-			type: "text",
-			text: "[policy] Rule form.find-discovery: Use rg --files, fd, or git ls-files for discovery: fd --max-results 50 -e ts src/. Matched command: find . -maxdepth 1 -name input.txt -print -quit",
-		}]);
+		assert.equal(denied.content.length, 1);
+		const refusal = denied.content[0];
+		assert.ok(refusal?.type === "text");
+		assert.match(refusal.text, /^\[policy\] Rule form\.find-discovery:/);
+		assert.ok(refusal.text.includes("Matched command: find . -maxdepth 1 -name input.txt -print -quit"));
 		assert.equal(existsSync(join(cwd, "denied-marker")), false);
 		assert.deepEqual((await data("jobs", { action: "list" })).jobs, []);
 

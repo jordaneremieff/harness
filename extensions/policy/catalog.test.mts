@@ -47,6 +47,12 @@ test("command defaults retain slow-traverser gates and guide other preferences",
 	const commandRows = PACKAGE_CATALOG.filter((row) => row.matcher.kind === "code");
 	assert.deepEqual(commandRows.filter((row) => row.effect === "block").map((row) => row.id).sort(), blocked.sort());
 	assert.deepEqual(commandRows.filter((row) => row.effect === "steer").map((row) => row.id).sort(), guided.sort());
+	for (const id of ["form.find-discovery", "form.ls-recursive"]) {
+		const note = installed(id).definition.note;
+		assert.match(note, /ignored entries, add --no-ignore/);
+		assert.match(note, /hidden entries, add --hidden/);
+	}
+	assert.match(installed("form.find-discovery").definition.note, /git ls-files lists tracked files only/);
 	assert.equal(installed("arguments.schema").definition.effect, "block");
 	assert.equal(installed("recovery.repeated-errors").definition.effect, "steer");
 	assert.equal(PACKAGE_CATALOG.some((row) => /deadline|timeout/.test(row.id)), false);

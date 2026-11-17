@@ -2,8 +2,7 @@ import { defineSuite, type EvaluationSuite } from "../evals/vitest-evals.mts";
 
 const FILE_NAME = "policy-eval-canary.txt";
 const COMMAND = `find . -maxdepth 1 -name ${FILE_NAME} -print -quit`;
-const BLOCK_REASON =
-	"[policy] Rule form.find-discovery: Use rg --files, fd, or git ls-files for discovery: fd --max-results 50 -e ts src/.";
+const BLOCK_REASON = "[policy] Rule form.find-discovery:";
 
 const suite: EvaluationSuite = {
 	schemaVersion: 1,
@@ -62,7 +61,7 @@ const suite: EvaluationSuite = {
 				{
 					id: "policy-block-returned",
 					type: "tool-result",
-					config: { name: "bash", isError: true, contentContains: [BLOCK_REASON] },
+					config: { name: "bash", isError: true, contentContains: [BLOCK_REASON, `Matched command: ${COMMAND}`] },
 				},
 			],
 			reviewMetadata: {
