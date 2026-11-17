@@ -357,6 +357,7 @@ function startOwnedLaunch(metadata: HostMetadata, options: HostLaunchOptions, de
 	const runner = options.runner ?? fileURLToPath(new URL("./durable-runner.ts", import.meta.url));
 	// Node reports a missing cwd as `spawn <executable> ENOENT`, which names the wrong path.
 	if (!statSync(metadata.cwd, { throwIfNoEntry: false })?.isDirectory()) throw new HostError(`The agent's working directory no longer exists: ${metadata.cwd}`, "invalid");
+	if (!statSync(process.execPath, { throwIfNoEntry: false })?.isFile()) throw new HostError(`The running Node executable is no longer available: ${process.execPath}. Restart Pi, then retry the agent control.`, "invalid");
 	const child = spawn(process.execPath, [runner, ...(options.runnerArgs ?? []), JSON.stringify(metadata)], {
 		cwd: metadata.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...options.env },
 	});

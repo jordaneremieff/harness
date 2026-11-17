@@ -220,6 +220,24 @@ it("names a missing working directory instead of starting a host there", { timeo
 	assert.equal(existsSync(statePath), false, "no host process started");
 });
 
+it("names a removed Node executable and requires a Pi restart before host launch", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const executable = process.execPath;
+	const removed = join(root, "removed-node");
+	try {
+		process.execPath = removed;
+		await assert.rejects(acquireHost(fixtureMetadata(root), launch()), (error: unknown) => {
+			assert.ok(error instanceof HostError);
+			assert.equal(error.code, "invalid", "a removed runtime is not a transient delivery failure");
+			assert.match(error.message, /Node executable.*no longer available/u);
+			assert.ok(error.message.includes(removed));
+			assert.match(error.message, /Restart Pi/u);
+			return true;
+		});
+	} finally { process.execPath = executable; }
+	assert.equal(existsSync(join(root, "state.json")), false, "no replacement runtime started");
+});
+
 it("refuses to connect when no host is live", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	await assert.rejects(connectHost(fixtureMetadata(root), launch()), /No verified native host endpoint/u);
