@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -76,6 +76,7 @@ struct Verification {
                 await run("ask-card-keeps-newest-exchange-in-view") { await context.askCardLatest(keep: &keep) }
                 await run("ask-from-open-block-and-let-it") { await context.askFromOpenBlock(keep: &keep) }
                 await run("narrow-writing-bar-keeps-save-icon") { await context.narrowWritingBar(keep: &keep) }
+                await run("agent-change-keeps-reading-position") { await context.agentChangeKeepsPlace(keep: &keep) }
                 await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
                 await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
                 await run("image-inspection-deadline") { await context.imageInspectionDeadline(keep: &keep) }
@@ -836,6 +837,129 @@ struct Context {
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
+    /// An agent change inside the visible area keeps the first visible line and everything above
+    /// the change in place: at a narrow width with the bottom-sheet card open, at a wide width with
+    /// the side card, near the end of the document, and after a card Send that closed an open block.
+    func agentChangeKeepsPlace(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "agent-change-keeps-reading-position"
+        var results: [String] = []
+        var pass = true
+        let long = "Target passage: " + String(repeating: "this sentence makes the paragraph wrap over several lines in a narrow pane. ", count: 2)
+        for (index, scenario) in [(452.0, "card", false), (800.0, "card", false), (452.0, "card", true), (452.0, "send", false)].enumerated() {
+            do {
+                let before = (1...24).map { "Paragraph \($0) above the target." }.joined(separator: "\n\n")
+                let after = (1...(scenario.2 ? 6 : 24)).map { "Paragraph \($0) below the target." }.joined(separator: "\n\n")
+                let source = "# Place\n\n\(before)\n\n## Section above\n\n\(long)\n\n\(after)\n"
+                let state = ReadingStateStore(directory: nil)
+                let file = workspace.appendingPathComponent("place-\(index).md")
+                try Data(source.utf8).write(to: file)
+                let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: state)
+                let editor = EditorWorkspace(directory: workspace.appendingPathComponent("place-\(index)-drafts"), store: nil)
+                editor.add(DraftRecord(source: source))
+                let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
+                defer { withExtendedLifetime(surface) {} }
+                keep.append(CheckRunner.offscreenWindow(page: model.page, width: scenario.0, height: 760))
+                await model.open(origin: nil)
+                try await CheckRunner.preparePageForCheck(model)
+                _ = await wait(seconds: 5) { editor.webReady && model.source == source }
+                guard let document = editor.active else { results.append("\(index): no draft"); pass = false; continue }
+                let forward = model.page.onMessage
+                model.page.onMessage = { message in
+                    if message["type"] as? String == "prompt" { return ["accepted": true] }
+                    nonisolated(unsafe) let body = message
+                    return try await forward?(body) ?? [:]
+                }
+                await model.sendCommand("toggleLock", args: ["lock": "writing"])
+                let placed = await js(model, """
+                const page = document.querySelector('[data-role="scroller"]');
+                const target = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.trim().startsWith('Target passage'));
+                if (!target) return false;
+                await new Promise(r => setTimeout(r, 300));
+                const wanted = nearEnd ? page.scrollHeight - page.clientHeight - 260
+                  : target.getBoundingClientRect().top - page.getBoundingClientRect().top + page.scrollTop - 260;
+                page.scrollTop = wanted;
+                await new Promise(r => setTimeout(r, 100));
+                if (mode === 'send') {
+                  const rect = target.getBoundingClientRect();
+                  const point = { bubbles: true, cancelable: true, button: 0, clientX: rect.left + 4, clientY: rect.top + 8 };
+                  target.dispatchEvent(new PointerEvent('pointerdown', { ...point, buttons: 1, pointerType: 'mouse', isPrimary: true }));
+                  target.dispatchEvent(new PointerEvent('pointerup', { ...point, pointerType: 'mouse', isPrimary: true }));
+                  target.dispatchEvent(new MouseEvent('click', point));
+                  await new Promise(r => setTimeout(r, 0));
+                }
+                if (mode === 'card') {
+                  // Ask on the passage itself: the card keeps that passage as its thread range.
+                  const text = target.querySelector('p') ?? target;
+                  const range = document.createRange(); range.selectNodeContents(text);
+                  getSelection().removeAllRanges(); getSelection().addRange(range);
+                  document.dispatchEvent(new Event('selectionchange'));
+                  text.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                  await new Promise(r => setTimeout(r, 60));
+                  const ask = [...document.querySelectorAll('[data-role="selection-strip"] button')].find(b => b.textContent.trim() === 'Ask');
+                  if (!ask) return false;
+                  ask.click();
+                } else {
+                  document.getElementById('b-ask').click();
+                  await new Promise(r => setTimeout(r, 30));
+                  [...document.querySelectorAll('#activity button')].find(b => b.textContent.includes('Ask about this document')).click();
+                }
+                await new Promise(r => setTimeout(r, 60));
+                if (mode === 'send') {
+                  const field = document.querySelector('[data-role="ask-card"] textarea');
+                  field.value = 'Shorten the target passage.';
+                  field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: 'x' }));
+                  document.querySelector('[data-role="ask-card"] .send').click();
+                  await new Promise(r => setTimeout(r, 100));
+                }
+                return true;
+                """, ["nearEnd": scenario.2, "mode": scenario.1]) as? Bool == true
+                // The person scrolls on: the passage's top now sits just under the bar, above the
+                // place where the card first revealed it.
+                var personPlaced: Double? = nil
+                if !scenario.2 {
+                    personPlaced = await js(model, """
+                    const page = document.querySelector('[data-role="scroller"]');
+                    const target = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.trim().startsWith('Target passage'));
+                    page.scrollTop += target.getBoundingClientRect().top - page.getBoundingClientRect().top - 20;
+                    return target.getBoundingClientRect().top;
+                    """) as? Double
+                    try? await Task.sleep(for: .milliseconds(150))
+                }
+                _ = await wait(seconds: 3) { editor.pageHeld == nil }
+                let measure = """
+                const page = document.querySelector('[data-role="scroller"]');
+                const top = page.getBoundingClientRect().top;
+                const blocks = [...document.querySelectorAll('[data-role="document"] [data-block]')];
+                const first = blocks.find(b => b.getBoundingClientRect().bottom > top);
+                const heading = blocks.find(b => b.textContent.trim() === 'Section above');
+                const target = blocks.find(b => b.textContent.trim().startsWith('Target passage'));
+                return [first ? first.dataset.block : '', first ? first.getBoundingClientRect().top : 0, heading ? heading.getBoundingClientRect().top : 0, target ? target.getBoundingClientRect().top : -1, page.clientHeight];
+                """
+                let start = await js(model, measure) as? [Any] ?? []
+                let text = document.text.source as NSString, range = text.range(of: long)
+                let applied = await editor.handleLive(LiveCommand(requestId: UUID().uuidString, workspace: editor.id.uuidString,
+                    document: editor.liveDocumentID.uuidString, op: "apply", operationId: UUID().uuidString,
+                    baseGeneration: document.text.generation, baseDigest: Digest.sha256(Data(document.text.source.utf8)),
+                    edits: [LiveTextEdit(start: range.location, end: NSMaxRange(range), expected: long, replacement: "Target passage: short.")]))
+                _ = await wait(seconds: 3) { (await js(model, "return [...document.querySelectorAll('[data-role=\"document\"] [data-block]')].some(b => b.textContent.trim() === 'Target passage: short.');") as? Bool) == true }
+                try? await Task.sleep(for: .milliseconds(150))
+                let end = await js(model, measure) as? [Any] ?? []
+                await editor.closeViews()
+                await model.close()
+                let visible = (start[safe: 3] as? Double).map { $0 >= 0 && $0 < (start[safe: 4] as? Double ?? 0) } ?? false
+                let firstKept = start.count == 5 && end.count == 5 && start[0] as? String == end[0] as? String
+                    && abs((start[1] as? Double ?? 0) - (end[1] as? Double ?? 1000)) <= 1
+                let aboveKept = abs((start[2] as? Double ?? 0) - (end[2] as? Double ?? 1000)) <= 1
+                // Card redraws and the agent's change leave the page where the person scrolled it.
+                let personKept = personPlaced.map { abs($0 - (end[safe: 3] as? Double ?? 1000)) <= 1 } ?? true
+                let ok = placed && visible && applied.status == "applied" && firstKept && aboveKept && personKept
+                pass = pass && ok
+                results.append("\(Int(scenario.0)) \(scenario.1)\(scenario.2 ? " near end" : ""): placed \(placed), \(applied.status), target visible \(visible), first line \(start[safe: 1] ?? "?")→\(end[safe: 1] ?? "?"), heading above \(start[safe: 2] ?? "?")→\(end[safe: 2] ?? "?"), passage where the person scrolled it \(personPlaced.map { String($0) } ?? "-")→\(end[safe: 3] ?? "?")")
+            } catch { pass = false; results.append("\(index): \(error)") }
+        }
+        return .init(name: name, pass: pass, detail: results.joined(separator: "; "))
+    }
+
     func typing(keep: inout [NSWindow]) async -> Verification.Check {
         let name = "bridge-typing-exact-line-endings"
         do {
@@ -1518,4 +1642,8 @@ struct Context {
             return .init(name: "webcontent-recovery", pass: false, detail: String(describing: error))
         }
     }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }
