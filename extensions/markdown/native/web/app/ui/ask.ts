@@ -295,6 +295,9 @@
 			const latest = `${thread.threadId}:${thread.messages.length}:${message?.state}:${message?.detail?.length ?? 0}`;
 			if (latest === shownLatest) return;
 			shownLatest = latest;
+			// The message list scrolls on its own inside the card; both end at the newest exchange.
+			const messages = card.querySelector<HTMLElement>(".ask-messages");
+			if (messages) messages.scrollTop = messages.scrollHeight;
 			card.scrollTop = card.scrollHeight;
 		}
 		function draw() {
