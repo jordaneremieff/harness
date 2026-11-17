@@ -470,6 +470,21 @@ it("reports corrupt metadata as skipped without losing valid records", async (t)
 	assert.throws(() => catalog.read(corrupt.storageId), /reasoning level/u);
 });
 
+it("counts nonregular catalog records as skipped without following symlinks", async (t) => {
+	const { catalog, input } = fixture(t);
+	const valid = catalog.create(input);
+	const linked = catalog.create(input);
+	const directory = catalog.create(input);
+	unlinkSync(catalog.path(linked.storageId));
+	symlinkSync(catalog.path(valid.storageId), catalog.path(linked.storageId));
+	unlinkSync(catalog.path(directory.storageId));
+	mkdirSync(catalog.path(directory.storageId));
+	const page = await catalog.page();
+	assert.deepEqual(page.records, [valid]);
+	assert.equal(page.coverage.skipped, 2, "unsafe record paths remain unknown instead of disappearing from coverage");
+	assert.equal(page.coverage.complete, true, "the directory scan reached its end");
+});
+
 it("tracks whether a create wrote the record and keeps dedup results", (t) => {
 	const { catalog, input } = fixture(t);
 	const first = catalog.createTracked(input, "request");

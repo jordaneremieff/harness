@@ -602,7 +602,7 @@ export class AgentCatalog {
 			last = entry.name;
 			visited++;
 			try {
-				const record = entry.isFile() ? this.select(entry.name, options) : undefined;
+				const record = this.select(entry.name, options);
 				if (record) records.push(record);
 			} catch {
 				skipped++;
