@@ -565,19 +565,20 @@
 			controller.on("ack", showKind),
 			controller.on("command", (m) => command(m.name, m.args)),
 			controller.on("error", (error) => notice(`The reader did not complete the change: ${String(error)}`, "warn")),
-			controller.on("notice", (m) =>
+			controller.on("notice", (m) => {
+				if (m.actions?.some((action) => action.id === "releaseHold")) ask.noteHeld();
 				notice(
 					m.text,
 					m.tone,
 					m.actions?.map((action) => ({
 						label: action.label,
 						run: () => {
-							if (action.id === "releaseHold") editor.releaseHold();
+							if (action.id === "releaseHold") ask.letAgentChange();
 							else void hostCommand(action.id);
 						},
 					})),
-				),
-			),
+				);
+			}),
 			controller.on("document", () => {
 				get("#linkcard").hidden = true;
 				linkAnchor = null;

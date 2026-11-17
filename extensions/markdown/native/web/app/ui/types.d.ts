@@ -90,6 +90,8 @@ declare global {
 		dispose(): void;
 	}
 	interface ReaderAskUI {
+		noteHeld(): void;
+		letAgentChange(): void;
 		open(selection?: ReaderSelection | null): void;
 		close(): boolean;
 		refresh(): void;

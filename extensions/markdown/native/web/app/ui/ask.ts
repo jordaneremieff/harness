@@ -356,26 +356,53 @@
 				generation: controller.doc?.generation ?? 0,
 			};
 		}
+		function newMessage(thread: ReaderThread) {
+			const message: ReaderAskMessage = { requestId: crypto.randomUUID(), text: thread.draft, state: "sending" };
+			if (!thread.threadId) thread.threadId = message.requestId;
+			thread.messages.push(message);
+			thread.draft = "";
+			payloads.set(message.requestId, promptPayload(thread, message));
+			return message;
+		}
 		async function sendMessage(retry?: ReaderAskMessage) {
 			const thread = current;
 			if (!thread) return;
 			if (!retry && (!thread.draft.trim() || pending(thread))) return;
-			const message = retry ?? {
-				requestId: crypto.randomUUID(),
-				text: thread.draft,
-				state: "sending" as ReaderAskState,
-			};
-			if (!thread.threadId) thread.threadId = message.requestId;
-			if (!retry) {
-				thread.messages.push(message);
-				thread.draft = "";
-				payloads.set(message.requestId, promptPayload(thread, message));
-			}
+			const message = retry ?? newMessage(thread);
 			message.state = "sending";
+			// Sending a request is the person's consent to the agent's change: the open block, which
+			// holds its passage against agent edits, closes before the request leaves.
+			if (controller.doc?.active) editor.close();
 			draw();
 			ask.refresh();
 			await deliverMessage(message);
 			ask.refresh();
+		}
+		// The thread whose request was working when the agent was held back by the open block.
+		let heldThread: ReaderThread | null = null;
+		function noteHeld() {
+			heldThread = [...threads].reverse().find((t) => {
+				const state = activeMessage(t)?.state;
+				return !!state && ["sending", "sent", "admitted", "working"].includes(state);
+			}) ?? heldThread;
+		}
+		// Let it releases the passage. If the held request has already ended, the agent is asked in
+		// the same thread to make the change now; while it still works, its own retry lands.
+		function letAgentChange() {
+			editor.releaseHold();
+			const thread = heldThread;
+			heldThread = null;
+			const state = thread ? activeMessage(thread)?.state : undefined;
+			if (!thread || !state) {
+				ctx.toast("The passage is free. Ask the agent again to change it.");
+				return;
+			}
+			if (!["answered", "failed"].includes(state)) return;
+			current = thread;
+			visible = true;
+			thread.collapsed = false;
+			thread.draft = "I closed the passage I had open. Please make the change now.";
+			void sendMessage();
 		}
 		async function deliverMessage(message: ReaderAskMessage) {
 			try {
@@ -527,6 +554,8 @@
 			drawDiff();
 		}
 		const ask: ReaderAskUI = {
+			noteHeld,
+			letAgentChange,
 			open(selection) {
 				current = {
 					threadId: "",
