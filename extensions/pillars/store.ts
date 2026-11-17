@@ -290,7 +290,7 @@ export class PillarsStore {
 	}
 
 	private async readShard(slot: string, start: NodeJS.MemoryUsage): Promise<Shard> {
-		const handle = await open(join(this.root, slot), constants.O_RDONLY | NO_FOLLOW);
+		const handle = await open(join(this.root, slot), constants.O_RDONLY | NO_FOLLOW | constants.O_NONBLOCK);
 		let raw: Buffer;
 		try {
 			const info = await handle.stat();

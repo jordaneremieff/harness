@@ -488,7 +488,8 @@ publication succeeds. Retention watermarks prevent clock rollback from
 resurrecting expired receipts.
 
 A reader captures bounded coherent shards without taking the lock, then
-projects and paginates them. It rejects unresolved temporary state rather
+projects and paginates them. Shard opens are nonblocking and refuse nonregular
+files even when a special file replaces a shard after directory inspection. It rejects unresolved temporary state rather
 than block on a writer. The managed store peak is bounded by 62 MiB plus
 4,096 control bytes. Decoded-node, heap-headroom, heap-growth, and
 process-memory guards supplement serialized limits. These guards are not

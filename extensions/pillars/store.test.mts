@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import syncFs, { constants, writeSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -85,6 +85,41 @@ test("absent and empty read capture leave storage unchanged", async () => {
 	await mkdir(f.root, { mode: 0o700 });
 	assert.deepEqual(await f.store.capture(TODAY), { shards: {} });
 	assert.deepEqual(await readdir(f.root), []);
+});
+
+test("a shard replaced by a writerless FIFO after inspection refuses without blocking", { skip: process.platform === "win32" }, async () => {
+	await using f = await fixture();
+	const path = join(f.root, slotFor(TODAY));
+	await mkdir(f.root, { mode: 0o700 });
+	await writeFile(path, JSON.stringify(emptyShard(TODAY)), { mode: 0o600 });
+	const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+		import assert from "node:assert/strict";
+		import { execFileSync } from "node:child_process";
+		import fs from "node:fs/promises";
+		import { syncBuiltinESMExports } from "node:module";
+		import { mock } from "node:test";
+		const [moduleUrl, root, path, today] = process.argv.slice(1);
+		const { PillarsStore, StoreUnavailableError } = await import(moduleUrl);
+		const original = fs.open;
+		let replaced = false;
+		mock.method(fs, "open", async (...args) => {
+			if (args[0] === path && !replaced) {
+				await fs.unlink(path);
+				execFileSync("mkfifo", [path], { timeout: 1000, maxBuffer: 8192 });
+				replaced = true;
+				console.log("fifo-installed");
+			}
+			return original(...args);
+		});
+		syncBuiltinESMExports();
+		await assert.rejects(new PillarsStore(root).capture(today), StoreUnavailableError);
+		assert.equal(replaced, true);
+		console.log("fifo-refused");
+	`, new URL("./store.ts", import.meta.url).href, f.root, path, TODAY], { timeout: 5000, encoding: "utf8", maxBuffer: 8192 });
+	assert.match(child.stdout, /fifo-installed/);
+	assert.equal(child.error, undefined, child.error?.message);
+	assert.equal(child.status, 0, child.stderr);
+	assert.match(child.stdout, /fifo-refused/);
 });
 
 test("atomic local publication gives coherent snapshots and idempotent receipts", async () => {
