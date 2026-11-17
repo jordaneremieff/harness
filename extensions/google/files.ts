@@ -65,10 +65,15 @@ export async function stageBytes(dir: string, bytes: Buffer, suffix = ".bin"): P
 	const path = join(dir, `${randomUUID()}${suffix}`);
 	const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
 	try {
-		await handle.writeFile(bytes);
-		await handle.sync();
-	} finally {
-		await handle.close();
+		try {
+			await handle.writeFile(bytes);
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+	} catch (error) {
+		await removeQuietly(path);
+		throw error;
 	}
 	return path;
 }
@@ -144,9 +149,12 @@ export async function replacePrivateFile(path: string, bytes: Buffer): Promise<v
 	const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
 	const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
 	try {
-		await handle.writeFile(bytes);
-		await handle.sync();
-		await handle.close();
+		try {
+			await handle.writeFile(bytes);
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
 		await rename(temporary, path);
 		await chmod(path, 0o600);
 		const directory = await open(dirname(path), constants.O_RDONLY);
