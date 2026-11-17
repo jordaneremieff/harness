@@ -7,6 +7,7 @@ import { it, type TestContext } from "node:test";
 import type { AgentToolResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AgentManager } from "./manager.ts";
 import register from "./ordinary-entry.ts";
+import { matchesSchema } from "./schema-check.ts";
 
 interface RegisteredTool {
 	name: string;
@@ -49,6 +50,22 @@ it("forwards receipt cursors and renders result pages as readable answer text", 
 	assert.equal((output.structuredContent as { answer: string }).answer, "First line\nSecond line");
 	await assert.rejects(f.execute("agent_inspect", { sessionId: "producer", view: "history", receiptCursor: "captured" }), /receiptCursor requires/u);
 });
+it("accepts and forwards exact result references with their native request identity", async (t) => {
+	const f = fixture(t), inputs: Record<string, unknown>[] = [];
+	t.mock.method(AgentManager.prototype, "control", async (_method: string, input: Record<string, unknown>) => {
+		inputs.push(input);
+		return { view: "result", sessionId: "producer", conversationId: 1, status: "unavailable", reason: "No retained result", usage: { models: {}, tools: {} } };
+	});
+	const tool = f.tools.find((item) => item.name === "agent_inspect"); assert.ok(tool);
+	const reference = { sessionId: "producer", view: "result", submissionId: 2, requestId: "task" };
+	assert.equal(matchesSchema(tool.parameters, reference), true);
+	assert.equal(matchesSchema(tool.parameters, { ...reference, requestId: "" }), false);
+	await f.execute("agent_inspect", reference);
+	assert.deepEqual(inputs, [reference]);
+	await assert.rejects(f.execute("agent_inspect", { ...reference, view: "history" }), /requestId.*result view/u);
+	assert.equal(inputs.length, 1, "a non-result request never reaches the host");
+});
+
 it("rejects native receipt continuation selectors on an ordinary primary", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "ordinary-inspect-"));
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root });

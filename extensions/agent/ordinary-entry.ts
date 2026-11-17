@@ -181,6 +181,7 @@ const inspect = obj(
 		query: opt(str({ minLength: 1, maxLength: 256 })),
 		source: opt(StringEnum(["user", "assistant", "toolResult", "summary", "custom"])),
 		submissionId: opt(nativeEntryId),
+		requestId: opt(str({ minLength: 1, description: "Native request ID within the selected conversation; result view only." })),
 		operationId: opt(id),
 		receiptCursor: opt(str({ minLength: 1, maxLength: 2048, description: "Recipient reference continuation from a result page. Separate from answer offset and history cursor." })),
 		finalReport: opt(bool({ description: "Result view only: page the retained final report of the selected input's declared work instead of its answer; offset continues it." })),
@@ -473,9 +474,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_inspect",
-		"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry, not the live selected branch; pass a clipped entry's textCursor as cursor to page its complete allowed text. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId or operationId. When the request declared work, the answer is a state note: work.finalReport.read pages its final report with finalReport true. Images, signatures, and redacted thinking stay omitted.",
+		"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry, not the live selected branch; pass a clipped entry's textCursor as cursor to page its complete allowed text. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId, a conversation-qualified native requestId, or the separate retained operationId. Missing results return unavailable; supplied selectors must agree. Result answerContinuation pages readable answer text; receiptGroup.next pages recipient references with receiptCursor. When the request declared work, the answer is a state note: work.finalReport.read pages its final report with finalReport true. Images, signatures, and redacted thinking stay omitted.",
 		inspect,
 		(input, ctx) => {
+			if (input.requestId !== undefined && input.view !== "result") throw new Error("requestId selects only the result view");
 			if (input.receiptCursor !== undefined && input.view !== "result") throw new Error("receiptCursor requires result view");
 			if (input.finalReport !== undefined && input.view !== "result") throw new Error("finalReport requires result view");
 			return control("inspect", input, ctx);
