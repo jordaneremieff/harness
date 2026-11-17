@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchesSchema } from "./schema-check.ts";
 import { AgentManager } from "./manager.ts";
 import { AgentConversationSummarySchema, StatusToolOutputSchema } from "./observation-schema.ts";
-import { classifyListStorage, composeListRow, enrichDashboardRow, matchesListRow } from "./profile-discovery.ts";
+import { classifyListStorage, composeListRow, enrichDashboardRow, matchesListRow, ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { boundCatalogView, type CatalogView } from "./catalog-view.ts";
 import type { CatalogRecord } from "./catalog.ts";
 import type { ProfileHints } from "./profile-schema.ts";
@@ -20,6 +20,7 @@ it("discovery joins retained hints by canonical identity and keeps missing cover
 	assert.equal(result.profile?.source, "retained");
 	assert.equal(Object.hasOwn(result, "expertise"), false);
 	for (const query of ["@HISTORY", "operator DECISIONS", "Expert", "old task", "/work", "one"]) assert.ok(matchesListRow(result, query), query);
+	assert.ok(matchesListRow({ ...result, handle: "history" }, "@HISTORY"), "a leading @ does not require one in the retained handle");
 	const missing = composeListRow({ identity: "two" }, hints, "/work", "two");
 	assert.equal(missing.profileCoverage, "unknown"); assert.equal(missing.role, null);
 	assert.equal(matchesListRow(missing, "history"), false);
@@ -79,6 +80,58 @@ it("classifies a storage for a query from its catalog record and writer claim", 
 		{ kind: "unknown", error: "Writer claim is unreadable" },
 	] as const) assert.equal(classifyListStorage(record, claim, "absent"), "remainder", JSON.stringify(claim));
 });
+for (const query of ["session-history", "@session-history"]) {
+	it(`lists the exact retained handle first for ${query} without losing earlier or later continuation rows`, async (t) => {
+		const root = mkdtempSync(join(tmpdir(), "profile-query-order-"));
+		const manager = new AgentManager({ root, agentDir: join(root, "agent"), packageDir: root,
+			acquire: async () => { throw new Error("discovery must not acquire a host"); },
+			observe: async (record, method, input) => {
+				assert.equal(method, "list");
+				const offset = Number((input.cursor as { offset?: number } | undefined)?.offset ?? 0);
+				const items = [record.storageId, `${record.storageId}:2`].map((identity, index) => ({ identity, conversationId: index + 1, busy: false, firstMessage: "Read session-history and @session-history findings" }));
+				const end = Math.min(items.length, offset + Number(input.limit));
+				return { items: items.slice(offset, end), next: end < items.length ? { offset: end } : null };
+			},
+		});
+		t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
+		const records = Array.from({ length: 8 }, () => manager.catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: root,
+			model: { provider: "fixture", modelId: "fixture" }, thinkingLevel: "off" })).sort((a, b) => a.storageId < b.storageId ? -1 : 1);
+		const exact = records[5];
+		for (const record of records) {
+			manager.catalog.updateView(record.storageId, { updatedAt: "2026-01-01T00:00:00.000Z",
+				rows: [record.storageId, `${record.storageId}:2`].map((identity) => row(identity, { storageId: record.storageId, cwd: root, firstMessage: "Read session-history and @session-history findings" })),
+				coverage: { complete: true, omitted: 0 }, profiles: { rows: record === exact ? [{ identity: record.storageId, handle: "session-history", role: "History", revision: "r1", hasExpertise: true, updatedAt: 1 }] : [], coverage: { complete: true, omitted: 0 } } });
+			manager.catalog.markRecoveryDue(record.storageId, false);
+			utimesSync(manager.catalog.path(record.storageId), 1, 1);
+		}
+		type Page = { rows: Array<{ identity: string; handle: string | null }>; nextCursor: string | null; coverage: { complete: boolean; storagesVisited: number; catalog: { pending: number; storages: number }; next: { tool: string; query: string; limit: number; cursor: string } | null } };
+		const first = await manager.list({ query, limit: 5 }) as Page;
+		assert.ok(matchesSchema(ProfiledListOutputSchema, first));
+		assert.equal(first.rows.length, 5);
+		assert.equal(first.rows[0].identity, exact.storageId);
+		assert.equal(first.rows[0].handle, "session-history");
+		assert.equal(first.coverage.complete, false);
+		assert.equal(first.coverage.catalog.storages, records.length);
+		assert.equal(first.coverage.catalog.pending, 6);
+		const pages: Page[] = [first];
+		for (let next: Page["coverage"]["next"] = first.coverage.next; next && pages.length < 10; next = pages.at(-1)?.coverage.next ?? null) {
+			const { tool, ...input } = next;
+			assert.equal(tool, "agent_list");
+			assert.equal(input.query, query);
+			pages.push(await manager.list(input) as Page);
+		}
+		const found = pages.flatMap((page) => page.rows.map((row) => row.identity));
+		const expected = [exact, ...records.filter((record) => record !== exact)].flatMap((record) => [record.storageId, `${record.storageId}:2`]);
+		assert.deepEqual(found, expected);
+		assert.equal(new Set(found).size, found.length);
+		assert.ok(pages.every((page) => page.rows.length <= 5 && page.coverage.storagesVisited <= 32));
+		assert.equal(pages.at(-1)?.coverage.complete, true);
+		assert.equal(pages.at(-1)?.coverage.catalog.pending, 0);
+		assert.equal(pages.at(-1)?.coverage.next, null);
+		assert.equal(pages.at(-1)?.nextCursor, null);
+	});
+}
+
 it("a publication at the publisher's 200-conversation scan bound always reports omitted rows", () => {
 	const storageId = "11111111-1111-4111-8111-111111111111";
 	const rows = Array.from({ length: 200 }, (_, index) => ({ id: index === 0 ? storageId : `${storageId}:${index + 1}`, storageId, cwd: "", modifiedAt: 0, owner: "here" as const, state: "new" as const, cost: 0, partial: false }));

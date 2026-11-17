@@ -35,10 +35,15 @@ export function composeListRow<T extends { identity: string; name?: string; firs
 	};
 }
 
+function matchesHandle(handle: string | null | undefined, query: string): boolean {
+	const term = query.replace(/^@/u, "").toLocaleLowerCase();
+	return term.length > 0 && typeof handle === "string" && handle.replace(/^@/u, "").toLocaleLowerCase() === term;
+}
+
 /** Literal discovery includes concern addresses and roles without a host read. */
 export function matchesListRow(row: { identity: string; name?: string; firstMessage?: string; cwd: string; handle?: string | null; role?: string | null }, query: string): boolean {
 	const term = query.toLocaleLowerCase();
-	return [row.identity, row.name, row.firstMessage, row.cwd, row.handle, row.role]
+	return matchesHandle(row.handle, query) || [row.identity, row.name, row.firstMessage, row.cwd, row.handle, row.role]
 		.some((value) => value?.toLocaleLowerCase().includes(term));
 }
 
@@ -56,7 +61,8 @@ function recordCarriesQuery(record: CatalogRecord, term: string): boolean {
 	const texts: Array<string | null | undefined> = [record.storageId, record.cwd, record.name];
 	for (const row of record.view?.rows ?? []) texts.push(row.id, row.name, row.firstMessage);
 	for (const hint of record.view?.profiles?.rows ?? []) texts.push(hint.handle, hint.role);
-	return texts.some((value) => value?.toLocaleLowerCase().includes(term));
+	return (record.view?.profiles?.rows ?? []).some((hint) => matchesHandle(hint.handle, term)) ||
+		texts.some((value) => value?.toLocaleLowerCase().includes(term));
 }
 
 /**
@@ -93,8 +99,14 @@ export interface ListScanPlan {
 	profileHints: { complete: boolean; unknownStorages: number; omitted: number };
 }
 
+/** The query order also compares continuation positions; exact handles precede other identities. */
+export function compareListStorages(facts: ReadonlyMap<string, CatalogFact | null>, query: string, left: string, right: string): number {
+	const exact = (id: string) => facts.get(id)?.record.view?.profiles?.rows.some((hint) => matchesHandle(hint.handle, query)) ?? false;
+	return Number(exact(right)) - Number(exact(left)) || (left < right ? -1 : left > right ? 1 : 0);
+}
+
 /**
- * Order the observations of one discovery from a catalog inventory, in storage identity order.
+ * Order discovery by exact retained handle, then storage identity, from one catalog inventory.
  *
  * The candidates pass comes first. The remainder pass also takes each candidate whose record file changed at or
  * after `since`, the start of the discovery: the candidates pass can have read an earlier record that was no
@@ -102,7 +114,7 @@ export interface ListScanPlan {
  */
 export function planListScan(facts: ReadonlyMap<string, CatalogFact | null>, query: string, cwd: string, since: number): ListScanPlan {
 	const plan: ListScanPlan = { storages: 0, settled: 0, candidates: [], remainder: [], profileHints: { complete: true, unknownStorages: 0, omitted: 0 } };
-	for (const storageId of [...facts.keys()].sort()) {
+	for (const storageId of [...facts.keys()].sort((left, right) => compareListStorages(facts, query, left, right))) {
 		const fact = facts.get(storageId);
 		if (!fact) { plan.candidates.push({ storageId }); continue; }
 		const { record } = fact;
@@ -126,7 +138,7 @@ export function listCoverageBasis(state: { query: string; pass: ListPass; pendin
 		const open = `${pending} storage observation${pending === 1 ? " is" : "s are"} still open, so a page without rows is not absence. Call agent_list with the fields of coverage.next.`;
 		if (!query) return `Storages are observed in identity order. ${open}`;
 		return pass === "candidates"
-			? `Candidates pass: storages whose catalog record carries the query, or cannot decide it, are observed first. ${open}`
+			? `Candidates pass: storages whose catalog record carries the query, or cannot decide it, are observed first; exact retained handle matches precede other candidates. ${open}`
 			: `Remainder pass: every candidate storage is observed. The remaining storages publish no match, but their publication can be older than the store. ${open}`;
 	}
 	if (!query) return "Every storage in scope was observed.";

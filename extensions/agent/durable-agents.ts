@@ -1719,7 +1719,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const listTool = {
 		...durable.defineTool({
 			name: "agent_list",
-			description: "Discover retained conversations through the session host's common observation. A query observes first the storages whose catalog record carries it. While coverage.complete is false, a page without rows is not absence: call agent_list again with the fields of coverage.next.",
+			description: "Discover retained conversations through the session host's common observation. An exact retained handle match comes first, with or without the leading @. A query then observes other storages whose catalog record carries it. While coverage.complete is false, a page without rows is not absence: call agent_list again with the fields of coverage.next.",
 			parameters: ListParams,
 			replay: "safe",
 			execute: async (args: ListInput) =>

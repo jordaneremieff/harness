@@ -108,7 +108,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_compact` | Run native compaction without stopping active work or withdrawing queued inputs. The summary applies at the next native boundary. Self-compaction uses its completed tool boundary. |
 | `agent_command` | Invoke a contributed command, reload host registrations while idle, or fork to a tree entry. |
 | `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths, none unless configured; optional `checkInMinutes` sets an interval. |
-| `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. A query observes first the storages whose catalog record carries it, and `coverage.next` holds the exact continuation call. Reads start no host. |
+| `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. A query puts an exact retained handle first, with or without `@`, then observes other catalogue candidates; `coverage.next` holds the exact continuation call. Reads start no host. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected read returns compact state with an exact full-detail call; `detail: true` with one explicit `sessionId` returns the full selected status and cannot be combined with `view`, `storageId`, `cursor`, or `limit`. The full status of a selected session lists its pending timers, nearest deadline first. `view: "storage-page"` continues one exact storage's bounded status scan; `storageId`, `cursor`, and `limit` apply to that view only, and a refusal of one of them elsewhere names the view and tells the caller to omit the field. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. The result view returns the answer in pages with separate continuations for answer text and for recipient references; see [result pages](#result-pages). |
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 characters and `message` within 8,000 characters; write longer content to a file and post its path. Handler length errors include this remedy because Pi's pre-handler schema errors omit field descriptions. |
@@ -186,9 +186,11 @@ scope from its catalog record and writer claim:
   but the catalog cannot prove that the publication is the last state of the
   store: the claim is open, crashed, unreadable or absent.
 
-Discovery observes the candidates first and the remainder second, each in
-storage identity order. Rows come only from observations. Without a query,
-every storage is a candidate.
+Discovery observes the candidates first and the remainder second. An exact
+retained handle match comes first, with or without the leading `@` and regardless
+of letter case. Other storages stay in identity order. Rows come only from
+observations. Without a query, every storage is a candidate and identity order
+applies throughout.
 
 Coverage keeps observed and unobserved storages apart.
 `coverage.storagesVisited` counts the observations of the call.
@@ -200,7 +202,9 @@ observation is open. While it is false, a page without rows is not absence:
 call, and `nextCursor` holds its cursor.
 
 Continuations retain the pass, the last finished storage identity, the native
-page position, and the start time of the discovery. Repeat the same query and
+page position, and the start time of the discovery. The continuation uses the
+same exact-handle-first order as the initial page, including identities before
+and after the handle's storage identity. Repeat the same query and
 cwd with a cursor; a different query or cwd is refused explicitly. A record
 that changes behind the position needs a new discovery, with one exception:
 the remainder pass also observes each candidate whose record file changed after
@@ -278,7 +282,7 @@ Roster continuation uses the last priority, modification time, and identity,
 bound to the caller's ownership set and local active stores. Each page ranks the
 current shared observation. Activity or claim changes between pages can move
 records across this position; refresh the
-roster to rediscover them. Use `agent_list` for stable identity-ordered continuation.
+roster to rediscover them. Use `agent_list` for stable continuation in query order (exact handle first, then identities).
 Exact-target attachment and controls read their own current evidence regardless
 of roster membership. Recovery still considers every source within its existing
 bound: availability of one recipient can wake a parked delivery in another store.

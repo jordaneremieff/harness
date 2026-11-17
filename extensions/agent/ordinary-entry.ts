@@ -438,7 +438,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_list",
-		"Discover Durable agent identities and names without a writer. A query observes first the storages whose catalog record carries it. While coverage.complete is false, a page without rows is not absence: call agent_list again with the fields of coverage.next.",
+		"Discover Durable agent identities and names without a writer. An exact retained handle match comes first, with or without the leading @. A query then observes other storages whose catalog record carries it. While coverage.complete is false, a page without rows is not absence: call agent_list again with the fields of coverage.next.",
 		obj(
 			{
 				query: opt(str({ minLength: 1, maxLength: 256 })),

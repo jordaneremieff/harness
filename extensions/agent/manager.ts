@@ -9,7 +9,7 @@ import { readFleetStatus, validateFleetSelection, type FleetSelection } from "./
 import { handleSlug, handleStorageId } from "./identity.ts";
 import { profileText, type AgentProfile } from "./profile-schema.ts";
 import { NativeListOutputSchema, observationSchema, structuredObservation } from "./observation-schema.ts";
-import { composeListRow, matchesListRow, enrichDashboardRow, planListScan, listCoverageBasis, type ListPass, type ListScanPlan, type ListScanStep } from "./profile-discovery.ts";
+import { composeListRow, matchesListRow, enrichDashboardRow, planListScan, compareListStorages, listCoverageBasis, type ListPass, type ListScanPlan, type ListScanStep } from "./profile-discovery.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -838,7 +838,7 @@ export class AgentManager {
 	private listQueue(plan: ListScanPlan, cursor: ListCursor, facts: CatalogInventory["facts"]): ListScanStep[] {
 		const steps = cursor.pass === "candidates" ? plan.candidates : plan.remainder;
 		const position = cursor.storage ?? cursor.after;
-		const queue = position === undefined ? steps : steps.filter((step) => step.storageId > position);
+		const queue = position === undefined ? steps : steps.filter((step) => compareListStorages(facts, cursor.query, step.storageId, position) > 0);
 		if (cursor.storage === undefined) return queue;
 		const record = facts.get(cursor.storage)?.record;
 		if (record) return [{ storageId: cursor.storage, record }, ...queue];
