@@ -1970,6 +1970,35 @@ for (const [total, eventAt] of [[1000, 850], [13500, 12000]] as const) {
 	}
 }
 
+test("a status deadline retains the exact block's last observed nonmatching status", async () => {
+	const f = fixture();
+	const time = operationTime(120000);
+	let entered!: () => void;
+	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const snapshot = { records: [{ id: "pi", state: "done" }] };
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = (args, call) => args.includes("events")
+		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }))
+		: run(args, call);
+	f.transport.handler = (method) => {
+		if (!method.endsWith(".program_status")) return undefined;
+		entered();
+		return reply(snapshot);
+	};
+	try {
+		const pending = f.core.execute({ op: "wait", condition: "status", state: "idle", timeoutMs: 120000, target }, { ...context, budget: time.budget });
+		await initial;
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		time.advance(time.budget.workEndsAt);
+		const response = await pending;
+		assert.equal(response.outcome, "timeout");
+		assert.equal(response.target?.blockId, block);
+		assert.deepEqual((response.data as { snapshot?: unknown }).snapshot, snapshot);
+		assert.match(JSON.stringify(response.data), /condition was not observed/);
+		assert.match(response.error ?? "", /Inspect the target's current state/);
+	} finally { time.budget.dispose(); f.core.dispose(); }
+});
+
 test("early cancellation bounds a non-cooperative event process with the same final signal", async () => {
 	const f = fixture();
 	const caller = new AbortController();
