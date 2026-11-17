@@ -36,11 +36,12 @@ function startOffset(fd: number, scan: Scan, stat: Stats, end: number): void {
 }
 /** Skip unrelated records without buffering them; only exact candidate lines establish retention. */
 function records(bytes: Buffer, scan: Scan, ids: Map<string, string>): boolean {
+	const candidates = [...ids.values()].map((entry) => Buffer.from(entry));
 	let offset = 0, found = false;
 	while (offset < bytes.length) {
 		const newline = bytes.indexOf(10, offset), end = newline < 0 ? bytes.length : newline;
 		const fragment = bytes.subarray(offset, end), start = scan.lineOffset;
-		scan.possible ??= [...ids.values()].map((entry) => Buffer.from(entry));
+		scan.possible ??= candidates;
 		scan.possible = scan.possible.filter((entry) => fragment.length <= entry.length - start && fragment.equals(entry.subarray(start, start + fragment.length)));
 		scan.lineOffset += fragment.length;
 		if (newline >= 0) {
