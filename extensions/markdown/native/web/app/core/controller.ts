@@ -54,7 +54,9 @@
 		let disposed = false,
 			stateTimer: ReturnType<typeof setTimeout> | undefined,
 			claimTimer: ReturnType<typeof setTimeout> | undefined;
-		let animationFrame = false;
+		let animationFrame = false,
+			fullRender = false,
+			renderFailures = 0;
 		let frame: ReturnType<typeof setTimeout> | number | undefined,
 			rendering = false,
 			wanted = false,
@@ -387,6 +389,20 @@
 			c.blocks = merged;
 			c.emit("blocks", merged);
 		}
+		// A newer change makes a render request stale and the next render covers it. Only
+		// repeated failures for the current generation reach the person.
+		function renderFailed(error: unknown, generation: number, token: number) {
+			if (!currentEpoch(token)) return;
+			// Native omits HTML for blocks it already sent; a discarded reply can leave the page
+			// without one, so the next request asks for every block's HTML.
+			if (error instanceof Error && error.message.includes("unknown block")) fullRender = true;
+			if (c.doc?.generation !== generation || ++renderFailures < 3) {
+				wanted = true;
+				return;
+			}
+			renderFailures = 0;
+			c.emit("error", error);
+		}
 		async function render() {
 			if (!c.doc || disposed) return;
 			rendering = true;
@@ -394,13 +410,15 @@
 			const generation = c.doc.generation,
 				token = epoch;
 			try {
-				const result = (await host.request("render", { generation })) as {
+				const result = (await host.request("render", fullRender ? { generation, full: true } : { generation })) as {
 					generation: number;
 					blocks: ReaderMappedBlock[];
 				};
 				acceptRender(result, generation, token);
+				renderFailures = 0;
+				fullRender = false;
 			} catch (error) {
-				if (currentEpoch(token)) c.emit("error", error);
+				renderFailed(error, generation, token);
 			} finally {
 				rendering = false;
 				if (wanted) c.requestRender();
@@ -492,6 +510,7 @@
 				c.emit("ack", m);
 			}),
 			host.on("refused", (m) => c.emit("refused", m)),
+			receive<ReaderNotice>("notice", (m) => c.emit("notice", m)),
 			receive<AgentApply>("agentApply", applyAgent),
 			receive<ReaderClaim>("claim", (m) => {
 				const held = c.doc?.heldRange(now());

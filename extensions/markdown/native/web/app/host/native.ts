@@ -404,7 +404,7 @@
 			ensure(string(m.operationId, 200) && one(m.reason, ["held", "stale"]));
 			if (m.range !== undefined) range(m.range);
 		},
-		render: (m) => ensure(integer(m.generation)),
+		render: (m) => ensure(integer(m.generation) && optional(m.full, (v) => typeof v === "boolean")),
 		lock: (m) => ensure(one(m.lock, ["reading", "writing"]) && typeof m.copy === "boolean"),
 		prompt(m) {
 			ensure(

@@ -154,6 +154,9 @@ public final class ReaderModel {
     @ObservationIgnored private var failedRevision: Int?
     @ObservationIgnored private var interactionGeneration = 0
     @ObservationIgnored private var latestScroll: ReaderBridgeScroll?
+    /// The source generation that `rendered` belongs to.
+    @ObservationIgnored private var renderedGeneration: UInt64?
+    @ObservationIgnored private var renderingWaiters: [(generation: UInt64, resume: CheckedContinuation<Void, Never>)] = []
     /// The start of the delivered block that contains the requested point; the page restores there.
     @ObservationIgnored private var requestedBlockStart: Int?
     @ObservationIgnored private var requestedScroll: ReaderBridgeScroll?
@@ -292,6 +295,8 @@ public final class ReaderModel {
         }.value
         guard mirror == mirrorSequence, sourceGeneration == generation, self.source.utf8.elementsEqual(source.utf8) else { return }
         rendered = result
+        renderedGeneration = generation
+        resumeRenderingWaiters()
         draftGeneration = isDraft ? generation : nil
         phase = .ready
         failure = nil
@@ -433,10 +438,16 @@ public final class ReaderModel {
             }
             return nil
         case .render:
-            guard (message.fields["generation"] as? NSNumber)?.uint64Value == sourceGeneration, let rendered else {
+            // Page messages run concurrently: a render request can arrive while the change that
+            // produced its generation still reaches the native mirror. Wait for that rendering.
+            guard let requested = (message.fields["generation"] as? NSNumber)?.uint64Value else {
                 throw ReaderBridgeError.staleGeneration
             }
-            let blocks = blockPayload(rendered, incremental: true)
+            await waitForRendering(requested)
+            guard requested == sourceGeneration, renderedGeneration == requested, let rendered else {
+                throw ReaderBridgeError.staleGeneration
+            }
+            let blocks = blockPayload(rendered, incremental: message.fields["full"] as? Bool != true)
             sentBlockKeys.formUnion(rendered.blocks.map(\.key))
             return ["generation": sourceGeneration, "blocks": blocks]
         case .query:
@@ -794,6 +805,8 @@ public final class ReaderModel {
         snapshot = prepared.snapshot
         rendered = prepared.rendered
         sourceGeneration = isDraft ? requestedSourceGeneration : 0
+        renderedGeneration = sourceGeneration
+        resumeRenderingWaiters()
         lock = isCaptured(prepared.snapshot) ? .reading : (initialLock ?? (isDraft ? initialDraftLock : .reading))
         initialLock = nil
         sentBlockKeys = Set(prepared.rendered.blocks.map(\.key))
@@ -914,6 +927,28 @@ public final class ReaderModel {
     func savePosition(final: Bool = false) async {
         guard !isDraft, !closed || final, phase == .ready, let position = cachedReadingPosition else { return }
         state.setPosition(position, for: reference)
+    }
+
+    /// Waits up to five seconds for the rendering of a generation the page already holds.
+    private func waitForRendering(_ requested: UInt64) async {
+        if closed || (renderedGeneration ?? 0) >= requested && sourceGeneration >= requested { return }
+        await withCheckedContinuation { continuation in
+            renderingWaiters.append((requested, continuation))
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                self?.resumeRenderingWaiters(all: true)
+            }
+        }
+    }
+
+    private func resumeRenderingWaiters(all: Bool = false) {
+        let reached = renderedGeneration ?? 0
+        var waiting: [(generation: UInt64, resume: CheckedContinuation<Void, Never>)] = []
+        for waiter in renderingWaiters {
+            if all || closed || waiter.generation <= reached || sourceGeneration > waiter.generation { waiter.resume.resume() }
+            else { waiting.append(waiter) }
+        }
+        renderingWaiters = waiting
     }
 
     var cachedReadingPosition: ReadingPosition? {
@@ -1075,6 +1110,7 @@ public final class ReaderModel {
     public func close() async {
         guard !closed else { return }
         closed = true
+        resumeRenderingWaiters(all: true)
         generation += 1
         supersedeDisplay()
         updates.stop()

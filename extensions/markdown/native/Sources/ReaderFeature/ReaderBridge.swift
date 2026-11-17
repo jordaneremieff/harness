@@ -235,8 +235,9 @@ public enum ReaderBridgeCodec {
             try BridgeField.choice(fields, "reason", values: ["held", "stale"])
             _ = try BridgeField.optionalRange(fields, "range")
         case .render:
-            try BridgeField.keys(fields, allowed: ["generation"])
+            try BridgeField.keys(fields, allowed: ["generation", "full"])
             _ = try BridgeField.integer(fields, "generation")
+            if fields["full"] != nil { _ = try BridgeField.bool(fields, "full") }
         case .lock:
             try BridgeField.keys(fields, allowed: ["lock", "copy"])
             try BridgeField.choice(fields, "lock", values: ["reading", "writing"])
