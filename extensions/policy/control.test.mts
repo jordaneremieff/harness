@@ -142,6 +142,46 @@ it("keeps exact authority and command/proposal boundaries intact", async (t) => 
 		await assert.rejects(f.call(input), /Invalid policy control fields/);
 });
 
+it("names unexpected, missing and invalid fields for the selected control operation", () => {
+	const rejection = {
+		operation: "reject",
+		proposalId: "00000000-0000-4000-8000-000000000001",
+		revision: "123456789abc",
+		authorization,
+	};
+	for (const [input, expected] of [
+		[{ ...rejection, reason: "Not selected." }, /Unexpected fields: "reason"\. Missing required fields: none/],
+		[{ ...rejection, revision: undefined }, /Missing required fields: none\. Invalid fields: "revision"/],
+		[{ operation: "reject", proposalId: rejection.proposalId, authorization }, /Missing required fields: "revision"/],
+		[{ operation: "reject", proposalId: rejection.proposalId }, /Missing required fields: "authorization", "revision"/],
+		[{ ...rejection, authorization: " " }, /Invalid fields: "authorization"/],
+		[{ operation: "inspect", revision: rejection.revision }, /Unexpected fields: "revision"\. Missing required fields: "id"/],
+		[{ operation: "inspect", id: 42 }, /Missing required fields: none\. Invalid fields: "id"/],
+		[{ operation: "mode", reason: "Not a mutation." }, /Unexpected fields: "reason"\. Missing required fields: none/],
+	] as const) {
+		assert.throws(() => validateControl(input), expected);
+	}
+	assert.throws(() => validateControl({ ...rejection, reason: "Not selected." }), /exact revision and nonblank operator authorization/);
+	validateControl(rejection);
+});
+
+it("reports the relevant alternative fields for read operations", () => {
+	assert.throws(
+		() => validateControl({ operation: "data-preview" }),
+		(error: Error) => /Missing required fields: "artifact"/.test(error.message) && /Missing required fields: "path"/.test(error.message),
+	);
+	assert.throws(
+		() => validateControl({ operation: "data-preview", path: 42 }),
+		/Unexpected fields: none\. Missing required fields: none\. Invalid fields: "path"/,
+	);
+	assert.throws(
+		() => validateControl({ operation: "telemetry", from: "2026-11-10", authorization }),
+		/Unexpected fields: "authorization"\. Missing required fields: "to"/,
+	);
+	assert.throws(() => validateControl(null), /Missing required fields: "operation"/);
+	assert.throws(() => validateControl({ operation: "unknown", extra: true }), /Unexpected fields: "extra"/);
+});
+
 it("explains the required telemetry selection when a continuation omits it", () => {
 	assert.throws(
 		() => validateControl({ operation: "telemetry", cursor: "page" }),

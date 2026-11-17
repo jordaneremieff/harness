@@ -273,19 +273,45 @@ async function controlReadback(
 	};
 }
 
+function controlFieldRefusal(params: unknown): string {
+	const input: Record<string, unknown> = typeof params === "object" && params !== null && !Array.isArray(params)
+		? params as Record<string, unknown>
+		: {};
+	const propertiesOf = (schema: Schema) => schema.properties as Record<string, Schema>;
+	const selected = variants.filter((schema) => compile(propertiesOf(schema).operation).check(input.operation));
+	const reports = (selected.length ? selected : [PolicyControlParams]).map((schema) => {
+		const properties = propertiesOf(schema);
+		const unexpected = Object.keys(input).filter((name) => !Object.hasOwn(properties, name)).sort();
+		const missing = (schema.required as string[]).filter((name) => !Object.hasOwn(input, name)).sort();
+		const invalid = Object.entries(properties).filter(([name, field]) => Object.hasOwn(input, name) && (
+			!compile(field).check(input[name]) ||
+			((name === "authorization" || name === "reason") && typeof input[name] === "string" && !input[name].trim())
+		)).map(([name]) => name).sort();
+		const names = (fields: string[]) => fields.length ? fields.map((name) => JSON.stringify(name)).join(", ") : "none";
+		return {
+			score: unexpected.length + missing.length + invalid.length,
+			text: `Unexpected fields: ${names(unexpected)}. Missing required fields: ${names(missing)}. Invalid fields: ${names(invalid)}.`,
+		};
+	});
+	const nearest = Math.min(...reports.map(({ score }) => score));
+	const matches = reports.filter(({ score }) => score === nearest);
+	const details = matches.map(({ text }, index) => matches.length > 1 ? `Alternative ${index + 1}: ${text}` : text).join(" ");
+	if (input.operation === "telemetry")
+		return `Invalid policy control fields for telemetry; use from and to, or since and until, with an optional cursor. Repeat the same selection on every page. This read accepts no authorization or mutation fields. ${details}`;
+	const operation = selected.length ? ` for ${input.operation}` : "; select a known operation and supply an object";
+	const boundary = selected.some((schema) => Object.hasOwn(propertiesOf(schema), "authorization"))
+		? " Mutations require an exact revision and nonblank operator authorization."
+		: "";
+	return `Invalid policy control fields${operation}. ${details}${boundary}`;
+}
+
 export function validateControl(params: unknown): asserts params is Input {
 	if (
 		!validator.check(params) ||
 		("authorization" in params && !params.authorization.trim()) ||
 		("reason" in params && !params.reason.trim())
 	) {
-		if (typeof params === "object" && params !== null && "operation" in params && params.operation === "telemetry")
-			throw new Error(
-				"Invalid policy control fields for telemetry; use from and to, or since and until, with an optional cursor. Repeat the same selection on every page. This read accepts no authorization or mutation fields.",
-			);
-		throw new Error(
-			"Invalid policy control fields; mutations require an exact revision and nonblank operator authorization, with only operation-specific fields",
-		);
+		throw new Error(controlFieldRefusal(params));
 	}
 	if (Buffer.byteLength(JSON.stringify(params)) > 512 * 1024)
 		throw new Error("Policy control input exceeds byte bound");

@@ -1101,7 +1101,11 @@ requires fresh inspection and reassessment, not automatic substitution.
 
 Execution validates closed operation-specific arguments. The provider-facing
 schema exposes one bounded flat object so adapters retain every field; required
-combinations and prohibited extra fields are checked again before any operation:
+combinations and prohibited extra fields are checked again before any operation.
+Field refusals name unexpected fields, missing required fields, and fields with
+invalid values for the selected operation. For alternative argument sets, the
+refusal reports the nearest set or equally close alternatives. These diagnostics
+do not relax the exact revision and operator authorization required for mutations:
 
 | Operation | Arguments beyond `operation` | Revision source |
 | --- | --- | --- |
