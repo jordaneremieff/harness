@@ -324,7 +324,9 @@ function run(command: string, args: string[]): string {
 
 /**
  * Runs the core's swift-testing suite. Under the Command Line Tools (no Xcode) the Testing
- * framework sits outside the default search paths, so the run names its directory.
+ * framework sits outside the default search paths, so the run names its directory. The Command
+ * Line Tools also lack the Testing and Foundation cross-import overlay, so the run disables
+ * cross-import overlays.
  */
 function test(): void {
 	const developer = run("xcode-select", ["-p"]).trim();
@@ -337,6 +339,10 @@ function test(): void {
 			"-F",
 			"-Xswiftc",
 			frameworks,
+			"-Xswiftc",
+			"-Xfrontend",
+			"-Xswiftc",
+			"-disable-cross-import-overlays",
 			"-Xlinker",
 			"-F",
 			"-Xlinker",
