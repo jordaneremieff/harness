@@ -291,8 +291,7 @@ assessment or application evidence.
 
 Context cost consists of the tool's static guidance plus an assessment task for
 each successful call that includes a draft. The task contains fixed instructions
-and a JSON-escaped copy of the draft; escaping can make it larger than the input
-byte limit. The extension has no automatic retry or review loop. Agent selection
+and a JSON-escaped copy of the draft; escaping can increase its byte size. The extension has no automatic retry or review loop. Agent selection
 and the quality of the resulting correction remain model judgments, not a
 compliance verdict computed by the extension.
 
@@ -301,7 +300,9 @@ compliance verdict computed by the extension.
 The extension and the corpus ship together in one package. At session start the
 extension resolves the corpus root as the sibling `../../pillars` directory
 relative to its own module location. `PI_PILLARS_CORPUS` overrides that root
-with an absolute path. A rejected relative override returns the package default
+with an absolute path. The `pillars.corpus` field in `<agentDir>/harness.json`
+also selects the corpus; a present environment value takes precedence.
+A rejected relative override returns the package default
 and a settings diagnostic; it never resolves against the session directory. The extension does not guess a corpus directory,
 depend on the registry extension, or scan session history. It loads the bounded
 inventory and canonical targets, with no full-corpus body cache.
