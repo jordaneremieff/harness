@@ -159,10 +159,10 @@ import ReaderFeature
         _ = try await server.request(["op": "publish", "status": "answer", "text": "Live conversation activity (not a document-specific receipt):\n\nShortened."])
         try await eventually { states.last?.state == "answered" }
         #expect(states.last?.request == thread && states.last?.thread == thread)
-        #expect(states.last?.detail?.hasSuffix("Shortened.") == true)
+        #expect(states.last?.detail == "Shortened.")
         _ = try await server.request(["op": "publish", "status": "answer", "text": "Unrelated later activity"])
         try await Task.sleep(for: .milliseconds(300))
-        #expect(states.last?.detail?.hasSuffix("Shortened.") == true)
+        #expect(states.last?.detail == "Shortened.")
         let followUp = UUID().uuidString
         #expect(await client.submitPrompt(requestId: followUp, threadId: thread, text: "Shorter again"))
         #expect(states.last?.request == followUp && states.last?.state == "sent")

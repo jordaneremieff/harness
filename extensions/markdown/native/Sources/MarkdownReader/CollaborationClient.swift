@@ -154,13 +154,21 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
             request = threads[threadKey(thread, document: document)]?.lastRequest
         } else { request = nil }
         guard let request else { return }
+        let text = Self.agentWords(state.text)
         switch state.status {
-        case "working": emitPromptState("working", detail: state.text.isEmpty ? nil : state.text, request: request)
-        case "answer": emitPromptState("answered", detail: state.text, request: request)
-        case "error": emitPromptState("failed", detail: state.text, request: request)
+        case "working": emitPromptState("working", detail: text.isEmpty ? nil : text, request: request)
+        case "answer": emitPromptState("answered", detail: text, request: request)
+        case "error": emitPromptState("failed", detail: text, request: request)
         default: break
         }
     }
+    /// The ordinary conversation route labels its activity for model-facing readers; the page shows
+    /// the agent's words only.
+    static let conversationActivityLabel = "Live conversation activity (not a document-specific receipt):\n\n"
+    static func agentWords(_ text: String) -> String {
+        text.hasPrefix(conversationActivityLabel) ? String(text.dropFirst(conversationActivityLabel.count)) : text
+    }
+
     private struct CommentDraft {
         var text: String
         var quote: String?
