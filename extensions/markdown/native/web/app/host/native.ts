@@ -351,6 +351,7 @@
 		"newDraft",
 		"saveSettings",
 		"chooseStore",
+		"readClipboard",
 	];
 	function hostCommand(m: Fields) {
 		ensure(one(m.name, hostCommands));
@@ -499,6 +500,7 @@
 	function replyBody(kind: string, fields: Fields) {
 		if (kind === "render") return "blocks";
 		if (kind === "query" && fields.kind === "review") return "html";
+		if (kind === "command" && fields.name === "readClipboard") return "text";
 		return undefined;
 	}
 	function imageReply(m: Fields) {
@@ -511,6 +513,8 @@
 	}
 	function commandReply(m: Fields, fields: Fields) {
 		if (fields.name === "pickImage") imageReply(m);
+		if (fields.name === "readClipboard")
+			ensure(typeof m.text === "string" && encoder.encode(m.text).length <= SOURCE, "Clipboard text exceeds its byte limit.");
 		if (fields.name === "chooseStore") {
 			ensure(typeof m.changed === "boolean");
 			if (m.store !== undefined) store(m.store);

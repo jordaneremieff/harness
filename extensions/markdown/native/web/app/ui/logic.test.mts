@@ -106,18 +106,46 @@ test("prompt progress cannot regress or resubmit an unknown admission", () => {
 
 test("inline change context preserves unchanged text around mapped UTF-16 ranges", () => {
 	const source = "before\r\nThe agent makes this 👩‍💻 passage clearer. Every change stays.\r\nafter";
-	const start = source.indexOf("makes"), end = source.indexOf(" Every");
-	const context = logic.changeContext(source, { start: 8, end: source.length - 7 }, {
-		start, end, oldText: "works on this passage.", newText: source.slice(start, end),
-	});
+	const start = source.indexOf("makes"),
+		end = source.indexOf(" Every");
+	const context = logic.changeContext(
+		source,
+		{ start: 8, end: source.length - 7 },
+		{
+			start,
+			end,
+			oldText: "works on this passage.",
+			newText: source.slice(start, end),
+		},
+	);
 	assert.equal(context?.oldText, "The agent works on this passage. Every change stays.");
 	assert.equal(context?.newText, "The agent makes this 👩‍💻 passage clearer. Every change stays.");
-	assert.equal(logic.changeContext(source, { start: 8, end: source.length }, {
-		start, end, oldText: "old", newText: "later overlap",
-	}), null);
-	assert.equal(logic.changeContext(source, { start: end, end: source.length }, {
-		start, end, oldText: "old", newText: source.slice(start, end),
-	}), null);
+	assert.equal(
+		logic.changeContext(
+			source,
+			{ start: 8, end: source.length },
+			{
+				start,
+				end,
+				oldText: "old",
+				newText: "later overlap",
+			},
+		),
+		null,
+	);
+	assert.equal(
+		logic.changeContext(
+			source,
+			{ start: end, end: source.length },
+			{
+				start,
+				end,
+				oldText: "old",
+				newText: source.slice(start, end),
+			},
+		),
+		null,
+	);
 });
 
 test("inline change context spans paragraphs and preserves insertion and deletion neighbours", () => {
@@ -179,8 +207,125 @@ test("the ask card floats beside its anchor inside the pane and never covers it"
 	assert.equal(tall.side, "below");
 	assert.ok(tall.maxHeight >= 120 && tall.top + tall.maxHeight <= pane.height - 12);
 	assert.ok(!overlaps(tall, 500, { top: 360, bottom: 520 }));
-	const wide = logic.cardPlacement({ top: 200, bottom: 230, left: 700 }, { width: 360, height: 300 }, { width: 800, height: 760, top: 46 });
+	const wide = logic.cardPlacement(
+		{ top: 200, bottom: 230, left: 700 },
+		{ width: 360, height: 300 },
+		{ width: 800, height: 760, top: 46 },
+	);
 	assert.equal(wide.left, 800 - 360 - 12);
 	const offscreen = logic.cardPlacement({ top: -400, bottom: -360, left: 60 }, card, pane);
 	assert.ok(offscreen.top >= pane.top && offscreen.top + card.height <= pane.height - 12);
+});
+
+const target = (partial: Partial<ReaderMenuTarget>): ReaderMenuTarget => ({
+	area: "document",
+	lock: "reading",
+	selection: false,
+	selectionInOneBlock: false,
+	editor: false,
+	block: true,
+	heading: false,
+	image: false,
+	imageAlt: false,
+	code: false,
+	table: false,
+	inputSelection: false,
+	inputEditable: false,
+	...partial,
+});
+const ids = (t: ReaderMenuTarget) =>
+	Array.from(logic.contextMenuItems(t), (e) => (e.separator ? "|" : e.enabled ? e.id : `(${e.id})`));
+
+test("the context menu offers the actions that apply where the person clicks", () => {
+	assert.deepEqual(ids(target({ selection: true, selectionInOneBlock: true })), [
+		"ask",
+		"|",
+		"copy",
+		"copyPassage",
+		"|",
+		"editSelection",
+		"find",
+		"toggleLock",
+	]);
+	assert.deepEqual(ids(target({})), ["askDocument", "|", "editHere", "find", "toggleLock"]);
+	assert.deepEqual(ids(target({ lock: "writing", editor: true })), [
+		"askDocument",
+		"|",
+		"(cut)",
+		"(copy)",
+		"paste",
+		"|",
+		"bold",
+		"italic",
+		"code",
+		"link",
+		"|",
+		"heading",
+		"bulletList",
+		"numberedList",
+		"taskList",
+		"quote",
+		"|",
+		"find",
+		"toggleLock",
+	]);
+	assert.deepEqual(
+		ids(target({ lock: "writing", editor: true, selection: true, selectionInOneBlock: true, heading: true })).slice(
+			0,
+			7,
+		),
+		["ask", "|", "cut", "copy", "paste", "copyPassage", "|"],
+	);
+	assert.ok(ids(target({ lock: "writing", editor: true, heading: true })).includes("bodyText"));
+	assert.deepEqual(ids(target({ lock: "writing", selection: true, selectionInOneBlock: false })), [
+		"ask",
+		"|",
+		"cut",
+		"copy",
+		"paste",
+		"copyPassage",
+		"|",
+		"editSelection",
+		"find",
+		"toggleLock",
+	]);
+	assert.deepEqual(ids(target({ link: { internal: false } })).slice(0, 5), [
+		"askDocument",
+		"|",
+		"openLink",
+		"copyLink",
+		"|",
+	]);
+	assert.deepEqual(ids(target({ link: { internal: true } })).slice(2, 3), ["openLink"]);
+	assert.deepEqual(ids(target({ image: true, imageAlt: true })).slice(2, 4), ["inspectImage", "copyImageText"]);
+	assert.deepEqual(ids(target({ code: true })).slice(2, 3), ["copyCode"]);
+	assert.deepEqual(ids(target({ table: true })).slice(2, 3), ["copyTable"]);
+	assert.deepEqual(ids(target({ area: "input", inputEditable: true })), ["(cut)", "(copy)", "paste", "|", "selectAll"]);
+	assert.deepEqual(ids(target({ area: "input", inputEditable: true, inputSelection: true })).slice(0, 3), [
+		"cut",
+		"copy",
+		"paste",
+	]);
+	assert.deepEqual(ids(target({ area: "other" })), []);
+	const keys = Object.fromEntries(
+		logic
+			.contextMenuItems(target({ lock: "writing", editor: true, selection: true, selectionInOneBlock: true }))
+			.map((e) => [e.id, e.key]),
+	);
+	assert.equal(keys.ask, "⇧⌘M");
+	assert.equal(keys.cut, "⌘X");
+	assert.equal(keys.paste, "⌘V");
+	assert.equal(keys.bold, "⌘B");
+});
+
+test("the context menu opens at the pointer and stays inside the pane", () => {
+	const pane = { width: 452, height: 880 },
+		size = { width: 240, height: 300 };
+	assert.deepEqual({ ...logic.menuPlacement({ x: 100, y: 200 }, size, pane) }, { left: 102, top: 202, maxHeight: 868 });
+	const right = logic.menuPlacement({ x: 400, y: 200 }, size, pane);
+	assert.equal(right.left, 400 - 240 - 2);
+	const low = logic.menuPlacement({ x: 100, y: 800 }, size, pane);
+	assert.equal(low.top, 800 - 300 - 2);
+	const tall = logic.menuPlacement({ x: 10, y: 10 }, { width: 240, height: 1000 }, pane);
+	assert.ok(tall.top >= 6 && tall.maxHeight === 868);
 });

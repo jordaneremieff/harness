@@ -195,6 +195,24 @@
   @container app (width < 560px) {
     #app[data-mode='writing'] .seltools .copyp button { font-size: 0; gap: 0; padding: 0 7px; }
   }
+  /* The reader's own context menu, in the selection strip's dark family. */
+  .context-menu {
+    position: absolute; z-index: 40; min-width: 232px; max-width: min(300px, calc(100cqw - 12px));
+    padding: 5px; overflow: auto; display: grid;
+    background: var(--toolbar-bg); color: var(--toolbar-ink);
+    border-radius: 11px; box-shadow: var(--shadow-l), 0 0 0 1px rgb(255 255 255 / .06);
+    .item {
+      min-height: 28px; padding: 4px 10px; border-radius: 7px;
+      display: flex; align-items: center; gap: 22px; text-align: left;
+      font: 500 13px/1.2 var(--font); color: inherit; cursor: default;
+      .lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .key { font-size: 12px; color: rgb(255 255 255 / .55); font-variant-numeric: tabular-nums; letter-spacing: .04em; }
+      &[data-id="ask"], &[data-id="askDocument"] { color: oklch(85% 0.1 300); }
+      &[data-active]:not([aria-disabled="true"]) { background: rgb(255 255 255 / .14); }
+      &[aria-disabled="true"] { color: rgb(255 255 255 / .38); .key { color: rgb(255 255 255 / .28); } }
+    }
+    .sep { height: 1px; margin: 4px 6px; background: rgb(255 255 255 / .14); }
+  }
   .link-card {
     position: absolute; z-index: 22; max-width: calc(100cqw - 24px);
     align-items: center; gap: 12px; padding: 8px 10px;

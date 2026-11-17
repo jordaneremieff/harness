@@ -133,7 +133,7 @@ public final class ReaderModel {
         }
     }
 
-    @ObservationIgnored let platform: ReaderPlatform
+    @ObservationIgnored public let platform: ReaderPlatform
     @ObservationIgnored let state: ReadingStateStore
     @ObservationIgnored let assets = AssetTable()
     @ObservationIgnored private var generation = 0
@@ -474,6 +474,7 @@ public final class ReaderModel {
         let args = fields["args"] as? [String: Any] ?? fields
         switch fields["name"] as? String {
         case "copy": if let text = args["text"] as? String { platform.copyText(text) }
+        case "readClipboard": return ["text": platform.readText() ?? ""]
         case "openLink":
             if let href = args["href"] as? String, let url = URL(string: href), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
                 pendingExternalURL = url

@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "find-close-clears-highlights",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "find-close-clears-highlights",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -78,6 +78,7 @@ struct Verification {
                 await run("narrow-writing-bar-keeps-save-icon") { await context.narrowWritingBar(keep: &keep) }
                 await run("agent-change-keeps-reading-position") { await context.agentChangeKeepsPlace(keep: &keep) }
                 await run("context-menu-ask-floats-beside-selection") { await context.contextMenuAsk(keep: &keep) }
+                await run("page-context-menu-replaces-system-menu") { await context.pageContextMenu(keep: &keep) }
                 await run("find-close-clears-highlights") { await context.findCloseClears(keep: &keep) }
                 await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
                 await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
@@ -962,8 +963,8 @@ struct Context {
         return .init(name: name, pass: pass, detail: results.joined(separator: "; "))
     }
 
-    /// A context menu for selected text starts with "Ask about this" and keeps WebKit's items; the
-    /// item opens the ask card for that selection, floating beside it inside the pane, off the
+    /// The page's context menu for selected text starts with "Ask about this"; the item opens the
+    /// ask card for that selection, floating beside it inside the pane, off the
     /// selected text, with the composer focused and the page unscrolled. Covers 452 and 800 pt, in
     /// Reading and Writing, and a selection near the bottom of the view, where the card flips above.
     func contextMenuAsk(keep: inout [NSWindow]) async -> Verification.Check {
@@ -997,16 +998,17 @@ struct Context {
                 const r = range.getBoundingClientRect();
                 return [r.top, r.bottom, r.left, r.right, page.scrollTop, text.textContent.trim()];
                 """, ["nearBottom": scenario.2]) as? [Any] ?? []
-                // WebKit's menu for selected text, as its items arrive in willOpenMenu.
-                let menu = NSMenu(); menu.autoenablesItems = false
-                for identifier in ["WKMenuItemIdentifierLookUp", "WKMenuItemIdentifierTranslate", "WKMenuItemIdentifierSearchWeb", "WKMenuItemIdentifierCopy", "WKMenuItemIdentifierShareMenu"] {
-                    let item = NSMenuItem(title: identifier, action: nil, keyEquivalent: ""); item.identifier = NSUserInterfaceItemIdentifier(identifier); menu.addItem(item)
-                }
-                let event = NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: model.page.webView.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
-                model.page.webView.willOpenMenu(menu, with: event)
-                let first = menu.items.first
-                let menuOK = first?.title == "Ask about this" && menu.items.compactMap(\.identifier?.rawValue).contains("WKMenuItemIdentifierLookUp")
-                if menuOK, let first, let action = first.action { NSApp.sendAction(action, to: first.target, from: first) }
+                // A secondary click on the selection opens the page's menu; Ask about this comes first.
+                let menuOK = await js(model, """
+                const range = getSelection().getRangeAt(0), r = range.getBoundingClientRect();
+                const target = document.elementFromPoint(r.left + 4, r.top + r.height / 2);
+                const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + 4, clientY: r.top + r.height / 2 });
+                target.dispatchEvent(event);
+                const first = document.querySelector('[data-role="context-menu"]:not([hidden]) .item');
+                if (!event.defaultPrevented || !first || first.dataset.id !== 'ask') return false;
+                first.click();
+                return true;
+                """) as? Bool == true
                 let card = await js(model, """
                 await new Promise(r => setTimeout(r, 200));
                 const card = document.querySelector('[data-role="ask-card"]');
@@ -1102,6 +1104,161 @@ struct Context {
         }
         return count > 0 ? sum / count : -1
     }
+
+    /// A secondary click never shows WebKit's menu: native empties any menu WebKit builds, and the
+    /// page cancels the event and opens its own menu with the actions for the target, or nothing.
+    /// Covers contents per state and target, keyboard use, clipboard round trips through the host,
+    /// the hidden selection strip, and placement inside the pane at 452 and 800 pt.
+    func pageContextMenu(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "page-context-menu-replaces-system-menu"
+        var results: [String] = []
+        var pass = true
+        let source = "# Menu\n\nAlpha beta gamma words to select.\n\nA [web link](https://example.org/x) and an [anchor](#menu).\n\n![Tiny picture](data:image/png;base64,\(Self.menuImage))\n\n```swift\nlet value = 1\n```\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\nLast paragraph here.\n"
+        for width in [452.0, 800.0] {
+            do {
+                let state = ReadingStateStore(directory: nil)
+                let file = workspace.appendingPathComponent("page-menu-\(Int(width)).md")
+                try Data(source.utf8).write(to: file)
+                let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: state)
+                let editor = EditorWorkspace(directory: workspace.appendingPathComponent("page-menu-\(Int(width))-drafts"), store: nil)
+                editor.add(DraftRecord(source: source))
+                let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
+                defer { withExtendedLifetime(surface) {} }
+                keep.append(CheckRunner.offscreenWindow(page: model.page, width: width, height: 760))
+                await model.open(origin: nil)
+                try await CheckRunner.preparePageForCheck(model)
+                _ = await wait(seconds: 5) { editor.webReady && model.source == source }
+                guard let document = editor.active else { pass = false; results.append("\(Int(width)): no draft"); continue }
+                // Native: whatever WebKit would show is emptied.
+                let menu = NSMenu()
+                for identifier in ["WKMenuItemIdentifierCopy", "WKMenuItemIdentifierLookUp", "WKMenuItemIdentifierPaste"] {
+                    let item = NSMenuItem(title: identifier, action: nil, keyEquivalent: ""); item.identifier = NSUserInterfaceItemIdentifier(identifier); menu.addItem(item)
+                }
+                let event = NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: model.page.webView.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                model.page.webView.willOpenMenu(menu, with: event)
+                let nativeEmpty = menu.items.isEmpty
+                CheckRunner.checkPasteboard.clearContents()
+                await model.sendCommand("toggleLock", args: ["lock": "reading"])
+                let probe = """
+                globalThis.menuProbe = (selector, text, at) => {
+                  const scope = document.querySelector(selector);
+                  let target = scope, x, y;
+                  if (text) {
+                    const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+                    let node; while ((node = walker.nextNode()) && !node.data.includes(text));
+                    const range = document.createRange(); const i = node.data.indexOf(text);
+                    range.setStart(node, i); range.setEnd(node, i + text.length);
+                    const r = range.getBoundingClientRect(); x = r.left + 2; y = r.top + r.height / 2; target = node.parentElement;
+                  } else { const r = scope.getBoundingClientRect(); x = at ? r.left + at[0] : r.left + 8; y = at ? r.top + at[1] : r.top + 8; }
+                  const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: x, clientY: y });
+                  target.dispatchEvent(event);
+                  const menu = document.querySelector('[data-role="context-menu"]');
+                  const open = !menu.hidden;
+                  const items = open ? [...menu.querySelectorAll('.item')].map(i => (i.getAttribute('aria-disabled') === 'true' ? '(' + i.dataset.id + ')' : i.dataset.id)) : [];
+                  const m = menu.getBoundingClientRect(), app = document.getElementById('app').getBoundingClientRect();
+                  const inside = !open || (m.left >= app.left - 0.5 && m.right <= app.right + 0.5 && m.top >= app.top - 0.5 && m.bottom <= app.bottom + 0.5);
+                  const atPointer = !open || (Math.abs(m.left - (x + 2)) <= 1 || Math.abs(m.right - (x - 2)) <= 1);
+                  const strip = document.querySelector('[data-role="selection-strip"]').hasAttribute('data-open');
+                  return { prevented: event.defaultPrevented, items, inside, atPointer, strip, keys: open ? [...menu.querySelectorAll('.key')].map(k => k.textContent) : [] };
+                };
+                globalThis.selectText = (text) => {
+                  const walker = document.createTreeWalker(document.querySelector('[data-role="document"]'), NodeFilter.SHOW_TEXT);
+                  let node; while ((node = walker.nextNode()) && !node.data.includes(text));
+                  const range = document.createRange(); const i = node.data.indexOf(text);
+                  range.setStart(node, i); range.setEnd(node, i + text.length);
+                  getSelection().removeAllRanges(); getSelection().addRange(range);
+                  document.dispatchEvent(new Event('selectionchange'));
+                };
+                return true;
+                """
+                _ = await js(model, probe)
+                func probeAt(_ selector: String, text: String? = nil, at: [Double]? = nil) async -> [String: Any] {
+                    let args: [String: Any] = ["selector": selector, "text": text ?? NSNull(), "at": at ?? NSNull()]
+                    return await js(model, "await new Promise(r => setTimeout(r, 30)); return menuProbe(selector, text, at);", args) as? [String: Any] ?? [:]
+                }
+                func items(_ value: [String: Any]) -> [String] { value["items"] as? [String] ?? [] }
+                func close() async { _ = await js(model, "window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); return true;") }
+                let scrollTop = "return document.querySelector('[data-role=\"scroller\"]').scrollTop;"
+                let scrollBefore = await js(model, scrollTop) as? Double ?? -1
+                // Reading with a selection.
+                _ = await js(model, "selectText('beta gamma'); await new Promise(r => setTimeout(r, 120)); return true;")
+                let readingSelection = await probeAt("[data-role=\"document\"]", text: "beta gamma")
+                let readingOK = items(readingSelection).first == "ask" && items(readingSelection).contains("copy") && items(readingSelection).contains("copyPassage") && items(readingSelection).contains("editSelection") && readingSelection["strip"] as? Bool == false
+                // Keyboard: Down to Ask, Down to Copy, Return copies the selection through the host.
+                _ = await js(model, "for (const key of ['ArrowDown', 'ArrowDown', 'Enter']) window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })); await new Promise(r => setTimeout(r, 80)); return true;")
+                let copied = await wait(seconds: 2) { CheckRunner.checkPasteboard.string(forType: .string) == "beta gamma" }
+                let closedAfterRun = await js(model, "return document.querySelector('[data-role=\"context-menu\"]').hidden;") as? Bool == true
+                _ = await probeAt("[data-role=\"document\"]", text: "beta gamma")
+                await close()
+                let escapeClosed = await js(model, "return document.querySelector('[data-role=\"context-menu\"]').hidden && !getSelection().isCollapsed;") as? Bool == true
+                _ = await js(model, "getSelection().removeAllRanges(); return true;")
+                // Targets in Reading.
+                let link = await probeAt("[data-role=\"document\"]", text: "web link")
+                await close()
+                let anchor = await probeAt("[data-role=\"document\"]", text: "anchor")
+                await close()
+                let image = await probeAt("[data-role=\"document\"] [data-image]")
+                await close()
+                let code = await probeAt("[data-role=\"document\"] pre", text: "value")
+                await close()
+                let table = await probeAt("[data-role=\"document\"] table", text: "1")
+                await close()
+                let bar = await probeAt(".bar", at: [200, 20])
+                let targetsOK = items(link).contains("openLink") && items(link).contains("copyLink")
+                    && items(anchor).contains("openLink") && !items(anchor).contains("copyLink")
+                    && items(image).contains("inspectImage") && items(image).contains("copyImageText")
+                    && items(code).contains("copyCode") && items(table).contains("copyTable")
+                    && bar["prevented"] as? Bool == true && items(bar).isEmpty
+                let preventedAll = [readingSelection, link, anchor, image, code, table].allSatisfy { $0["prevented"] as? Bool == true }
+                let placed = [readingSelection, link, image, code, table].allSatisfy { $0["inside"] as? Bool == true && $0["atPointer"] as? Bool == true }
+                // Writing: an open block, Cut then Paste through the host clipboard.
+                await model.sendCommand("toggleLock", args: ["lock": "writing"])
+                let opened = await js(model, """
+                const block = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.includes('Alpha beta'));
+                const r = block.getBoundingClientRect();
+                const point = { bubbles: true, cancelable: true, button: 0, clientX: r.left + 4, clientY: r.top + r.height / 2 };
+                block.dispatchEvent(new PointerEvent('pointerdown', { ...point, buttons: 1, pointerType: 'mouse', isPrimary: true }));
+                block.dispatchEvent(new PointerEvent('pointerup', { ...point, pointerType: 'mouse', isPrimary: true }));
+                block.dispatchEvent(new MouseEvent('click', point));
+                await new Promise(r => setTimeout(r, 30));
+                const editor = document.querySelector('[data-role="block-editor"]');
+                if (!editor) return false;
+                editor.focus();
+                selectText('beta ');
+                await new Promise(r => setTimeout(r, 120));
+                return true;
+                """) as? Bool == true
+                let writingSelection = await probeAt("[data-role=\"block-editor\"]", text: "beta")
+                let writingOK = items(writingSelection).first == "ask" && ["cut", "copy", "paste", "bold", "italic", "code", "link", "heading", "bulletList"].allSatisfy(items(writingSelection).contains)
+                    && (writingSelection["keys"] as? [String] ?? []).contains("⌘X")
+                _ = await js(model, "document.querySelector('[data-role=\"context-menu\"] .item[data-id=\"cut\"]').click(); return true;")
+                let cut = await wait(seconds: 3) { document.text.source.contains("Alpha gamma") && CheckRunner.checkPasteboard.string(forType: .string) == "beta " }
+                _ = await js(model, """
+                const editor = document.querySelector('[data-role="block-editor"]');
+                const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+                let node, last; while ((node = walker.nextNode())) last = node;
+                const range = document.createRange(); range.setStart(last, last.data.length); range.collapse(true);
+                getSelection().removeAllRanges(); getSelection().addRange(range);
+                document.dispatchEvent(new Event('selectionchange'));
+                await new Promise(r => setTimeout(r, 80));
+                return true;
+                """)
+                let caretMenu = await probeAt("[data-role=\"block-editor\"]", text: "select")
+                let caretOK = items(caretMenu).contains("(cut)") && items(caretMenu).contains("(copy)") && items(caretMenu).contains("paste")
+                _ = await js(model, "document.querySelector('[data-role=\"context-menu\"] .item[data-id=\"paste\"]').click(); return true;")
+                let pasted = await wait(seconds: 3) { document.text.source.contains("to select.beta ") }
+                let scrollAfter = await js(model, scrollTop) as? Double ?? -2
+                await editor.closeViews()
+                await model.close()
+                let ok = nativeEmpty && readingOK && copied && closedAfterRun && escapeClosed && targetsOK && preventedAll && placed && opened && writingOK && cut && caretOK && pasted && abs(scrollBefore - scrollAfter) < 0.5
+                pass = pass && ok
+                results.append("\(Int(width)): native menu empty \(nativeEmpty); reading selection \(items(readingSelection)); keyboard copy \(copied), closed \(closedAfterRun), Escape \(escapeClosed); link \(items(link)); anchor \(items(anchor)); image \(items(image)); code \(items(code)); table \(items(table)); bar \(items(bar)) prevented \(bar["prevented"] ?? "?"); all prevented \(preventedAll); placed \(placed); writing selection \(items(writingSelection)); cut \(cut); caret \(items(caretMenu)); paste \(pasted); unscrolled \(abs(scrollBefore - scrollAfter) < 0.5)")
+            } catch { pass = false; results.append("\(Int(width)): \(error)") }
+        }
+        return .init(name: name, pass: pass, detail: results.joined(separator: "; "))
+    }
+
+    static let menuImage = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQVR4nGP4z8CAgonnAwEBAP9fC/V+u2SvAAAAAElFTkSuQmCC"
 
     func typing(keep: inout [NSWindow]) async -> Verification.Check {
         let name = "bridge-typing-exact-line-endings"

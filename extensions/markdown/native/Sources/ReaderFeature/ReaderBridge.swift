@@ -298,6 +298,12 @@ public enum ReaderBridgeCodec {
         if !ok { try validateJSONSize(fields, limit: messageLimit); return }
         if request.type == .render {
             try validateArrayGroup(fields, key: "blocks", limit: renderedLimit)
+        } else if request.type == .command, request.fields["name"] as? String == "readClipboard" {
+            guard let text = fields["text"] as? String else { throw ReaderBridgeError.invalid("text") }
+            guard text.utf8.count <= sourceLimit else { throw ReaderBridgeError.oversized }
+            var metadata = fields
+            metadata.removeValue(forKey: "text")
+            try validateJSONSize(metadata, limit: messageLimit)
         } else if request.type == .query, request.fields["kind"] as? String == "review" {
             guard let html = fields["html"] as? String else { throw ReaderBridgeError.invalid("html") }
             guard html.utf8.count <= renderedLimit else { throw ReaderBridgeError.oversized }
@@ -351,7 +357,7 @@ public enum ReaderBridgeCodec {
         let args: [String: Any]
         if fields["args"] != nil { args = try BridgeField.object(fields, "args") } else { args = [:] }
         switch name {
-        case "returnFocus", "close", "showOriginal", "details", "newDraft", "chooseStore":
+        case "returnFocus", "close", "showOriginal", "details", "newDraft", "chooseStore", "readClipboard":
             try BridgeField.keys(args, allowed: [])
         case "pickImage":
             try BridgeField.keys(args, allowed: ["generation", "range"])

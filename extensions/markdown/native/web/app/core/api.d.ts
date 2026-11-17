@@ -227,6 +227,11 @@ declare global {
 		dispose(): void;
 		selection(): ReaderSelection | null;
 		replaceSelection(text: string): boolean;
+		/** Inserts plain text at the caret or over the selection, as the paste key does. */
+		paste(text: string): boolean;
+		/** Removes the selection as the cut key does and returns its text, or null. */
+		cut(): string | null;
+		hasCaret(): boolean;
 		format(command: string | { command: string; level?: number }): boolean;
 		toggleTask(key: string, offset?: number): boolean;
 		index(): {

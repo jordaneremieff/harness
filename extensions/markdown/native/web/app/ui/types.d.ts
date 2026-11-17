@@ -35,7 +35,50 @@ declare global {
 		messages: ReaderAskMessage[];
 		collapsed: boolean;
 	}
+	interface ReaderMenuTarget {
+		area: "document" | "input" | "other";
+		lock: "reading" | "writing";
+		selection: boolean;
+		selectionInOneBlock: boolean;
+		editor: boolean;
+		block: boolean;
+		heading: boolean;
+		link?: { internal: boolean };
+		image: boolean;
+		imageAlt: boolean;
+		code: boolean;
+		table: boolean;
+		inputSelection: boolean;
+		inputEditable: boolean;
+	}
+	interface ReaderMenuEntry {
+		id: string;
+		label: string;
+		key: string;
+		enabled: boolean;
+		separator?: boolean;
+	}
+	interface ReaderMenuContext {
+		point: { x: number; y: number };
+		target: ReaderMenuTarget;
+		input: HTMLInputElement | HTMLTextAreaElement | null;
+		selection: ReaderSelection | null;
+		block: HTMLElement | null;
+		link: HTMLAnchorElement | null;
+		image: HTMLElement | null;
+	}
+	interface ReaderContextMenu {
+		isOpen(): boolean;
+		close(): boolean;
+		dispose(): void;
+	}
 	interface ReaderUILogic {
+		contextMenuItems(target: ReaderMenuTarget): ReaderMenuEntry[];
+		menuPlacement(
+			point: { x: number; y: number },
+			size: { width: number; height: number },
+			pane: { width: number; height: number },
+		): { left: number; top: number; maxHeight: number };
 		cardPlacement(
 			anchor: { top: number; bottom: number; left: number },
 			card: { width: number; height: number },
@@ -78,6 +121,7 @@ declare global {
 		hostCommand(name: string, args?: Record<string, unknown>): Promise<unknown>;
 		notice(text: string, tone?: string, actions?: { label: string; run: () => void }[], id?: string): void;
 		toast(text: string, action?: { label: string; run: () => void }): void;
+		onMenuOpen?(): void;
 	}
 	interface ReaderNavigation {
 		rebuild(): void;
@@ -125,6 +169,7 @@ declare global {
 		createNavigation(context: ReaderUIContext): ReaderNavigation;
 		createAskUI(context: ReaderUIContext, navigation: ReaderNavigation): ReaderAskUI;
 		createViewsUI(context: ReaderUIContext, navigation: ReaderNavigation): ReaderViewsUI;
+		createContextMenu(context: ReaderUIContext, run: (id: string, context: ReaderMenuContext) => void | Promise<void>): ReaderContextMenu;
 		createUI(host: ReaderCoreHost, controller: ReaderController, editor: ReaderEditor): ReaderUI;
 		boot(host?: ReaderCoreHost): {
 			host: ReaderCoreHost;

@@ -238,7 +238,12 @@ final class ReaderSurface: NSView {
             if response == .alertFirstButtonReturn { model.pendingExternalURL = url; model.confirmExternal() }
         case "copy":
             guard let text = args["text"] as? String, text.utf8.count <= Limits.sourceBytes else { throw BridgeFailure.invalid }
-            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+            model.platform.copyText(text)
+        case "readClipboard":
+            // The page's own menu pastes through the host, so WebKit shows no paste permission prompt.
+            let text = model.platform.readText() ?? ""
+            guard text.utf8.count <= Limits.sourceBytes else { throw BridgeFailure.invalid }
+            return ["text": text]
         case "export":
             switch args["format"] as? String {
             case "archive": await model.exportRevision(.archive)

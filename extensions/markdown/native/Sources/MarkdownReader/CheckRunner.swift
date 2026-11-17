@@ -23,7 +23,8 @@ struct CheckRunner {
             },
             openExternal: { _ in false },
             reveal: { _ in },
-            returnToTerminal: { _ in TerminalReturnResult(pane: .unavailable("check mode"), application: .failed("check mode")) }
+            returnToTerminal: { _ in TerminalReturnResult(pane: .unavailable("check mode"), application: .failed("check mode")) },
+            readText: { checkPasteboard.string(forType: .string) }
         )
     }
 

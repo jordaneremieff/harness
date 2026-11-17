@@ -744,6 +744,9 @@
 			open(key, at = 0, openOptions = {}) {
 				return openBlock(key, at, openOptions);
 			},
+			paste: (text) => pasteText(text),
+			cut: () => cutText(),
+			hasCaret: () => !!(active && caret()),
 			close() {
 				pendingOpen = null;
 				if (!active) return true;
@@ -1055,22 +1058,31 @@
 			if (controller.lock !== "writing") return;
 			openClickedBlock(event, el);
 		}) as EventListener);
-		listen(owner, "paste", ((event: ClipboardEvent) => {
-			if (event.defaultPrevented || externalInput(event) || controller.lock !== "writing" || composing) return;
+		// Paste and cut keep one implementation for the keys and for the page's own menu.
+		function pasteText(text: string) {
+			if (controller.lock !== "writing" || composing) return false;
 			if (active && caret()) {
-				event.preventDefault();
-				insert((event.clipboardData?.getData("text/plain") ?? "").replace(/\r\n|\r/g, "\n"));
-			} else if (selection()) {
-				event.preventDefault();
-				replaceSelection(event.clipboardData?.getData("text/plain") ?? "");
+				insert(text.replace(/\r\n|\r/g, "\n"));
+				return true;
 			}
+			return !!selection() && replaceSelection(text);
+		}
+		function cutText() {
+			const selected = selection();
+			if (!selected || controller.lock !== "writing" || composing) return null;
+			replaceSelection("");
+			return selected.text;
+		}
+		listen(owner, "paste", ((event: ClipboardEvent) => {
+			if (event.defaultPrevented || externalInput(event)) return;
+			if (pasteText(event.clipboardData?.getData("text/plain") ?? "")) event.preventDefault();
 		}) as EventListener);
 		listen(owner, "cut", ((event: ClipboardEvent) => {
-			const selected = selection();
-			if (event.defaultPrevented || externalInput(event) || !selected || controller.lock !== "writing" || composing) return;
+			if (event.defaultPrevented || externalInput(event)) return;
+			const text = cutText();
+			if (text === null) return;
 			event.preventDefault();
-			event.clipboardData?.setData("text/plain", selected.text);
-			replaceSelection("");
+			event.clipboardData?.setData("text/plain", text);
 		}) as EventListener);
 		function handleEscapeKey(event: KeyboardEvent) {
 			if (event.key !== "Escape" || !active) return false;

@@ -179,10 +179,12 @@
 			hostCommand,
 			toast,
 			notice,
+			onMenuOpen: () => hideSelection(),
 		};
 		const navigation = api.createNavigation(context),
 			ask = api.createAskUI(context, navigation),
-			views = api.createViewsUI(context, navigation);
+			views = api.createViewsUI(context, navigation),
+			contextMenu = api.createContextMenu(context, (id, c) => runMenu(id, c));
 		const findbar = get(".find");
 		bar.insertBefore(findbar, bar.querySelector(".spacer"));
 		function showKind() {
@@ -318,7 +320,7 @@
 		}
 		function selectionTools(selected: ReaderSelection | null) {
 			selection = selected;
-			if (!selected) {
+			if (!selected || contextMenu.isOpen()) {
 				hideSelection();
 				return;
 			}
@@ -413,6 +415,7 @@
 		}
 		// Escape closes the topmost layer: menus over the page, then the open block, then views.
 		function closeTopLayer() {
+			if (contextMenu.close()) return true;
 			const menus = [...document.querySelectorAll<HTMLElement>("[popover]:popover-open")];
 			for (const layer of menus) layer.hidePopover();
 			if (menus.length) return true;
@@ -422,6 +425,95 @@
 				return true;
 			}
 			return views.close() || ask.close() || navigation.closeSheet() || navigation.closeFind();
+		}
+		// Actions of the page's context menu. Clipboard actions use the host, as the keys' own
+		// clipboard does through WebKit, so the page shows no paste permission prompt.
+		async function clipboardText() {
+			const reply = (await hostCommand("readClipboard")) as { text?: string } | undefined;
+			return typeof reply?.text === "string" ? reply.text : null;
+		}
+		function copyText(text: string, done = "Copied") {
+			if (!text) return;
+			void hostCommand("copy", { text });
+			toast(done);
+		}
+		function replaceInput(field: HTMLInputElement | HTMLTextAreaElement, text: string, inputType: string) {
+			field.focus({ preventScroll: true });
+			field.setRangeText(text, field.selectionStart ?? 0, field.selectionEnd ?? 0, "end");
+			field.dispatchEvent(new InputEvent("input", { bubbles: true, inputType, data: text }));
+		}
+		async function inputAction(id: string, field: HTMLInputElement | HTMLTextAreaElement) {
+			const selected = field.value.slice(field.selectionStart ?? 0, field.selectionEnd ?? 0);
+			const actions: Record<string, () => void | Promise<void>> = {
+				selectAll: () => field.select(),
+				copy: () => copyText(selected),
+				cut: () => {
+					copyText(selected, "Cut");
+					replaceInput(field, "", "deleteByCut");
+				},
+				paste: async () => {
+					const text = await clipboardText();
+					if (text !== null) replaceInput(field, text, "insertFromPaste");
+				},
+			};
+			await actions[id]?.();
+		}
+		function formatAction(id: string) {
+			const command = id === "heading" ? { command: "heading", level: 2 } : id === "bodyText" ? { command: "heading", level: 0 } : id;
+			if (!editor.hasCaret() && !editSelection()) return;
+			editor.format(command);
+		}
+		function editHere(c: ReaderMenuContext) {
+			const key = c.block?.dataset.block;
+			if (!key) return;
+			const oneOff = controller.lock === "reading";
+			controller.setLock("writing");
+			editor.open(key, { x: c.point.x, y: c.point.y }, { oneOff });
+		}
+		function followLink(link: HTMLAnchorElement) {
+			const href = link.getAttribute("href") ?? "";
+			if (!href.startsWith("#")) {
+				void hostCommand("openLink", { href });
+				return;
+			}
+			const target = doc.querySelector(`[id="${CSS.escape(decodeURIComponent(href.slice(1)))}"]`);
+			if (target instanceof HTMLElement) navigation.jumpElement(target);
+		}
+		function copyBlockSource(block: HTMLElement | null) {
+			const data = controller.blocks.find((b) => b.key === block?.dataset.block);
+			if (data && controller.doc) copyText(controller.doc.source.slice(data.start, data.end), "Copied table as Markdown");
+		}
+		async function runMenu(id: string, c: ReaderMenuContext) {
+			if (c.input) {
+				await inputAction(id, c.input);
+				return;
+			}
+			const actions: Record<string, () => void | Promise<void>> = {
+				ask: () => ask.open(c.selection),
+				askDocument: () => ask.open(),
+				copy: () => copyText(getSelection()?.toString() ?? ""),
+				cut: () => copyText(editor.cut() ?? "", "Cut"),
+				paste: async () => {
+					const text = await clipboardText();
+					if (text !== null) editor.paste(text);
+				},
+				copyPassage: () => copyPassage(),
+				openLink: () => {
+					if (c.link) followLink(c.link);
+				},
+				copyLink: () => copyText(c.link?.getAttribute("href") ?? "", "Copied link address"),
+				inspectImage: () => views.show("image", { index: Number(c.image?.dataset.image ?? 0) }),
+				copyImageText: () => copyText(c.image?.getAttribute("alt") || c.image?.getAttribute("aria-label") || ""),
+				copyCode: () => c.block?.querySelector<HTMLButtonElement>('[data-role="code-copy"]')?.click(),
+				copyTable: () => copyBlockSource(c.block),
+				editSelection: () => void editSelection(),
+				editHere: () => editHere(c),
+				find: () => command("find"),
+				toggleLock: () => command("toggleLock"),
+			};
+			const action = actions[id];
+			if (action) await action();
+			else formatAction(id);
 		}
 		function codeControls() {
 			for (const block of doc.querySelectorAll<HTMLElement>("[data-block]")) {
@@ -630,6 +722,7 @@
 				disposed = true;
 				for (const fn of off) fn();
 				navigation.dispose();
+				contextMenu.dispose();
 				ask.dispose();
 				views.dispose();
 				clearTimeout(toastTimer);

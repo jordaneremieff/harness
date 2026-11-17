@@ -21,7 +21,8 @@ public enum MacPlatform {
             },
             returnToTerminal: { origin in
                 await returnToTerminal(origin, helper: TerminalFocusHelper.fromBundle())
-            }
+            },
+            readText: { NSPasteboard.general.string(forType: .string) }
         )
     }
 

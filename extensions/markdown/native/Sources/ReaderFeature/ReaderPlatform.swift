@@ -5,6 +5,8 @@ import MarkdownCore
 /// the operating system for these effects itself.
 public struct ReaderPlatform: Sendable {
     public var copyText: @MainActor @Sendable (String) -> Void
+    /// Reads plain text from the pasteboard that copyText writes; nil when it holds none.
+    public var readText: @MainActor @Sendable () -> String?
     /// Opens a web address in the default browser after the reader obtained confirmation.
     public var openExternal: @MainActor @Sendable (URL) -> Bool
     /// Shows a file or folder in the file manager.
@@ -23,9 +25,11 @@ public struct ReaderPlatform: Sendable {
         reveal: @escaping @MainActor @Sendable (URL) -> Void,
         returnToTerminal: @escaping @MainActor @Sendable (LaunchOrigin) async -> TerminalReturnResult,
         exportRevision: @escaping @MainActor @Sendable (DocumentSnapshot, RevisionExportForm) async throws -> URL? = { _, _ in nil },
-        savePDF: @escaping @MainActor @Sendable (Data, String) async throws -> URL? = { _, _ in nil }
+        savePDF: @escaping @MainActor @Sendable (Data, String) async throws -> URL? = { _, _ in nil },
+        readText: @escaping @MainActor @Sendable () -> String? = { nil }
     ) {
         self.copyText = copyText
+        self.readText = readText
         self.openExternal = openExternal
         self.reveal = reveal
         self.returnToTerminal = returnToTerminal

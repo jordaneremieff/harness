@@ -118,7 +118,90 @@
 			? { left, top: bottom + gap, maxHeight: below, side: "below" as const }
 			: { left, top: low, maxHeight: above, side: "above" as const };
 	}
+	// The page's own context menu: the actions that apply where the person clicked, in groups.
+	// Items that cannot run here are disabled when they belong to the standard set (Cut, Copy,
+	// Paste), and left out otherwise. An empty result means no menu.
+	const menuItem = (id: string, label: string, key = "", enabled = true): ReaderMenuEntry => ({ id, label, key, enabled });
+	function inputGroups(t: ReaderMenuTarget) {
+		return [
+			[
+				menuItem("cut", "Cut", "⌘X", t.inputSelection && t.inputEditable),
+				menuItem("copy", "Copy", "⌘C", t.inputSelection),
+				menuItem("paste", "Paste", "⌘V", t.inputEditable),
+			],
+			[menuItem("selectAll", "Select All", "⌘A")],
+		];
+	}
+	function clipboardGroup(t: ReaderMenuTarget) {
+		const passage = t.selection ? [menuItem("copyPassage", "Copy with Source", "⌥⌘C")] : [];
+		if (t.lock === "reading") return t.selection ? [menuItem("copy", "Copy", "⌘C"), ...passage] : [];
+		return [
+			menuItem("cut", "Cut", "⌘X", t.selection),
+			menuItem("copy", "Copy", "⌘C", t.selection),
+			menuItem("paste", "Paste", "⌘V", t.editor || t.selection),
+			...passage,
+		];
+	}
+	function formatGroups(t: ReaderMenuTarget) {
+		if (t.lock !== "writing" || !(t.editor || t.selectionInOneBlock)) return [];
+		return [
+			[menuItem("bold", "Bold", "⌘B"), menuItem("italic", "Italic", "⌘I"), menuItem("code", "Code", "⇧⌘K"), menuItem("link", "Link", "⌘K")],
+			[
+				t.heading ? menuItem("bodyText", "Body Text") : menuItem("heading", "Heading"),
+				menuItem("bulletList", "Bulleted List"),
+				menuItem("numberedList", "Numbered List"),
+				menuItem("taskList", "Task List"),
+				menuItem("quote", "Quote"),
+			],
+		];
+	}
+	function linkItems(t: ReaderMenuTarget) {
+		if (!t.link) return [];
+		if (t.link.internal) return [menuItem("openLink", "Go to Link")];
+		return [menuItem("openLink", "Open Link"), menuItem("copyLink", "Copy Link Address")];
+	}
+	function targetGroup(t: ReaderMenuTarget) {
+		const image = t.image ? [menuItem("inspectImage", "Inspect Image"), ...(t.imageAlt ? [menuItem("copyImageText", "Copy Image Description")] : [])] : [];
+		const rendered = t.editor ? [] : [...(t.code ? [menuItem("copyCode", "Copy Code")] : []), ...(t.table ? [menuItem("copyTable", "Copy Table as Markdown")] : [])];
+		return [...linkItems(t), ...image, ...rendered];
+	}
+	function documentGroup(t: ReaderMenuTarget) {
+		const edit = t.block && !t.editor ? [t.selection ? menuItem("editSelection", "Edit Selection") : menuItem("editHere", "Edit Here")] : [];
+		return [
+			...edit,
+			menuItem("find", t.selection ? "Find Selection" : "Find…", "⌘F"),
+			menuItem("toggleLock", t.lock === "writing" ? "Done Editing" : "Edit Document", "⌘E"),
+		];
+	}
+	function documentGroups(t: ReaderMenuTarget) {
+		const ask = t.selection ? menuItem("ask", "Ask about this", "⇧⌘M") : menuItem("askDocument", "Ask about this document", "⌥⌘M");
+		return [[ask], clipboardGroup(t), ...formatGroups(t), targetGroup(t), documentGroup(t)];
+	}
+	function contextMenuItems(t: ReaderMenuTarget): ReaderMenuEntry[] {
+		const groups = t.area === "input" ? inputGroups(t) : t.area === "document" ? documentGroups(t) : [];
+		const entries: ReaderMenuEntry[] = [];
+		for (const group of groups.filter((g) => g.length)) {
+			if (entries.length) entries.push({ id: "", label: "", key: "", enabled: false, separator: true });
+			entries.push(...group);
+		}
+		return entries;
+	}
+	// Opens the menu at the pointer, flipped left or up where it would leave the pane.
+	function menuPlacement(point: { x: number; y: number }, size: { width: number; height: number }, pane: { width: number; height: number }) {
+		const margin = 6;
+		let left = point.x + 2,
+			top = point.y + 2;
+		if (left + size.width > pane.width - margin) left = Math.max(margin, point.x - size.width - 2);
+		if (top + size.height > pane.height - margin) top = Math.max(margin, point.y - size.height - 2);
+		return {
+			left: Math.max(margin, Math.min(left, pane.width - size.width - margin)),
+			top: Math.max(margin, Math.min(top, pane.height - size.height - margin)),
+			maxHeight: pane.height - 2 * margin,
+		};
+	}
 	api.uiLogic = {
+		contextMenuItems,
+		menuPlacement,
 		cardPlacement,
 		zoomStep,
 		changeContext,
