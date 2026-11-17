@@ -32,8 +32,10 @@ public final class ReaderWebPage: NSObject, WKNavigationDelegate, WKScriptMessag
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.setURLSchemeHandler(ReaderAppSchemeHandler(resources: ReaderAppResources(root: root)), forURLScheme: "reader-app")
         configuration.setURLSchemeHandler(AssetSchemeHandler(table: assets), forURLScheme: MarkdownRenderer.assetScheme)
-        webView = FirstMouseWebView(frame: .zero, configuration: configuration)
+        let view = FirstMouseWebView(frame: .zero, configuration: configuration)
+        webView = view
         super.init()
+        view.page = self
         webView.navigationDelegate = self
         webView.allowsBackForwardNavigationGestures = false
         webView.setValue(false, forKey: "drawsBackground")
@@ -221,5 +223,46 @@ private final class WeakReaderScriptHandler: NSObject, WKScriptMessageHandlerWit
 
 @MainActor
 private final class FirstMouseWebView: WKWebView {
+    weak var page: ReaderWebPage?
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// WebKit builds the context menu, with its system items, before it opens; the reader adds
+    /// its ask command at the top when the menu is for selected text.
+    override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) {
+        super.willOpenMenu(menu, with: event)
+        ReaderContextMenu.addAsk(to: menu, target: self, action: #selector(askAboutSelection(_:)))
+    }
+
+    @objc func askAboutSelection(_ sender: Any?) {
+        guard let page else { return }
+        Task { @MainActor in _ = try? await page.send(["v": 1, "type": "command", "name": "askSelection"]) }
+    }
+}
+
+/// The reader's addition to WebKit's context menu. The page owns the ask command; the menu item
+/// only sends it, so every standard item (Copy, Look Up, Translate, Share, Services) stays.
+public enum ReaderContextMenu {
+    public static let askIdentifier = NSUserInterfaceItemIdentifier("ReaderAskAboutSelection")
+    public static let askTitle = "Ask about this"
+    /// WebKit's item identifiers that appear only for selected text. Copy counts only while enabled,
+    /// because an editable area can list a disabled Copy without a selection.
+    static let selectionItems: Set<String> = ["WKMenuItemIdentifierLookUp", "WKMenuItemIdentifierTranslate",
+                                                "WKMenuItemIdentifierSearchWeb", "WKMenuItemIdentifierShareMenu"]
+    static let copyItem = "WKMenuItemIdentifierCopy"
+
+    public static func isSelectionMenu(_ menu: NSMenu) -> Bool {
+        menu.items.contains { item in
+            guard let identifier = item.identifier?.rawValue else { return false }
+            return selectionItems.contains(identifier) || (identifier == copyItem && item.isEnabled)
+        }
+    }
+
+    @MainActor public static func addAsk(to menu: NSMenu, target: AnyObject, action: Selector) {
+        guard isSelectionMenu(menu), !menu.items.contains(where: { $0.identifier == askIdentifier }) else { return }
+        let item = NSMenuItem(title: askTitle, action: action, keyEquivalent: "")
+        item.identifier = askIdentifier
+        item.target = target
+        menu.insertItem(item, at: 0)
+        menu.insertItem(.separator(), at: 1)
+    }
 }
