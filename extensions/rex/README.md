@@ -386,6 +386,10 @@ program. `timeout` means the deadline ended; `cancelled` means the caller or hos
 cancelled the operation. Neither establishes child failure, child exit or service
 shutdown. `observation_failed` retains the CLI or event-source cause. A normal event-source
 end without the condition is `observer_ended`. An evidence cap is `snapshot_limit`.
+An unmet wait, an ended observer, and a nonzero child exit return `ok: false`
+and tool error status in both hosts. That status alone does not establish a
+transport fault. An unsuccessful wait directs the caller to inspect current
+state before another wait; it never authorises a terminal restart.
 
 Text and status observations resume on relevant events, event-process exit, cancellation
 or the deadline. Text observations also refresh the current output snapshot on a bounded

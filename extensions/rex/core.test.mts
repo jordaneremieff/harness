@@ -507,6 +507,24 @@ test("cleanup refuses ownership state that changes after resource preflight", as
   assert.equal(f.transport.calls.some((call) => call.method === "block.close"), false);
 });
 
+test("unmatched condition waits report no match and preserve observer diagnostics", async () => {
+	for (const failed of [false, true]) {
+		const f = fixture();
+		const run = f.transport.run.bind(f.transport);
+		f.transport.run = (args, call) => args.includes("events")
+			? Promise.resolve({ ...reply({}), exitCode: failed ? 1 : 0, stderr: failed ? "event source unavailable" : "" })
+			: run(args, call);
+		const response = await f.core.execute({ op: "wait", condition: "status", state: "done", target }, context);
+		assert.equal(response.ok, false);
+		assert.equal(response.outcome, failed ? "observation_failed" : "observer_ended");
+		assert.match(JSON.stringify(response.data), /condition was not observed/);
+		assert.doesNotMatch(JSON.stringify(response.data), /status matched/);
+		assert.match(response.error ?? "", /Inspect the target's current state/);
+		assert.match(response.error ?? "", /did not stop terminal work/);
+		if (failed) assert.match(JSON.stringify(response.data), /event source unavailable/);
+	}
+});
+
 test("child observer timeouts stay distinct from cancellation and execution failure", async () => {
   const f = fixture({ maxOutputBytes: 4096 });
   const run = f.transport.run.bind(f.transport);
@@ -515,6 +533,8 @@ test("child observer timeouts stay distinct from cancellation and execution fail
     const response = await f.core.execute({ op: "wait", condition: "child_exit", target }, context);
     assert.equal(response.outcome, outcome === "spawn_error" ? "observation_failed" : outcome);
     assert.equal(response.effects.state, "none");
+    assert.match(response.error ?? "", /Inspect the target's current state/);
+    assert.match(response.error ?? "", /did not stop terminal work/);
   }
 });
 

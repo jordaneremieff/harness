@@ -186,7 +186,10 @@ export class RexCore {
 
 	async execute(request: RexRequest, context: RexCallContext): Promise<RexResult> {
 		let owned: RexBudget | undefined;
-		const finish = (value: RexResult) => boundResult(deadlineResult(value, context.budget, request.op), resultByteLimit(this.maxOutputBytes));
+		const finish = (value: RexResult) => {
+			const settled = deadlineResult(value, context.budget, request.op);
+			return boundResult(request.op === "wait" ? waitDiagnostic(settled) : settled, resultByteLimit(this.maxOutputBytes));
+		};
 		try {
 			if (!boundedText(context.ownerId, 1024) || !boundedText(context.callId, 1024))
 				throw new Error("Rex requires stable owner and call identities.");
@@ -1949,8 +1952,9 @@ function conditionResult(
 			events: observer.events,
 			eventCount: observer.eventCount,
 			observer: raw.outcome,
-			meaning:
-				"A literal or reported status matched. The agent decides whether that establishes application readiness.",
+			meaning: observation.matched
+				? "A literal or reported status matched. The agent decides whether that establishes application readiness."
+				: "The requested condition was not observed. This does not establish application failure or child exit.",
 		}),
 		coverage: {
 			bounded: true,
@@ -1960,6 +1964,22 @@ function conditionResult(
 			note: "Live events have no replay guarantee. Current snapshots cover missed events, not lost history. The terminal remains independent of this observer.",
 		},
 	};
+}
+
+const WAIT_ENDINGS: Readonly<Record<string, string>> = {
+	timeout: "The observation deadline ended before the condition was established.",
+	cancelled: "The observation was cancelled before the condition was established.",
+	observer_ended: "The event source ended before the condition was established.",
+	snapshot_limit: "The snapshot limit ended observation before the condition was established.",
+	completion_unknown: "The wait ended without direct-child exit evidence.",
+	observation_failed: "The observer failed before the condition was established.",
+};
+
+/** An unsuccessful observation does not authorise a restart of independent terminal work. */
+function waitDiagnostic(value: RexResult): RexResult {
+	const ending = WAIT_ENDINGS[value.outcome];
+	if (value.ok || !ending) return value;
+	return { ...value, error: [value.error, ending, "Inspect the target's current state before another wait. The observer did not stop terminal work."].filter(Boolean).join(" ") };
 }
 
 class EventObserver {
