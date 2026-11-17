@@ -42,7 +42,7 @@ function fixture(t: { after(fn: () => void): void }) {
 
 it("finds the ordinary session at the top of a chain of creating owners", (t) => {
 	const { catalog, input } = fixture(t);
-	const ordinary = "01a1ea73-1222-73e9-af05-a382cd28b29f";
+	const ordinary = "01900000-0000-7000-8000-000000000001";
 	const root = catalog.create({ ...input, ownerId: ordinary });
 	const nested = catalog.create({ ...input, ownerId: `${root.storageId}:3` });
 	const deeper = catalog.create({ ...input, ownerId: nested.storageId });
