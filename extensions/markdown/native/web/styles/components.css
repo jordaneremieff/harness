@@ -400,7 +400,7 @@
   @container app (width < 720px) { #jumps { left:12px; }.bar .status .save-word { display:none; } }
   @container app (width < 560px) {
     .bar .hide-narrow { display:none; }.bar { gap:3px;padding-inline:6px; }.bar .title { min-width:40px; }
-    .bar .status { width:14px;overflow:hidden; }.bar .status .save-word { display:none; }.history-controls{gap:0;}.history-controls .btn-i{width:26px;}
+    .bar .status { flex:none;width:auto;overflow:visible; }.bar .status .save-word { display:none; }.history-controls{gap:0;}.history-controls .btn-i{width:26px;}
     .ask-card { left:8px!important;right:8px;bottom:8px;top:auto!important;width:auto;max-height:65cqh;border-radius:13px; }
     .ask-card[data-collapsed]{width:auto;}.ask-messages{max-height:140px;}
     .notice { flex-wrap:wrap;font-size:12px;gap:4px 7px;padding:8px; }.notice .tx{flex:1 1 calc(100% - 32px);}.notice .acts{flex-wrap:nowrap;white-space:nowrap;margin-left:auto;}.notice .acts button{font-size:12px;padding-inline:6px;}
