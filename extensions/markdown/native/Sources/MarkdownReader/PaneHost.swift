@@ -202,8 +202,17 @@ final class PaneHost: NSObject, NSWindowDelegate {
     }
 
     /// Gives the keyboard back to the application that shows the pane.
+    /// Gives the keyboard back to the terminal. The pane is a non-activating panel, so the
+    /// terminal application usually stays frontmost while the panel holds the key window;
+    /// activating the terminal alone then changes nothing. Ordering the panel out and back in
+    /// without making it key returns key status to the terminal's window.
     private func releaseFocus() {
         guard let host = placement?.host, let application = NSRunningApplication(processIdentifier: host) else { return }
+        if window.isKeyWindow, window.isVisible {
+            window.orderOut(nil)
+            window.orderFrontRegardless()
+            order()
+        }
         application.activate()
     }
 

@@ -21,11 +21,11 @@
 		const glyph = el("span", { class: "kind", id: "kind", "data-kind": "published" }, icon("doc")),
 			name = el("span", { class: "name", id: "doc-title" }, "Markdown Reader");
 		title.replaceChildren(glyph, name, icon("chev"));
-		const lock = button("Edit", "pen", () => command("toggleLock"), { className: "edit-lock" });
+		const lock = button("Edit", "pen", () => command("toggleLock"), { iconOnly: true, key: "⌘E" });
+		lock.classList.add("edit-lock");
 		lock.id = "b-edit";
 		lock.dataset.role = "lock";
 		lock.setAttribute("aria-pressed", "false");
-		lock.lastElementChild?.classList.add("edit-word");
 		const outline = button("Contents", "outline", () => command("toggleOutline"), { iconOnly: true, key: "⌃⌘S" });
 		outline.id = "b-outline";
 		outline.setAttribute("aria-controls", "outline");
@@ -87,7 +87,7 @@
 			return [
 				{
 					level: Number(matches[1]),
-					text: heading?.textContent ?? sourceHeadingText(block),
+					text: heading?.textContent?.replace(/\s+/g, " ").trim() || sourceHeadingText(block),
 					anchor: heading?.id ?? block.key,
 					start: block.start,
 				},
@@ -121,15 +121,41 @@
 		function removeNotice(id?: string) {
 			for (const child of [...notices.children]) if ((child as HTMLElement).dataset.noticeId === id) child.remove();
 		}
+		// A repeated notice updates its count instead of stacking; at most three show.
+		function repeatNotice(key: string) {
+			const same = [...notices.children].find((child) => (child as HTMLElement).dataset.noticeKey === key) as
+				| HTMLElement
+				| undefined;
+			if (!same) return false;
+			const count = Number(same.dataset.count ?? "1") + 1;
+			same.dataset.count = String(count);
+			const tag = same.querySelector(".count") ?? el("span", { class: "count" });
+			tag.textContent = `×${count}`;
+			same.querySelector(".tx")?.after(tag);
+			notices.append(same);
+			return true;
+		}
+		const noticeIcons: Record<string, string> = { agent: "spark", draft: "pen" };
+		function noticeTone(tone: string) {
+			return tone === "warning" ? "warn" : tone;
+		}
 		function notice(text: string, tone = "info", actions: { label: string; run: () => void }[] = [], id?: string) {
 			if (id) removeNotice(id);
+			const key = `${tone}\u0000${text}`;
+			if (repeatNotice(key)) return;
+			while (notices.children.length >= 3) notices.firstElementChild?.remove();
 			const item = el(
 				"div",
-				{ class: "notice", "data-role": "notice", "data-tone": tone === "warning" ? "warn" : tone, role: "status" },
-				icon({ agent: "spark", draft: "pen" }[tone] ?? "info"),
+				{ class: "notice", "data-role": "notice", "data-tone": noticeTone(tone), role: "status" },
+				icon(noticeIcons[tone] ?? "info"),
 				el("span", { class: "tx" }, text),
 			);
+			item.dataset.noticeKey = key;
 			if (id) item.dataset.noticeId = id;
+			item.append(noticeControls(item, actions));
+			notices.append(item);
+		}
+		function noticeControls(item: HTMLElement, actions: { label: string; run: () => void }[]) {
 			const controls = el("span", { class: "acts" });
 			for (const action of actions.slice(0, 2))
 				controls.append(
@@ -139,8 +165,7 @@
 					}),
 				);
 			controls.append(button("Dismiss notice", "x", () => item.remove(), { iconOnly: true }));
-			item.append(controls);
-			notices.append(item);
+			return controls;
 		}
 		const context: ReaderUIContext = {
 			host,
@@ -208,9 +233,10 @@
 			const writing = controller.lock === "writing";
 			app.dataset.mode = controller.lock;
 			lock.setAttribute("aria-pressed", String(writing));
-			lock.setAttribute("aria-label", writing ? "Done" : "Edit");
-			const word = lock.querySelector(".edit-word");
-			if (word) word.textContent = writing ? "Done" : "Edit";
+			const label = writing ? "Done editing" : "Edit";
+			lock.setAttribute("aria-label", label);
+			lock.dataset.tip = label;
+			lock.querySelector("svg")?.replaceWith(icon(writing ? "check" : "pen"));
 			showKind();
 			hideSelection();
 		}
@@ -375,20 +401,22 @@
 					selected?.addRange(range);
 				},
 				escape: () => {
-					if (controller.doc?.active) {
-						editor.close();
-						get("#linkcard").hidden = true;
-						return;
-					}
-					for (const layer of document.querySelectorAll<HTMLElement>("[popover]:popover-open")) {
-						layer.hidePopover();
-						return;
-					}
-					if (views.close() || ask.close() || navigation.closeSheet() || navigation.closeFind()) return;
-					void hostCommand("returnFocus");
+					if (!closeTopLayer()) void hostCommand("returnFocus");
 				},
 			};
 			local[name]?.();
+		}
+		// Escape closes the topmost layer: menus over the page, then the open block, then views.
+		function closeTopLayer() {
+			const menus = [...document.querySelectorAll<HTMLElement>("[popover]:popover-open")];
+			for (const layer of menus) layer.hidePopover();
+			if (menus.length) return true;
+			if (controller.doc?.active) {
+				editor.close();
+				get("#linkcard").hidden = true;
+				return true;
+			}
+			return views.close() || ask.close() || navigation.closeSheet() || navigation.closeFind();
 		}
 		function codeControls() {
 			for (const block of doc.querySelectorAll<HTMLElement>("[data-block]")) {
