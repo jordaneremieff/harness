@@ -280,7 +280,7 @@
   /* Notices sit just under the bar, inside the reading column. */
   .notices { position: absolute; z-index: 5; top: calc(var(--bar-h) + 6px); left: 0; right: 0; display: grid; gap: 6px; padding: 0 12px; pointer-events: none; }
   #app:not([data-outline="closed"]) .notices { left: var(--outline-w); }
-  @container app (width < 720px) { #app .notices { left: 0; } }
+  @container app (width < 720px) { #app:not([data-outline="closed"]) .notices { left: 0; } }
   .notice {
     pointer-events: auto;
     justify-self: center; width: min(var(--measure), 100%);
@@ -393,7 +393,7 @@
   .source-text { white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font:13px/1.65 var(--mono);color:var(--ink-2); }
   .facts { display:grid;grid-template-columns:max-content minmax(0,1fr);gap:10px 24px;font:13.5px/1.5 var(--font); }
   .facts dt { color:var(--ink-3); }.facts dd { margin:0;overflow-wrap:anywhere; }
-  .review-summary { color:var(--ink-2);font-size:13px; }.review-doc { margin:24px 0; }
+  .review-summary { color:var(--ink-2);font-size:13px; }.doc.review-doc { margin:24px 0;padding:0;max-width:none; }.review-doc > * + * { margin-top:1em; }
   .review-doc del { background:color-mix(in oklch,var(--err) 12%,transparent); }.review-doc ins { background:var(--agent-soft);text-decoration:none; }
   .library-tools,.library-search,.library-filters { display:flex;align-items:center;gap:8px;margin-bottom:14px; }
   .store-label { margin-right:auto;font-weight:600; }

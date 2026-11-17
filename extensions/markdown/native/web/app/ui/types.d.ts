@@ -43,6 +43,7 @@ declare global {
 		promptTransition(old: ReaderAskState, next: ReaderAskState): ReaderAskState;
 		promptLabel(state: ReaderAskState): string;
 		diffWords(oldText: string, newText: string): { kind: "same" | "removed" | "added"; text: string }[];
+		changeContext(source: string, span: ReaderRange, edit: ReaderRange & { oldText: string; newText: string }): { oldText: string; newText: string } | null;
 	}
 	interface ReaderUIHelpers {
 		element<K extends keyof HTMLElementTagNameMap>(

@@ -409,7 +409,7 @@
 				el(
 					"p",
 					{},
-					`${summary.changedRegions} changed passages, ${summary.addedLines} lines added, ${summary.removedLines} removed.`,
+					`${summary.changedRegions} changed ${summary.changedRegions === 1 ? "passage" : "passages"}, ${summary.addedLines} ${summary.addedLines === 1 ? "line" : "lines"} added, ${summary.removedLines} removed.`,
 				),
 				summary.partial ? el("p", {}, "This comparison covers part of the source.") : null,
 			);

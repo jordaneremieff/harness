@@ -77,6 +77,13 @@
 		add("same", old.slice(old.length - end));
 		return parts;
 	}
+	function changeContext(source: string, span: ReaderRange, edit: ReaderRange & { oldText: string; newText: string }) {
+		if (edit.start < span.start || edit.end > span.end || source.slice(edit.start, edit.end) !== edit.newText) return null;
+		return {
+			oldText: source.slice(span.start, edit.start) + edit.oldText + source.slice(edit.end, span.end),
+			newText: source.slice(span.start, span.end),
+		};
+	}
 	function zoomStep(current: number, steps: readonly number[], direction: number | null) {
 		if (direction === null) return 1;
 		const valid = steps.filter((step) => Number.isFinite(step) && step > 0);
@@ -85,6 +92,7 @@
 	}
 	api.uiLogic = {
 		zoomStep,
+		changeContext,
 		keyCommand,
 		promptTransition,
 		diffWords,

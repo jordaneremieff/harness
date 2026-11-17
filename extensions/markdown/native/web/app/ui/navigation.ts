@@ -52,8 +52,7 @@
 		let matches: ReturnType<ReaderEditor["find"]> = [],
 			index = 0,
 			findOpen = false,
-			hover = false,
-			frame = 0;
+			hover = false;
 		let history: { blockStart: number; offsetY: number; scrollTop: number }[] = [],
 			cursor = -1;
 		const off: (() => void)[] = [];
@@ -377,7 +376,6 @@
 			},
 			dispose() {
 				for (const fn of off) fn();
-				if (frame) cancelAnimationFrame(frame);
 			},
 		};
 		listen(filter, "input", () => nav.rebuild());
@@ -413,12 +411,8 @@
 			"scroll",
 			() => {
 				app.toggleAttribute("data-scrolled", page.scrollTop > 2);
-				if (frame) return;
-				frame = requestAnimationFrame(() => {
-					frame = 0;
-					nav.updateCurrent();
-					controller.state({ scroll: position() });
-				});
+				nav.updateCurrent();
+				controller.state({ scroll: position() });
 			},
 			{ passive: true },
 		);

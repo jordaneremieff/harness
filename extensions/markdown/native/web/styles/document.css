@@ -51,10 +51,10 @@
   #app[data-mode="writing"] .doc > .reader-block { cursor:text; }.doc a,.doc button { cursor:pointer; }
   .doc .agent-flash { border-radius:3px;animation:agent-flash 2.6s var(--ease) both; }
   @keyframes agent-flash { from { background:color-mix(in oklch,var(--agent) 38%,transparent); } to { background:transparent; } }
-  .doc .agent-claimed { background:var(--agent-soft);padding:28px 8px 8px; }
+  .doc .agent-claimed { padding:28px 8px 8px; }
   .doc .agent-claimed::before { content:attr(data-claim-label);position:absolute;right:8px;top:5px;font:550 11.5px/1.3 var(--font);color:var(--agent-text);user-select:none;pointer-events:none; }
   .doc .reader-block .pin { position:absolute;right:-32px;top:0;width:26px;height:26px;display:grid;place-items:center;border-radius:6px;background:var(--agent-soft);color:var(--agent-text); }
-  .doc .has-diff > :not(.inline-diff) { display:none; }
+  .doc .has-diff > :not(.inline-diff),.doc .diff-continuation { display:none; }
   .inline-diff { white-space:pre-wrap;padding:12px 14px;background:color-mix(in oklch,var(--agent) 7%,var(--paper));border-radius:9px;box-shadow:inset 0 0 0 1px color-mix(in oklch,var(--agent) 22%,transparent); }
   .diff-head { display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:10px;font:500 12px/1.4 var(--font);color:var(--agent-text); }.diff-head > span { margin-right:auto; }.diff-head .btn-i { width:24px;height:24px; }
   .diff-words del { color:var(--ink-2);background:color-mix(in oklch,var(--err) 10%,transparent);text-decoration:line-through; }.diff-words ins { color:var(--agent-text);background:var(--agent-soft);text-decoration:none; }

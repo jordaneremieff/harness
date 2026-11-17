@@ -9,6 +9,7 @@
 			notices = get("#notices"),
 			strip = get("#seltools");
 		const off: (() => void)[] = [];
+		let linkAnchor: { top: number; scrollTop: number } | null = null;
 		let toastTimer: ReturnType<typeof setTimeout> | undefined,
 			tipTimer: ReturnType<typeof setTimeout> | undefined,
 			selection: ReaderSelection | null = null,
@@ -19,7 +20,7 @@
 		title.setAttribute("aria-controls", "docmenu");
 		const glyph = el("span", { class: "kind", id: "kind", "data-kind": "published" }, icon("doc")),
 			name = el("span", { class: "name", id: "doc-title" }, "Markdown Reader");
-		title.append(glyph, name, icon("chev"));
+		title.replaceChildren(glyph, name, icon("chev"));
 		const lock = button("Edit", "pen", () => command("toggleLock"), { className: "edit-lock" });
 		lock.id = "b-edit";
 		lock.dataset.role = "lock";
@@ -82,8 +83,7 @@
 			const matches = /^heading([1-6])$/.exec(block.type);
 			if (!matches) return [];
 			const node = doc.querySelector<HTMLElement>(`[data-block="${CSS.escape(block.key)}"]`);
-			if (!node) return [];
-			const heading = node.querySelector("h1,h2,h3,h4,h5,h6");
+			const heading = node?.querySelector("h1,h2,h3,h4,h5,h6");
 			return [
 				{
 					level: Number(matches[1]),
@@ -214,10 +214,11 @@
 			showKind();
 			hideSelection();
 		}
-		function historyLabel(description: ReaderHistoryDescription | null, verb: string) {
+		function historyLabel(description: { origin: "person" | "agent" | "history"; blockStart: number } | null, verb: string) {
 			if (!description) return verb;
 			const section = headings().findLast((h) => h.start <= description.blockStart)?.text ?? "this passage";
-			return `${verb} ${description.origin === "agent" ? "the agent's change" : "your edit"} in ${section}`;
+			const change = description.origin === "agent" ? "the agent's change" : description.origin === "person" ? "your edit" : "the change";
+			return `${verb} ${change} in ${section}`;
 		}
 		function historyState() {
 			const next = controller.nextHistory();
@@ -329,17 +330,11 @@
 				findNext: () => navigation.findNext(1),
 				findPrevious: () => navigation.findNext(-1),
 				undo: () => {
-					const next = controller.nextHistory().undo,
-						r = controller.undo();
-					if (r?.status === "blocked")
+					const result = controller.undo();
+					if (result?.status === "blocked")
 						notice("A later edit overlaps this change. The document stays as it is.", "warn");
-					else if (r && next) toast(historyLabel(next, "Undid"), { label: "Redo", run: () => command("redo") });
 				},
-				redo: () => {
-					const next = controller.nextHistory().redo,
-						r = controller.redo();
-					if (r && next) toast(historyLabel(next, "Redid"));
-				},
+				redo: () => { controller.redo(); },
 				format: () => {
 					if (controller.lock === "writing") editor.format(args as { command: string; level?: number });
 				},
@@ -466,7 +461,11 @@
 			"scroll",
 			() => {
 				hideSelection();
-				get("#linkcard").hidden = true;
+				const card = get("#linkcard");
+				if (card.hidden || !linkAnchor) return;
+				const top = linkAnchor.top + linkAnchor.scrollTop - page.scrollTop;
+				card.hidden = top < 50 || top + card.offsetHeight > app.clientHeight - 8;
+				card.style.top = `${top}px`;
 			},
 			{ passive: true },
 		);
@@ -520,6 +519,12 @@
 				historyState();
 			}),
 			controller.on("history", historyState),
+			controller.on("change", (change) => {
+				get("#linkcard").hidden = true;
+				if (!change.historyAction) return;
+				const description = { origin: change.origin, blockStart: change.edits[0]?.start ?? 0 };
+				toast(historyLabel(description, change.historyAction === "redo" ? "Redid" : "Undid"));
+			}),
 			controller.on("selection", selectionTools),
 			controller.on("view", () => {
 				codeControls();
@@ -543,6 +548,8 @@
 				),
 			),
 			controller.on("document", () => {
+				get("#linkcard").hidden = true;
+				linkAnchor = null;
 				notices.replaceChildren();
 				selection = null;
 				saveStatus("saved");
@@ -574,7 +581,9 @@
 					box = app.getBoundingClientRect();
 				card.hidden = false;
 				card.style.left = `${Math.max(12, Math.min(r.left - box.left, box.width - card.offsetWidth - 12))}px`;
-				card.style.top = `${Math.max(50, r.top - box.top - card.offsetHeight - 8)}px`;
+				const top = Math.max(50, r.top - box.top - card.offsetHeight - 8);
+				linkAnchor = { top, scrollTop: page.scrollTop };
+				card.style.top = `${top}px`;
 			}),
 		);
 		historyState();

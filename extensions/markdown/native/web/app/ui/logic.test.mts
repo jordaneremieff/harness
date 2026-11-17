@@ -104,6 +104,34 @@ test("prompt progress cannot regress or resubmit an unknown admission", () => {
 	assert.equal(logic.promptTransition("admitted", "working"), "working");
 });
 
+test("inline change context preserves unchanged text around mapped UTF-16 ranges", () => {
+	const source = "before\r\nThe agent makes this 👩‍💻 passage clearer. Every change stays.\r\nafter";
+	const start = source.indexOf("makes"), end = source.indexOf(" Every");
+	const context = logic.changeContext(source, { start: 8, end: source.length - 7 }, {
+		start, end, oldText: "works on this passage.", newText: source.slice(start, end),
+	});
+	assert.equal(context?.oldText, "The agent works on this passage. Every change stays.");
+	assert.equal(context?.newText, "The agent makes this 👩‍💻 passage clearer. Every change stays.");
+	assert.equal(logic.changeContext(source, { start: 8, end: source.length }, {
+		start, end, oldText: "old", newText: "later overlap",
+	}), null);
+	assert.equal(logic.changeContext(source, { start: end, end: source.length }, {
+		start, end, oldText: "old", newText: source.slice(start, end),
+	}), null);
+});
+
+test("inline change context spans paragraphs and preserves insertion and deletion neighbours", () => {
+	for (const [source, edit, old] of [
+		["A new\n\npassage Z", { start: 2, end: 15, oldText: "old words", newText: "new\n\npassage " }, "A old wordsZ"],
+		["A Z", { start: 2, end: 2, oldText: "removed ", newText: "" }, "A removed Z"],
+		["A added Z", { start: 2, end: 8, oldText: "", newText: "added " }, "A Z"],
+	] as const) {
+		const context = logic.changeContext(source, { start: 0, end: source.length }, edit);
+		assert.equal(context?.oldText, old);
+		assert.equal(context?.newText, source);
+	}
+});
+
 test("inline differences preserve exact original and replacement text", () => {
 	for (const [before, after] of [
 		["Read the old words.", "Read the new words."],

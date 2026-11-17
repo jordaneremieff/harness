@@ -82,16 +82,20 @@
 			if (rect.bottom > limit) page.scrollTop += rect.bottom - limit;
 			if (rect.top < top) page.scrollTop += rect.top - top;
 		}
+		function cardAnchorRect() {
+			const anchor = current?.collapsed ? doc.querySelector(".inline-diff") : rangeFor(threadRange());
+			return anchor?.getBoundingClientRect() ?? get("#b-ask").getBoundingClientRect();
+		}
 		function position() {
 			if (!visible) return;
 			const box = app.getBoundingClientRect();
 			if (box.width < 560) {
 				card.style.left = "";
 				card.style.top = "";
-				revealPassage(card.getBoundingClientRect().top - 12);
+				if (!current?.collapsed) revealPassage(card.getBoundingClientRect().top - 12);
 				return;
 			}
-			const rect = rangeFor(threadRange())?.getBoundingClientRect() ?? get("#b-ask").getBoundingClientRect();
+			const rect = cardAnchorRect();
 			const width = card.offsetWidth,
 				height = card.offsetHeight;
 			card.style.left = `${Math.max(12, Math.min(rect.left - box.left, box.width - width - 12))}px`;
@@ -379,7 +383,8 @@
 		}
 		function clearDiff() {
 			for (const diff of doc.querySelectorAll(".inline-diff")) diff.remove();
-			for (const block of doc.querySelectorAll(".has-diff")) block.classList.remove("has-diff");
+			for (const block of doc.querySelectorAll(".has-diff,.diff-continuation"))
+				block.classList.remove("has-diff", "diff-continuation");
 		}
 		function moveChange(delta: number, total: number) {
 			changeIndex = (changeIndex + delta + total) % total;
@@ -401,17 +406,39 @@
 				);
 			return body;
 		}
+		function changeBlocks(edit: ReaderRange) {
+			const blocks = [...doc.children] as HTMLElement[];
+			const first = blockAt(edit.start) ?? blocks.find((node) => Number(node.dataset.start) >= edit.start) ?? blocks.at(-1);
+			if (!first) return [];
+			return [first, ...blocks.filter((node) => node !== first && Number(node.dataset.start) < edit.end && Number(node.dataset.end) > edit.start)];
+		}
+		function diffTarget(operation: ReaderAgentOperation) {
+			const edit = operation.edits[changeIndex];
+			if (!edit || !controller.doc) return null;
+			const blocks = changeBlocks(edit), block = blocks[0];
+			if (!block) return null;
+			const context = operation.conflicted ? null : api.uiLogic.changeContext(controller.doc.source, {
+				start: Number(block.dataset.start), end: Number(blocks.at(-1)?.dataset.end),
+			}, edit);
+			return { blocks, block, context, edit };
+		}
+		function mountDiff(diff: HTMLElement, target: NonNullable<ReturnType<typeof diffTarget>>) {
+			if (target.context) {
+				target.block.classList.add("has-diff");
+				for (const next of target.blocks.slice(1)) next.classList.add("diff-continuation");
+			}
+			target.block.append(diff);
+		}
 		function drawDiff() {
 			clearDiff();
 			if (!operationId) return;
 			const operation = controller.agentOperations.get(operationId);
 			if (!operation) return;
 			changeIndex = Math.min(changeIndex, operation.edits.length - 1);
-			const edit = operation.edits[changeIndex],
-				block = edit ? blockAt(edit.start) : undefined;
-			if (!block || !edit) return;
+			const target = diffTarget(operation);
+			if (!target) return;
 			const diff = el("section", { class: "inline-diff", "data-reader-control": "", "aria-label": "Agent change" }),
-				body = diffBody(edit);
+				body = diffBody(target.context ?? target.edit);
 			diff.append(
 				el(
 					"div",
@@ -433,8 +460,8 @@
 				body,
 			);
 			diff.addEventListener("click", (event) => event.stopPropagation());
-			block.classList.add("has-diff");
-			block.append(diff);
+			if (operation.conflicted) diff.prepend(el("p", { class: "diff-warning" }, "Original agent change. Later edits overlap this passage."));
+			mountDiff(diff, target);
 		}
 		function markers() {
 			for (const marker of doc.querySelectorAll(".change-marker")) marker.remove();
@@ -496,6 +523,7 @@
 				if (!operation) return;
 				editor.close();
 				controller.markRead(operationId);
+				get("#notices").querySelector(`[data-notice-id="${CSS.escape(`agent-${operationId}`)}"]`)?.remove();
 				if (current && visible) current.collapsed = true;
 				drawDiff();
 				const diff = doc.querySelector(".inline-diff");
