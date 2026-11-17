@@ -100,10 +100,21 @@
 			const width = card.offsetWidth,
 				height = card.offsetHeight;
 			card.style.left = `${Math.max(12, Math.min(rect.left - box.left, box.width - width - 12))}px`;
+			const top = cardTop(rect, box, height);
+			card.style.top = `${top}px`;
+			// The collapsed card never covers the change panel it summarises; where no free
+			// place exists it steps aside until the panel scrolls or closes.
+			card.style.visibility = current?.collapsed && overlapsPanel(top + box.top, height) ? "hidden" : "";
+		}
+		function cardTop(rect: DOMRect, box: DOMRect, height: number) {
 			let top = rect.bottom - box.top + 10;
 			if (top + height > box.height - 12 && rect.top - box.top - height - 10 > 56)
 				top = rect.top - box.top - height - 10;
-			card.style.top = `${Math.max(56, Math.min(top, box.height - height - 12))}px`;
+			return Math.max(56, Math.min(top, box.height - height - 12));
+		}
+		function overlapsPanel(top: number, height: number) {
+			const panel = doc.querySelector(".inline-diff")?.getBoundingClientRect();
+			return !!panel && top < panel.bottom && top + height > panel.top;
 		}
 		function paintPassage() {
 			const range = visible ? rangeFor(threadRange()) : null;
@@ -277,6 +288,15 @@
 			if (!(field instanceof HTMLTextAreaElement) || !card.contains(field)) return null;
 			return { start: field.selectionStart, end: field.selectionEnd };
 		}
+		// A new message, state or answer brings the end of the conversation into view.
+		let shownLatest = "";
+		function revealLatest(thread: ReaderThread) {
+			const message = activeMessage(thread);
+			const latest = `${thread.threadId}:${thread.messages.length}:${message?.state}:${message?.detail?.length ?? 0}`;
+			if (latest === shownLatest) return;
+			shownLatest = latest;
+			card.scrollTop = card.scrollHeight;
+		}
 		function draw() {
 			if (!current || !visible) {
 				card.removeAttribute("data-open");
@@ -303,6 +323,7 @@
 			);
 			drawConversation(thread);
 			card.append(composer(thread, !!activeMessage(thread)));
+			revealLatest(thread);
 			position();
 			paintPassage();
 			if (focused) {
