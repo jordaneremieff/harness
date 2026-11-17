@@ -149,7 +149,10 @@ selection changes. Refresh highlights after `view`, `change` or `document`.
 Run the colocated Node tests through `npm test`. `test/stage-webcheck.mts` stages
 the editor regression page and the same type-stripped scripts into an explicit
 output directory. `test/editor-steps.json` drives the offscreen WebKit runner.
-The fixture renderer is deliberately small and never ships in the app.
+The fixture renderer is deliberately small and never ships in the app. The
+isolated editor page flushes its frame queue explicitly, without a visible-window
+clock. Its timings cover synchronous input and forced layout with the memory
+host, not native transport, frame pacing or key-to-paint.
 
 `test/stage-product.mts <UI web directory> <output directory>` stages the real
 UI shell and styles with the same core and editor. It injects boot deferral and a

@@ -17,6 +17,17 @@
 		): FixtureHost;
 	}
 	const api = (globalThis as unknown as { reader: ReaderCoreAPI & FixtureAPI }).reader;
+	// The offscreen fixture flushes queued frames without a visible-window clock.
+	const queuedFrames = new Map<number, FrameRequestCallback>();
+	let nextFrame = 0;
+	globalThis.requestAnimationFrame = (callback) => {
+		const id = ++nextFrame;
+		queuedFrames.set(id, callback);
+		return id;
+	};
+	globalThis.cancelAnimationFrame = (id) => {
+		queuedFrames.delete(id);
+	};
 	function required<T>(value: T | null | undefined): T {
 		if (value === null || value === undefined) throw new Error("Missing test surface.");
 		return value;
@@ -45,6 +56,14 @@
 			y = api.sourceModel.point(el, b);
 		getSelection()?.setBaseAndExtent(x.node, x.offset, y.node, y.offset);
 	}
+	function caret() {
+		const s = getSelection(),
+			el = openElement();
+		if (!s?.anchorNode || !s.focusNode) return null;
+		const anchor = api.sourceModel.offset(el, s.anchorNode, s.anchorOffset),
+			focus = api.sourceModel.offset(el, s.focusNode, s.focusOffset);
+		return anchor === null || focus === null ? null : { anchor, focus };
+	}
 	function bodyNode(node: Text) {
 		return (
 			node.length > 0 &&
@@ -71,8 +90,15 @@
 			return { type: b.type, opened, before, after, shift: after - before };
 		});
 	}
-	async function frames() {
-		await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+	async function settle() {
+		for (let i = 0; i < 16; i++) {
+			const batch = [...queuedFrames.values()];
+			queuedFrames.clear();
+			for (const callback of batch) callback(performance.now());
+			await Promise.resolve();
+		}
+		if (queuedFrames.size) throw new Error("The fixture frame queue did not settle.");
+		root.getBoundingClientRect();
 	}
 	function check() {
 		const doc = required(controller.doc);
@@ -102,11 +128,15 @@
 		let accepted = 0;
 		for (let i = 0; i < 200; i++) {
 			const command = typeCommand(structural, i, el),
+				beforeCaret = required(caret()),
+				target = beforeCaret.anchor + (command.name === "delete" ? -1 : command.value.length),
 				start = performance.now();
 			if (document.execCommand(command.name, false, command.value)) accepted++;
 			el.getBoundingClientRect();
 			times.push(performance.now() - start);
 			check();
+			const afterCaret = required(caret());
+			if (afterCaret.anchor !== target || afterCaret.focus !== target) throw new Error("The input moved the caret.");
 		}
 		times.sort((a, b) => a - b);
 		return {
@@ -121,8 +151,9 @@
 	const test = {
 		load,
 		select,
+		caret,
 		alignment,
-		frames,
+		settle,
 		check,
 		benchmark,
 		get controller() {
