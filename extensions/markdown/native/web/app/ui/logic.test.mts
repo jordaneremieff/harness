@@ -20,6 +20,7 @@ test("the mirrored Mac keys select one command for each context", () => {
 		["-", "zoomOut"],
 		["0", "zoomReset"],
 		["[", "back"],
+		["]", "forward"],
 	])
 		assert.equal(key(keyName)?.name, name);
 	assert.equal(key("g", false, { shiftKey: true })?.name, "findPrevious");

@@ -136,6 +136,7 @@
 			drawBack();
 		}
 		function drawBack() {
+			controller.state({ canBack: cursor > 0, canForward: cursor >= 0 && cursor < history.length - 1 });
 			const root = get("#jumps");
 			root.replaceChildren();
 			if (cursor > 0) root.append(button("Back", "back", () => nav.back(), { className: "back" }));

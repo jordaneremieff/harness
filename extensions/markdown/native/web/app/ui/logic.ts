@@ -34,6 +34,7 @@
 					"-": "zoomOut",
 					"0": "zoomReset",
 					"[": "back",
+					"]": "forward",
 					"ctrl:s": "toggleOutline",
 					"alt:f": "replace",
 					"alt:m": "askDocument",
