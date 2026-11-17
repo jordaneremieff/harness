@@ -286,7 +286,11 @@ export class LiveBridges {
 		if (!promise) {
 			if (this.bridges.size >= 32) throw new Error("The live conversation limit is reached.");
 			const bridge = new LiveBridge(route());
-			promise = bridge.start().then(() => bridge).catch((error: unknown) => { bridge.close(); throw error; });
+			promise = bridge.start().then(() => bridge).catch((error: unknown) => {
+				bridge.close();
+				if (this.bridges.get(key) === promise) this.bridges.delete(key);
+				throw error;
+			});
 			this.bridges.set(key, promise);
 		}
 		return promise;

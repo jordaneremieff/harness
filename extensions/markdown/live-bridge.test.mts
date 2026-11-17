@@ -89,6 +89,19 @@ test("selection deactivates a handle without retiring its prompt receipts, while
 		await assert.rejects(registry.get("exact", () => ({ submit: async () => ({ status: "requested" }) })), /host closed/u);
 	} finally { registry.close(); }
 });
+test("failed connection startup permits a fresh route without retaining a rejected registry entry", { timeout: 10000 }, async () => {
+	const registry = new LiveBridges();
+	try {
+		await assert.rejects(registry.get("exact", () => ({
+			submit: async () => ({ status: "requested" }),
+			observe: async () => { throw new Error("Temporary observation failure"); },
+		})), /progress connection failed/u);
+		assert.equal(await registry.find("exact"), undefined);
+		const bridge = await registry.get("exact", () => ({ submit: async () => ({ status: "requested" }) }));
+		assert.equal(await registry.find("exact"), bridge);
+		assert.equal((await post(await bridge.start(), "/connect", binding())).status, 200);
+	} finally { registry.close(); }
+});
 test("failed idempotent admission retries the same ID but ordinary uncertainty never resubmits", { timeout: 10000 }, async () => {
 	for (const retryFailedSubmission of [true, false]) {
 		const ids: string[] = [];
