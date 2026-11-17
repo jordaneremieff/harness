@@ -401,8 +401,7 @@
   @container app (width < 560px) {
     .bar .hide-narrow { display:none; }.bar { gap:3px;padding-inline:6px; }.bar .title { min-width:40px; }
     .bar .status { flex:none;width:auto;overflow:visible; }.bar .status .save-word { display:none; }.history-controls{gap:0;}.history-controls .btn-i{width:26px;}
-    .ask-card { left:8px!important;right:8px;bottom:8px;top:auto!important;width:auto;max-height:65cqh;border-radius:13px; }
-    .ask-card[data-collapsed]{width:auto;}.ask-messages{max-height:140px;}
+    .ask-messages{max-height:140px;}
     .notice { flex-wrap:wrap;font-size:12px;gap:4px 7px;padding:8px; }.notice .tx{flex:1 1 calc(100% - 32px);}.notice .acts{flex-wrap:nowrap;white-space:nowrap;margin-left:auto;}.notice .acts button{font-size:12px;padding-inline:6px;}
     .overlay-head{padding:12px 16px;}.overlay-body{padding:18px 16px;}.facts{gap:10px 12px;grid-template-columns:minmax(0,1fr) minmax(0,2fr);}
     .library-search{flex-wrap:wrap;}.library-search input{flex-basis:55%;}.library-search select{max-width:130px;}

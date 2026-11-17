@@ -36,6 +36,11 @@ declare global {
 		collapsed: boolean;
 	}
 	interface ReaderUILogic {
+		cardPlacement(
+			anchor: { top: number; bottom: number; left: number },
+			card: { width: number; height: number },
+			pane: { width: number; height: number; top: number },
+		): { left: number; top: number; maxHeight: number; side: "below" | "above" | "over" };
 		zoomStep(current: number, steps: readonly number[], direction: number | null): number;
 		keyCommand(key: ReaderKey, context: { writing: boolean; input: boolean }): ReaderUICommand | null;
 		findStatus(count: number, index: number): string;

@@ -9,7 +9,6 @@
 			payloads = new Map<string, Record<string, unknown>>();
 		const off: (() => void)[] = [];
 		let current: ReaderThread | null = null,
-			revealPending = false,
 			visible = false,
 			changeIndex = 0,
 			operationId: string | null = null;
@@ -73,48 +72,31 @@
 			result.setEnd(end.node, end.offset);
 			return result;
 		}
-		function revealPassage(limit: number) {
-			const rect = rangeFor(threadRange())?.getBoundingClientRect();
-			if (!rect) return;
-			const top = app.getBoundingClientRect().top + 64;
-			if (rect.height > limit - top) {
-				page.scrollTop += rect.top - top;
-				return;
-			}
-			if (rect.bottom > limit) page.scrollTop += rect.bottom - limit;
-			if (rect.top < top) page.scrollTop += rect.top - top;
-		}
 		function cardAnchorRect() {
 			const anchor = current?.collapsed ? doc.querySelector(".inline-diff") : rangeFor(threadRange());
 			return anchor?.getBoundingClientRect() ?? get("#b-ask").getBoundingClientRect();
 		}
+		// The card floats beside its passage at every width and follows it while the page scrolls;
+		// opening it, redraws and agent changes never scroll the page.
 		function position() {
 			if (!visible) return;
-			const box = app.getBoundingClientRect();
-			if (box.width < 560) {
-				card.style.left = "";
-				card.style.top = "";
-				// The bottom sheet brings its passage into view once, when the person opens the card;
-				// later redraws, agent changes and scrolling never move the page.
-				if (revealPending && !current?.collapsed) revealPassage(card.getBoundingClientRect().top - 12);
-				revealPending = false;
-				return;
-			}
+			const box = app.getBoundingClientRect(),
+				bar = get(".bar").getBoundingClientRect();
 			const rect = cardAnchorRect();
-			const width = card.offsetWidth,
-				height = card.offsetHeight;
-			card.style.left = `${Math.max(12, Math.min(rect.left - box.left, box.width - width - 12))}px`;
-			const top = cardTop(rect, box, height);
+			card.style.maxHeight = "";
+			const place = api.uiLogic.cardPlacement(
+				{ top: rect.top - box.top, bottom: rect.bottom - box.top, left: rect.left - box.left },
+				{ width: card.offsetWidth, height: card.scrollHeight },
+				{ width: box.width, height: box.height, top: bar.bottom - box.top },
+			);
+			card.style.maxHeight = `${place.maxHeight}px`;
+			card.style.left = `${place.left}px`;
+			const top = place.top;
 			card.style.top = `${top}px`;
+			card.dataset.side = place.side;
 			// The collapsed card never covers the change panel it summarises; where no free
 			// place exists it steps aside until the panel scrolls or closes.
-			card.style.visibility = current?.collapsed && overlapsPanel(top + box.top, height) ? "hidden" : "";
-		}
-		function cardTop(rect: DOMRect, box: DOMRect, height: number) {
-			let top = rect.bottom - box.top + 10;
-			if (top + height > box.height - 12 && rect.top - box.top - height - 10 > 56)
-				top = rect.top - box.top - height - 10;
-			return Math.max(56, Math.min(top, box.height - height - 12));
+			card.style.visibility = current?.collapsed && overlapsPanel(top + box.top, card.offsetHeight) ? "hidden" : "";
 		}
 		function overlapsPanel(top: number, height: number) {
 			const panel = doc.querySelector(".inline-diff")?.getBoundingClientRect();
@@ -161,7 +143,6 @@
 					() => {
 						current = thread;
 						visible = true;
-						revealPending = true;
 						thread.collapsed = false;
 						draw();
 						activity.hidePopover();
@@ -572,7 +553,6 @@
 				};
 				threads.unshift(current);
 				visible = true;
-				revealPending = true;
 				draw();
 				card.querySelector("textarea")?.focus({ preventScroll: true });
 			},

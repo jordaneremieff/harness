@@ -90,7 +90,36 @@
 		if (direction > 0) return valid.find((step) => step > current) ?? valid.at(-1) ?? 1;
 		return valid.findLast((step) => step < current) ?? valid[0] ?? 1;
 	}
+	// Places the ask card beside its anchor inside the pane without covering the anchor: below it
+	// when the card fits, otherwise above it, otherwise on the larger side with a capped height.
+	// Coordinates are relative to the pane; top is the bottom edge of the bar.
+	function cardPlacement(
+		anchor: { top: number; bottom: number; left: number },
+		card: { width: number; height: number },
+		pane: { width: number; height: number; top: number },
+	) {
+		const gap = 10,
+			margin = 12,
+			minHeight = 120,
+			low = pane.top + 6,
+			high = pane.height - margin;
+		const top = Math.min(Math.max(anchor.top, low), high),
+			bottom = Math.max(Math.min(anchor.bottom, high), low);
+		const below = high - (bottom + gap),
+			above = top - gap - low;
+		const left = Math.max(margin, Math.min(anchor.left, pane.width - card.width - margin));
+		if (card.height <= below) return { left, top: bottom + gap, maxHeight: below, side: "below" as const };
+		if (card.height <= above) return { left, top: top - gap - card.height, maxHeight: above, side: "above" as const };
+		if (Math.max(below, above) < minHeight) {
+			const height = Math.min(card.height, high - low);
+			return { left, top: high - height, maxHeight: high - low, side: "over" as const };
+		}
+		return below >= above
+			? { left, top: bottom + gap, maxHeight: below, side: "below" as const }
+			: { left, top: low, maxHeight: above, side: "above" as const };
+	}
 	api.uiLogic = {
+		cardPlacement,
 		zoomStep,
 		changeContext,
 		keyCommand,

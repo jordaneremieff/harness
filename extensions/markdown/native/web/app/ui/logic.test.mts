@@ -158,3 +158,29 @@ test("inline differences preserve exact original and replacement text", () => {
 		);
 	}
 });
+
+test("the ask card floats beside its anchor inside the pane and never covers it", () => {
+	const pane = { width: 452, height: 880, top: 46 };
+	const card = { width: 428, height: 300 };
+	const overlaps = (p: { top: number; maxHeight: number }, height: number, a: { top: number; bottom: number }) =>
+		p.top < a.bottom && p.top + Math.min(height, p.maxHeight) > a.top;
+	const middle = { top: 300, bottom: 340, left: 60 };
+	const below = logic.cardPlacement(middle, card, pane);
+	assert.equal(below.side, "below");
+	assert.equal(below.top, 350);
+	assert.equal(below.left, 12);
+	assert.ok(!overlaps(below, card.height, middle));
+	const low = { top: 700, bottom: 740, left: 60 };
+	const above = logic.cardPlacement(low, card, pane);
+	assert.equal(above.side, "above");
+	assert.equal(above.top, 390);
+	assert.ok(!overlaps(above, card.height, low));
+	const tall = logic.cardPlacement({ top: 360, bottom: 520, left: 30 }, { width: 360, height: 500 }, pane);
+	assert.equal(tall.side, "below");
+	assert.ok(tall.maxHeight >= 120 && tall.top + tall.maxHeight <= pane.height - 12);
+	assert.ok(!overlaps(tall, 500, { top: 360, bottom: 520 }));
+	const wide = logic.cardPlacement({ top: 200, bottom: 230, left: 700 }, { width: 360, height: 300 }, { width: 800, height: 760, top: 46 });
+	assert.equal(wide.left, 800 - 360 - 12);
+	const offscreen = logic.cardPlacement({ top: -400, bottom: -360, left: 60 }, card, pane);
+	assert.ok(offscreen.top >= pane.top && offscreen.top + card.height <= pane.height - 12);
+});

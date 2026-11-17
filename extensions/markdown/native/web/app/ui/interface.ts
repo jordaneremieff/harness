@@ -365,7 +365,11 @@
 				format: () => {
 					if (controller.lock === "writing") editor.format(args as { command: string; level?: number });
 				},
-				askSelection: () => ask.open(editor.selection()),
+				askSelection: () => {
+					const selected = editor.selection();
+					if (selected) ask.open(selected);
+					else toast("Select text to ask about it.");
+				},
 				askDocument: () => ask.open(),
 				copyMarkdown: () => {
 					void hostCommand("copy", { text: controller.doc?.source ?? "", markdown: true });
