@@ -397,6 +397,9 @@ refuses completion; inspect and repair the artifact header before retrying.
 Artifacts require an explicit JSON-encoded lifecycle state. Missing headers, missing states,
 and malformed state values remain visible as unknown but cannot authorize pickup or lifecycle changes.
 The extension never synthesizes missing metadata or interprets unquoted values as a second format.
+Metadata keys remain own data properties; a `__proto__` value supplies no inherited
+lifecycle fields. For repeated keys, the final occurrence determines the value;
+malformed final JSON leaves that field unavailable, not the earlier value.
 Reopening returns a closed artifact to `open` and removes closure metadata
 while retaining its prior activation timestamp. Artifacts never move or disappear as a
 lifecycle side effect.

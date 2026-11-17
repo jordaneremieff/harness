@@ -110,6 +110,20 @@ describe("updateFrontmatter", () => {
 });
 
 describe("parseFrontmatter tolerance", () => {
+	it("retains prototype-shaped keys as data without inherited lifecycle fields", () => {
+		const { meta } = parseFrontmatter('---\n__proto__: {"state":"open","title":"Inherited"}\n---\nbody\n');
+		assert.equal(meta.state, undefined);
+		assert.equal(meta.title, undefined);
+		assert.equal(Object.getPrototypeOf(meta), Object.prototype);
+		assert.ok(Object.hasOwn(meta, "__proto__"));
+		assert.deepEqual(Object.getOwnPropertyDescriptor(meta, "__proto__")?.value, { state: "open", title: "Inherited" });
+	});
+	it("omits a field when its final occurrence has malformed JSON", () => {
+		const { meta } = parseFrontmatter('---\nstate: "open"\nstate: broken\ntitle: "Valid"\n---\nbody\n');
+		assert.equal(meta.state, undefined);
+		assert.equal(Object.hasOwn(meta, "state"), false);
+		assert.equal(meta.title, "Valid");
+	});
 	it("returns the whole input as body when no frontmatter exists", () => {
 		const { meta, body } = parseFrontmatter("# Just markdown\n");
 		assert.deepEqual(meta, {});

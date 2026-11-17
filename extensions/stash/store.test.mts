@@ -38,6 +38,35 @@ describe("resolveStoreDir", () => {
 	});
 });
 
+describe("unavailable lifecycle metadata", () => {
+	for (const [name, header] of [
+		["prototype-state", '__proto__: {"state":"open"}'],
+		["malformed-final-state", 'state: "open"\nstate: broken'],
+	]) {
+		it(`refuses mutations and preserves bytes for ${name}`, async () => {
+			const store = join(dir, name);
+			await mkdir(store);
+			const path = join(store, `${name}.md`);
+			const content = `---\n${header}\n---\n\n# Body\nOriginal\n`;
+			await writeFile(path, content);
+			const listed = await listStashes(store);
+			assert.equal(listed[0].meta.state, "unknown");
+			assert.deepEqual(await listStashes(store, { state: "open" }), []);
+			const read = await readStash(store, name);
+			assert.ok(read.ok);
+			await assert.rejects(transitionStash(store, name, { action: "activate" }), /invalid lifecycle state/);
+			await assert.rejects(transitionStash(store, name, { action: "close", outcome: "Done" }), /invalid lifecycle state/);
+			await assert.rejects(rotateStash(store, name), /invalid lifecycle state/);
+			await assert.rejects(editStash(store, name, {
+				expectedDigest: read.digest,
+				edits: [{ oldText: "Original", newText: "Changed" }],
+			}), /invalid lifecycle state/);
+			assert.equal(await readFile(path, "utf8"), content);
+			assert.deepEqual(await readdir(store), [`${name}.md`]);
+		});
+	}
+});
+
 describe("lifecycle cancellation publication boundary", () => {
 	for (const afterPublication of [false, true]) {
 		it(`honours transition cancellation only before publication (${afterPublication})`, async (t) => {

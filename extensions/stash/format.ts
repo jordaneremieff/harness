@@ -204,9 +204,12 @@ export function parseFrontmatter(md: string): ParsedArtifact {
 		const raw = line.slice(sep + 1).trim();
 		if (!key) continue;
 		try {
-			meta[key] = JSON.parse(raw);
+			Object.defineProperty(meta, key, {
+				value: JSON.parse(raw), enumerable: true, configurable: true, writable: true,
+			});
 		} catch {
-			// Invalid current metadata is unavailable, never a second value format.
+			// A malformed later occurrence must not leave an earlier lifecycle value usable.
+			delete meta[key];
 		}
 	}
 	return {
