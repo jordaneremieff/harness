@@ -18,6 +18,9 @@ const block = "block:33333333-3333-4333-8333-333333333333";
 const otherSession = "session:44444444-4444-4444-8444-444444444444";
 const target = { server: "launch", session, block, source: "explicit" as const };
 const context: RexCallContext = { ownerId: "owner", callId: "create", cwd: process.cwd() };
+function terminalEvent(name: string, blockId = block): string {
+	return JSON.stringify({ type: "session_event", payload: { session_id: session, event: { type: "block_event", payload: { block_id: blockId, creator_name: "com.superlogical.terminal", name, payload: {} } } } });
+}
 function reply(value: unknown): CliResult {
 	return {
 		outcome: "exited",
@@ -1682,7 +1685,53 @@ test("text wait refreshes output when no event announces readiness", async (t) =
 	assert.equal(response.ok, true);
 });
 
-test("text wait returns on a valid event without the refresh delay", async (t) => {
+for (const condition of ["text", "status"] as const) test(`${condition} waits ignore unrelated events without spending snapshots`, async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const f = fixture();
+	const caller = new AbortController();
+	let eventCall!: CliCall;
+	let snapshots = 0;
+	let ready = false;
+	let entered!: () => void;
+	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = (args, call) => {
+		if (!args.includes("events")) return run(args, call);
+		eventCall = call;
+		return new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }));
+	};
+	f.transport.handler = (method) => {
+		if (!method.endsWith(condition === "text" ? ".format" : ".program_status")) return undefined;
+		snapshots++;
+		entered();
+		return condition === "text" ? reply({ content: ready ? "READY" : "starting", eof: true }) : reply({ records: [{ id: "service", state: ready ? "done" : "working" }] });
+	};
+	const pending = f.core.execute({ op: "wait", condition, text: condition === "text" ? "READY" : undefined, state: condition === "status" ? "done" : undefined, timeoutMs: 15000, target }, { ...context, signal: caller.signal });
+	let settled = false;
+	void pending.then(() => { settled = true; });
+	t.after(async () => { caller.abort(); await pending; f.core.dispose(); });
+	await initial;
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	const unrelated = [
+		JSON.stringify({ type: "session_event", payload: { session_id: session, event: { type: "client_connected", payload: { client_id: "client:probe" } } } }),
+		JSON.stringify({ type: "session_event", payload: { session_id: session, event: { type: "client_disconnected", payload: { client_id: "client:probe" } } } }),
+		JSON.stringify({ type: "session_event", payload: { session_id: session, event: { type: "session_view_changed", payload: { revision: 1 } } } }),
+		terminalEvent("program_status_changed", "block:elsewhere"), terminalEvent("title_changed"), terminalEvent("progress_report"), "{}",
+	];
+	for (let index = 0; index < 30; index++) {
+		eventCall.onLine?.(unrelated[index % unrelated.length]);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
+	assert.equal(snapshots, 1);
+	assert.equal(settled, false, "unrelated events do not end the wait before its deadline");
+	ready = true;
+	if (condition === "text") t.mock.timers.tick(250);
+	else eventCall.onLine?.(terminalEvent("program_status_changed"));
+	assert.equal((await pending).outcome, "condition_observed");
+	assert.equal(snapshots, 2);
+});
+
+test("text wait returns on a direct-child exit event without the refresh delay", async (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const f = fixture();
 	const caller = new AbortController();
@@ -1711,7 +1760,7 @@ test("text wait returns on a valid event without the refresh delay", async (t) =
 	await initial;
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	ready = true;
-	eventCall.onLine?.(JSON.stringify({ payload: { event: { type: "custom", payload: { block_id: block } } } }));
+	eventCall.onLine?.(terminalEvent("child_exited"));
 	const response = await pending;
 	assert.equal(response.outcome, "condition_observed");
 	assert.equal(captures, 2, "the event triggers the next snapshot before a timer tick");
@@ -1908,7 +1957,7 @@ for (const [total, eventAt] of [[1000, 850], [13500, 12000]] as const) {
 				assert.equal(eventCall.timeoutMs, total);
 				assert.equal(eventCall.finaliseSignal, time.budget.finaliseSignal);
 				if (mode === "event") {
-					time.advance(eventAt); ready = true; eventCall.onLine?.("{}");
+					time.advance(eventAt); ready = true; eventCall.onLine?.(terminalEvent("child_exited"));
 				} else if (mode === "source_error") {
 					time.advance(800); endEvent({ ...reply({}), exitCode: 2, stderr: "event source failed" });
 				} else time.advance(time.budget.workEndsAt);

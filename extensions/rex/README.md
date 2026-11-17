@@ -392,7 +392,12 @@ transport fault. An unsuccessful wait directs the caller to inspect current
 state before another wait; it never authorises a terminal restart.
 
 Text and status observations resume on relevant events, event-process exit, cancellation
-or the deadline. Text observations also refresh the current output snapshot on a bounded
+or the deadline. Only the exact terminal block's `program_status_changed` and
+`program_status_removed` events refresh a status observation. Its `child_exited`
+event refreshes a text observation immediately. Client, layout, unrelated terminal,
+and other-block events spend no snapshots. These names follow Rex's public
+[event contract](https://www.superlogical.com/rex/docs/reference/events).
+Text observations also refresh the current output snapshot on a bounded
 cadence because Rex publishes no output-change event. The interval starts at 250 ms and
 doubles after each snapshot, so quick readiness shows quickly. The even spread of the
 remaining snapshots across the remaining work window caps it, so the last snapshot

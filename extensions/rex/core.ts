@@ -812,6 +812,7 @@ export class RexCore {
 			Math.ceil(context.budget?.remaining("finalise") ?? timeoutMs),
 			Math.min(this.maxOutputBytes, 32768),
 			target.blockId,
+			request.condition,
 		);
 		let observation: ConditionObservation | undefined;
 		let observationError: unknown;
@@ -1994,16 +1995,19 @@ class EventObserver {
 	private readonly relay = () => this.controller.abort();
 	private readonly context: RexCallContext;
 	private readonly blockId?: string;
+	private readonly condition: WaitRequest["condition"];
 	constructor(
 		transport: RexTransport,
 		args: string[],
 		context: RexCallContext,
 		timeoutMs: number,
 		maxOutputBytes: number,
-		blockId?: string,
+		blockId: string | undefined,
+		condition: WaitRequest["condition"],
 	) {
 		this.context = context;
 		this.blockId = blockId;
+		this.condition = condition;
 		context.signal?.addEventListener("abort", this.relay, { once: true });
 		if (context.signal?.aborted) this.controller.abort();
 		this.outcome = transport
@@ -2033,9 +2037,14 @@ class EventObserver {
 		} catch {
 			return;
 		}
-		const payload = object(object(object(value).payload).event);
-		const block = object(payload.payload).block_id;
-		if (typeof block === "string" && block !== this.blockId) return;
+		const event = object(object(object(value).payload).event);
+		const payload = object(event.payload);
+		if (event.type !== "block_event" || payload.block_id !== this.blockId || payload.creator_name !== "com.superlogical.terminal") return;
+		// Output has no change event; its refresh timer remains authoritative between child exits.
+		const relevant = this.condition === "text"
+			? payload.name === "child_exited"
+			: payload.name === "program_status_changed" || payload.name === "program_status_removed";
+		if (!relevant) return;
 		if (this.events.length < 16) this.events.push(value);
 		this.generation++;
 		this.wake?.();
