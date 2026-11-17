@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -77,6 +77,7 @@ struct Verification {
                 await run("ask-from-open-block-and-let-it") { await context.askFromOpenBlock(keep: &keep) }
                 await run("narrow-writing-bar-keeps-save-icon") { await context.narrowWritingBar(keep: &keep) }
                 await run("agent-change-keeps-reading-position") { await context.agentChangeKeepsPlace(keep: &keep) }
+                await run("context-menu-ask-floats-beside-selection") { await context.contextMenuAsk(keep: &keep) }
                 await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
                 await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
                 await run("image-inspection-deadline") { await context.imageInspectionDeadline(keep: &keep) }
@@ -955,6 +956,81 @@ struct Context {
                 let ok = placed && visible && applied.status == "applied" && firstKept && aboveKept && personKept
                 pass = pass && ok
                 results.append("\(Int(scenario.0)) \(scenario.1)\(scenario.2 ? " near end" : ""): placed \(placed), \(applied.status), target visible \(visible), first line \(start[safe: 1] ?? "?")→\(end[safe: 1] ?? "?"), heading above \(start[safe: 2] ?? "?")→\(end[safe: 2] ?? "?"), passage where the person scrolled it \(personPlaced.map { String($0) } ?? "-")→\(end[safe: 3] ?? "?")")
+            } catch { pass = false; results.append("\(index): \(error)") }
+        }
+        return .init(name: name, pass: pass, detail: results.joined(separator: "; "))
+    }
+
+    /// A context menu for selected text starts with "Ask about this" and keeps WebKit's items; the
+    /// item opens the ask card for that selection, floating beside it inside the pane, off the
+    /// selected text, with the composer focused and the page unscrolled. Covers 452 and 800 pt, in
+    /// Reading and Writing, and a selection near the bottom of the view, where the card flips above.
+    func contextMenuAsk(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "context-menu-ask-floats-beside-selection"
+        var results: [String] = []
+        var pass = true
+        for (index, scenario) in [(452.0, "reading", false), (800.0, "reading", false), (452.0, "writing", false), (452.0, "reading", true), (800.0, "writing", true)].enumerated() {
+            do {
+                let paragraphs = (1...40).map { "Paragraph \($0) with enough words to wrap in a narrow pane and give the selection real lines." }.joined(separator: "\n\n")
+                let file = workspace.appendingPathComponent("menu-\(index).md")
+                try Data("# Menu\n\n\(paragraphs)\n".utf8).write(to: file)
+                let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: ReadingStateStore(directory: nil))
+                keep.append(CheckRunner.offscreenWindow(page: model.page, width: scenario.0, height: 760))
+                await model.open(origin: nil)
+                try await CheckRunner.preparePageForCheck(model)
+                if scenario.1 == "writing" { await model.sendCommand("toggleLock", args: ["lock": "writing"]) }
+                let selected = await js(model, """
+                const page = document.querySelector('[data-role="scroller"]');
+                page.scrollTop = 900;
+                await new Promise(r => setTimeout(r, 50));
+                const view = page.getBoundingClientRect();
+                const blocks = [...document.querySelectorAll('[data-role="document"] [data-block]')];
+                const target = nearBottom
+                  ? blocks.filter(b => b.getBoundingClientRect().bottom < view.bottom - 10).at(-1)
+                  : blocks.find(b => b.getBoundingClientRect().top > view.top + 160);
+                const text = target.querySelector('p') ?? target;
+                const range = document.createRange(); range.selectNodeContents(text);
+                getSelection().removeAllRanges(); getSelection().addRange(range);
+                document.dispatchEvent(new Event('selectionchange'));
+                await new Promise(r => setTimeout(r, 150));
+                const r = range.getBoundingClientRect();
+                return [r.top, r.bottom, r.left, r.right, page.scrollTop, text.textContent.trim()];
+                """, ["nearBottom": scenario.2]) as? [Any] ?? []
+                // WebKit's menu for selected text, as its items arrive in willOpenMenu.
+                let menu = NSMenu(); menu.autoenablesItems = false
+                for identifier in ["WKMenuItemIdentifierLookUp", "WKMenuItemIdentifierTranslate", "WKMenuItemIdentifierSearchWeb", "WKMenuItemIdentifierCopy", "WKMenuItemIdentifierShareMenu"] {
+                    let item = NSMenuItem(title: identifier, action: nil, keyEquivalent: ""); item.identifier = NSUserInterfaceItemIdentifier(identifier); menu.addItem(item)
+                }
+                let event = NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: model.page.webView.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                model.page.webView.willOpenMenu(menu, with: event)
+                let first = menu.items.first
+                let menuOK = first?.title == "Ask about this" && menu.items.compactMap(\.identifier?.rawValue).contains("WKMenuItemIdentifierLookUp")
+                if menuOK, let first, let action = first.action { NSApp.sendAction(action, to: first.target, from: first) }
+                let card = await js(model, """
+                await new Promise(r => setTimeout(r, 200));
+                const card = document.querySelector('[data-role="ask-card"]');
+                if (!card.hasAttribute('data-open')) return [];
+                const c = card.getBoundingClientRect(), app = document.getElementById('app').getBoundingClientRect();
+                const quote = card.querySelector('.quote')?.textContent.trim() ?? '';
+                const focused = document.activeElement === card.querySelector('textarea');
+                return [c.top, c.bottom, c.left, c.right, app.left, app.right, app.bottom, document.querySelector('[data-role="scroller"]').scrollTop, quote, focused ? 1 : 0, card.dataset.side ?? ''];
+                """) as? [Any] ?? []
+                await model.close()
+                guard selected.count == 6, card.count == 11 else { pass = false; results.append("\(Int(scenario.0)) \(scenario.1): menu \(menuOK), card not open"); continue }
+                let n = { (a: [Any], i: Int) in a[i] as? Double ?? .nan }
+                let selTop = n(selected, 0), selBottom = n(selected, 1), selLeft = n(selected, 2)
+                let cardTop = n(card, 0), cardBottom = n(card, 1), cardLeft = n(card, 2), cardRight = n(card, 3)
+                let inside = cardLeft >= n(card, 4) - 0.5 && cardRight <= n(card, 5) + 0.5 && cardBottom <= n(card, 6) + 0.5
+                let off = cardBottom <= selTop + 0.5 || cardTop >= selBottom - 0.5
+                let gap = min(abs(cardTop - selBottom), abs(selTop - cardBottom))
+                let beside = gap <= 16 && abs(cardLeft - max(selLeft, 12)) <= 24
+                let unscrolled = abs(n(selected, 4) - n(card, 7)) <= 0.5
+                let sameQuote = (card[8] as? String) == (selected[5] as? String)
+                let focused = card[9] as? Int == 1
+                let flipped = !scenario.2 || card[10] as? String == "above"
+                let ok = menuOK && inside && off && beside && unscrolled && sameQuote && focused && flipped
+                pass = pass && ok
+                results.append("\(Int(scenario.0)) \(scenario.1)\(scenario.2 ? " near bottom" : ""): menu \(menuOK), side \(card[10]), inside \(inside), off selection \(off), gap \(Int(gap)), unscrolled \(unscrolled), quote \(sameQuote), composer focused \(focused)")
             } catch { pass = false; results.append("\(index): \(error)") }
         }
         return .init(name: name, pass: pass, detail: results.joined(separator: "; "))
