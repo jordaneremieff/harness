@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { base64url, createFake, errorCode, type FakeCall, methodCalls } from "./fake-gws.test-support.mts";
@@ -19,6 +19,24 @@ test("an accepted send records the Gmail message and repeats return the same rec
 		assert.equal(methodCalls(await fake.calls(), SEND).length, 1);
 		const conflict = await fake.tool("gmail_send", { operationId: "op-1", mail: { ...MAIL, text: "Changed" } });
 		assert.equal((conflict.error as { code: string }).code, "OPERATION_CONFLICT");
+	} finally {
+		await fake.cleanup();
+	}
+});
+
+test("a staging failure leaves no send record and permits a retry after the local fault is removed", async () => {
+	const fake = await createFake({ responses: { [SEND]: { stdout: { id: "g1" } } } });
+	try {
+		await fake.runtime.run({ local: true }, undefined, async () => ({ schemaVersion: 1, status: "ok" }));
+		const mimeDir = join(fake.configDir, "pi-extension", "mime");
+		await writeFile(mimeDir, "not a directory");
+		assert.equal((await fake.tool("gmail_send", { operationId: "op-stage", mail: MAIL })).status, "error");
+		assert.equal(methodCalls(await fake.calls(), SEND).length, 0);
+		assert.equal(errorCode(await fake.tool("gmail_operation_status", { operationId: "op-stage" })), "OPERATION_NOT_FOUND");
+		await rm(mimeDir);
+		const retry = await fake.tool("gmail_send", { operationId: "op-stage", mail: MAIL });
+		assert.equal(retry.status, "ok", JSON.stringify(retry));
+		assert.equal(methodCalls(await fake.calls(), SEND).length, 1);
 	} finally {
 		await fake.cleanup();
 	}

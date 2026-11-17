@@ -353,21 +353,23 @@ async function dispatch(
 	bytes: Buffer,
 	draft: boolean,
 ): Promise<Result<unknown>> {
-	await ledger.insert(record);
 	const stagedPath = await staged(operation, bytes);
 	let settled: SendRecord;
 	try {
-		const response = await sendCall(operation, record, stagedPath, draft);
-		if (typeof response.id !== "string" || !response.id)
-			throw new BackendError("BACKEND_SCHEMA_ERROR", "Gmail send returned no validated message ID.", false, true);
-		settled = {
-			...record,
-			state: "accepted",
-			gmailMessageId: response.id,
-			threadId: text(response.threadId, record.threadId),
-		};
-	} catch (error) {
-		settled = failedRecord(record, error);
+		await ledger.insert(record);
+		try {
+			const response = await sendCall(operation, record, stagedPath, draft);
+			if (typeof response.id !== "string" || !response.id)
+				throw new BackendError("BACKEND_SCHEMA_ERROR", "Gmail send returned no validated message ID.", false, true);
+			settled = {
+				...record,
+				state: "accepted",
+				gmailMessageId: response.id,
+				threadId: text(response.threadId, record.threadId),
+			};
+		} catch (error) {
+			settled = failedRecord(record, error);
+		}
 	} finally {
 		await removeQuietly(stagedPath);
 	}
