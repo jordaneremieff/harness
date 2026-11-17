@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "find-close-clears-highlights",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -81,6 +81,7 @@ struct Verification {
                 await run("page-context-menu-replaces-system-menu") { await context.pageContextMenu(keep: &keep) }
                 await run("real-keys-and-clicks-reach-find-and-menu") { await context.realInput(keep: &keep) }
                 await run("selection-strip-clears-selection-under-bar") { await context.stripUnderBar(keep: &keep) }
+                await run("triple-click-selection-before-heading-and-earlier-ask") { await context.tripleClickSelection(keep: &keep) }
                 await run("find-close-clears-highlights") { await context.findCloseClears(keep: &keep) }
                 await run("no-remote-requests") { await context.remoteLoads(keep: &keep) }
                 await run("asset-scheme-containment") { await context.assetContainment(keep: &keep) }
@@ -1459,6 +1460,120 @@ struct Context {
                 results.append("\(Int(width)): block under bar by \(placed); selected '\(geometry["text"] ?? "")'; selection \(selection), strip \(strip) open \(geometry["open"] ?? "?"), word under strip \(geometry["hitStrip"] ?? "?"); right-click menu \(menu)")
             } catch { pass = false; results.append("\(Int(width)): \(error)") }
         }
+        return .init(name: name, pass: pass, detail: results.joined(separator: "; "))
+    }
+
+    /// A person's real triple-click selects a whole paragraph, and WebKit may end that selection at
+    /// the start of the next block or between blocks. Every such selection must still give the
+    /// strip, the selection menu and an ask about exactly that paragraph: a paragraph before a
+    /// heading, a paragraph before another paragraph, and a paragraph whose passage holds an
+    /// earlier ask's underline. Reading and Writing.
+    func tripleClickSelection(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "triple-click-selection-before-heading-and-earlier-ask"
+        let first = "One new observation from the release test: in Read mode of an edited document, Command-F now opens the reader's Find bar, but\nkeyboard focus did not move into its field (twice in one trial). A click into the field works. This is not fixed yet."
+        let plain = "Items 1 to 23 are fixed in commits `c65da30ec` to `c0db073f2` on `main`. Item 24 is still open."
+        let source = "# Review\n\n## Status\n\n\(plain)\n\n\(first)\n\n## Result\n\nThe last paragraph of the document.\n"
+        var results: [String] = []
+        var pass = true
+        do {
+            let state = ReadingStateStore(directory: nil)
+            let file = workspace.appendingPathComponent("triple-click.md")
+            try Data(source.utf8).write(to: file)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: state)
+            let editor = EditorWorkspace(directory: workspace.appendingPathComponent("triple-click-drafts"), store: nil)
+            editor.add(DraftRecord(source: source))
+            let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
+            defer { withExtendedLifetime(surface) {} }
+            let window = CheckRunner.offscreenWindow(page: model.page, width: 775, height: 880, key: true)
+            keep.append(window)
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            _ = await wait(seconds: 5) { editor.webReady && model.source == source }
+            await model.sendCommand("toggleLock", args: ["lock": "reading"])
+            window.makeKey()
+            window.makeFirstResponder(model.page.webView)
+            let view = model.page.webView
+            func click(_ x: Double, _ y: Double, down: NSEvent.EventType, up: NSEvent.EventType, count: Int = 1) async {
+                let point = view.convert(NSPoint(x: x, y: view.isFlipped ? y : view.bounds.height - y), to: nil)
+                for type in [down, up] {
+                    guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: count, pressure: type == down ? 1 : 0) else { continue }
+                    NSApp.sendEvent(event)
+                    _ = await js(model, "await new Promise(r => setTimeout(r, 70)); return true;")
+                }
+            }
+            func point(of text: String) async -> (Double, Double) {
+                let value = await js(model, """
+                const walker = document.createTreeWalker(document.querySelector('[data-role="document"]'), NodeFilter.SHOW_TEXT);
+                let node; while ((node = walker.nextNode()) && !node.data.includes(text));
+                if (!node) return [];
+                const range = document.createRange(); const i = node.data.indexOf(text);
+                range.setStart(node, i); range.setEnd(node, i + text.length);
+                const r = range.getBoundingClientRect(); return [r.left + 4, r.top + r.height / 2];
+                """, ["text": text]) as? [Double] ?? []
+                return value.count == 2 ? (value[0], value[1]) : (-1, -1)
+            }
+            func tripleClick(_ text: String) async -> [String: Any] {
+                let at = await point(of: text)
+                for count in 1...3 { await click(at.0, at.1, down: .leftMouseDown, up: .leftMouseUp, count: count) }
+                let state = await js(model, """
+                await new Promise(r => setTimeout(r, 200));
+                const s = getSelection();
+                const strip = document.querySelector('[data-role="selection-strip"]');
+                return { painted: s.toString().trim(), strip: strip.hasAttribute('data-open') ? strip.querySelectorAll('button').length : 0, end: s.rangeCount ? (s.getRangeAt(0).endContainer.nodeName + ':' + s.getRangeAt(0).endOffset) : '' };
+                """) as? [String: Any] ?? [:]
+                await click(at.0, at.1, down: .rightMouseDown, up: .rightMouseUp)
+                let menu = await js(model, "const m = document.querySelector('[data-role=\"context-menu\"]'); return m.hidden ? [] : [...m.querySelectorAll('.item')].map(i => i.dataset.id);") as? [String] ?? []
+                var result = state
+                result["menu"] = menu
+                if menu.first == "ask" {
+                    _ = await js(model, "document.querySelector('[data-role=\"context-menu\"] .item[data-id=\"ask\"]').click(); await new Promise(r => setTimeout(r, 150)); return true;")
+                    result["quote"] = await js(model, "return document.querySelector('[data-role=\"ask-card\"][data-open] .quote')?.textContent.trim() ?? '';") as? String ?? ""
+                    _ = await js(model, "document.querySelector('[data-role=\"ask-card\"] textarea')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await new Promise(r => setTimeout(r, 100)); return true;")
+                } else {
+                    _ = await js(model, "window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); return true;")
+                }
+                _ = await js(model, "getSelection().removeAllRanges(); await new Promise(r => setTimeout(r, 80)); return true;")
+                return result
+            }
+            func passes(_ r: [String: Any], _ paragraph: String) -> Bool {
+                let flat = paragraph.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "`", with: "")
+                let quote = (r["quote"] as? String ?? "").replacingOccurrences(of: "\n", with: " ")
+                return (r["strip"] as? Int ?? 0) > 0 && (r["menu"] as? [String] ?? []).first == "ask" && quote.contains(flat.prefix(40)) && quote.hasSuffix(String(flat.suffix(20)))
+            }
+            for (label, text, paragraph) in [("before heading", "One new observation", first), ("before paragraph", "Items 1 to 23", plain)] {
+                let r = await tripleClick(text)
+                let ok = passes(r, paragraph)
+                pass = pass && ok
+                results.append("reading \(label): \(r)")
+            }
+            // An earlier ask on part of the third line leaves its underline; the paragraph must stay askable.
+            _ = await js(model, """
+            const walker = document.createTreeWalker(document.querySelector('[data-role="document"]'), NodeFilter.SHOW_TEXT);
+            let node; while ((node = walker.nextNode()) && !node.data.includes('keyboard focus'));
+            const range = document.createRange(); const i = node.data.indexOf('keyboard focus');
+            range.setStart(node, i); range.setEnd(node, i + 'keyboard focus did not move into its'.length);
+            getSelection().removeAllRanges(); getSelection().addRange(range);
+            document.dispatchEvent(new Event('selectionchange'));
+            await new Promise(r => setTimeout(r, 150));
+            return true;
+            """)
+            await model.sendCommand("askSelection")
+            // The earlier ask's card stays open, so its passage keeps the underline.
+            _ = await js(model, "await new Promise(r => setTimeout(r, 150)); getSelection().removeAllRanges(); await new Promise(r => setTimeout(r, 100)); return true;")
+            let underlined = await js(model, "return CSS.highlights.get('passage')?.size ?? 0;") as? Int ?? 0
+            let asked = await tripleClick("One new observation")
+            let askedOK = underlined > 0 && passes(asked, first)
+            pass = pass && askedOK
+            results.append("reading after an earlier ask (underline ranges \(underlined)): \(asked)")
+            await model.sendCommand("toggleLock", args: ["lock": "writing"])
+            _ = await js(model, "await new Promise(r => setTimeout(r, 200)); return true;")
+            let writing = await tripleClick("One new observation")
+            let writingOK = (writing["strip"] as? Int ?? 0) > 0 && (writing["menu"] as? [String] ?? []).first == "ask"
+            pass = pass && writingOK
+            results.append("writing before heading: \(writing)")
+            await editor.closeViews()
+            await model.close()
+        } catch { pass = false; results.append("\(error)") }
         return .init(name: name, pass: pass, detail: results.joined(separator: "; "))
     }
 

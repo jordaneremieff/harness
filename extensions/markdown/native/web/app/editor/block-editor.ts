@@ -149,9 +149,7 @@
 				if (name === "indent") return breaks + prefix + line;
 				if (name === "outdent") return breaks + line.replace(/^(?: {1,2}|\t)/, "");
 				return (
-					breaks +
-					prefix +
-					line.replace(/^(?:#{1,6}[ \t]+|>[ \t]?|(?:[-+*]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)/, "")
+					breaks + prefix + line.replace(/^(?:#{1,6}[ \t]+|>[ \t]?|(?:[-+*]|\d+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)/, "")
 				);
 			});
 		return { start, end, value, selectionStart: start, selectionEnd: start + value.length };
@@ -250,10 +248,7 @@
 			const range = scope();
 			if (!range) return;
 			const doc = controller.doc;
-			const map = new api.exact.LineMap(
-				doc.source.slice(range.start, range.end),
-				api.exact.dominantEnding(doc.source),
-			);
+			const map = new api.exact.LineMap(doc.source.slice(range.start, range.end), api.exact.dominantEnding(doc.source));
 			active.el.dataset.start = String(range.start);
 			active.el.dataset.end = String(range.end);
 			active.map = map;
@@ -426,13 +421,37 @@
 			if (el?.closest("[data-reader-control],input,textarea")) return true;
 			return !!el?.closest("[contenteditable]") && !active?.el.contains(el);
 		}
+		// A selection edge that no block maps, such as the start of a heading or a point between
+		// blocks where a triple-click ends, snaps to the nearest block edge inside the selection:
+		// a start to the next block's start, an end to the previous block's end.
+		function edgeSource(node: Node, offset: number, side: "start" | "end") {
+			const mapped = sourcePoint(node, offset);
+			if (mapped !== null) return mapped;
+			const blocks = [...root.querySelectorAll<HTMLElement>("[data-block]")];
+			const probe = owner.createRange();
+			const placed = (el: HTMLElement) => {
+				probe.selectNodeContents(el);
+				return probe.comparePoint(node, offset);
+			};
+			const el = side === "end" ? blocks.findLast((b) => placed(b) > 0) : blocks.find((b) => placed(b) < 0);
+			const block = el && controller.blocks.find((b) => b.key === el.dataset.block);
+			if (!block) return null;
+			return side === "end" ? block.end : block.start;
+		}
+		function selectionEdges(s: Selection, anchor: Node, focus: Node) {
+			const range = s.getRangeAt(0),
+				anchorFirst = range.startContainer === anchor && range.startOffset === s.anchorOffset;
+			return [
+				edgeSource(anchor, s.anchorOffset, anchorFirst ? "start" : "end"),
+				edgeSource(focus, s.focusOffset, anchorFirst ? "end" : "start"),
+			] as const;
+		}
 		function selection() {
 			if (composing) return null;
 			const s = win.getSelection();
 			if (!s?.rangeCount || !s.anchorNode || !s.focusNode || s.isCollapsed) return null;
-			const a = sourcePoint(s.anchorNode, s.anchorOffset),
-				f = sourcePoint(s.focusNode, s.focusOffset);
-			if (a === null || f === null) return null;
+			const [a, f] = selectionEdges(s, s.anchorNode, s.focusNode);
+			if (a === null || f === null || a === f) return null;
 			return { text: s.toString(), start: Math.min(a, f), end: Math.max(a, f), anchor: a, focus: f };
 		}
 		function readDisplayedText(el: HTMLElement) {
@@ -629,13 +648,17 @@
 		function beginEdit(el: HTMLElement, block: ReaderMappedBlock, oneOffFlag: boolean): ReaderLineMap | null {
 			const doc = controller.doc;
 			if (!doc) return null;
-			const map = new api.exact.LineMap(
-				doc.source.slice(block.start, block.end),
-				api.exact.dominantEnding(doc.source),
-			);
+			const map = new api.exact.LineMap(doc.source.slice(block.start, block.end), api.exact.dominantEnding(doc.source));
 			const first = model.textNodes(el).find((n) => n.length > 0),
 				style = blockStyle(el, first);
-			active = { key: block.key, el, map, shown: map.display, originalStyle: el.getAttribute("style"), type: block.type };
+			active = {
+				key: block.key,
+				el,
+				map,
+				shown: map.display,
+				originalStyle: el.getAttribute("style"),
+				type: block.type,
+			};
 			oneOff = oneOffFlag;
 			applyEditorChrome(el, style, measurePadding(el, first));
 			controller.activate(block.key);
@@ -686,7 +709,9 @@
 			return { el, block };
 		}
 		function validSelection(block: ReaderRange, selected?: ReaderRange) {
-			return !selected || (selected.start >= block.start && selected.end >= selected.start && selected.end <= block.end);
+			return (
+				!selected || (selected.start >= block.start && selected.end >= selected.start && selected.end <= block.end)
+			);
 		}
 		function resolveOpen(key: string, at: number | { x: number; y: number }) {
 			const ready = beginOpen(key);
@@ -1136,10 +1161,9 @@
 			if (!/^[\r\n]+$/.test(expected)) return false;
 			event.preventDefault();
 			doc.seal();
-			const result = controller.change(
-				[{ start: previous.end, end: range.start, text: "", expected }],
-				{ blockId: current.key },
-			);
+			const result = controller.change([{ start: previous.end, end: range.start, text: "", expected }], {
+				blockId: current.key,
+			});
 			if (result.status !== "ok") return true;
 			const returnToReading = oneOff;
 			editor.close();
