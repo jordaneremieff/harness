@@ -7,8 +7,8 @@
  * The footer carries status only; it adds no navigation labels. In fullscreen the model, the
  * level and the +N cell are click targets for the Model and Statuses views; regular mode leaves
  * the mouse to the terminal. This owner publishes Commands, Model and Statuses as views of the
- * shared frame (docs/conventions/operator-panels.md); each has its own command, and /dashboard
- * shows every published view as tabs. Installed only in
+ * shared frame (docs/conventions/operator-panels.md); Commands and Statuses have commands, and
+ * /dashboard shows every published view as tabs. Installed only in
  * TUI mode; setFooter is a documented no-op elsewhere. One unref'd 5s tick owns wall-clock
  * freshness for duration while idle.
  */

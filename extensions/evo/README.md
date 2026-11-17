@@ -419,8 +419,8 @@ of a native kickoff.
 ## Implementation and checks
 
 - `index.ts` registers `/evo`, emits the Durable contribution, resolves its
-  evidence root, reads release intake, reports invalid input, names an unnamed
-  session from the direction outside RPC mode, and selects follow-up delivery.
+  evidence root, reads release intake, reports invalid input, and selects
+  follow-up delivery.
 - `release.ts` reads the four version facts: published versions, the running
   host, the checkout graph on local `main`, and committed review coverage with
   bounded cumulative release notes.
