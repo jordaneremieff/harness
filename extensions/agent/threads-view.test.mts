@@ -3,9 +3,19 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { KeybindingsManager, TUI_KEYBINDINGS, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { CollaborationEvent, CollaborationPage, CollaborationSummary } from "./collaboration-contract.ts";
-import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
+import { fixture, row, source, theme as fixtureTheme, turn } from "./dashboard-test-fixture.mts";
 import { readingGeometry } from "./dashboard-layout.ts";
 import { ThreadsView } from "./threads-view.ts";
+
+const theme = Object.assign(Object.create(fixtureTheme), {
+	getBgAnsi: (color: string) => color === "selectedBg" ? "\u001b[48;5;24m" : "\u001b[48;5;236m",
+}) as typeof fixtureTheme;
+
+const cardTheme = Object.assign(Object.create(theme), {
+	fg: (color: string, text: string) => `\u001b[${({ accent: 36, success: 32, dim: 90, muted: 37, text: 97, borderMuted: 90 } as Record<string, number>)[color] ?? 97}m${text}\u001b[39m`,
+	bg: (color: string, text: string) => `${theme.getBgAnsi(color as Parameters<typeof theme.getBgAnsi>[0])}${text}\u001b[49m`,
+	bold: (text: string) => `\u001b[1m${text}\u001b[22m`,
+}) as typeof theme;
 
 const thread = (id: string, patch: Partial<CollaborationSummary> = {}): CollaborationSummary => ({ id, title: `Thread ${id}`, purpose: `Purpose of ${id}`, updatedAt: 1_000, closed: false, members: 2, ...patch });
 
@@ -74,7 +84,8 @@ it("Threads reads every discovery page itself and lists open threads first, newe
 			const current = pages[(input.cursor as string | undefined) ?? "start"];
 			return { ...current, coverage: { complete: current?.nextCursor === null, visited: 8, omitted: 0 } };
 		}
-		return page(String(input.threadId), [event(1)]);
+		const updatedAt = { new: 3_000, old: 1_000, done: 5_000 }[String(input.threadId)] ?? 1_000;
+		return page(String(input.threadId), [event(1)], { updatedAt });
 	});
 	await turn();
 	f.ui.openNamedAction("threads");
@@ -85,12 +96,15 @@ it("Threads reads every discovery page itself and lists open threads first, newe
 	assert.doesNotMatch(f.text(), /^\s*Open \d+\s*$/m, "no Open section header");
 	assert.doesNotMatch(f.text(), /Thread done/, "closed threads start collapsed");
 	assert.match(f.text(), /▸ Closed · 1/);
-	assert.equal((lines.at(-1) ?? "").trimEnd(), "↑↓ select · enter open · / find · m members · d details · r reply · ctrl+o open posts · ctrl+r retry · tab focus · esc back", "a partial read keeps Retry read on the row");
-	assert.match(f.text(), /3 threads · partial/, "the count row names the partial read");
+	assert.equal((lines.at(-1) ?? "").trimEnd(), "↑↓ select · enter read · r reply · / find · x more · esc close", "secondary controls stay in More");
 	const left = lines.map((line) => line.split("│")[0] ?? line);
+	assert.equal(left.at(-2)?.trim(), "3 threads", "the count omits discovery coverage");
+	assert.doesNotMatch(left.join("\n"), /partial|Purpose of/, "the rail has no coverage suffix or purpose rows");
 	const newest = left.findIndex((line) => line.includes("Thread new"));
-	assert.match(left[newest + 1] ?? "", /Purpose of new/, "two content lines");
-	assert.equal((left[newest + 2] ?? "").trim(), "", "one blank row between items");
+	assert.match(left[newest] ?? "", /^▌ ● Thread new.*ago\s*$/, "the selected row has a rail, state and right-hand age");
+	assert.match(left[newest + 1] ?? "", /^\s+● Thread old.*ago\s*$/, "threads occupy consecutive single rows");
+	assert.equal(left[newest + 2]?.trim(), "", "one blank row precedes the closed group");
+	assert.match(left[newest + 3] ?? "", /▸ Closed · 1/);
 	f.click(3, lines.findIndex((line) => line.includes("▸ Closed · 1")));
 	await settle();
 	assert.match(f.text(), /▾ Closed · 1/);
@@ -98,7 +112,7 @@ it("Threads reads every discovery page itself and lists open threads first, newe
 	assert.match(f.text(), /3 threads/);
 });
 
-it("selecting a thread shows its exchange with names, replies and who a post woke", async () => {
+it("selecting a thread shows posts with names and no routing metadata", async () => {
 	const f = setup(async (input) => {
 		if (input.action === "list") return { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } };
 		return page("t1", [event(1, { sender: "two", message: "Challenge the boundary" }), event(2, { sender: "one", replyTo: 1, notify: ["two"], origin: "operator", message: "Keep the restriction" })]);
@@ -112,21 +126,79 @@ it("selecting a thread shows its exchange with names, replies and who a post wok
 	const rows = screen.split("\n");
 	assert.match(rows[1] ?? "", /Thread t1/);
 	assert.doesNotMatch(rows[1] ?? "", /Members|Details/, "the header holds no command cluster");
-	assert.match(rows[2] ?? "", /Open · 2 members · 2 events/);
-	assert.match(rows[3] ?? "", /Purpose of t1/, "the purpose follows the counts");
-	assert.equal(rows[4]?.split("│")[1]?.trim(), "", "one blank row under the header");
-	assert.match(rows.at(-1) ?? "", /m members · d details · r reply · ctrl\+o open posts · tab focus · x more · esc back/, "the header's commands now sit in the footer, with Read again in More");
+	assert.match(rows[2] ?? "", /Open · 2 members/);
+	assert.match(rows[3] ?? "", /Purpose of t1/, "the purpose follows the state");
+	const paneWidth = visibleWidth(rows[4]?.split("│")[1] ?? "");
+	assert.equal(rows[4]?.split("│")[1], "─".repeat(paneWidth), "a full-width rule follows the purpose");
+	assert.match(rows.at(-1) ?? "", /enter read · r reply · \/ find · x more · esc close/, "secondary controls stay in More");
 	assert.match(screen, /Reviewer/);
 	assert.match(screen, /Challenge the boundary/);
-	const replyLine = rows.find((line) => line.includes("↳ Reviewer"));
-	assert.ok(replyLine, "a reply names the message it answers");
-	assert.match(replyLine, /Designer\s+·\s+integrator\s+·\s+#2\s+·\s+↳ Reviewer #1\s+·\s+operator/, "the header carries the sender role, post number, reply target and origin");
-	assert.match(screen, /notified Reviewer/);
+	const header = rows.find((line) => line.includes("Designer · lead"));
+	assert.ok(header, "the frame integrator has the lead label");
+	assert.match(header, /ago\s*$/, "the time stays on the right");
+	assert.doesNotMatch(screen, /#\d|↳|notified|integrator|operator/, "post headers omit routing metadata");
 	const first = rows.findIndex((line) => line.includes("Challenge the boundary"));
 	const second = rows.findIndex((line) => line.includes("Keep the restriction"));
 	const between = rows.slice(first, second).map((line) => line.split("│")[1]?.trim() ?? "");
 	assert.ok(between.includes(""), "one blank row between posts");
 	assert.ok(f.calls.some((call) => call.action === "read" && call.threadId === "t1"));
+});
+
+it("thread rail rows paint only the selected title bold and keep each age dim at the right", async () => {
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("one", { updatedAt: 3_000 }), thread("two", { updatedAt: 2_000 })], nextCursor: null, coverage: { complete: true, visited: 2, omitted: 0 } }
+		: page(String(input.threadId), [event(1)], { updatedAt: input.threadId === "one" ? 3_000 : 2_000 }), 140, 40, cardTheme);
+	try {
+		await turn(); f.ui.openNamedAction("threads"); await settle();
+		const rail = () => f.ui.render(f.width).map((line) => line.split("│")[0] ?? line);
+		const rows = rail();
+		const selected = rows.find((line) => line.includes("Thread one")) ?? "";
+		const other = rows.find((line) => line.includes("Thread two")) ?? "";
+		assert.ok(selected.includes(cardTheme.fg("accent", "▌")), "the selection has an accent rail");
+		assert.ok(selected.includes(cardTheme.bold(cardTheme.fg("text", "Thread one"))), "the selected title is bold");
+		assert.ok(selected.includes(theme.getBgAnsi("selectedBg")), "the selection has a background");
+		assert.doesNotMatch(other, /\u001b\[1m|▌/, "an unselected title has no bold or rail");
+		for (const line of [selected, other]) {
+			assert.match(line, /\u001b\[90m\d+d ago/, "the age uses the dim token");
+			assert.match(stripVTControlCharacters(line), /ago\s*$/, "the age is the last content on its row");
+		}
+		f.ui.handleInput("\u001b[B"); await settle();
+		assert.ok(rail().find((line) => line.includes("Thread two"))?.includes(cardTheme.bold(cardTheme.fg("text", "Thread two"))), "the bold title follows selection");
+	} finally { f.ui.dispose(); }
+});
+
+it("post cards use half-row edges, a coloured author bar and a padded Markdown body", async () => {
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page("t1", [event(1, { message: "Run `npm test`" }), event(2, { sender: "two", message: "Review the result" })]), 140, 44, cardTheme);
+	try {
+		await turn(); f.ui.openNamedAction("threads"); await settle();
+		const raw = f.ui.render(f.width).map((line) => line.split("│")[1] ?? "");
+		const lines = raw.map((line) => stripVTControlCharacters(line));
+		const geometry = readingGeometry(visibleWidth(lines[1] ?? ""));
+		const top = `\u001b[38;5;24m${"▄".repeat(geometry.textWidth)}\u001b[39;49m`;
+		const transition = `\u001b[38;5;24m\u001b[48;5;236m${"▀".repeat(geometry.textWidth)}\u001b[39;49m`;
+		const bottom = `\u001b[38;5;236m${"▀".repeat(geometry.textWidth)}\u001b[39;49m`;
+		for (const name of ["Designer", "Reviewer"]) {
+			const author = lines.findIndex((line) => line.includes(name));
+			assert.ok(author > 0, `${name} has a visible card header`);
+			assert.ok(raw[author - 1]?.includes(top), "a half-row top opens the header bar");
+			assert.ok(raw[author]?.includes(theme.getBgAnsi("selectedBg")), "the header uses the header background");
+			assert.ok(raw[author]?.includes(cardTheme.bold(cardTheme.fg("accent", name))), "the author is accent and bold");
+			assert.match(lines[author] ?? "", name === "Designer" ? /Designer · lead/ : /Reviewer/);
+			assert.equal(visibleWidth((lines[author] ?? "").trimEnd()), geometry.margin + geometry.textWidth - 3, "the time leaves three right padding columns");
+			assert.match(lines[author + 1] ?? "", /test\/model \[high\]/, "known models occupy a header row");
+			assert.ok(raw[author + 1]?.includes(theme.getBgAnsi("selectedBg")), "the model shares the header bar");
+			assert.ok(raw[author + 2]?.includes(transition), "a half-row changes from header to body colour");
+			assert.ok(raw[author + 3]?.includes(theme.getBgAnsi("toolPendingBg")), "the Markdown body uses the body background");
+			assert.equal((lines[author + 3] ?? "").search(/\S/), geometry.margin + 3, "the body has three padding columns");
+			assert.ok(raw[author + 4]?.includes(bottom), "a half-row closes the body");
+			assert.equal(lines[author + 5]?.trim(), "", "one unpainted blank row follows a card");
+			assert.doesNotMatch(raw[author + 5] ?? "", /\u001b\[48;/, "the blank uses the terminal background");
+		}
+		assert.match(lines.join("\n"), /Run npm test/);
+		assert.doesNotMatch(lines.join("\n"), /`|continued|integrator|notified/, "the cards omit Markdown syntax and routing or continuation metadata");
+	} finally { f.ui.dispose(); }
 });
 
 it("a post goes once with the operator origin; an unconfirmed post keeps the draft and reuses its request ID", async () => {
@@ -145,6 +217,7 @@ it("a post goes once with the operator origin; an unconfirmed post keeps the dra
 	await settle();
 	f.ui.handleInput("\u001b[B");
 	await settle();
+	f.ui.handleInput("\r");
 	f.ui.handleInput("\r");
 	for (const char of "Ship it") f.ui.handleInput(char);
 	f.ui.handleInput("\r");
@@ -193,8 +266,8 @@ it("earlier messages load above the newer ones without losing them", async () =>
 	await settle();
 	f.ui.handleInput("\u001b[B");
 	await settle();
-	assert.match(f.text(), /↑ 2 earlier events · click or Home reads them/);
-	assert.match(f.text(), /latest 1 of 3 events/, "a partial exchange count stays distinct");
+	assert.match(f.text(), /↑ Earlier posts/);
+	assert.doesNotMatch(f.text(), /latest 1 of 3 events/, "event coverage stays out of the header");
 	f.ui.handleInput("\t");
 	f.ui.handleInput("\u001b[H");
 	await settle();
@@ -262,7 +335,7 @@ it("Find is a field reached by /, keeps letters as text and clears before it lea
 		: page(String(input.threadId), [event(1)]));
 	await turn(); f.ui.openNamedAction("threads"); await settle();
 	const footer = () => f.text().split("\n").at(-1) ?? "";
-	// Letters over the list are not a search: they run only the keys the footer shows.
+	// Letters over the list are not a search; the Find field takes text.
 	for (const char of "notes") f.ui.handleInput(char);
 	await settle();
 	assert.match(f.text(), /Thread open/);
@@ -280,10 +353,10 @@ it("Find is a field reached by /, keeps letters as text and clears before it lea
 	assert.match(f.text(), /▸ Closed · 1/);
 	assert.match(footer(), /esc list/);
 	f.ui.handleInput("\u001b"); await settle();
-	assert.match(footer(), /\/ find · m members/);
+	assert.match(footer(), /\/ find · x more/);
 });
 
-it("create and revise events render one muted line without frame JSON", async () => {
+it("create, revise and leave events render one muted line without frame JSON", async () => {
 	const colored = Object.assign(Object.create(theme), {
 		fg: (color: string, text: string) => `\u2039${color}\u203a${text}`,
 		bg: (color: string, text: string) => `\u2039bg:${color}\u203a${text}`,
@@ -292,15 +365,21 @@ it("create and revise events render one muted line without frame JSON", async ()
 	const frame = JSON.stringify({ title: "Thread t1", purpose: "Purposes must not print" });
 	const f = setup(async (input) => input.action === "list"
 		? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
-		: page("t1", [event(1, { kind: "create", message: frame }), event(2, { kind: "revise", message: frame }), event(3, { message: "Keep the restriction" })]), 140, 40, colored);
+		: page("t1", [event(1, { kind: "create", message: frame }), event(2, { kind: "revise", message: frame }), event(3, { kind: "leave", sender: "two", message: "LEAVE_BODY" }), event(4, { message: "Keep the restriction" })]), 140, 40, colored);
 	await turn(); f.ui.openNamedAction("threads"); await settle();
 	f.ui.handleInput("\u001b[B"); await settle();
 	const raw = f.ui.render(140).join("\n");
 	const screen = stripVTControlCharacters(raw);
 	assert.match(screen, /Designer created the thread/);
 	assert.match(screen, /Designer revised the frame/);
-	assert.doesNotMatch(screen, /\{"title"|Purposes must not print/);
-	assert.equal(screen.split("\n").filter((line) => line.includes("created the thread")).length, 1);
+	assert.match(screen, /Reviewer left/);
+	assert.doesNotMatch(screen, /\{"title"|Purposes must not print|LEAVE_BODY/);
+	for (const label of ["created the thread", "revised the frame", "Reviewer left"]) {
+		const eventRows = raw.split("\n").filter((line) => line.includes(label));
+		assert.equal(eventRows.length, 1, "each structural event occupies one row");
+		assert.match(eventRows[0] ?? "", /\u2039muted\u203a/, "structural events use muted text");
+		assert.doesNotMatch(eventRows[0] ?? "", /\u2039bg:(selectedBg|toolPendingBg)\u203a/, "structural events do not use cards");
+	}
 	assert.match(raw, /\u2039muted\u203a[^\u2039]*created the thread/);
 	assert.match(raw, /\u2039muted\u203a[^\u2039]*Purpose of t1/, "thread purpose stays muted");
 	assert.doesNotMatch(raw, /\u2039dim\u203a[^\u2039]*(created the thread|revised the frame|Purpose of t1)/, "events and purpose stay muted, not dim");
@@ -343,7 +422,7 @@ it("the exchange keeps a readable text width and stays inside 80 and 60 columns"
 				const paneDivider = sender.indexOf("│");
 				const paneWidth = width - paneDivider - 1;
 				const expected = readingGeometry(paneWidth).margin + readingGeometry(paneWidth).textWidth;
-				assert.equal(visibleWidth(sender.slice(paneDivider + 1).trimEnd()), expected, "time is right-aligned at margin plus text width");
+				assert.equal(visibleWidth(sender.slice(paneDivider + 1).trimEnd()), expected - 3, "time ends before the card's right padding");
 			}
 		} finally { f.ui.dispose(); }
 	}
@@ -364,7 +443,7 @@ it("the exchange keeps a readable text width and stays inside 80 and 60 columns"
 	}
 });
 
-it("unknown long identities read as Session <8 hex> in senders and notifications", async () => {
+it("one unknown main session reads without a raw identity or notification row", async () => {
 	const unknown = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 	const f = setup(async (input) => input.action === "list"
 		? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
@@ -372,9 +451,14 @@ it("unknown long identities read as Session <8 hex> in senders and notifications
 	await turn(); f.ui.openNamedAction("threads"); await settle();
 	f.ui.handleInput("\u001b[B"); await settle();
 	const screen = f.text();
-	assert.match(screen, /Session aaaaaaaa/);
-	assert.match(screen, /notified Session aaaaaaaa/);
+	assert.match(screen, /Main session/);
+	assert.doesNotMatch(screen, /aaaaaaaa|notified/);
 	assert.doesNotMatch(screen, /aaaaaaaa-bbbb/);
+	assert.doesNotMatch(screen, /test\/model|unknown model/, "an unknown model adds no placeholder row");
+	const rows = screen.split("\n").map((line) => line.split("│")[1] ?? "");
+	const author = rows.findIndex((line) => line.includes("Main session"));
+	assert.match(rows[author + 1] ?? "", /▀+/, "the header transitions straight to the body when no model is known");
+	assert.match(rows[author + 2] ?? "", /Boundary note/);
 	assert.doesNotMatch(screen, /\.\.\./);
 });
 
@@ -387,8 +471,9 @@ it("long thread rows clip with one ellipsis, not three dots", async () => {
 	const left = f.text().split("\n").map((line) => line.split("│")[0] ?? line);
 	const at = left.findIndex((line) => line.includes("A very long"));
 	assert.ok(at >= 0);
-	const block = `${left[at]} ${left[at + 1]}`;
-	assert.match(block, /…/, "the wrapped title shortens with one ellipsis");
+	const block = left[at] ?? "";
+	assert.match(block, /…/, "the single-row title shortens with one ellipsis");
+	assert.equal(left[at + 1]?.trim(), "", "the title never wraps into a second rail row");
 	assert.doesNotMatch(block, /\.\.\./);
 });
 
@@ -431,7 +516,7 @@ it("post bodies render Markdown, so inline code shows without its backticks", as
 	assert.doesNotMatch(screen, /`/, "Markdown inline code loses its backticks");
 });
 
-it("the thread header counts loaded events and ends a long purpose with a Details pointer", async () => {
+it("the thread header omits event counts and limits the purpose to two lines", async () => {
 	const purpose = `${"Wrap this purpose across several rows ".repeat(12)}TAIL_MARKER.`;
 	const f = setup(async (input) => input.action === "list"
 		? { items: [thread("t1", { purpose })], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
@@ -439,16 +524,18 @@ it("the thread header counts loaded events and ends a long purpose with a Detail
 	await turn(); f.ui.openNamedAction("threads"); await settle();
 	f.ui.handleInput("\u001b[B"); await settle();
 	const rows = f.text().split("\n");
-	assert.match(rows[2] ?? "", /Open · 2 members · latest 2 of 5 events/);
+	assert.match(rows[2] ?? "", /Open · 2 members/);
 	const header = rows.slice(1, 6).map((line) => line.split("│")[1] ?? "");
-	assert.ok(header.some((line) => line.includes("… more in Details")), "the purpose points to Details");
+	assert.ok(header[3]?.trimEnd().endsWith("…"), "the second purpose row ends with one ellipsis");
+	assert.equal(header.filter((line) => line.includes("Wrap this purpose")).length, 2);
+	assert.doesNotMatch(header.join("\n"), /events|partial|Details/);
 	assert.doesNotMatch(header.join("\n"), /TAIL_MARKER/);
 	f.ui.handleInput("d");
 	await settle();
 	assert.match(f.text(), /TAIL_MARKER/, "Details keeps the complete purpose");
 });
 
-it("a long post previews, keeps the window top while it grows, and names the post a window continues", async () => {
+it("a long post previews and keeps its window top without a continuation header", async () => {
 	const paragraphs = Array.from({ length: 30 }, (_, index) => `Paragraph ${index + 1}`).join("\n\n");
 	const f = setup(async (input) => input.action === "list"
 		? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
@@ -461,14 +548,14 @@ it("a long post previews, keeps the window top while it grows, and names the pos
 		const screen = preview.join("\n");
 		assert.match(screen, /▸ \d+ more lines/);
 		assert.doesNotMatch(screen, /Paragraph 30/, "the preview stops before the end");
-		assert.match(screen, /↑ Designer · #1, continued/, "a window inside a post names it");
+		assert.doesNotMatch(screen, /continued|Designer · lead/, "a window inside a post has no continuation row or pinned header");
 		const control = preview.findIndex((line) => line.includes("more lines"));
-		f.click(40, control);
+		f.click(f.width - 2, control);
 		const grown = pane();
 		assert.equal(grown[4], preview[4], "the window keeps its first row while the post grows");
 		assert.match(grown.join("\n"), /↓ \d+ lines? below · End shows the latest/);
 		const below = grown.findIndex((line) => line.includes("lines below"));
-		f.click(40, below);
+		f.click(f.width - 2, below);
 		const bottom = pane().join("\n");
 		assert.doesNotMatch(bottom, /lines below/);
 		assert.match(bottom, /Paragraph 30/);
@@ -490,30 +577,30 @@ it("the footer describes each focus and its way out keeps the outcome Escape has
 	try {
 		await turn(); f.ui.openNamedAction("threads"); await settle();
 		const footer = () => (f.text().split("\n").at(-1) ?? "").trimEnd();
-		assert.equal(footer(), "↑↓ select · enter open · / find · m members · d details · r reply · ctrl+o open posts · tab focus · x more · esc back");
+		assert.equal(footer(), "↑↓ select · enter read · r reply · / find · x more · esc close");
 		f.ui.handleInput("\t"); await settle();
-		assert.equal(footer(), "↑↓ scroll · pgup/pgdn page · home earlier · end latest · enter write · m members · d details · r reply · x more · esc list");
+		assert.equal(footer(), "↑↓ scroll · enter write · r reply · / find · x more · esc list");
 		f.ui.handleInput("m"); await settle();
 		assert.equal(footer(), "↑↓ choose · enter open conversation · space wake on post · m exchange · esc exchange");
 		f.ui.handleInput("\u001b"); await settle();
-		assert.match(footer(), /^↑↓ scroll · pgup\/pgdn page · home earlier · end latest · enter write · m members/, "the panel's way out returns to the exchange");
+		assert.match(footer(), /^↑↓ scroll · enter write · r reply/, "the panel's way out returns to the exchange");
 		f.ui.handleInput("d"); await settle();
 		assert.equal(footer(), "↑↓ scroll · pgup/pgdn page · d exchange · esc exchange");
 		f.ui.handleInput("\u001b"); await settle();
 		f.ui.handleInput("\u001b"); await settle();
-		assert.match(footer(), /^↑↓ select · enter open · \/ find · m members/, "a further Escape returns to the list");
+		assert.match(footer(), /^↑↓ select · enter read · r reply · \/ find/, "a further Escape returns to the list");
 		f.ui.handleInput("\t"); f.ui.handleInput("\t"); await settle();
-		assert.equal(footer(), "enter post · shift+enter/ctrl+j newline · tab focus · esc exchange");
+		assert.equal(footer(), "enter send · shift+enter/ctrl+j newline · esc exchange");
 		f.ui.handleInput("\u001b"); await settle();
 		assert.match(footer(), /^↑↓ scroll · .*esc list$/, "Escape leaves the message field for the exchange, not the list");
 		f.ui.handleInput("\u001b"); await settle();
-		assert.match(footer(), /\/ find · m members/, "the next Escape returns to the list");
+		assert.match(footer(), /\/ find · x more/, "the next Escape returns to the list");
 		f.ui.handleInput("\u001b"); await settle();
-		assert.equal(f.ui.focus.surface, "work", "the last Escape leaves Threads, as its back label says");
+		assert.equal(f.ui.focus.surface, "work", "the last Escape closes Threads");
 	} finally { f.ui.dispose(); }
 });
 
-it("a click on a footer control runs the same command as its key on the same thread", async () => {
+it("a click on a More entry runs the same command as its key on the same thread", async () => {
 	const run = async (mode: "key" | "click") => {
 		const f = setup(async (input) => input.action === "list"
 			? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
@@ -521,7 +608,12 @@ it("a click on a footer control runs the same command as its key on the same thr
 		try {
 			await turn(); f.ui.openNamedAction("threads"); await settle();
 			if (mode === "key") f.ui.handleInput("m");
-			else f.click(f.ui.render(f.width).at(-1)?.indexOf("m members") ?? -1, f.height - 1);
+			else {
+				f.text();
+				f.ui.handleInput("x");
+				const lines = f.text().split("\n");
+				f.click(4, lines.findIndex((line) => /m\s+Members/.test(line)));
+			}
 			await settle();
 			assert.equal(f.state.threads?.selected, "t1", "the control acts on the selected thread");
 			return f.text();
@@ -571,8 +663,10 @@ it("a narrow window shows the pane that holds focus and gives each key its visib
 		assert.match(f.text(), /Thread two/, "the list is the visible pane");
 		assert.match(footer(), /^↑↓ select/);
 		f.ui.handleInput("\r"); await settle();
+		assert.match(footer(), /^↑↓ scroll/, "Enter opens the thread for reading");
+		f.ui.handleInput("\r"); await settle();
 		assert.match(f.text(), /Body of one/);
-		assert.match(f.text(), /Post to Thread one/, "Enter opens the thread in its message field");
+		assert.match(f.text(), /Post to Thread one/, "the thread keeps its message field below the exchange");
 		assert.doesNotMatch(f.text(), /Thread two/, "the list gives way to the thread pane");
 		f.ui.handleInput("\u001b"); await settle();
 		assert.match(footer(), /^↑↓ scroll/, "Escape leaves the field for the exchange");
@@ -591,7 +685,7 @@ it("a narrow window shows the pane that holds focus and gives each key its visib
 		assert.match(footer(), /^↑↓ scroll/);
 		f.ui.handleInput("\u001b"); await settle();
 		f.ui.handleInput("\t"); await settle();
-		assert.match(footer(), /^enter post/);
+		assert.match(footer(), /^enter send/);
 		f.ui.handleInput("\u001b[Z"); await settle();
 		assert.match(footer(), /^↑↓ scroll/, "Shift+Tab returns to the exchange");
 		f.ui.handleInput("\u001b[Z"); await settle();
@@ -601,7 +695,6 @@ it("a narrow window shows the pane that holds focus and gives each key its visib
 		assert.equal(f.state.threads?.selected, "two", "the list selection changes where the list shows");
 		f.ui.handleInput("\r"); await settle();
 		assert.match(f.text(), /Post to Thread two/);
-		f.ui.handleInput("\u001b"); await settle();
 		f.ui.handleInput("\u001b"); await settle();
 		assert.match(footer(), /^↑↓ select/);
 		const listRow = () => f.text().split("\n").findIndex((line) => line.includes("Thread one"));
@@ -628,7 +721,7 @@ it("the Members pane reveals the chosen member before a wake acts on it", async 
 		assert.doesNotMatch(f.text(), /Contribution of peer-01/, "the viewport moved with the choice");
 		f.ui.handleInput(" "); await settle();
 		assert.deepEqual(f.state.threads?.drafts.get("t1")?.notify, ["peer-12"], "Space ticks the visible member");
-		assert.match(f.text(), /\[x\] Session peer-12/, "the tick shows on the visible row");
+		assert.match(f.text(), /\[x\] Main session/, "the tick shows on the visible row");
 	} finally { f.ui.dispose(); }
 });
 
@@ -639,6 +732,7 @@ it("the reply panel marks and clears the exact target from the keyboard and keep
 	}, 140, 40);
 	try {
 		await turn(); f.ui.openNamedAction("threads"); await settle();
+		f.ui.handleInput("\r");
 		f.ui.handleInput("\r");
 		for (const char of "Draft r stays") f.ui.handleInput(char);
 		assert.equal(f.state.threads?.drafts.get("t1")?.text, "Draft r stays", "a printable key in the field is text, never the reply key");
@@ -652,7 +746,7 @@ it("the reply panel marks and clears the exact target from the keyboard and keep
 		assert.equal(draft?.replyTo, 1, "the chosen post is the reply target");
 		assert.equal(draft?.text, "Draft r stays", "the draft stays");
 		assert.match(f.text(), /reply to #1/);
-		assert.match(f.text(), /replying/, "the exchange marks the chosen post");
+		assert.doesNotMatch(f.text(), /· replying/, "reply state stays in the field, not post headers");
 		f.ui.handleInput("\u001b"); await settle();
 		f.ui.handleInput("r"); await settle();
 		f.ui.handleInput("\r"); await settle();
@@ -671,6 +765,7 @@ it("a late post failure stays with the thread that sent it", async () => {
 	}, 140, 40);
 	try {
 		await turn(); f.ui.openNamedAction("threads"); await settle();
+		f.ui.handleInput("\r");
 		f.ui.handleInput("\r");
 		for (const char of "Draft one") f.ui.handleInput(char);
 		f.ui.handleInput("\r"); await settle();
@@ -702,8 +797,7 @@ it("a late earlier-page failure stays with its thread and other threads keep the
 	}, 140, 40);
 	try {
 		await turn(); f.ui.openNamedAction("threads"); await settle();
-		f.ui.handleInput("\r");
-		f.ui.handleInput("\u001b"); await settle();
+		f.ui.handleInput("\r"); await settle();
 		f.ui.handleInput("\u001b[H"); await settle();
 		f.ui.handleInput("\u001b");
 		f.ui.handleInput("\u001b[B"); await settle();
@@ -732,9 +826,9 @@ it("a refresh above the tail keeps the reader's posts in place while a following
 	}, 140, 40);
 	try {
 		await turn(); f.ui.openNamedAction("threads"); await settle();
-		f.ui.handleInput("\r");
-		f.ui.handleInput("\u001b"); await settle();
-		for (let step = 0; step < 35; step++) { f.ui.handleInput("\u001b[A"); f.ui.render(140); }
+		f.ui.handleInput("\r"); await settle();
+		f.ui.handleInput("\u001b[H"); f.ui.render(140);
+		for (let step = 0; step < 2; step++) { f.ui.handleInput("\u001b[B"); f.ui.render(140); }
 		await settle();
 		const before = f.text();
 		assert.match(before, /Post 01/);
@@ -773,11 +867,12 @@ it("an empty partial discovery states what the read did not reach and offers ret
 	}, 140, 40);
 	try {
 		await turn(); f.ui.openNamedAction("threads"); await settle();
-		assert.match(f.text(), /No threads · partial/, "the count row keeps the partial state");
+		assert.match(f.text(), /No threads found; some could not be read/, "an empty partial discovery explains the gap");
+		assert.doesNotMatch(f.text(), /No threads · partial/, "the rail omits the retired partial count suffix");
 		assert.match(f.text(), /No threads in the pages read/);
 		const pane = () => f.text().split("\n").map((line) => line.split("│")[1] ?? "").join(" ").replace(/\s+/g, " ");
 		assert.match(pane(), /1 source storage is unavailable, 2 threads are omitted, 1 record is unavailable/, "the gap names what stopped the read");
-		assert.match(f.text(), /click|ctrl\+r retry/, "the retry route is in the footer or the pane");
+		assert.match(f.text(), /ctrl\+r to read/, "the retry route is in the footer or the pane");
 		assert.doesNotMatch(f.text(), /No threads yet/, "a partial read is not an absence");
 		const before = calls;
 		f.ui.handleInput("\x12"); await settle();
@@ -821,9 +916,9 @@ it("the message field keeps every letter as text, including x, at the minimum wi
 	}, 60, 20);
 	try {
 		await turn(); f.ui.openNamedAction("threads"); await settle();
-		f.ui.handleInput("\r"); await settle();
+		f.ui.handleInput("\r"); f.ui.handleInput("\r"); await settle();
 		const footer = () => (f.text().split("\n").at(-1) ?? "").trimEnd();
-		assert.match(footer(), /^enter post · .*esc exchange$/);
+		assert.match(footer(), /^enter send · .*esc exchange$/);
 		f.ui.handleInput("x");
 		assert.equal(f.state.threads?.drafts.get("t1")?.text, "x", "x inserts text instead of opening a menu");
 		f.ui.handleInput("y");
@@ -831,7 +926,7 @@ it("the message field keeps every letter as text, including x, at the minimum wi
 	} finally { f.ui.dispose(); }
 });
 
-it("Read again sits in More while every read is complete and on the row when a read fails", async () => {
+it("read and retry controls stay in More and their keys remain active", async () => {
 	let listFails = false;
 	let readFails = false;
 	let lists = 0;
@@ -856,12 +951,12 @@ it("Read again sits in More while every read is complete and on the row when a r
 		assert.equal(lists, before + 1, "the key reads the list again while the control sits in More");
 		listFails = true;
 		f.ui.handleInput("\x12"); await settle();
-		assert.match(row(), /ctrl\+r retry/, "a failed list read keeps Retry read on the row");
+		assert.doesNotMatch(row(), /ctrl\+r retry/, "a failed list read keeps Retry read in More");
 		assert.match(f.text(), /Threads could not be read/);
 		listFails = false;
 		readFails = true;
 		f.ui.handleInput("\x12"); await settle();
-		assert.match(row(), /ctrl\+r retry/, "a failed thread read keeps Retry read on the row");
+		assert.doesNotMatch(row(), /ctrl\+r retry/, "a failed thread read keeps Retry read in More");
 		assert.match(f.text(), /The thread could not be read/);
 		readFails = false;
 		f.ui.handleInput("\x12"); await settle();
@@ -890,6 +985,7 @@ it("a clicked hint whose key has no terminal form warns and sends nothing", asyn
 		view.open();
 		await settle();
 		view.handleInput("\r");
+		view.handleInput("\r");
 		const newline = view.footer().controls.find((control) => control.id === "newline");
 		assert.ok(newline, "the message field lists its newline key");
 		newline.run("ctrl+escape");
@@ -897,4 +993,56 @@ it("a clicked hint whose key has no terminal form warns and sends nothing", asyn
 		assert.match(text, /The ctrl\+esc key has no clickable form here\./);
 		assert.equal(state.drafts.get("t1")?.text ?? "", "", "no key reaches the draft");
 	} finally { view.dispose(); }
+});
+
+
+it("unknown main authors gain distinct short identities only when more than one posts", async () => {
+	const first = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+	const second = "aaaaaaaa-cccc-dddd-eeee-ffffffffffff";
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page("t1", [event(1, { sender: first }), event(2, { sender: second })], { integrator: first }));
+	try {
+		await turn(); f.ui.openNamedAction("threads"); await settle();
+		assert.match(f.text(), /Main session aaaaaaaa-b · lead/);
+		assert.match(f.text(), /Main session aaaaaaaa-c/);
+		assert.doesNotMatch(f.text(), /aaaaaaaa-bbbb|aaaaaaaa-cccc/);
+	} finally { f.ui.dispose(); }
+});
+
+it("arrow scrolling to the top loads one earlier page while concurrent requests stay bounded", async () => {
+	const pending = later<CollaborationPage>();
+	const latest = Array.from({ length: 12 }, (_, index) => event(index + 20));
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: input.before ? pending.promise : page("t1", latest, {}, 20), 136, 24);
+	try {
+		await turn(); f.ui.openNamedAction("threads"); await settle();
+		f.ui.handleInput("\r"); f.ui.render(136);
+		for (let step = 0; step < latest.length * 10; step++) { f.ui.handleInput("\u001b[A"); f.ui.render(136); }
+		await settle();
+		assert.equal(f.calls.filter((call) => call.before === 20).length, 1, "only one earlier read stays in flight");
+		pending.resolve(page("t1", [event(1, { message: "Earlier words" })]));
+		await settle();
+		assert.match(f.text(), /Earlier words/);
+		assert.match(f.text(), /Start of the thread/);
+		assert.equal(f.calls.filter((call) => call.before !== undefined).length, 1);
+	} finally { f.ui.dispose(); }
+});
+
+it("a click on the post time toggles its date without starting a reply", async () => {
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page("t1", [event(1)]), 136, 43);
+	try {
+		await turn(); f.ui.openNamedAction("threads"); await settle();
+		const rows = f.text().split("\n");
+		const header = rows.findIndex((line) => line.includes("Designer · lead"));
+		const ago = rows[header]?.lastIndexOf("ago") ?? -1;
+		assert.ok(ago > 0);
+		f.click(ago, header); await settle();
+		assert.doesNotMatch(f.text().split("\n")[header] ?? "", /ago/);
+		assert.equal(f.state.threads?.drafts.get("t1")?.replyTo, undefined);
+		assert.match(f.text().split("\n").at(-1) ?? "", /↑↓ select/);
+	} finally { f.ui.dispose(); }
 });

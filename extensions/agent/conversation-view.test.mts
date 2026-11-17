@@ -29,15 +29,15 @@ it("cwd replacement and repeat disposal release native parent and nested rendere
 	try {
 		view.setContent([call], live, "/one");
 		view.render(80, 30);
-		assert.equal(intervals.mock.calls.length, 1);
+		assert.equal(intervals.mock.calls.length, 2, "the parent and nested native renderers each own a timer");
 		view.setContent([], [], "/two");
-		assert.equal(clears.mock.calls.length, 1);
+		assert.equal(clears.mock.calls.length, 2);
 		assert.equal(state.toolExpanded.get("parent/key"), true);
 		view.setContent([call], live, "/two");
 		view.render(80, 30);
-		assert.equal(intervals.mock.calls.length, 2);
+		assert.equal(intervals.mock.calls.length, 4);
 		view.dispose(); view.dispose();
-		assert.equal(clears.mock.calls.length, 2);
+		assert.equal(clears.mock.calls.length, 4);
 		assert.deepEqual(new Set(clears.mock.calls.map((call) => call.arguments[0])), new Set(intervals.mock.calls.map((call) => call.result)));
 		assert.equal(state.toolExpanded.get("parent/key"), true);
 		assert.deepEqual(view.render(80, 3), ["", "", ""]);
@@ -233,8 +233,10 @@ it("a failed tool in the transcript shows its failure text and error colour", ()
 	const failed: AgentConversationEntry = { id: "result", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tool-id", toolName: "example_tool", content: [{ type: "text", text: '{"message":"Owner unavailable","code":"E_OFFLINE"}' }], isError: true, timestamp: 2 }] };
 	view.setContent([call, failed], [], "/work");
 	const raw = view.render(80, 8).filter((line) => line.trim());
-	assert.equal(stripVTControlCharacters(raw.at(-1) ?? "").trim(), "example_tool · first → Owner unavailable");
-	assert.match(raw.at(-1) ?? "", /\x1b\[[0-9;]*m → Owner unavailable/u, "the failure keeps the error colour");
+	assert.match(stripVTControlCharacters(raw.join("\n")), /example_tool topic="first"/u);
+	assert.equal(stripVTControlCharacters(raw.at(-1) ?? "").trim(), '{"message":"Owner unavailable","code":"E_OFFLINE"}');
+	assert.match(raw.at(-1) ?? "", /\x1b\[48;/u, "the failure keeps the native error background");
+	assert.doesNotMatch(stripVTControlCharacters(raw.join("\n")), /→/u);
 	view.dispose();
 });
 
@@ -244,8 +246,8 @@ it("a renderer lookup change rebuilds the cards and keeps each tool's disclosure
 	const call = assistantEntry("call", 1, [{ type: "toolCall", id: "tool-id", name: "example_tool", arguments: { topic: "first" } }]);
 	const done: AgentConversationEntry = { id: "result", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tool-id", toolName: "example_tool", content: [{ type: "text", text: Array.from({ length: 30 }, (_, i) => `output ${i}`).join("\n") }], isError: false, timestamp: 2 }] };
 	view.setContent([call, done], [], "/work");
-	const lines = readText(view);
-	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("example_tool")))));
+	const lines = readText(view, 14);
+	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("example_tool")), 80, 14)));
 	assert.equal(state.toolExpanded.get("tool-id"), true);
 	assert.match(readText(view, 40).join("\n"), /output 29/u);
 	view.setToolDisplay((name) =>
@@ -364,11 +366,15 @@ it("tool collapse clamps an anchor from the middle of a long card and disables f
 	const lines = readText(view);
 	assert.equal(state.follow, false);
 	assert.equal(state.toolExpanded.get("long-tool"), false);
-	assert.match(lines.join("\n"), /example_tool → output 0/u);
+	assert.match(lines.join("\n"), /output \d+/u);
+	assert.match(lines.join("\n"), /90 more lines/u);
+	assert.doesNotMatch(lines.join("\n"), /output 99|example_tool →/u);
+	assert.ok(state.anchor?.id.startsWith("call"));
 });
 
 it("transcript clicks leave selection gestures, outside blocks and stale viewport events unhandled", () => {
 	const state = agentState(createDashboardState(), "one").view;
+	state.showThinking = false;
 	const view = new ConversationView({ requestRender() {} } as TUI, state);
 	view.setContent([user(1)], [], "/work");
 	readText(view);

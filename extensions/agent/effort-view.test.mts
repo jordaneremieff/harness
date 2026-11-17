@@ -103,9 +103,13 @@ it("the mouse opens Related efforts and message hints without agent-control leak
 	const f = setup();
 	try {
 		await turn();
-		const lines = f.ui.render(100);
-		const y = lines.findIndex((line) => line.includes("Efforts"));
-		assert.ok(y >= 0);
+		const heading = stripVTControlCharacters(f.ui.render(100)[0]);
+		assert.match(heading, /Agents/u);
+		assert.doesNotMatch(heading, /Efforts/u, "efforts stays out of the default tabs");
+		f.ui.handleInput("x");
+		const lines = f.ui.render(100).map(stripVTControlCharacters);
+		const y = lines.findIndex((line) => /b\s+Efforts/u.test(line));
+		assert.ok(y >= 0, "More offers Efforts with its b key");
 		assert.equal(f.ui.handleMouse(click(lines[y].indexOf("Efforts"), y, 100, 30))?.handled, true);
 		await turn(); await turn();
 		const pane = f.ui.render(100);
@@ -154,7 +158,7 @@ it("closing during an effort read drops late results", async () => {
 });
 it("roster rows carry no creating-session tag, whoever created or owns them", () => {
 	const rows = [row("one", { creatingOwnerId: "primary", owner: "unknown" }), row("two", { storageId: "two", creatingOwnerId: "other", owner: "here" }), row("three", { creatingOwnerId: "other" })];
-	for (const compact of [false, true]) assert.doesNotMatch(rosterLines(rows, "two", 60, 20, 0, theme, compact, { primaryId: "primary" }).join("\n"), /\[other\]/);
+	assert.doesNotMatch(rosterLines(rows, "two", 60, 20, 0, theme).join("\n"), /\[other\]/);
 });
 
 function contactPage(): CollaborationPage {
@@ -398,7 +402,7 @@ it("wide effort panes separate discovery from claim-first details and quiet cove
 			assert.ok(visibleWidth(pane[purposeKey + 1]?.trim() ?? "") <= 100, "values use the shared reading width");
 			const selected = stripVTControlCharacters(lines.find((line) => line.includes("▌ ")) ?? "");
 			const divider = selected.indexOf("│");
-			const expectedList = Math.max(32, Math.min(60, Math.floor(width * 0.27)));
+			const expectedList = Math.max(32, Math.min(60, Math.round(width * 0.3)));
 			assert.equal(divider, expectedList, "the divider sits at the shared list width, as in the Agents tab");
 			f.ui.handleInput("d");
 			const full = f.ui.render(width).join("\n");
@@ -452,7 +456,8 @@ it("effort ages stay fixed between observations and keyboard or mouse reveals on
 		assert.doesNotMatch(exact.join("\n"), /2026-10-04T/);
 		const y = exact.findIndex((line) => line.includes(`started ${dashboardTime(Date.parse(at), true)}, no activity recorded`));
 		assert.ok(y >= 0);
-		assert.equal(f.ui.handleMouse(click(40, y, 140, 44))?.handled, true);
+		const paneX = stripVTControlCharacters(exact[y]).indexOf("│") + 2;
+		assert.equal(f.ui.handleMouse(click(paneX, y, 140, 44))?.handled, true);
 		assert.match(f.ui.render(140).join("\n"), /15m ago/);
 		assert.equal(reads, 2);
 	} finally { f.ui.dispose(); }

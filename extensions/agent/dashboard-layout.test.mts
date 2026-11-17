@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, truncateToWidth, CURSOR_MARKER } from "@earendil-works/pi-tui";
-import { dashboardGeometry, dashboardHeading, fitLine, LIST_BLOCK_ROWS, listBlock, readingGeometry } from "./dashboard-layout.ts";
+import { dashboardGeometry, dashboardHeading, fitLine, LIST_BLOCK_ROWS, listBlock, readingGeometry, MAX_ROSTER_COLUMNS, MIN_DETAIL_COLUMNS } from "./dashboard-layout.ts";
 import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
 import { agentState, updateDraft } from "./dashboard-state.ts";
 
@@ -26,7 +26,7 @@ it("line fitting preserves truncation and padding for styled and Unicode text", 
 });
 
 it("the roster keeps its share of the window and the conversation keeps the body", () => {
-	for (const [width, expected] of [[100, 32], [120, 32], [164, 44], [240, 60]]) {
+	for (const [width, expected] of [[100, 32], [120, 36], [164, 49], [240, 60]]) {
 		const geometry = dashboardGeometry(width, 44, 3);
 		assert.equal(geometry.rosterWidth, expected);
 		assert.equal(geometry.wide, true);
@@ -39,6 +39,42 @@ it("the roster keeps its share of the window and the conversation keeps the body
 	assert.equal(dashboardGeometry(100, 30, 3, false, 0, 4, { rosterRatio: 0.01 }).rosterWidth, 32);
 });
 
+it("the list widens for the longest model while it preserves the pane minimum", async () => {
+	for (const width of [100, 164, 240]) for (const modelId of ["small", "long-model-identity-with-provider", "model".repeat(30)]) {
+		const model = { provider: "test", modelId, thinkingLevel: "high" };
+		const f = fixture(width, 40, source([row("short"), row("long", { model })]));
+		try {
+			await turn();
+			const lines = visible(f.ui.render(width));
+			const longest = visibleWidth(`test/${modelId} [high]`) + 5;
+			const base = dashboardGeometry(width, 40, 0).rosterWidth;
+			const expected = Math.max(base, Math.min(longest, MAX_ROSTER_COLUMNS, width - 1 - MIN_DETAIL_COLUMNS));
+			const divider = lines[1]?.indexOf("│") ?? -1;
+			assert.equal(divider, expected);
+			assert.ok(divider <= MAX_ROSTER_COLUMNS);
+			assert.ok(width - divider - 1 >= MIN_DETAIL_COLUMNS);
+			assert.ok(lines.every((line) => visibleWidth(line) === width));
+		} finally { f.ui.dispose(); }
+	}
+});
+
+it("the header places the name left and the state right with an age only for settled agents", async () => {
+	for (const state of ["working", "starting", "idle", "done", "failed", "stopped"] as const) {
+		const f = fixture(100, 30, source([row("one", { name: "Recipient", state })]));
+		try {
+			await turn();
+			const lines = visible(f.ui.render(100));
+			const divider = lines[1]?.indexOf("│") ?? -1;
+			const header = lines[1]?.slice(divider + 1) ?? "";
+			assert.match(header, /^ Recipient +[◌●○✓!■]/u);
+			assert.equal(header.at(-1), " ");
+			if (state === "working" || state === "starting") assert.doesNotMatch(header, /ago|just now/u);
+			else assert.match(header, / · \d+d ago $/u);
+			assert.doesNotMatch(header, /work|test\/model|\$/u);
+		} finally { f.ui.dispose(); }
+	}
+});
+
 it("reading geometry keeps a two-column margin and a 100-column text maximum", () => {
 	for (const [paneWidth, textWidth] of [[159, 100], [89, 86], [80, 77], [60, 57]]) {
 		assert.deepEqual(readingGeometry(paneWidth), { margin: 2, textWidth });
@@ -46,8 +82,8 @@ it("reading geometry keeps a two-column margin and a 100-column text maximum", (
 	assert.deepEqual(readingGeometry(2), { margin: 2, textWidth: 1 });
 });
 
-/** The target header's state line: a divider or the row start, the state glyph, then the state label. */
-const STATE_LINE = /(^|│) [◌●○✓!■↯·?] (Starting|Working|Idle|Done|Failed|Stopped|Interrupted|New|Unavailable)\b/u;
+/** The target header state follows its left-aligned name on the same row. */
+const STATE_LINE = /[◌●○✓!■↯·?] (Starting|Working|Idle|Done|Failed|Stopped|Interrupted|New|Unavailable)\b/u;
 
 it("the target header keeps identity and state without activity", async () => {
 	const observed = source([row("one", { name: "Selected recipient", state: "working", currentTool: { name: "read", argument: JSON.stringify({ path: `/${"long-path/".repeat(40)}` }) } })]);
@@ -59,7 +95,7 @@ it("the target header keeps identity and state without activity", async () => {
 		const lines = visible(f.ui.render(60));
 		const state = lines.findIndex((line, index) => index > 0 && STATE_LINE.test(line));
 		assert.ok(state > 0);
-		const title = state - 1;
+		const title = state;
 		assert.match(lines[title] ?? "", /Selected recipient/);
 		assert.doesNotMatch(lines.slice(title, title + 2).join("\n"), /read|long-path/);
 		assert.equal(visibleWidth(lines[title] ?? ""), 60);
@@ -123,7 +159,7 @@ for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of
 			assert.equal(lines.length, height, `${width}x${height} ${focus}`);
 			assert.ok(plain.every((line) => visibleWidth(line) === width));
 			const text = plain.join("\n");
-			assert.match((plain.at(-1) ?? "").trimEnd(), /esc (list|close|cancel)$/u, "the way out is the last footer control");
+			assert.match((plain.at(-1) ?? "").trimEnd(), /esc (list|close|cancel|done)$/u, "the way out is the last footer control");
 			if (notice) {
 				assert.match(text, /Layout could not be saved/);
 				assert.doesNotMatch(plain[1] ?? "", /quota limit/, "the notice takes the header line");
@@ -166,13 +202,13 @@ it("narrow strips preserve the composer, two status lines and two conversation r
 			const plain = visible(f.ui.render(width));
 			const state = plain.findIndex((line, index) => index > 0 && STATE_LINE.test(line));
 			assert.ok(state > 0);
-			const title = state - 1;
+			const title = state;
 			assert.equal(title - 1, stripRows, `${width}x${height} list strip`);
 			const strip = plain.slice(1, title).join("\n");
 			assert.match(strip, /one/);
 			assert.equal(strip.includes("two"), visibleAgents === 2);
 			assert.doesNotMatch(strip, /three/);
-			assert.match(strip, /more|\d agents/);
+			assert.match(strip, /[↓↑] \d.*more/);
 			const composerTop = plain.findIndex((line) => line.startsWith("╭─ To "));
 			const composerBottom = plain.findIndex((line) => line.startsWith("╰─"));
 			assert.ok(composerTop - title - 3 >= 2, "at least two conversation rows remain");
@@ -244,14 +280,15 @@ it("a list block keeps a short title on one row, then its detail, then a gap", (
 	assert.ok(block.lines.every((line) => visibleWidth(line) === 40));
 });
 
-it("a long list title continues on the second row and the detail moves to the third", () => {
+it("a long list title truncates before the time and leaves the detail on its own row", () => {
 	const title = "A very long agent name that does not fit in one list row";
 	const block = listBlock({ title, glyph: "○", glyphColor: "muted", detail: "model high", time: "5m ago", selected: false }, 32, painted);
 	assert.equal(block.lines.length, LIST_BLOCK_ROWS);
 	const plain = visible(block.lines);
-	assert.match(plain[0] ?? "", /^ {2}○ A very long agent +5m ago$/u);
-	assert.match(plain[1] ?? "", /^ {4}name that does not fit in/u, "the title continues on the second row");
-	assert.match(plain[2] ?? "", /^ {4}model high/u);
+	assert.match(plain[0] ?? "", /^ {2}○ A very long agent na… 5m ago$/u);
+	assert.equal(plain[1]?.trim(), "model high");
+	assert.equal(plain[2]?.trim(), "");
+	assert.doesNotMatch(plain.join("\n"), /name that does not fit/);
 	assert.equal(block.timeLine, 0);
 	assert.ok(block.lines.every((line) => visibleWidth(line) === 32));
 });

@@ -39,7 +39,7 @@ function fixture() {
 			if (method === "submit") return admission();
 			return {};
 		},
-		dashboardPage: async () => page([row("a", { state: "idle" }), row("b")]),
+		dashboardPage: async () => page([row("a", { state: "idle" }), row("b", { state: "idle" })]),
 		snapshot: async () => snapshot(),
 		observeLive: async (id, _scope, listener) => {
 			observers.set(id, listener);

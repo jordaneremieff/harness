@@ -44,7 +44,7 @@ it("gutter offset, cell coalescing, capture outside handles and one committed sa
 	assert.deepEqual(f.resize.handle(mouse("drag", x)), { handled: true, render: false });
 	assert.deepEqual(f.saves, []);
 	f.resize.handle(mouse("drag", x + 10));
-	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 54);
+	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 59);
 	f.paint();
 	f.resize.handle(mouse("drag", 300, -20));
 	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 60, "a drag past the widest list keeps its limit");
@@ -80,7 +80,7 @@ it("the key after a lost release starts from committed handle geometry", () => {
 	assert.equal(f.resize.input("r"), false);
 	assert.deepEqual(f.layout, {}); assert.equal(f.resize.selected, undefined);
 	f.resize.handle(mouse("press", x)); f.resize.handle(mouse("drag", x + 3)); f.resize.handle(mouse("release", x + 3));
-	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 47, "the new gesture starts from the committed width");
+	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 52, "the new gesture starts from the committed width");
 });
 it("double-click resets only the selected divider", () => {
 	const f = controller({ rosterRatio: 0.4, composerRows: 8 });
@@ -121,19 +121,19 @@ it("raw SGR drag dispatch reaches the dashboard across rerenders without changin
 		const render = () => { const lines = f.ui.render(164); assert.equal(lines.length, 44); assert.ok(lines.every((line) => visibleWidth(line) === 164)); return lines.map(stripVTControlCharacters); };
 		render();
 		const send = rawDispatcher(f.ui, 164, 44);
-		send(0, 43, 8); render(); send(32, 53, 8);
-		assert.match(render().join("\n"), /List 54 · conversation 109 columns · release to keep/);
-		send(0, 53, 8, true); render();
-		assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 54);
+		send(0, 48, 8); render(); send(32, 58, 8);
+		assert.match(render().join("\n"), /List 59 · conversation 104 columns · release to keep/);
+		send(0, 58, 8, true); render();
+		assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 59);
 		assert.equal(saved.length, 1);
 		assert.equal(f.state.selected, "one"); assert.equal(f.ui.focus.region, "list");
 		assert.equal(state.draft, "literal r 🧩"); assert.equal(state.draftRevision, 7);
 		// A moved press stays a drag even after it returns to its starting cell.
-		send(0, 53, 8); send(32, 70, 8); render(); send(32, 53, 8); render(); send(0, 53, 8, true); render();
+		send(0, 58, 8); send(32, 70, 8); render(); send(32, 58, 8); render(); send(0, 58, 8, true); render();
 		assert.equal(saved.length, 1); assert.equal(f.ui.focus.region, "list");
 		// Pi's stationary completed clicks carry the reset count.
-		send(0, 53, 8); send(0, 53, 8, true); render();
-		send(0, 53, 8); send(0, 53, 8, true); render();
+		send(0, 58, 8); send(0, 58, 8, true); render();
+		send(0, 58, 8); send(0, 58, 8, true); render();
 		assert.equal(f.state.layout.rosterRatio, undefined);
 		assert.equal(saved.length, 2);
 		f.ui.handleInput("\r"); f.ui.render(164); f.ui.handleInput("r");
@@ -152,7 +152,8 @@ it("raw composer grip drag increases rows, preserves its caption and resets on d
 		assert.match(dragged.join("\n"), /Message field 9 rows/);
 		assert.ok(dragged.some((line) => line.includes("━━━")));
 		assert.ok(dragged.some((line) => line.includes("model │")));
-		assert.ok(dragged.some((line) => line.includes("Correction at next step")), "the delivery effect stays on the resized field");
+		assert.ok(dragged.some((line) => line.includes("╭─ To storage:1")), "the recipient stays on the resized field");
+		assert.ok(!dragged.some((line) => line.includes("Correction at next step")), "the caption has no retired delivery text");
 		const resetY = render().findIndex((line) => line.includes("┄┄┄"));
 		send(0, 161, resetY); send(0, 161, resetY, true); render(); send(0, 161, resetY); send(0, 161, resetY, true); render();
 		assert.equal(f.state.layout.composerRows, undefined);
@@ -206,7 +207,7 @@ it("save failure retains the local split and gives a restart notice", async () =
 	try {
 		await turn(); f.ui.render(164);
 		const send = rawDispatcher(f.ui, 164, 44);
-		send(0, 43, 8); send(32, 53, 8); f.ui.render(164); send(0, 53, 8, true);
+		send(0, 48, 8); send(32, 58, 8); f.ui.render(164); send(0, 58, 8, true);
 		assert.ok(f.state.layout.rosterRatio);
 		assert.match(f.ui.render(164).join("\n"), /restart persistence failed/);
 	} finally { f.ui.dispose(); }
@@ -217,11 +218,11 @@ it("raw text drags use the native fallback and focus loss clears the abandoned r
 		await turn(); f.ui.render(164); const send = rawDispatcher(f.ui, 164, 44, selection);
 		send(0, 8, 8); send(32, 12, 8); send(0, 12, 8, true);
 		assert.equal(selection.length, 3); assert.deepEqual(f.state.layout, {});
-		send(0, 43, 8); send(32, 60, 8); f.ui.render(164); assert.ok(f.state.layout.rosterRatio);
+		send(0, 48, 8); send(32, 60, 8); f.ui.render(164); assert.ok(f.state.layout.rosterRatio);
 		send.input("\x1b[O"); send(35, 60, 8); f.ui.render(164);
 		assert.deepEqual(f.state.layout, {});
 		// Captured bounds are stale after a terminal resize, even before the next render.
-		send(0, 43, 8); send(32, 60, 8); f.resize(120, 32); send(32, 70, 8); send(0, 70, 8, true);
+		send(0, 48, 8); send(32, 60, 8); f.resize(120, 32); send(32, 70, 8); send(0, 70, 8, true);
 		assert.deepEqual(f.state.layout, {}); assert.equal(f.ui.focus.region, "list");
 	} finally { f.ui.dispose(); }
 });

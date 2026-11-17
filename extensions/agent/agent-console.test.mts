@@ -60,7 +60,8 @@ it("the message field takes every letter and slash text literally for the select
 	assert.equal(f.ui.focus.region, "composer");
 	f.ui.render(80);
 	f.ui.handleInput("/help n a ? !literal");
-	clickText(f, "Correction at next step ⇄");
+	f.ui.handleInput("\u000e");
+	clickText(f, "Send as follow-up");
 	assert.equal(agentState(f.state, "storage:1").mode, "followUp");
 	assert.equal(f.ui.focus.region, "composer", "choosing the delivery effect keeps the message field");
 	f.ui.handleInput("\r");
@@ -80,7 +81,9 @@ it("refused admission retains the draft and disposition", async () => {
 	await turn();
 	f.ui.handleInput("\r");
 	f.ui.handleInput("retained");
-	clickText(f, "Correction at next step ⇄");
+	f.ui.render(80);
+	f.ui.handleInput("\u000e");
+	clickText(f, "Send as follow-up");
 	f.ui.handleInput("\r");
 	await turn();
 	const state = agentState(f.state, "storage:1");
@@ -100,7 +103,7 @@ function factSource(state: "working" | "idle" | "failed") {
 }
 for (const state of ["working", "idle", "failed"] as const) {
 	for (const width of [164, 100, 80, 60]) for (const writing of [false, true]) {
-		it(`${state} target facts appear once, the state under the name and the status under the message field, at ${width}${writing ? " while writing" : ""}`, async () => {
+		it(`${state} target facts appear once, the state beside the name and the status below the message field, at ${width}${writing ? " while writing" : ""}`, async () => {
 			const f = fixture(width, 30, factSource(state), { modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }) });
 			try {
 				await turn();
@@ -117,17 +120,18 @@ for (const state of ["working", "idle", "failed"] as const) {
 				assert.equal(header.split("Recipient").length - 1, 1, "the header shows one label, not the handle pair");
 				assert.doesNotMatch(header, /@recipient/);
 				assert.doesNotMatch(pane[0] ?? "", /model|high|%|\$/);
-				assert.match(pane[1] ?? "", new RegExp(sessionAppearance[state].label), "the state sits on the line under the name");
+				assert.match(header, new RegExp(sessionAppearance[state].label), "the state shares the name row");
 				const bottom = pane.findIndex((line) => line.includes("╰─"));
-				const facts = pane.findIndex((line) => /Example model \[high\].*16%.*160\/1.0k/.test(line));
+				const facts = pane.findIndex((line) => /test\/model \[high\].*16%.*160\/1.0k/.test(line));
 				assert.ok(bottom > 0 && facts > bottom, "the status lines sit under the message field, as in the main session");
 				assert.match(pane[facts + 1] ?? "", /\/work/);
-				for (const fact of ["Example model", "[high]", "16%", "160/1.0k", "~$0.42"]) assert.equal(right.split(fact).length - 1, 1, right);
+				for (const fact of ["test/model", "[high]", "16%", "160/1.0k", "~$0.42"]) assert.equal(right.split(fact).length - 1, 1, right);
 				const caption = pane.find((line) => line.includes("╭─")) ?? "";
 				assert.match(caption, /╭─ To Recipient /);
-				assert.match(caption, state === "working" ? /Correction at next step ⇄/ : /^(?!.*(Correction|New work)).*$/u, "only a working agent's message field names a delivery choice");
+				assert.doesNotMatch(caption, /Correction|New work/u, "steer is implicit on every message field");
+				assert.doesNotMatch(right, /First task|agents:|test:model/u);
 				assert.doesNotMatch(caption, /Working|Idle|Failed|model|high|%|\$|hit|ctx| in| out/);
-				const status = "Example model [high] │ ██░░░░░░░░ 16% │ 160/1.0k │ ~$0.42 │ ● 21% hit";
+				const status = "test/model [high] │ ██░░░░░░░░ 16% │ 160/1.0k │ ~$0.42 │ ● 21% hit";
 				assert.equal(right.split("21% hit").length - 1, width - paneX > visibleWidth(status) ? 1 : 0);
 			} finally { f.ui.dispose(); }
 		});
@@ -139,7 +143,9 @@ it("the delivery effect and a long draft stay on the message field without other
 		await turn(); await turn();
 		const state = agentState(f.state, "one");
 		f.ui.handleInput("\r");
-		clickText(f, "Correction at next step ⇄");
+		f.ui.render(100);
+		f.ui.handleInput("\u000e");
+		clickText(f, "Send as follow-up");
 		updateDraft(state, Array.from({ length: 30 }, (_, index) => `draft ${index}`).join("\n"));
 		const caption = () => visible(f.ui.render(f.tui.terminal.columns)).slice(1).find((line) => line.includes("╭─")) ?? "";
 		assert.match(caption(), /New work at next step/); assert.match(caption(), /↑ \d+ lines/);
@@ -149,16 +155,67 @@ it("the delivery effect and a long draft stay on the message field without other
 		assert.equal(state.mode, "followUp"); assert.equal(state.draft.split("\n").length, 30);
 	} finally { f.ui.dispose(); }
 });
-it("project statistics include only the selected agent's loaded delegates", async () => {
+it("project status shows the selected folder and branch without delegate statistics", async () => {
 	const observed = source([row("one", { modifiedAt: 100 }), row("child", { creatingOwnerId: "one", cost: 1 }), row("other", { creatingOwnerId: "primary", cost: 99 })]);
 	const list = observed.list; observed.list = async () => { const page = await list(); return { ...page, coverage: { ...page.coverage, complete: false } }; };
 	const f = fixture(164, 30, observed, { branch: async () => "main" });
 	try {
 		await turn(); await turn();
-		assert.match(visible(f.ui.render(164)).join("\n"), /\/work \(main\) │ agents: 1\/1\+ active · ~\$1\.00/);
+		const screen = visible(f.ui.render(164)).join("\n");
+		assert.match(screen, /\/work \(main\)/);
+		assert.doesNotMatch(screen, /agents:|~\$1\.00|~\$99\.00/u);
 		const before = f.ui.focus;
 		f.ui.handleMouse({ type: "press", button: "left", x: 100, y: 28, screenX: 100, screenY: 28, width: 164, height: 30, shift: false, alt: false, ctrl: false });
 		assert.deepEqual(f.ui.focus, before, "a press on the figures changes nothing");
+	} finally { f.ui.dispose(); }
+});
+
+it("a short transcript reads earlier pages until its pane fills", async () => {
+	const observed = source([row("one")]);
+	const reads: number[] = [];
+	observed.snapshot = async () => ({ entries: [{ id: "100", kind: "pi.user", model: [{ role: "user", content: "Current message", timestamp: 100 }] }], partial: true, revision: "100", nextBefore: 100 });
+	observed.earlier = async (_id, before) => {
+		reads.push(before);
+		return { entries: [{ id: String(before - 1), kind: "pi.user", model: [{ role: "user", content: `Earlier message ${before - 1}`, timestamp: before - 1 }] }], partial: true, revision: String(before - 1), nextBefore: before - 1,
+			coverage: { complete: false, entries: 1, bytes: 128, hiddenExcluded: 0, entryLimitReached: true, byteLimitReached: false } };
+	};
+	const f = fixture(100, 30, observed);
+	try {
+		await turn();
+		for (let step = 0; step < 30; step++) { f.ui.render(100); await turn(); }
+		assert.ok(reads.length > 1 && reads.length < 24, "several short pages fill the pane before its read bound");
+		const filled = reads.length;
+		f.ui.render(100); await turn();
+		assert.equal(reads.length, filled, "a full pane stops automatic reads");
+		assert.match(visible(f.ui.render(100)).join("\n"), /Earlier message|Current message/u);
+	} finally { f.ui.dispose(); }
+});
+
+it("automatic history reads stop at 24 pages per selection and leave earlier history reachable", async () => {
+	const observed = source([row("one"), row("two")]);
+	const reads: number[] = [];
+	observed.snapshot = async () => ({ entries: [], partial: true, revision: "100", nextBefore: 100 });
+	observed.earlier = async (_id, before) => {
+		reads.push(before);
+		return { entries: [], partial: true, revision: String(before - 1), nextBefore: before - 1,
+			coverage: { complete: false, entries: 0, bytes: 0, hiddenExcluded: 1, entryLimitReached: true, byteLimitReached: false } };
+	};
+	const f = fixture(100, 30, observed);
+	try {
+		await turn();
+		for (let step = 0; step < 30; step++) { f.ui.render(100); await turn(); }
+		assert.equal(reads.length, 24);
+		assert.deepEqual(reads, Array.from({ length: 24 }, (_, index) => 100 - index));
+		f.ui.handleInput("\t");
+		f.ui.render(100);
+		f.ui.handleInput("\x1b[5~");
+		await turn();
+		assert.equal(reads.length, 25, "PageUp still reads history after automatic reads stop");
+		f.ui.selectIdentity("two");
+		await turn();
+		for (let step = 0; step < 30; step++) { f.ui.render(100); await turn(); }
+		assert.equal(reads.length, 49, "a new selection receives its own automatic page allowance");
+		assert.deepEqual(reads.slice(25), Array.from({ length: 24 }, (_, index) => 100 - index));
 	} finally { f.ui.dispose(); }
 });
 

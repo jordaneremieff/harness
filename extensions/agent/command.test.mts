@@ -104,14 +104,17 @@ it("the dashboard gets its context window and session figures from the current p
 		await turn();
 		assert.ok(dashboard);
 		const text = stripVTControlCharacters(dashboard.render(160).join("\n"));
-		assert.deepEqual(lookups, [["test", "model"]]);
+		assert.ok(lookups.length > 0, "the roster and selected agent consult the primary registry");
+		for (const lookup of lookups) assert.deepEqual(lookup, ["test", "model"]);
 		assert.equal(reads, 1);
-		assert.match(text, /Example model \[high\].*16%.*163k\/1.0M/);
+		assert.match(text, /test\/model \[high\].*16%.*163k\/1.0M/);
 		assert.match(text, / Related {2}All /, "the scope controls stay on the Find row");
 		const heading = stripVTControlCharacters(dashboard.render(160)[0] ?? "");
 		assert.match(heading, /agents: 1\/1 active · ~\$0\.42/, "the primary's session figures sit in the heading");
 		assert.doesNotMatch(heading, /New conversation|Help|Close/, "the heading holds no commands");
-		assert.match(text, /n new/u, "the commands are keys in the footer");
+		assert.match(text, /x more/u, "secondary actions stay in More");
+		dashboard.handleInput("x");
+		assert.match(stripVTControlCharacters(dashboard.render(160).join("\n")), /n\s+New conversation/u);
 	} finally { dashboard?.dispose(); finish(); await opened; }
 });
 it("the dashboard collaboration adapter carries its primary context and structured read", async () => {

@@ -1,11 +1,10 @@
 import { basename } from "node:path";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
-import { dashboardTime } from "./dashboard-time.ts";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentConversationSummary, AgentDashboardCoverage } from "./dashboard-types.ts";
 import { cleanDashboardText } from "./dashboard-conversation.ts";
 import { formatCost } from "./agent-footer.ts";
-import { LIST_BLOCK_ROWS, listBlock } from "./dashboard-layout.ts";
+import { fitLine, highlightRow } from "./dashboard-layout.ts";
 
 export interface AgentDashboardSnapshot {
 	observedAt: number;
@@ -255,90 +254,135 @@ export function openWorkText(row: Pick<AgentConversationSummary, "openWorkCount"
 	const age = minutes < 1 ? `${seconds}s` : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 	return `work open: ${row.openWorkCount}, oldest: ${age}`;
 }
-function rosterModel(row: AgentConversationSummary): string {
-	if (!row.model) return "";
-	return `${oneLine(row.model.modelId)} ${oneLine(row.model.thinkingLevel)}`;
-}
 /**
- * The roster's second line. A row with an error shows its reason; a working agent shows its current
- * tool; every other row shows its model, reasoning level and cost. Inputs that the agent has not
- * read yet show as a count with the age of the oldest one. Rows with open work or unplaced inputs put their model facts first.
+ * The reason the list shows. An unreadable host of an agent that is not at work matters only when
+ * the operator writes to it, so the list keeps that agent's own outcome; the header still names it.
  */
-export function rosterDetail(row: AgentConversationSummary, now = Date.now()): { text: string; color: ThemeColor } {
-	const reason = attentionReason(row);
-	// The list keeps the reason's first sentence; the selected agent's header shows all of it.
-	const openWork = openWorkText(row, now), unplaced = unplacedText(row, now);
-	const facts = [rosterModel(row), costOf(row)].filter(Boolean).join(" · ");
-	if (reason) return { text: [openWork || unplaced ? facts : "", openWork, unplaced, reason.split(/(?<=[.!?])\s/u)[0] ?? reason].filter(Boolean).join(" · "), color: currentFault(row) ? "error" : "warning" };
-	if (row.state === "working") return { text: (openWork || unplaced ? [facts, openWork, activityOf(row), unplaced] : [activityOf(row), facts]).filter(Boolean).join(" · "), color: "muted" };
-	return { text: [facts, openWork, unplaced].filter(Boolean).join(" · "), color: "muted" };
+export function listReason(row: AgentConversationSummary): string | undefined {
+	return attentionReason(listedRow(row));
 }
+/** The row as the list judges it: a settled agent's unreadable host is not its outcome. */
+export function listedRow(row: AgentConversationSummary): AgentConversationSummary {
+	const settled = row.state !== "working" && row.state !== "starting" && row.state !== "unavailable";
+	return settled && row.owner === "unavailable" ? { ...row, owner: "unknown" } : row;
+}
+
+/** The list's sections: agents at work, agents active in the last day, and the rest. */
+export type RosterGroup = "working" | "recent" | "earlier";
+const RECENT_MS = 24 * 60 * 60 * 1000;
+const GROUP_LABEL: Record<RosterGroup, string> = { working: "Working", recent: "Recent", earlier: "Earlier" };
+export function rosterGroup(row: AgentConversationSummary, now = Date.now()): RosterGroup {
+	if (row.state === "working" || row.state === "starting") return "working";
+	return now - row.modifiedAt < RECENT_MS ? "recent" : "earlier";
+}
+/** A stable partition: each section keeps the incoming roster order. */
+export function groupRows(rows: readonly AgentConversationSummary[], now = Date.now()): AgentConversationSummary[] {
+	const order: RosterGroup[] = ["working", "recent", "earlier"];
+	return order.flatMap((group) => rows.filter((row) => rosterGroup(row, now) === group));
+}
+
+/** Rows per agent in the list: the state mark and the name, then the model and its thinking level. */
+export const ROSTER_ROWS = 2;
+
+/**
+ * Two quiet rows per agent: the state mark and the name, then the model and its thinking level. Only
+ * agents at work and agents with an error carry colour; a settled agent's name is muted, and the
+ * selected agent is bold on the selection colour.
+ */
 function rosterRow(
 	row: AgentConversationSummary,
 	rows: readonly AgentConversationSummary[],
 	selected: string | undefined,
 	width: number,
 	theme: Theme,
-	exactTime: boolean,
-	now: number,
-	primaryId?: string,
-): { lines: string[]; timeX: number; timeWidth: number; timeLine: number } {
+	reasons?: (row: Pick<AgentConversationSummary, "model">) => boolean | undefined,
+): string[] {
 	const appearance = sessionAppearance[row.state];
-	const time = dashboardTime(row.modifiedAt, exactTime, now);
-	void primaryId;
-	const detail = rosterDetail(row, now);
-	// An exact date is long, so it shares the detail row instead of shortening the name.
-	const block = listBlock({ title: uniqueName(row, rows), glyph: appearance.glyph, glyphColor: appearance.color, detail: detail.text, detailColor: detail.color, time, timeOnDetail: exactTime, selected: row.id === selected }, width, theme);
-	return { lines: block.lines, timeX: block.timeX, timeWidth: block.timeWidth, timeLine: block.timeLine };
+	const chosen = row.id === selected;
+	const active = row.state === "working" || row.state === "starting";
+	const reason = listReason(row);
+	const mark = theme.fg(active ? "accent" : reason ? (currentFault(listedRow(row)) ? "error" : "warning") : "dim", appearance.glyph);
+	const name = truncateToWidth(uniqueName(row, rows), Math.max(1, width - 4), "…");
+	const label = chosen ? theme.bold(theme.fg("text", name)) : theme.fg(active || reason ? "text" : "muted", name);
+	const rail = chosen ? theme.fg("accent", "▌") : " ";
+	const lines = [`${rail} ${mark} ${label}`, `${rail}   ${modelLabel(row, theme, Math.max(1, width - 4), reasons)}`];
+	return lines.map((line) => (chosen ? highlightRow(line, width, 2, theme) : fitLine(line, width)));
 }
-function rosterWindow(
-	rows: readonly AgentConversationSummary[],
-	selected: string | undefined,
-	height: number,
-	requested?: number,
-): { capacity: number; start: number; maxStart: number } {
-	const index = Math.max(
-		0,
-		rows.findIndex((row) => row.id === selected),
-	);
-	const capacity = Math.max(1, Math.floor((height - 1) / LIST_BLOCK_ROWS));
-	const maxStart = Math.max(0, rows.length - capacity);
-	const start = Math.min(maxStart, Math.max(0, requested ?? index - Math.floor(capacity / 2)));
-	return { capacity, maxStart, start };
+
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+/**
+ * The model as the main session's status line writes it: `provider/model` in the accent colour, then
+ * `[level]` in that level's colour for a model that reasons. A long identity shortens before the level.
+ */
+export function modelLabel(row: Pick<AgentConversationSummary, "model">, theme: Pick<Theme, "fg">, width: number, reasons?: (row: Pick<AgentConversationSummary, "model">) => boolean | undefined): string {
+	const model = row.model;
+	if (!model) return theme.fg("dim", "model unknown");
+	const level = oneLine(model.thinkingLevel);
+	const bracket = level && THINKING_LEVELS.includes(level) && reasons?.(row) !== false ? ` [${level}]` : "";
+	const identity = truncateToWidth(oneLine(`${model.provider}/${model.modelId}`), Math.max(1, width - visibleWidth(bracket)), "…");
+	return `${theme.fg("accent", identity)}${bracket ? theme.fg(`thinking${level.charAt(0).toUpperCase()}${level.slice(1)}` as ThemeColor, bracket) : ""}`;
 }
 interface RosterViewport {
-	primaryId?: string;
+	/** Whether the registry says a row's model reasons; unknown keeps the thinking level. */
+	reasons?(row: Pick<AgentConversationSummary, "model">): boolean | undefined;
 	start?: number;
-	exactTime?: boolean;
 	footer?: { text: string; color: ThemeColor };
-	/** The rows are the error filter's result; the footer offers the way back to every row. */
-	errorsOnly?: boolean;
 	range?(start: number, maxStart: number): void;
 	row?(row: AgentConversationSummary, line: number, height: number): void;
-	timestamp?(row: AgentConversationSummary, line: number, x: number, width: number): void;
-	/** The footer's error filter control: its row, first column and width. */
-	errors?(line: number, x: number, width: number): void;
 }
 interface RosterHit {
 	row: AgentConversationSummary;
 	line: number;
 	height: number;
 }
-interface RosterTimeHit {
-	row: AgentConversationSummary;
-	line: number;
-	x: number;
-	width: number;
-}
 interface DerivedRoster {
 	lines: string[];
 	start: number;
 	maxStart: number;
 	hits: RosterHit[];
-	times: RosterTimeHit[];
-	errors?: { line: number; x: number; width: number };
 }
+
 const rosterCaches = new WeakMap<readonly AgentConversationSummary[], WeakMap<Theme, Map<string, DerivedRoster>>>();
+
+/** A section heading: the quiet label and its count, after one blank row unless it opens the window. */
+function groupHeading(group: RosterGroup, count: number, theme: Theme): string {
+	return ` ${theme.bold(theme.fg("muted", GROUP_LABEL[group]))} ${theme.fg("dim", String(count))}`;
+}
+
+/** The lines from row `start` on: each section's heading before its first shown row. */
+function layoutFrom(rows: readonly AgentConversationSummary[], groups: readonly RosterGroup[], start: number, height: number): { headings: Array<{ index: number; line: number; first: boolean }>; last: number } {
+	let lines = 0;
+	const headings: Array<{ index: number; line: number; first: boolean }> = [];
+	let last = start - 1;
+	for (let index = start; index < rows.length; index++) {
+		const heading = index === start || groups[index] !== groups[index - 1];
+		const headingRows = heading ? (lines === 0 ? 1 : 2) : 0;
+		if (lines + headingRows + ROSTER_ROWS > height) break;
+		if (heading) {
+			headings.push({ index, line: lines + headingRows - 1, first: lines === 0 });
+			lines += headingRows;
+		}
+		lines += ROSTER_ROWS;
+		last = index;
+	}
+	return { headings, last };
+}
+
+/** Keep the selection in view unless the operator chose an explicit scroll position. */
+function rosterWindow(rows: readonly AgentConversationSummary[], groups: readonly RosterGroup[], selected: string | undefined, room: number, requested: number | undefined): { start: number; maxStart: number } {
+	// The last start that still fills the window from the end.
+	let maxStart = rows.length - 1;
+	while (maxStart > 0 && layoutFrom(rows, groups, maxStart - 1, room).last === rows.length - 1) maxStart--;
+	maxStart = Math.max(0, maxStart);
+	const index = Math.max(0, rows.findIndex((row) => row.id === selected));
+	let start = Math.min(maxStart, Math.max(0, requested ?? 0));
+	if (requested === undefined) {
+		// Keep the selection in view: from the top when it fits, else with the selection near the window's end.
+		while (start < index && layoutFrom(rows, groups, start, room).last < index) start++;
+	}
+	return { start, maxStart };
+}
+
 function deriveRoster(
 	rows: readonly AgentConversationSummary[],
 	selected: string | undefined,
@@ -348,43 +392,38 @@ function deriveRoster(
 	theme: Theme,
 	viewport?: RosterViewport,
 ): DerivedRoster {
-	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, viewport?.start);
+	const groups = rows.map((row) => rosterGroup(row, now));
+	const counts = new Map<RosterGroup, number>();
+	for (const group of groups) counts.set(group, (counts.get(group) ?? 0) + 1);
+	const room = Math.max(ROSTER_ROWS, height - 1);
+	const { start, maxStart } = rosterWindow(rows, groups, selected, room, viewport?.start);
+	const layout = layoutFrom(rows, groups, start, room);
 	const lines: string[] = [];
 	const hits: RosterHit[] = [];
-	const times: RosterTimeHit[] = [];
-	for (const row of rows.slice(start, start + capacity)) {
-		const block = rosterRow(row, rows, selected, width, theme, viewport?.exactTime ?? false, now, viewport?.primaryId);
-		const line = lines.length;
-		if (line < height) {
-			hits.push({ row, line, height: Math.min(block.lines.length, height - line) });
-			const timeLine = line + block.timeLine;
-			if (timeLine < height) times.push({ row, line: timeLine, x: block.timeX, width: Math.min(block.timeWidth, width - block.timeX) });
+	for (let index = start; index <= layout.last; index++) {
+		const row = rows[index];
+		if (row === undefined) continue;
+		const heading = layout.headings.find((item) => item.index === index);
+		if (heading) {
+			if (!heading.first) lines.push("");
+			lines.push(groupHeading(groups[index] ?? "earlier", counts.get(groups[index] ?? "earlier") ?? 0, theme));
 		}
-		lines.push(...block.lines);
+		const block = rosterRow(row, rows, selected, width, theme, viewport?.reasons);
+		const line = lines.length;
+		hits.push({ row, line, height: block.length });
+		lines.push(...block);
 	}
-	const shown = rows.slice(start, start + capacity).length;
-	const counted = rosterFooter(rows, start, shown, viewport?.errorsOnly ?? false);
+	const counted = rosterFooter(rows, start, layout.last);
 	const footer = viewport?.footer ?? counted;
+	while (lines.length < height - 1) lines.push("");
 	lines.push(theme.fg(footer.color, footer.text));
-	const control = viewport?.footer ? undefined : counted.control;
-	return { lines: lines.slice(0, height), start, maxStart, hits, times, ...(control && lines.length <= height ? { errors: { line: lines.length - 1, ...control } } : {}) };
+	return { lines: lines.slice(0, height), start, maxStart, hits };
 }
-/**
- * The list footer: how many loaded rows sit above or below the visible window, then the error count
- * or the error filter's state. The count is a passive fact that also takes a click; the filter's
- * control is `e` in the key footer.
- */
-function rosterFooter(rows: readonly AgentConversationSummary[], start: number, shown: number, errorsOnly: boolean): { text: string; color: ThemeColor; control?: { x: number; width: number } } {
-	const hidden = rows.length - shown;
-	const below = rows.length - start - shown;
-	const position = !hidden
-		? `${rows.length} ${errorsOnly ? "with errors" : `agent${rows.length === 1 ? "" : "s"}`}`
-		: !start ? `↓ ${below} more` : !below ? `↑ ${start} more` : `↑ ${start} · ↓ ${below} more`;
-	const errors = rows.filter(needsAttention).length;
-	const label = errorsOnly ? "errors only" : errors ? `${errors} with errors` : "";
-	if (!label) return { text: position, color: "muted" };
-	const prefix = `${position} · `;
-	return { text: `${prefix}${label}`, color: "muted", control: { x: visibleWidth(prefix), width: visibleWidth(label) } };
+/** How many rows sit above or below the window; nothing when every row shows. */
+function rosterFooter(rows: readonly AgentConversationSummary[], start: number, last: number): { text: string; color: ThemeColor } {
+	const below = rows.length - 1 - last;
+	if (!start && !below) return { text: "", color: "muted" };
+	return { text: !start ? `↓ ${below} more` : !below ? `↑ ${start} more` : `↑ ${start} · ↓ ${below} more`, color: "muted" };
 }
 export function rosterLines(
 	rows: readonly AgentConversationSummary[],
@@ -393,10 +432,8 @@ export function rosterLines(
 	height: number,
 	now: number,
 	theme: Theme,
-	compact: boolean,
 	viewport?: RosterViewport,
 ): string[] {
-	void compact;
 	let themes = rosterCaches.get(rows);
 	if (!themes) {
 		themes = new WeakMap();
@@ -407,8 +444,7 @@ export function rosterLines(
 		cache = new Map();
 		themes.set(theme, cache);
 	}
-	const ticking = rows.some((row) => Number.isFinite(row.ageObservedAt) && ((row.unplaced && row.oldest !== undefined) || (row.openWorkCount && row.openWorkOldest !== undefined)));
-	const key = JSON.stringify([selected, width, height, Math.floor(now / (ticking ? 1000 : 60000)), viewport?.start, viewport?.exactTime, viewport?.primaryId, viewport?.footer, viewport?.errorsOnly]);
+	const key = JSON.stringify([selected, width, height, Math.floor(now / 60000), viewport?.start, viewport?.footer]);
 	let derived = cache.get(key);
 	if (!derived) {
 		derived = deriveRoster(rows, selected, width, height, now, theme, viewport);
@@ -417,7 +453,5 @@ export function rosterLines(
 	}
 	viewport?.range?.(derived.start, derived.maxStart);
 	for (const hit of derived.hits) viewport?.row?.(hit.row, hit.line, hit.height);
-	for (const hit of derived.times) viewport?.timestamp?.(hit.row, hit.line, hit.x, hit.width);
-	if (derived.errors) viewport?.errors?.(derived.errors.line, derived.errors.x, derived.errors.width);
 	return [...derived.lines];
 }

@@ -41,19 +41,19 @@ it("roster derivation reuses lines until the minute, selection or width changes"
 	let reads = 0;
 	const measured = new Proxy(row("one"), {
 		get(target, property, receiver) {
-			if (property === "modifiedAt") reads++;
+			if (property === "state") reads++;
 			return Reflect.get(target, property, receiver);
 		},
 	});
 	const rows = [measured, row("two")];
-	const paint = (now: number, selected = "one", width = 80) => rosterLines(rows, selected, width, 16, now, theme, false);
+	const paint = (now: number, selected = "one", width = 80) => rosterLines(rows, selected, width, 16, now, theme);
 	paint(0);
 	const initial = reads;
 	assert.ok(initial > 0);
 	paint(0);
 	assert.equal(reads, initial, "an unchanged paint does not derive roster lines again");
 	paint(60000);
-	assert.ok(reads > initial, "a new minute derives new relative times");
+	assert.ok(reads > initial, "a new minute rechecks section membership");
 	const beforeSelection = reads;
 	paint(60000, "two");
 	assert.ok(reads > beforeSelection, "a selection change derives the newly painted rows");
@@ -212,7 +212,8 @@ it("unchanged history skips reconciliation and committed usage while live facts 
 		}
 		assert.equal(tail.mock.callCount(), tails + 2, "coverage and cursor changes each reconcile history");
 		assert.equal(usage.mock.callCount(), usages, "coverage and cursor changes do not recompute committed usage");
-		assert.match(visible(f.ui.render(120)), /Partial history/u);
+		assert.doesNotMatch(visible(f.ui.render(120)), /Partial history/u, "the idle header does not repeat history coverage");
+		assert.equal(console.status, "Partial history");
 	} finally { f.ui.dispose(); }
 });
 

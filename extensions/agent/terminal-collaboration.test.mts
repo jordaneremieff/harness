@@ -38,7 +38,10 @@ for (const nonroot of [false, true]) it(`native terminal discovers, reads and po
 	});
 	screen.view.selectIdentity(actor);
 	await waitFor(() => text().includes("Current native work"));
-	await waitFor(() => text().includes("3 agents"));
+	await waitFor(() => /(?:Recent|Earlier) 3/u.test(text()));
+	const heading = text().split("\n")[0];
+	assert.match(heading, /Agents.*Threads/u);
+	assert.doesNotMatch(heading, /3 agents|Efforts/u, "the heading keeps only the primary tabs");
 	assert.equal(controller.selected, actor, "the terminal's target is the selected conversation");
 	screen.view.openNamedAction("threads");
 	await waitFor(() => text().includes("Native task review"));

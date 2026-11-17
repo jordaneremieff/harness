@@ -11,7 +11,7 @@ import { initTheme, createCodemodeExtension, AssistantMessageComponent, ToolExec
 import { MouseRegion, Text, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
-import { AgentConversation, cleanDashboardText, firstTaskEntry, renderableEntries } from "./dashboard-conversation.ts";
+import { AgentConversation, cleanDashboardText, renderableEntries } from "./dashboard-conversation.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
 import type { Communication } from "./communication.ts";
 import { dashboardClock } from "./dashboard-time.ts";
@@ -118,7 +118,8 @@ it("uses native built-in tools, generic unknown tools and unmatched results with
 	const conversation = new AgentConversation(entries, "/work", tui, false, false);
 	const text = screen(conversation);
 	assert.match(text, /source\.ts/);
-	assert.match(text, /read · source\.ts → 1 line/u);
+	assert.match(text, /read source\.ts/u);
+	assert.doesNotMatch(text, /read · source\.ts →/u);
 	assert.match(screen(new AgentConversation(entries, "/work", tui, true, false)), /nativeRead/);
 	assert.match(text, /example_tool/);
 	assert.match(text, /Generic result/);
@@ -129,7 +130,7 @@ it("uses native built-in tools, generic unknown tools and unmatched results with
 	assert.ok(conversation.render(50).lines.every((line) => visibleWidth(line) <= 50));
 });
 
-it("generic tools show one summary line at every width and keep the full output on expansion", () => {
+it("generic tools use native previews and keep the full output on expansion", () => {
 	for (const width of [30, 80, 120]) {
 		const output = Array.from({ length: 13 }, (_, i) => `row ${i + 1} ${"界🙂".repeat(20)}`).join("\n");
 		const entries = [
@@ -142,9 +143,10 @@ it("generic tools show one summary line at every width and keep the full output 
 		const summaries = collapsed.filter((line) => line.includes("extension_tool"));
 		assert.equal(summaries.length, 1);
 		assert.ok(summaries[0].trimStart().startsWith("extension_tool"), "the name stays whole");
-		assert.match(summaries[0], /→ row 1/u, "the outcome stays visible");
-		assert.doesNotMatch(summaries[0], /row 2/u);
-		if (width >= 120) assert.match(summaries[0], /first line second line → row 1/u);
+		assert.match(collapsed.join("\n"), /row 1/u, "the native preview keeps output below the call");
+		assert.doesNotMatch(collapsed.join("\n"), /row 13/u);
+		assert.doesNotMatch(summaries[0], /→/u);
+		if (width >= 120) assert.match(summaries[0], /count=23/u);
 		const expanded = screen(new AgentConversation(entries, "/work", tui, true, false), width);
 		assert.match(expanded, /count: 23/u);
 		assert.match(expanded, /row 13/u);
@@ -172,8 +174,11 @@ it("renders tool-call-only and thinking-only assistant entries and attaches thei
 		["a", "t1", "t2"],
 	);
 	const text = screen(new AgentConversation(entries, "/work", tui, false, false));
-	assert.match(text, /bash · echo step-1 → step-1/u);
-	assert.match(text, /write · poem\.txt → Successfully wrote to poem\.txt/u);
+	assert.match(text, /\$ echo step-1/u);
+	assert.match(text, /step-1/u);
+	assert.match(text, /write poem\.txt/u);
+	assert.match(text, /line one[\s\S]*line two/u);
+	assert.doesNotMatch(text, /bash ·|write ·|→/u);
 	assert.doesNotMatch(text, /▸ Thinking|Plan the shell steps/u, "a tool call stands in for the hidden thinking");
 	assert.doesNotMatch(text, /\{\}/);
 	assert.match(screen(new AgentConversation(entries, "/work", tui, false, true)), /Plan the shell steps/);
@@ -264,18 +269,20 @@ it("separates blocks with one blank row and owns the reading margin", () => {
 		const kept = text.findIndex((line) => line.includes("kept output"));
 		assert.ok(task >= 0 && working > task && kept > working);
 		assert.equal(working - task, 2, "one content line and one gap");
-		assert.equal(kept - working, 2, "one content line and one gap");
+		const toolHeader = text.findIndex((line) => line.includes("example_tool"));
+		assert.equal(toolHeader - working, 2, "one content line and one gap before the native tool");
+		assert.equal(kept - toolHeader, 1, "the native result follows its call");
 		assert.equal(text.slice(task + 1, working).filter((line) => line.trim()).length, 0);
-		assert.equal(text.slice(working + 1, kept).filter((line) => line.trim()).length, 0);
+		assert.equal(text.slice(working + 1, toolHeader).filter((line) => line.trim()).length, 0);
 	}
 	const tool = new ToolExecutionComponent("example_tool", "missing-call", undefined, { showImages: false }, createDashboardToolDefinitions("/work")("example_tool", false), tui, "/work");
 	tool.updateResult({ content: [{ type: "text", text: "kept output" }], isError: false });
 	const rows = tool.render(80);
 	assert.equal(rows[0], "", "Pi's own leading spacer stays at component level");
-	assert.doesNotMatch(rows.join("\n"), /\x1b\[48;/u, "no tool background");
+	assert.match(rows.join("\n"), /\x1b\[48;/u, "the native shell supplies the tool background");
 	const keptLine = conversation.render(80).lines.find((line) => stripVTControlCharacters(line).includes("kept output"));
 	assert.ok(keptLine);
-	assert.doesNotMatch(keptLine, /\x1b\[48;/u, "the summary carries no filled block");
+	assert.match(keptLine, /\x1b\[48;/u, "the transcript keeps the native tool background");
 });
 
 it("consecutive one-line tool steps share a run and commentary keeps its gap", () => {
@@ -287,8 +294,8 @@ it("consecutive one-line tool steps share a run and commentary keeps its gap", (
 		assistant("commentary", [{ type: "text", text: "Commentary line" }]),
 	];
 	const lines = new AgentConversation(entries, "/work", tui, false, false).renderWindow(100, 0, 20, true).lines.map(stripVTControlCharacters);
-	const first = lines.findIndex((line) => line.includes("read · a.ts"));
-	const second = lines.findIndex((line) => line.includes("read · b.ts"));
+	const first = lines.findIndex((line) => line.includes("read a.ts"));
+	const second = lines.findIndex((line) => line.includes("read b.ts"));
 	const commentary = lines.findIndex((line) => line.includes("Commentary line"));
 	assert.equal(second, first + 1, "one-line tool steps keep no blank row between them");
 	assert.equal(commentary, second + 2, "commentary keeps one blank row");
@@ -305,7 +312,7 @@ it("non-agent tool lines use the wide pane while prose, notices and agent cards 
 	const lines = new AgentConversation(entries, "/work", tui, false, false).render(158).lines;
 	const widths = (needle: string) => lines.filter((line) => stripVTControlCharacters(line).includes(needle)).map((line) => visibleWidth(line));
 	assert.deepEqual(widths("Short prose"), [102], "prose keeps the 100-column reading width plus its margin");
-	const tool = widths("bash · echo");
+	const tool = widths("$ echo");
 	assert.equal(tool.length, 1);
 	assert.ok(tool[0] > 102, "the tool line passes the reading column");
 	assert.ok(tool[0] <= 158);
@@ -313,23 +320,15 @@ it("non-agent tool lines use the wide pane while prose, notices and agent cards 
 	assert.ok(widths("Report from Peer name").every((width) => width <= 102), "notices keep the reading column");
 });
 
-it("recovers the first task from the session summary when the bounded transcript omits it", () => {
-	const late: AgentConversationEntry[] = [assistant("late", [{ type: "text", text: "Late answer" }])];
-	const synthetic = firstTaskEntry({ entries: late, partial: true }, { firstMessage: "Run the checks" });
-	assert.ok(synthetic);
-	const message = synthetic.model?.[0] as { content?: unknown } | undefined;
-	assert.equal(message?.content, "First task · Run the checks");
-	const long = firstTaskEntry({ entries: late, partial: true }, { firstMessage: `# Task: review the parser\n\nRead ${"x".repeat(400)}` });
-	assert.equal((long?.model?.[0] as { content?: unknown } | undefined)?.content, "First task · Task: review the parser", "one line, without heading marks or the rest of the task");
-	const wide = firstTaskEntry({ entries: late, partial: true }, { firstMessage: "y".repeat(300) });
-	const wideText = String((wide?.model?.[0] as { content?: unknown } | undefined)?.content ?? "");
-	assert.ok(wideText.endsWith("…") && Array.from(wideText).length === "First task · ".length + 160, "a long first line is bounded");
-	assert.equal(firstTaskEntry({ entries: late, partial: true }, undefined), undefined);
-	assert.equal(firstTaskEntry({ entries: late, partial: false }, { firstMessage: "Run the checks" }), undefined);
-	assert.equal(
-		firstTaskEntry({ entries: [user("u", "Run the checks")], partial: true }, { firstMessage: "Run the checks" }),
-		undefined,
-	);
+it("a transcript shows its first retained message without a pinned task summary", () => {
+	const entries = [user("first", "Run the checks"), assistant("late", [{ type: "text", text: "Late answer" }])];
+	const shown = screen(new AgentConversation(entries, "/work", tui, false, true));
+	assert.equal(shown.match(/Run the checks/gu)?.length, 1);
+	assert.ok(shown.indexOf("Run the checks") < shown.indexOf("Late answer"));
+	assert.doesNotMatch(shown, /First task/u);
+	const partial = screen(new AgentConversation(entries.slice(1), "/work", tui, false, true));
+	assert.match(partial, /Late answer/u);
+	assert.doesNotMatch(partial, /Run the checks|First task/u, "an omitted first message is not reconstructed above history");
 });
 
 const naturalTask = "What changed since yesterday?";
@@ -339,10 +338,12 @@ const taskInputs: Array<{ name: string; content: UserMessage["content"]; text: s
 	{ name: "image before text", content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }, { type: "text", text: naturalTask }], text: naturalTask, image: true },
 ];
 for (const input of taskInputs) {
-	it(`matches historical ${input.name} against task text rather than display placeholders`, () => {
+	it(`shows the first ${input.name} message once without a pinned task`, () => {
 		const entries: AgentConversationEntry[] = [{ id: "task", kind: "pi.user", model: [{ role: "user", content: input.content, timestamp: 1 }] }];
-		assert.equal(firstTaskEntry({ entries, partial: true }, { firstMessage: input.text }), undefined);
-		assert.equal(firstTaskEntry({ entries, partial: true }, { firstMessage: input.text.slice(0, 12) }), undefined);
+		const shown = screen(new AgentConversation(entries, "/work", tui, false, true));
+		assert.equal(shown.match(/What changed since yesterday\?/gu)?.length, 1);
+		assert.doesNotMatch(shown, /First task/u);
+		if (input.image) assert.match(shown, /\[Image\]/u);
 	});
 	it(`native ${input.name} admission displays the task without host routes or a duplicate historical input`, { timeout: 10000 }, async (t) => {
 		const root = mkdtempSync(join(tmpdir(), "dashboard-request-"));
@@ -361,7 +362,6 @@ for (const input of taskInputs) {
 		const row = rows.find((value) => value.id === host?.storageId);
 		assert.ok(row?.firstMessage);
 		assert.equal(row.firstMessage.trim(), input.text);
-		assert.equal(firstTaskEntry({ ...snapshot, partial: true }, row), undefined);
 		const users = snapshot.entries.filter((entry) => entry.kind === "pi.user");
 		assert.equal(users.length, 1);
 		for (const width of [40, 80, 120]) {
@@ -385,8 +385,7 @@ for (const width of [40, 80, 120]) {
 		const entries = [user("quoted", text)];
 		const shown = screen(new AgentConversation(entries, "/work", tui, false, false), width);
 		assert.equal(shown.replace(/\s/gu, ""), text.replace(/\s/gu, ""));
-		assert.equal(firstTaskEntry({ entries, partial: true }, { firstMessage: text }), undefined);
-		assert.ok(firstTaskEntry({ entries, partial: true }, { firstMessage: "Keep this literal example." }), "text inside a user-authored example is not a host-decoded task");
+		assert.doesNotMatch(shown, /First task/u);
 	});
 }
 
@@ -478,7 +477,7 @@ function checkCodemodeCase(t: TestContext, width: number, expanded: boolean, isE
 	const message = completed.model?.[0]; assert.ok(message?.role === "toolResult");
 	message.content = [{ type: "text", text: "Script failed\nWall time 1.0 seconds\nOutput:\n" }, { type: "text", text: Array.from({ length: 9 }, (_, i) => `output ${i}`).join("\n") }];
 	message.details = details as typeof message.details;
-	const native = new ToolExecutionComponent("codemode", "outer", args, { showImages: false }, { ...definition, renderShell: "self" }, tui, "/work");
+	const native = new ToolExecutionComponent("codemode", "outer", args, { showImages: false }, { ...definition, renderShell: "default" }, tui, "/work");
 	let conversation: AgentConversation | undefined;
 	t.after(() => {
 		try { native.updateResult(message, false); }
@@ -489,16 +488,19 @@ function checkCodemodeCase(t: TestContext, width: number, expanded: boolean, isE
 	conversation = new AgentConversation([call, completed], "/work", tui, expanded, false);
 	const rendered = conversation.render(width).lines;
 	const visible = stripVTControlCharacters(rendered.join("\n"));
-	assert.doesNotMatch(rendered.join("\n"), /\x1b\[48;/u, "no outer tool block");
-	if (expanded) {
-		if (!partial) assert.match(visible, /output 8/u);
-		const last = stripVTControlCharacters(native.render(width).join("\n")).split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
-		assert.ok(last && visible.includes(last), "expanded output keeps the self-shell native rows");
-	} else {
-		assert.equal(rendered.filter((line) => line.trim().length > 0).length, 1);
-		assert.match(visible, /→ Script failed/u, "the outcome stays visible");
-		if (width >= 80) assert.match(visible, /codemode · console/u);
-	}
+	assert.match(rendered.join("\n"), /\x1b\[48;/u, "the native shell keeps its background");
+	assert.match(visible, /codemode/u);
+	assert.doesNotMatch(visible, /codemode ·|→ Script failed/u);
+	assert.match(visible, /lookup/u, "native nested calls remain visible");
+	if (expanded && !partial) assert.match(visible, /output 8/u);
+	const nativeText = stripVTControlCharacters(native.render(width - 2).join("\n"));
+	const contentRows = (text: string) => {
+		const rows = text.split("\n").map((line) => line.trim().replace(/^(Took|Elapsed) \d+(?:\.\d+)?s$/u, "$1 <duration>"));
+		while (rows[0] === "") rows.shift();
+		while (rows.at(-1) === "") rows.pop();
+		return rows;
+	};
+	assert.deepEqual(contentRows(visible), contentRows(nativeText), "the transcript keeps every native row with its default shell");
 	const settled = { ...completed, id: "result" };
 	conversation.update([call, settled]);
 }
@@ -733,7 +735,7 @@ it("dashboard codemode cards fall back to standard presentation when capture fai
 		const code = 'import assert from "node:assert/strict"; import { mock } from "node:test"; import * as pi from "@earendil-works/pi-coding-agent"; import { stripVTControlCharacters } from "node:util";' +
 			'pi.initTheme("dark"); mock.module("@earendil-works/pi-coding-agent", { namedExports: { ...pi, createCodemodeExtension: () => () => {} } });' +
 			'const { AgentConversation } = await import(' + JSON.stringify(new URL("./dashboard-conversation.ts", import.meta.url).href) + ');' +
-			'const view = new AgentConversation(' + JSON.stringify(entries) + ', "/work", { requestRender() {} }, false, false); const text = stripVTControlCharacters(view.render(80).lines.join("\\n")); assert.match(text, /codemode · return 42; → row 1/); assert.doesNotMatch(text, /row 2/); assert.equal(text.split("\\n").filter((line) => line.includes("codemode")).length, 1);';
+			'const view = new AgentConversation(' + JSON.stringify(entries) + ', "/work", { requestRender() {} }, false, false); const text = stripVTControlCharacters(view.render(80).lines.join("\\n")); assert.match(text, /codemode code="return 42;"/); assert.match(text, /row 10/); assert.doesNotMatch(text, /row 13|codemode ·|→/); assert.equal(text.split("\\n").filter((line) => line.includes("codemode")).length, 1);';
 		const child = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 30000, env: { ...process.env, PI_AGENT_DIR: join(root, "agent"), PI_AGENT_SESSIONS_DIR: join(root, "sessions") } });
 		assert.equal(child.status, 0, child.stderr || String(child.error));
 	} finally { rmSync(root, { recursive: true, force: true }); }
@@ -763,7 +765,7 @@ it("custom child clicks leave card choices untouched and a plain card click reco
 	let document = conversation.render(80);
 	const setters = t.mock.method(ToolExecutionComponent.prototype, "setExpanded");
 	const y = document.lines.findIndex((line) => line.includes("child action"));
-	assert.ok(conversation.handleMouse(click(80, document.lines.length, y)));
+	assert.ok(conversation.handleMouse({ ...click(80, document.lines.length, y), x: 3, screenX: 3 }));
 	assert.equal(childClicks, 1);
 	assert.equal(setters.mock.callCount(), 0);
 	assert.equal(state.toolExpanded.size, 0);
@@ -915,15 +917,12 @@ it("passes settled native codemode rows unchanged and preserves final nested vis
 		const conversation = new AgentConversation([call, entry], "/work", tui, expanded, false);
 		assert.deepEqual(updates.mock.calls.at(-1)?.arguments, [message, false]);
 		const text = screen(conversation, width);
-		if (expanded) {
-			assert.match(text, /✓ lookup.*4ms/u);
-			assert.match(text, /✗ failed/u);
-			assert.match(text, /⊘ stopped/u);
-		} else {
-			// A narrow line truncates the argument first, so the outcome stays visible.
-			assert.match(text, width >= 80 ? /codemode · await tools\.lookup\(\{\}\); → Script/u : /codemode · await t.*… → Script completed/u);
-			assert.doesNotMatch(text, /✓ lookup|✗ failed|⊘ stopped/u);
-		}
+		assert.match(text, /codemode/u);
+		assert.match(text, /await tools\.lookup\(\{\}\);/u);
+		assert.match(text, /✓ lookup.*4ms/u);
+		assert.match(text, /✗ failed/u);
+		assert.match(text, /⊘ stopped/u);
+		assert.doesNotMatch(text, /codemode ·|→ Script/u);
 		assert.doesNotMatch(text, /\$/u);
 	}
 	assert.deepEqual(entry, original);

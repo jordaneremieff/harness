@@ -88,20 +88,21 @@ it("a control click opens its form beside the conversation, the inspector wheel 
 	const f = fixture(140, 24, source([row("one", { state: "idle" })]));
 	const lines = () => visible(f.ui.render(140));
 	const click = (needle: string) => {
+		if (!lines().some((line) => line.includes(needle))) f.ui.handleInput("x");
 		const p = point(lines(), needle);
 		return f.ui.handleMouse(event(p.x, p.y, 140, 24));
 	};
 	try {
 		await turn();
 		await turn();
-		click("c configure");
+		click("Configure");
 		assert.equal(f.ui.focus.inspector, "Configure");
 		assert.deepEqual(f.calls, [], "opening a form sends nothing");
 		f.ui.handleInput("\x1b");
 		assert.equal(f.ui.focus.inspector, undefined);
 		f.ui.handleInput("\x1b");
 		assert.equal(f.ui.focus.region, "list");
-		click("? help");
+		click("Help");
 		assert.equal(f.ui.focus.inspector, "Help");
 		const before = lines().join("\n");
 		const body = point(lines(), "Machine execution preferences");
@@ -128,11 +129,9 @@ it("the More menu wheel reaches Details and opens it only when chosen", async ()
 		const menu = lines().findIndex((line) => line.trimEnd() === "More");
 		assert.ok(menu >= 0, "the More menu shows its heading");
 		assert.equal(f.ui.handleMouse(event(2, menu + 1, 140, 24, { type: "wheel", wheelDelta: 100 }))?.handled, true);
-		assert.match(lines().join("\n"), /›\s+i\s+Exact times/, "the wheel moves the menu selection only");
+		assert.match(lines().join("\n"), /›\s+ctrl\+t\s+Hide thinking/, "the wheel moves the menu selection only");
 		assert.equal(f.ui.focus.inspector, undefined);
-		f.ui.handleInput("\x1b[A");
-		assert.match(lines().join("\n"), /›\s+Stop and release host/);
-		f.ui.handleInput("\x1b[A");
+		for (let step = 0; step < 30 && !/›\s+Details/.test(lines().join("\n")); step++) f.ui.handleInput("\x1b[A");
 		assert.match(lines().join("\n"), /›\s+Details/);
 		f.ui.handleInput("\r");
 		assert.equal(f.ui.focus.inspector, "Details");
@@ -234,15 +233,15 @@ for (const width of [80, 140]) {
 }
 
 for (const width of [80, 140]) {
-	it(`flat roster block clicks select the correct agent at ${width}`, async () => {
-		const f = fixture(width, 30, source([row("work", { name: "Worker", modifiedAt: 3 }), row("done", { name: "Finished", state: "done", modifiedAt: 2 }), row("failed", { name: "Failure", state: "failed", error: "quota limit", modifiedAt: 1 })]));
+	it(`two-row roster clicks select the correct agent at ${width}`, async () => {
+		const f = fixture(width, 30, source([row("work", { name: "Worker", modifiedAt: 3 }), row("done", { name: "Second worker", state: "working", modifiedAt: 2 }), row("failed", { name: "Failure", state: "failed", error: "quota limit", modifiedAt: 1 })]));
 		try {
 			await turn();
 			// The side list shows all three agents; the 80-column strip shows the newest two.
-			const target = width >= 100 ? { name: "Failure", id: "failed" } : { name: "Finished", id: "done" };
+			const target = width >= 100 ? { name: "Failure", id: "failed" } : { name: "Second worker", id: "done" };
 			const lines = f.ui.render(width).map(stripVTControlCharacters);
 			const block = point(lines, target.name);
-			assert.equal(f.ui.handleMouse(event(5, block.y + 1, width, 30))?.handled, true, "a click on the facts line selects its agent");
+			assert.equal(f.ui.handleMouse(event(5, block.y + 1, width, 30))?.handled, true, "a click on the model line selects its agent");
 			assert.equal(f.state.selected, target.id);
 			await turn();
 			const next = point(f.ui.render(width).map(stripVTControlCharacters), "Worker");
@@ -262,7 +261,7 @@ const interactiveEntries: AgentConversationEntry[] = [
 for (const [width, height] of [[140, 45], [80, 32]]) for (const start of ["list", "composer", "conversation"] as const) {
 	it(`single transcript clicks toggle tools and thinking from the ${start} at ${width} and move focus to the conversation`, async () => {
 		const observed = source(); observed.snapshot = async () => ({ entries: interactiveEntries, partial: false, revision: "interactive", nextBefore: null });
-		const retained = createDashboardState(); retained.hideThinkingBlock = true;
+		const retained = createDashboardState(); agentState(retained, "storage:1").view.showThinking = false;
 		const f = fixture(width, height, observed, undefined, retained);
 		try {
 			await turn();
@@ -306,7 +305,7 @@ it("a top region callback returning false never activates an earlier region", ()
 
 it("dashboard reopen retains tool choices and anchor but not discarded thinking instances", async () => {
 	const observed = source(); observed.snapshot = async () => ({ entries: interactiveEntries, partial: false, revision: "interactive", nextBefore: null });
-	const retained = createDashboardState(); retained.hideThinkingBlock = true;
+	const retained = createDashboardState(); agentState(retained, "storage:1").view.showThinking = false;
 	let f = fixture(140, 45, observed, undefined, retained);
 	try {
 		await turn();
@@ -340,8 +339,9 @@ it("dashboard reopen uses the current runtime renderer rather than a retained de
 		try {
 			await turn();
 			const lines = f.ui.render(140).map(stripVTControlCharacters);
-			assert.match(lines.join("\n"), /example_tool · /u, "the collapsed tool is one summary line");
-			const item = point(lines, "example_tool");
+			assert.ok(lines.some((line) => line.includes(title ?? "example_tool")), "the native renderer supplies the visible call");
+			assert.doesNotMatch(lines.join("\n"), /example_tool · /u, "the view adds no summary wrapper");
+			const item = point(lines, title ?? "example_tool");
 			assert.ok(f.ui.handleMouse(event(item.x, item.y, 140, 45))?.handled);
 			const text = f.ui.render(140).map(stripVTControlCharacters).join("\n");
 			assert.ok(text.includes(title ?? "example_tool"));

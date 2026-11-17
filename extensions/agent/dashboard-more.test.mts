@@ -62,7 +62,7 @@ it("the message field offers the More chord at 60x20 and keeps x as draft text",
 	}
 });
 
-it("the Threads message field offers the More chord at 60 columns and keeps x as draft text", async () => {
+it("the Threads message field shows only its text controls and keeps x as draft text", async () => {
 	const f = fixture(60, 20, source([row("one")]), {
 		collaborate: async (input) => (input.action === "list" ? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } } : threadPage("t1")),
 	});
@@ -71,24 +71,16 @@ it("the Threads message field offers the More chord at 60 columns and keeps x as
 		f.ui.openNamedAction("threads");
 		await settle();
 		f.ui.handleInput("\r");
-		for (let attempt = 0; attempt < 20 && !shown(f).includes("Message 1"); attempt++) await turn();
-		assert.match(shown(f), /Message 1/u, "the selected exchange is loaded before its write action");
-		assert.deepEqual(f.ui.focus, { region: "list", surface: "threads" }, "the thread's message field has focus");
-		assert.match(footer(f), /ctrl\+n more/u, shown(f));
-		assert.doesNotMatch(footer(f), /x more/u);
+		assert.match(shown(f), /Message 1/u, "Enter opens the selected exchange for reading");
+		assert.match(footer(f), /^↑↓ scroll/u);
+		f.ui.handleInput("\r");
+		assert.match(footer(f), /^enter send · shift\+enter\/ctrl\+j newline · esc exchange\s*$/u);
+		assert.doesNotMatch(footer(f), /more|tab focus/u);
 		f.ui.handleInput("x");
 		assert.equal(f.state.threads?.drafts.get("t1")?.text, "x", "x reaches the thread draft");
-		f.ui.handleInput("\u000e");
-		assert.match(shown(f), /^More\s*$/mu, "the chord opens the menu");
 		f.ui.handleInput("\x1b");
-		assert.doesNotMatch(shown(f), /^More\s*$/mu, "Escape closes it");
-		assert.equal(f.state.threads?.drafts.get("t1")?.text, "x", "the draft survives the menu");
-		assert.match(footer(f), /ctrl\+n more/u);
-		f.ui.handleInput("\u000e");
-		assert.match(shown(f), /^More\s*$/mu, "the chord opens the menu again");
-		f.ui.handleInput("\u000e");
-		assert.doesNotMatch(shown(f), /^More\s*$/mu, "the same chord closes it");
-		assert.equal(f.state.threads?.drafts.get("t1")?.text, "x", "the thread draft survives both directions");
+		assert.match(footer(f), /x more/u, "secondary controls belong to the exchange, not the text field");
+		assert.equal(f.state.threads?.drafts.get("t1")?.text, "x", "the draft survives focus changes");
 	} finally {
 		f.ui.dispose();
 	}

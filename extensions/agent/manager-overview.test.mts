@@ -93,7 +93,7 @@ it("ranks caller-owned history without PID-derived live priority across roster c
 	const page = await manager.dashboardPage({ ownerId: "owner-1" });
 	const rows = dashboardRecords({ observedAt: 0, sessions: page.rows }, "");
 	assert.deepEqual(rows.slice(0, 2).map((row) => row.id), [owned.storageId, newest.storageId]);
-	const viewport = rosterLines(rows, live.storageId, 80, 10, 0, theme, false).join("\n");
+	const viewport = rosterLines(rows, live.storageId, 80, 10, 0, theme).join("\n");
 	assert.doesNotMatch(viewport, /Live history/);
 	assert.match(viewport, /Owned history/);
 	assert.match(viewport, /Newest history/);

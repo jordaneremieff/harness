@@ -13,12 +13,6 @@ export interface AgentModelInfo {
 	reasoning: boolean;
 	contextWindow: number;
 }
-export interface DelegatedFigures {
-	active: number;
-	total: number;
-	incomplete: boolean;
-	cost?: number;
-}
 const clean = (text: string) => stripVTControlCharacters(text.slice(0, 512)).replace(/[\x00-\x1f\x7f-\x9f]/g, " ").replace(/\s+/g, " ").trim();
 export function agentCacheShare(usage?: UsageState): { percent: number; read: boolean } | undefined {
 	if (!usage) return undefined;
@@ -55,7 +49,8 @@ function projectLabel(cwd: string, branch: string | undefined, width: number, ho
 function modelLabel(row: AgentConversationSummary, info: AgentModelInfo | undefined, theme: Pick<Theme, "fg">): string {
 	if (!row.model) return "";
 	const model = row.model;
-	const label = theme.fg("accent", clean(info?.name || model.modelId));
+	// The main session's status line writes the route as provider/model; the agent's line matches it.
+	const label = theme.fg("accent", clean(`${model.provider}/${model.modelId}`));
 	const level = clean(model.thinkingLevel);
 	const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 	return info?.reasoning && levels.includes(level) ? label + theme.fg(`thinking${level.charAt(0).toUpperCase()}${level.slice(1)}` as ThemeColor, ` [${level}]`) : label;
@@ -79,18 +74,7 @@ function metricsLine(row: AgentConversationSummary, width: number, theme: Pick<T
 	}
 	return truncateToWidth(compose(), width, "…");
 }
-export function agentStatusLines(row: AgentConversationSummary, width: number, theme: Pick<Theme, "fg">, context?: number, info?: AgentModelInfo, usage?: UsageState, branch?: string, delegated?: DelegatedFigures, home = homedir()): string[] {
-	const paint = (color: ThemeColor, text: string) => theme.fg(color, text);
-	const separator = paint("dim", " │ ");
-	let children = delegated ? `agents: ${delegated.active}/${delegated.total}${delegated.incomplete ? "+" : ""} active` : "";
-	if (delegated?.cost !== undefined && Number.isFinite(delegated.cost) && delegated.cost >= 0.005) children += ` · ~$${delegated.cost.toFixed(2)}`;
-	const tail = children ? paint("text", children) : "";
-	const project = projectLabel(row.cwd, branch, width - (tail ? visibleWidth(tail) + 3 : 0), home, theme);
-	let second = project;
-	if (tail) {
-		if (visibleWidth(project) + visibleWidth(tail) + 3 <= width) second += separator + tail;
-		else if (width >= 6) second = projectLabel(row.cwd, branch, width - 5, home, theme) + separator + paint("dim", "+1");
-		else second = truncateToWidth(paint("dim", "+1"), width, "");
-	}
-	return [metricsLine(row, width, theme, context, info, usage), truncateToWidth(second, width, "…")];
+export function agentStatusLines(row: AgentConversationSummary, width: number, theme: Pick<Theme, "fg">, context?: number, info?: AgentModelInfo, usage?: UsageState, branch?: string, home = homedir()): string[] {
+	const project = projectLabel(row.cwd, branch, width, home, theme);
+	return [metricsLine(row, width, theme, context, info, usage), truncateToWidth(project, width, "…")];
 }

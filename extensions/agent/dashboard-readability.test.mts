@@ -21,16 +21,16 @@ it("activity summarizes string arguments without raw JSON, including published p
 	assert.equal(activityOf(agent), "any_tool review the notes");
 	assert.doesNotMatch(activityOf(agent), /[{}]/);
 });
-it("roster rows show the name, state, current activity, model, thinking, cost and relative time", () => {
+it("roster rows show only the name, state mark and model with its thinking level", () => {
 	const agent = row("worker", { name: "Research", modifiedAt: 0, currentTool: { name: "read", argument: "notes.md" }, profile: { identity: "worker", role: "Research", handle: "@research", revision: "1", hasExpertise: false, updatedAt: 0 } });
-	const text = rosterLines([agent], agent.id, 64, 12, 15 * 60000, theme, false).join("\n");
-	for (const fact of ["Research", "●", "read notes.md", "model high", "$0.42", "15m ago"]) assert.ok(text.includes(fact), fact);
-	assert.doesNotMatch(text, /@research · Research/);
+	const text = rosterLines([agent], agent.id, 64, 12, 15 * 60000, theme).join("\n");
+	for (const fact of ["Research", "●", "test/model [high]"]) assert.ok(text.includes(fact), fact);
+	assert.doesNotMatch(text, /@research · Research|read notes.md|\$0.42|15m ago/);
 	assert.ok(dashboardGeometry(160, 45, 3).rosterWidth <= 60);
-	const compact = rosterLines([row("worker", { name: "Work", currentTool: { name: "read", argument: "file" } })], "worker", 100, 4, 0, theme, true).join("\n");
+	const compact = rosterLines([row("worker", { name: "Work", currentTool: { name: "read", argument: "file" } })], "worker", 100, 4, 0, theme).join("\n");
 	assert.match(compact, /Work/);
-	assert.match(compact, /read file · model high · \$0.42/);
-	assert.match(compact, /just now/);
+	assert.match(compact, /test\/model \[high\]/);
+	assert.doesNotMatch(compact, /read file|just now|\$/);
 });
 it("selected status uses the same state labels as the roster", async () => {
 	for (const state of Object.keys(sessionAppearance) as Array<keyof typeof sessionAppearance>) {
@@ -38,7 +38,7 @@ it("selected status uses the same state labels as the roster", async () => {
 		try {
 			await turn();
 			const lines = f.ui.render(100);
-			assert.ok(lines[2]?.includes(`${sessionAppearance[state].glyph} ${sessionAppearance[state].label}`));
+			assert.ok(lines[1]?.includes(`${sessionAppearance[state].glyph} ${sessionAppearance[state].label}`));
 		} finally { f.ui.dispose(); }
 	}
 });
@@ -59,16 +59,16 @@ for (const [width, skipped] of [[164, 18], [164, 0], [100, 18], [100, 0], [80, 1
 			const wide = width >= 100;
 			const paneX = wide ? (lines[1]?.indexOf("│") ?? 0) + 1 : 0;
 			const headerY = wide ? 1 : 9;
-			const header = lines.slice(headerY, headerY + 3).map((line) => line.slice(paneX));
+			const header = lines.slice(headerY, headerY + 2).map((line) => line.slice(paneX));
 			assert.doesNotMatch(header.join("\n"), /coverage|unreadable|omitted|incomplete/i);
-			assert.match(header[0] ?? "", /0 {2}work/u, "the target header names the agent and project");
-			assert.match(header[1] ?? "", /● Working/u, "the state occupies the second header line");
-			assert.equal((header[2] ?? "").trim(), "", "one blank row follows the two-line header");
+			assert.match(header[0] ?? "", /^ 0 +● Working\s*$/u, "the name is left-aligned and the state is right-aligned");
+			assert.equal((header[1] ?? "").trim(), "", "one blank row follows the header");
+			assert.doesNotMatch(header[0] ?? "", /work|ago|\$/u);
 			const roster = wide ? lines.slice(1).map((line) => line.slice(0, paneX - 1)) : lines.slice(1, 9);
 			assert.doesNotMatch(roster.join("\n"), /unreadable|omitted|incomplete/, "storage coverage stays in Details");
 			if (skipped) assert.match(roster.join("\n"), /Load mo/);
 			f.ui.handleInput("\r");
-			assert.doesNotMatch(read().slice(headerY, headerY + 3).map((line) => line.slice(paneX)).join("\n"), /coverage|unreadable|incomplete/i);
+			assert.doesNotMatch(read().slice(headerY, headerY + 2).map((line) => line.slice(paneX)).join("\n"), /coverage|unreadable|incomplete/i);
 		} finally { f.ui.dispose(); }
 	});
 }
@@ -94,14 +94,15 @@ it("live usage sits under the target header and receipts stay on the message fie
 		const paneX = (lines[1]?.indexOf("│") ?? 0) + 1;
 		const pane = lines.slice(1).map((line) => line.slice(paneX));
 		assert.doesNotMatch(pane.slice(0, 3).join("\n"), /LIVE|RETAINED|Earlier messages available|Roster|Message admitted/);
-		assert.match(pane[0] ?? "", /one {2}work/);
-		assert.match(pane[1] ?? "", /● Working/);
-		const model = pane.findIndex((line) => /Example model \[high\]/.test(line));
+		assert.match(pane[0] ?? "", /^ one +● Working\s*$/u);
+		assert.equal(pane[1]?.trim(), "");
+		const model = pane.findIndex((line) => /test\/model \[high\]/.test(line));
 		assert.ok(model > 0);
 		assert.match(pane[model] ?? "", /16%.*160\/1\.0k.*~\$0\.42.*21% hit/);
 		assert.match(pane[model + 1] ?? "", /\/work/);
 		const caption = lines.find((line) => line.includes("╭─ To one"));
-		assert.match(caption ?? "", /Correction at next step/);
+		assert.match(caption ?? "", /╭─ To one/);
+		assert.doesNotMatch(caption ?? "", /Correction at next step|New message/);
 		assert.doesNotMatch(caption ?? "", /%|\$|model|high|ctx/);
 		assert.ok(lines.some((line) => line.includes("╰─ Message admitted")), "the receipt is on the message field's bottom border");
 	} finally { f.ui.dispose(); }

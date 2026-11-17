@@ -46,11 +46,16 @@ type Fixture = ReturnType<typeof fixture>;
 const visible = (f: Fixture) => f.ui.render(f.tui.terminal.columns).map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
 const shown = (f: Fixture) => visible(f).join("\n");
 
-/** The line that carries the list's facts, whichever row the layout puts it on. */
+/** The list column, excluding the selected conversation and footer actions. */
 function facts(f: Fixture): string {
-	const line = visible(f).find((candidate) => /loaded|reading related work|related work failed|Loading more agents/u.test(candidate));
-	assert.ok(line, `no facts line\n${shown(f)}`);
-	return line.trim();
+	const lines = visible(f);
+	const width = f.tui.terminal.columns;
+	if (width >= 100) {
+		const divider = lines[1]?.indexOf("│") ?? -1;
+		assert.ok(divider > 0);
+		return lines.slice(1, -1).map((line) => line.slice(0, divider).trimEnd()).join("\n");
+	}
+	return lines.slice(1, f.tui.terminal.rows >= 25 ? 9 : 6).map((line) => line.trimEnd()).join("\n");
 }
 
 /** Click the visible label on the row it is drawn on. */
@@ -65,7 +70,7 @@ function click(f: Fixture, label: string, y?: number): void {
 	assert.ok(f.ui.handleMouse(event)?.handled, `${label} accepts the click`);
 }
 
-it("the compact strip at 80x24 draws Find, Related/All and the facts on one row, and each click acts where it is drawn", async () => {
+it("the compact strip at 80x24 draws Find and Related/All above the grouped rows, and each click acts where it is drawn", async () => {
 	const gate = deferred();
 	let reading = true;
 	const observed = source(rows());
@@ -79,25 +84,25 @@ it("the compact strip at 80x24 draws Find, Related/All and the facts on one row,
 	try {
 		for (let attempt = 0; attempt < 6; attempt++) await turn();
 		const pending = visible(f)[1] ?? "";
-		for (const text of ["Find", "/ to find agents", " Related ", " All ", "reading related work…"]) assert.ok(pending.includes(text), `${text} is drawn at 80x24`);
+		for (const text of ["/ Find", " Related ", " All "]) assert.ok(pending.includes(text), `${text} is drawn at 80x24`);
 		assert.equal(visibleWidth(pending), 80, "the row fills exactly the window");
 		click(f, " All ", 1);
-		assert.match(facts(f), /All · 3 loaded/u, "All shows every loaded agent");
+		assert.match(facts(f), /Working 3/u, "All shows every loaded agent");
 		click(f, " Related ", 1);
-		assert.match(facts(f), /reading related work…/u);
+		assert.match(facts(f), /Reading related work…/u);
 		reading = false;
 		gate.resolve();
 		for (let attempt = 0; attempt < 8; attempt++) await turn();
-		assert.match(facts(f), /Related · 1 of 3 loaded/u);
+		assert.match(facts(f), /Working 1/u);
 		const complete = visible(f)[1] ?? "";
-		for (const text of ["Find", "/ to find agents", " Related ", " All ", "Related · 1 of 3 loaded"]) assert.ok(complete.includes(text), `${text} is drawn after the read`);
-		assert.equal(complete.includes("Load more"), false, "a complete page shows no Load more");
+		for (const text of ["/ Find", " Related ", " All "]) assert.ok(complete.includes(text), `${text} is drawn after the read`);
+		assert.doesNotMatch(facts(f), /Load more|loaded|retained|with errors/u, "a complete list has no pagination or retired totals");
 		assert.doesNotMatch(shown(f), /Unrelated/u, "Related lists this session's work only");
 		click(f, " All ", 1);
-		assert.match(facts(f), /All · 3 loaded/u);
-		assert.match(shown(f), /↓ 2 more/u, "All lists every loaded agent");
+		assert.match(facts(f), /Working 3/u);
+		assert.match(facts(f), /↓ 2 more/u, "the compact viewport states the rows below");
 		click(f, " Related ", 1);
-		assert.match(facts(f), /Related · 1 of 3 loaded/u);
+		assert.match(facts(f), /Working 1/u);
 	} finally {
 		gate.resolve();
 		f.ui.dispose();
@@ -117,20 +122,23 @@ it("compact list controls keep their clicks through a resize and Load more still
 	try {
 		for (let attempt = 0; attempt < 8; attempt++) await turn();
 		const strip = visible(f)[1] ?? "";
-		for (const text of ["Find", "/ to find agents", " Related ", " All ", "Related · 1 of 3 loaded", "Load more"]) assert.ok(strip.includes(text), `${text} shares the compact row with pagination`);
-		assert.equal(visibleWidth(strip), 80, "the paginated compact row fills the window");
-		assert.match(facts(f), /Related · 1 of 3 loaded Load more/u);
+		for (const text of ["/ Find", " Related ", " All "]) assert.ok(strip.includes(text), `${text} stays on the Find row`);
+		assert.equal(visibleWidth(strip), 80, "the compact Find row fills the window");
+		assert.match(facts(f), /Working 1[\s\S]*Load more/u);
+		assert.equal(visible(f)[5]?.trim(), "Load more", "a complete viewport leaves only pagination on the last row");
+		assert.doesNotMatch(strip, /Load more|loaded|retained|\$/u);
 		click(f, " All ", 1);
-		assert.match(facts(f), /All · 3 loaded Load more/u);
+		assert.match(facts(f), /Working 3[\s\S]*Load more/u);
+		assert.match(visible(f)[5] ?? "", /^↓ 2 more +Load more\s*$/u, "position and pagination share the last row");
 		f.resize(140, 30);
-		assert.match(facts(f), /All · 3 loaded .*Load more/u, "the wide list states the facts after a resize");
+		assert.match(facts(f), /Working 3[\s\S]*Load more/u, "the wide list states the facts after a resize");
 		click(f, " Related ");
-		assert.match(facts(f), /Related · 1 of 3 loaded/u, "a wide-list click works after the resize");
+		assert.match(facts(f), /Working 1/u, "a wide-list click works after the resize");
 		f.resize(80, 24);
-		assert.match(facts(f), /Related · 1 of 3 loaded Load more/u);
+		assert.match(facts(f), /Working 1[\s\S]*Load more/u);
 		click(f, " All ", 1);
-		assert.match(facts(f), /All · 3 loaded Load more/u, "the compact click works after resizing back");
-		click(f, "Load more", 1);
+		assert.match(facts(f), /Working 3[\s\S]*Load more/u, "the compact click works after resizing back");
+		click(f, "Load more", 5);
 		for (let attempt = 0; attempt < 6; attempt++) await turn();
 		assert.deepEqual(cursors, [undefined, "more"], "Load more reads the next page once");
 	} finally {
@@ -139,7 +147,7 @@ it("compact list controls keep their clicks through a resize and Load more still
 });
 
 for (const [width, height] of [[140, 40], [80, 24]] as const) {
-	it(`a routine relation refresh keeps the count and the geometry at ${width}`, async (t) => {
+	it(`a routine relation refresh keeps the section count and the geometry at ${width}`, async (t) => {
 		t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
 		let gate: Promise<unknown> | undefined;
 		const observed = source(rows());
@@ -159,8 +167,8 @@ for (const [width, height] of [[140, 40], [80, 24]] as const) {
 			for (let attempt = 0; attempt < 8; attempt++) await turn();
 			const settledFacts = facts(f);
 			const findRow = visible(f)[1] ?? "";
-			assert.match(settledFacts, /Related · 1 of 3 loaded/u);
-			assert.match(findRow, /\/ to find agents/u);
+			assert.match(settledFacts, /Working 1/u);
+			assert.match(findRow, /\/ Find/u);
 			const selected = f.state.selected;
 			for (let cycle = 0; cycle < 3; cycle++) {
 				const pending = deferred();
@@ -183,7 +191,7 @@ for (const [width, height] of [[140, 40], [80, 24]] as const) {
 		}
 	});
 
-	it(`a changed count, a failed read and its recovery still show at ${width}`, async (t) => {
+	it(`section counts, a failed relation read and its recovery still show at ${width}`, async (t) => {
 		t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
 		let gate: Promise<unknown> | undefined;
 		let joined = false;
@@ -211,19 +219,19 @@ for (const [width, height] of [[140, 40], [80, 24]] as const) {
 		};
 		try {
 			for (let attempt = 0; attempt < 8; attempt++) await turn();
-			assert.match(facts(f), /Related · 1 of 3 loaded/u);
+			assert.match(facts(f), /Working 1/u);
 			await refresh(() => {
 				joined = true;
 			});
-			assert.match(facts(f), /Related · 2 of 3 loaded/u, "a new relation publishes when it is ready");
+			assert.match(facts(f), /Working 2/u, "a new relation publishes when it is ready");
 			await refresh(() => {
 				failing = true;
 			});
-			assert.match(facts(f), /Related · 1 of 3 loaded · failed/u, "a failed read is stated, not hidden");
+			assert.match(facts(f), /Related work: read failed/u, "a failed read is stated, not hidden");
 			await refresh(() => {
 				failing = false;
 			});
-			assert.match(facts(f), /Related · 2 of 3 loaded/u, "recovery publishes the current facts again");
+			assert.match(facts(f), /Working 2/u, "recovery publishes the current facts again");
 			assert.doesNotMatch(facts(f), /failed/u);
 		} finally {
 			f.ui.dispose();
@@ -231,14 +239,14 @@ for (const [width, height] of [[140, 40], [80, 24]] as const) {
 	});
 }
 
-it("a long facts row keeps its count and failure rather than clipping them for Load more", async () => {
+it("a narrow footer keeps the relation failure rather than clipping it for Load more", async () => {
 	const observed = source(rows());
 	const list = observed.list;
 	observed.list = async (input): Promise<AgentConversationPage> => {
 		const result = await list(input);
 		return { ...result, coverage: { ...result.coverage, complete: false, nextCursor: "more" } };
 	};
-	const f = fixture(140, 40, observed, {
+	const f = fixture(100, 40, observed, {
 		collaborate: async (input) => {
 			if (input.action === "list") throw new Error("Threads are unreadable");
 			return undefined;
@@ -247,7 +255,8 @@ it("a long facts row keeps its count and failure rather than clipping them for L
 	try {
 		for (let attempt = 0; attempt < 8; attempt++) await turn();
 		const line = facts(f);
-		assert.match(line, /Related · 1 of 3 loaded · failed/u, "the count and the failure stay whole");
+		assert.match(line, /Working 1/u);
+		assert.match(line, /Related work: read failed/u, "the failure stays whole");
 		assert.doesNotMatch(line, /Load more/u, "the secondary control gives its space to the facts");
 	} finally {
 		f.ui.dispose();

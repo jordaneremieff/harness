@@ -67,7 +67,7 @@ async function settle(condition: () => boolean): Promise<void> {
 	assert.ok(condition(), "the condition never held");
 }
 
-it("keeps owed final reports visible in the roster, conversation view and compaction seed after an input settles", async () => {
+it("keeps open-work facts out of the quiet view while the compaction seed preserves owed reports", async () => {
 	const observed = source([row("one", { state: "idle", openWorkCount: 2, openWorkOldest: 300000 })]);
 	let notify = () => {};
 	observed.subscribe = (listener) => { notify = listener; return () => {}; };
@@ -81,8 +81,8 @@ it("keeps owed final reports visible in the roster, conversation view and compac
 	try {
 		await turn();
 		const text = shown(f);
-		assert.equal(text.match(/work open: 2, oldest: 5m/gu)?.length, 2, "both the roster and selected conversation show the count and age");
-		assert.match(paneLines(f).lines.join("\n"), /Idle[\s\S]*work open: 2, oldest: 5m/u);
+		assert.doesNotMatch(text, /work open:|oldest:/u, "the list and header omit open-work facts");
+		assert.match(targetHeader(f)[0] ?? "", /○ Idle · .*ago/u);
 		assert.match(NATIVE_COMPACTION_SEED, /Preserve each owed final report with its request, reply recipient, dependencies, and next action/u);
 		const closed = { ...status, openWorkCount: 0, openWorkOldest: 0 };
 		frame = { ...frame, revision: 2, status: closed };
@@ -94,15 +94,15 @@ it("keeps owed final reports visible in the roster, conversation view and compac
 	} finally { f.ui.dispose(); }
 });
 
-/** The target header's state line: a divider or the row start, the state glyph, then the state label. */
-const STATE_LINE = /(^|│) [◌●○✓!■↯·?] (Starting|Working|Idle|Done|Failed|Stopped|Interrupted|New|Unavailable)\b/u;
+/** The target header state follows the name on the same row. */
+const STATE_LINE = /[◌●○✓!■↯·?] (Starting|Working|Idle|Done|Failed|Stopped|Interrupted|New|Unavailable)(?: · [^\r\n]*)?\s*$/u;
 
 /** The rows right of the list divider, or every row when the list is a strip above the pane. */
 function paneLines(f: Fixture): { lines: string[]; title: number } {
 	const lines = visible(f.ui.render(f.tui.terminal.columns));
 	const state = lines.findIndex((line, index) => index > 0 && STATE_LINE.test(line));
 	assert.ok(state > 0, "the selected agent's header is shown");
-	const title = state - 1;
+	const title = state;
 	const divider = lines[title]?.indexOf("│") ?? -1;
 	return { lines: lines.map((line) => (divider >= 0 ? line.slice(divider + 1) : line)), title };
 }
@@ -172,7 +172,7 @@ for (const [width, height] of [
 	[140, 45],
 	[80, 24],
 ]) {
-	it(`live state drives the delivery label and Stop at ${width}`, async () => {
+	it(`live state drives the header and Stop without a delivery caption at ${width}`, async () => {
 		const observed = source([row("one")]);
 		let notify = () => {};
 		observed.subscribe = (listener) => {
@@ -192,7 +192,8 @@ for (const [width, height] of [
 				clock.advance(50);
 			await turn();
 				const screen = shown(f);
-				assert.match(screen, busy ? /╭─ To one ─+ Correction at next step ⇄/u : /╭─ To one ─+┄*╮/u);
+				assert.match(screen, /╭─ To one ─+┄*╮/u);
+				assert.doesNotMatch(screen, /Correction at next step|New message/u);
 				const header = targetHeader(f).join("\n");
 				assert.match(header, busy ? /● Working/u : /Idle/u);
 				assert.doesNotMatch(header, /Stop/u, "the header holds no commands");
@@ -296,7 +297,7 @@ for (const [width, height] of [
 				assert.ok(lines.every((line) => visibleWidth(line) <= width));
 				const screen = visible(lines).join("\n");
 				assert.match(screen, /▌ ● Build/u);
-				assert.match(screen, /Find {2}Build/u);
+				assert.match(visible(lines)[1] ?? "", /^Build\s*(?:│|$)/u, "the focused Find field shows its value");
 				assert.match(screen, /Check the task/u);
 			} finally {
 				f.ui.dispose();
@@ -424,7 +425,7 @@ for (const [patch, reason, recovery] of [
 	});
 }
 
-it("a row without a stored error shows its specific read status instead of a generic reason", async () => {
+it("an unavailable row without a stored error names its unreadable storage", async () => {
 	const observed = source([row("one", { owner: "unavailable", state: "unavailable" })]);
 	observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: "Check the task", timestamp: 0 }] }], partial: true, revision: "1", nextBefore: null });
 	const f = fixture(140, 45, observed);
@@ -432,14 +433,16 @@ it("a row without a stored error shows its specific read status instead of a gen
 		await turn();
 		await turn();
 		const header = targetHeader(f).join("\n");
-		assert.match(header, /Partial history/u);
-		assert.doesNotMatch(header, /Storage cannot be read/u);
+		assert.match(header, /Unavailable/u);
+		assert.match(shown(f), /Check the task/u);
+		assert.doesNotMatch(header, /Partial history/u, "the settled header omits read coverage");
+		assert.match(header, /Unavailable: Storage cannot be read · Reconnect starts the host/u);
 	} finally {
 		f.ui.dispose();
 	}
 });
 
-it("the error count filters the list and Show all or Escape restores every agent", async () => {
+it("the errors key filters agents and its key or Escape restores every agent", async () => {
 	const rows = [row("ok", { name: "Okay", modifiedAt: 3 }), row("bad", { name: "Broken", state: "failed", error: "quota limit", modifiedAt: 2 }), row("sad", { name: "Host fault", health: { lastError: "Host error" }, modifiedAt: 1 })];
 	const f = fixture(120, 30, source(rows));
 	/** The whole screen and the list column alone; the pane keeps the selected agent while the list narrows. */
@@ -451,19 +454,19 @@ it("the error count filters the list and Show all or Escape restores every agent
 	try {
 		await turn();
 		await turn();
-		assert.match(read().list, /2 with errors/u);
+		assert.doesNotMatch(read().list, /with errors|loaded|retained/u);
 		assert.match(read().list, /Okay/u);
-		clickLabel(f, "2 with errors");
+		press(f, "e");
 		await turn();
 		assert.doesNotMatch(read().list, /Okay/u);
 		assert.match(read().list, /Broken/u);
-		assert.match(read().list, /errors only/u);
-		assert.match(read().list, /errors · 2 of 3 loaded/u);
+		assert.match(read().list, /Host fault/u);
+		assert.doesNotMatch(read().list, /errors only|loaded/u);
 		press(f, "e");
 		await turn();
 		assert.match(read().list, /Okay/u);
-		assert.match(read().list, /3 loaded/u);
-		clickLabel(f, "2 with errors");
+		assert.match(read().list, /Broken/u);
+		press(f, "e");
 		f.ui.handleInput("\x1b");
 		await turn();
 		assert.match(read().list, /Okay/u);
@@ -794,7 +797,8 @@ it("a busy live frame updates the header, the list and the message field togethe
 		frame = conversationFrame();
 		changed();
 		const screen = shown(f);
-		assert.match(screen, /Correction at next step ⇄/u);
+		assert.match(screen, /╭─ To one/u);
+		assert.doesNotMatch(screen, /Correction at next step/u);
 		assert.match(targetHeader(f).join("\n"), /● Working/u);
 		assert.match(shown(f), /model │/u);
 		assert.doesNotMatch(screen, /Done|0 working/u);
@@ -1049,7 +1053,7 @@ it("Tasks opens a resolved unloaded conversation and releases its graph", async 
 });
 
 for (const width of [80, 164]) {
-	it(`the fact line resolves the current model once per render at ${width}`, async () => {
+	it(`the cached roster leaves one selected-model lookup per render at ${width}`, async () => {
 		const observed = source([row("one"), row("two", { model: { provider: "other", modelId: "second", thinkingLevel: "high" } })]);
 		observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", api: "openai-responses", provider: "test", model: "model", content: [], timestamp: 0, stopReason: "stop", usage: { input: 160, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 160, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] }], partial: false, revision: "1" });
 		const lookups: Array<[string, string]> = [];
@@ -1063,19 +1067,23 @@ for (const width of [80, 164]) {
 		try {
 			await turn();
 			let screen = shown(f);
-			assert.deepEqual(lookups, [["test", "model"]]);
+			lookups.length = 0;
+			screen = shown(f);
+			assert.deepEqual(lookups, [["test", "model"]], "a cached roster leaves one selected-model lookup");
 			assert.match(screen, /160\/1.0k/u);
 			assert.match(screen, /16%/u);
 			capacity = 2000;
 			f.ui.handleInput("\x1b[B");
 			await turn();
 			screen = shown(f);
-			assert.deepEqual(lookups, [["test", "model"], ["other", "second"]]);
+			lookups.length = 0;
+			screen = shown(f);
+			assert.deepEqual(lookups, [["other", "second"]]);
 			assert.match(screen, /160\/2.0k/u);
 			assert.match(screen, /8%/u);
 			capacity = undefined;
 			screen = shown(f);
-			assert.equal(lookups.length, 3);
+			assert.equal(lookups.length, 2);
 			assert.match(screen, /│ 160 │/u);
 			assert.doesNotMatch(screen, /8%|2.0k/u);
 		} finally {
@@ -1090,8 +1098,8 @@ for (const width of [80, 164]) {
 		try {
 			await turn();
 			const header = targetHeader(f);
-			assert.match(header[0] ?? "", /one {2}work/u);
-			assert.match(header[1] ?? "", /○ Idle/u);
+			assert.match(header[0] ?? "", /^ one +○ Idle · .*ago\s*$/u);
+			assert.equal(header[1]?.trim(), "");
 			assert.equal(header.length, 2);
 			assert.doesNotMatch(header.join("\n"), /Model|Tokens|Context|Cost|\$\?/u);
 			const { lines } = paneLines(f);
@@ -1103,16 +1111,15 @@ for (const width of [80, 164]) {
 	});
 }
 
-it("c configure opens the same form by its key and by a click on its footer control", async () => {
+it("Configure opens the same form through its key and More", async () => {
 	for (const mode of ["key", "click"] as const) {
 		const f = fixture(140, 45, source([row("one", { state: "idle" })]));
 		try {
 			await turn();
 			if (mode === "key") f.ui.handleInput("c");
 			else {
-				const rows = visible(f.ui.render(140));
-				const footer = rows.at(-1) ?? "";
-				f.ui.handleMouse(click(footer.indexOf("c configure") + 1, rows.length - 1, 140, 45));
+				press(f, "x");
+				clickLabel(f, "Configure");
 			}
 			assert.equal(f.ui.focus.inspector, "Configure", mode);
 		} finally {
@@ -1150,12 +1157,13 @@ it("the footer follows the focused region", async () => {
 	try {
 		await turn();
 		const footer = () => (visible(f.ui.render(164)).at(-1) ?? "").trimEnd();
-		assert.match(footer(), /↑↓ select.*esc (close|list)$/u);
+		assert.equal(footer(), "↑↓ select · enter message · / find · s stop · x more · esc close");
+		assert.doesNotMatch(footer(), /configure|help|thinking|expand|tab|retained|\$/u);
 		press(f, "/");
-		assert.match(footer(), /↑↓ select · enter done · esc list$/u);
+		assert.match(footer(), /↑↓ select · enter done · ctrl\+n more · esc list$/u);
 		press(f, "\x1b");
 		press(f, "\r");
-		assert.match(footer(), /enter (send|steer).*esc list$/u);
+		assert.match(footer(), /enter send.*ctrl\+n more.*esc done$/u);
 		press(f, "\x1b");
 		press(f, "\t");
 		assert.match(footer(), /↑↓ scroll.*esc list$/u);
@@ -1169,17 +1177,18 @@ it("footer targets follow a resize", async () => {
 	try {
 		await turn();
 		const wide = visible(f.ui.render(140));
-		const oldX = (wide.at(-1) ?? "").indexOf("? help");
-		assert.ok(oldX > 0, "the wide row shows Help");
+		const oldX = (wide.at(-1) ?? "").indexOf("x more");
+		assert.ok(oldX > 0, "the wide row shows More");
+		assert.doesNotMatch(wide.at(-1) ?? "", /configure|help/u, "secondary actions stay under More");
 		f.resize(80, 24);
 		const narrow = visible(f.ui.render(80));
 		const narrowFooter = (narrow.at(-1) ?? "").trimEnd();
 		assert.ok(!narrowFooter.includes("? help"), "the narrow row hides Help in More");
-		f.ui.handleMouse(click(oldX, narrow.length - 1, 80, 24));
+		f.ui.handleMouse(click(oldX, wide.length - 1, 140, 40));
 		assert.equal(f.ui.focus.inspector, undefined, "the old position opens nothing");
 		f.ui.handleMouse(click(narrowFooter.indexOf("x more") + 1, narrow.length - 1, 80, 24));
 		const menu = visible(f.ui.render(80));
-		assert.ok(menu.some((line) => line.includes("help")), "the drawn More control lists the hidden action");
+		assert.ok(menu.some((line) => line.includes("Help")), "the drawn More control lists the hidden action");
 	} finally {
 		f.ui.dispose();
 	}

@@ -56,14 +56,14 @@ it("the public Pi event bus completes synchronous publication responses before r
 	events.clear();
 });
 
-/** The expanded dashboard card for a definition; a collapsed dashboard tool is one summary line. */
+/** The expanded native card for one retained display definition. */
 function expandedText(definition: ToolDefinition): string {
 	const tool = new ToolExecutionComponent(definition.name, "call", {}, { showImages: false }, definition, { requestRender() {} } as TUI, "/work");
 	tool.setExpanded(true);
 	return stripVTControlCharacters(tool.render(80).join("\n"));
 }
 
-it("collects fake publishers in either factory load order and uses their card when expanded", async () => {
+it("collects fake publishers in either factory load order and uses their native card in both states", async () => {
 	for (const publisherFirst of [false, true]) {
 		const bus = new FakeBus();
 		const publisher = bus.scope();
@@ -77,8 +77,11 @@ it("collects fake publishers in either factory load order and uses their card wh
 		const tool = new ToolExecutionComponent("fixture_tool", "call", {}, { showImages: false }, definition, { requestRender() {} } as TUI, "/work");
 		tool.updateResult({ content: [{ type: "text", text: "Unformatted result" }], isError: false });
 		const collapsed = stripVTControlCharacters(tool.render(80).join("\n"));
-		assert.match(collapsed, /fixture_tool → Unformatted result/u, "a collapsed published tool is one summary line");
-		assert.doesNotMatch(collapsed, /Published call|Published result/u);
+		assert.equal(definition.renderCall, renderCall);
+		assert.equal(definition.renderResult, renderResult);
+		assert.match(collapsed, /Published call/u);
+		assert.match(collapsed, /Published result/u);
+		assert.doesNotMatch(collapsed, /Unformatted result|→/u);
 		tool.setExpanded(true);
 		const visible = stripVTControlCharacters(tool.render(80).join("\n"));
 		assert.match(visible, /Published call/u);
@@ -147,7 +150,7 @@ it("native builtin, codemode and agent cards take precedence over published name
 	}
 	assert.doesNotMatch(expandedText(define("read", false)), /Published call/u);
 	const unpublished = define("unpublished");
-	assert.equal(unpublished.renderShell, "self", "no dashboard tool draws an outer block");
+	assert.equal(unpublished.renderShell, undefined, "unpublished tools use Pi's default shell");
 	assert.doesNotMatch(expandedText(unpublished), /Published call/u);
 });
 

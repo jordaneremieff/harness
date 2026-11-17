@@ -28,8 +28,9 @@ setKeybindings(keys);
 export const theme = {
 	fg: (_color: string, text: string) => text,
 	bg: (_color: string, text: string) => text,
+	getBgAnsi: (_color: string) => "",
 	bold: (text: string) => text,
-} as Theme;
+} as unknown as Theme;
 export const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 export function deferred<T = void>() {
 	let resolve!: (value: T) => void;

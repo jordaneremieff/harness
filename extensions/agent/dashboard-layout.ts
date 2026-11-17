@@ -1,11 +1,11 @@
-import { sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { sliceByColumn, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { DashboardLayout } from "./dashboard-state.ts";
 type Paint = Pick<Theme, "fg" | "bg" | "bold">;
 export const MIN_ROSTER_COLUMNS = 32;
 export const MAX_ROSTER_COLUMNS = 60;
 /** The list's share of the window width before a saved divider position applies. */
-export const ROSTER_SHARE = 0.27;
+export const ROSTER_SHARE = 0.3;
 export const MIN_DETAIL_COLUMNS = 60;
 export const MIN_COMPOSER_ROWS = 5;
 export const MIN_TRANSCRIPT_ROWS = 6;
@@ -75,6 +75,8 @@ export interface ListItem {
 	readonly time?: string;
 	readonly timeOnDetail?: boolean;
 	readonly selected: boolean;
+	/** A blank row after the item; lists that separate items by contrast alone leave it out. */
+	readonly gap?: boolean;
 }
 
 /** Rows of one list item, with the row that holds the time. */
@@ -85,13 +87,12 @@ export interface ListBlock {
 	readonly timeWidth: number;
 }
 
-/** Rows per list item in every dashboard list: title, detail, then a gap or the title's second row. */
+/** Rows per list item in the Threads and Efforts lists: title, detail, then a blank gap row. */
 export const LIST_BLOCK_ROWS = 3;
 
 /**
- * One list item in three rows. A title that fits takes one row, then the detail, then a blank gap row.
- * A longer title wraps into the gap row instead, so the list shows the identifying words before any
- * metadata. The selection rail and background cover the content rows only.
+ * One list item: the title on one row, shortened with … when it does not fit, then the detail, then a
+ * blank gap row unless `gap` is false. The selection rail and background cover the content rows only.
  */
 export function listBlock(item: ListItem, width: number, theme: Paint): ListBlock {
 	const rail = item.selected ? theme.fg("accent", "▌ ") : "  ";
@@ -100,25 +101,18 @@ export function listBlock(item: ListItem, width: number, theme: Paint): ListBloc
 	const onTitle = timeWidth > 0 && !item.timeOnDetail;
 	const onDetail = timeWidth > 0 && item.timeOnDetail === true;
 	const stamp = theme.fg("muted", truncateToWidth(time, timeWidth, ""));
-	const [first, rest] = splitTitle(item.title, Math.max(1, width - 4 - (onTitle ? timeWidth + 1 : 0)), Math.max(1, width - 4));
+	const title = truncateToWidth(item.title.replace(/\s+/gu, " ").trim(), Math.max(1, width - 4 - (onTitle ? timeWidth + 1 : 0)), "…");
 	const paint = (text: string) => theme.bold(theme.fg(item.titleColor ?? "text", text));
-	const titleRow = `${rail}${theme.fg(item.glyphColor, `${item.glyph} `)}${paint(first)}`;
+	const titleRow = `${rail}${theme.fg(item.glyphColor, `${item.glyph} `)}${paint(title)}`;
 	const lines = [onTitle ? `${fitLine(titleRow, width - timeWidth)}${stamp}` : titleRow];
-	if (rest) lines.push(`${rail}  ${paint(rest)}`);
 	const detail = `${rail}  ${theme.fg(item.detailColor ?? "muted", truncateToWidth(item.detail, Math.max(1, width - 4 - (onDetail ? timeWidth + 1 : 0)), "…"))}`;
 	const timeLine = onDetail ? lines.length : 0;
 	lines.push(onDetail ? `${fitLine(detail, width - timeWidth)}${stamp}` : detail);
-	if (lines.length < LIST_BLOCK_ROWS) lines.push("");
+	if (item.gap !== false) lines.push("");
 	const painted = lines.map((line) => (item.selected && line ? highlightRow(line, width, 4, theme) : fitLine(line, width)));
 	return { lines: painted, timeLine, timeX: width - timeWidth, timeWidth };
 }
 
-/** A title's first row at `firstRoom` columns and the rest on one row of `restRoom` columns, shortened with … when longer. */
-function splitTitle(text: string, firstRoom: number, restRoom: number): [string, string] {
-	const title = text.replace(/\s+/gu, " ").trim();
-	const first = wrapTextWithAnsi(title, firstRoom)[0] ?? "";
-	return [first, title.length > first.length ? truncateToWidth(title.slice(first.length).trim(), restRoom, "…") : ""];
-}
 export function dashboardPaneGeometry(paneHeight: number, headerRows: number, editorRows: number) {
 	return {
 		composerMaxRows: Math.max(0, paneHeight - headerRows - 2 - MIN_TRANSCRIPT_ROWS),

@@ -5,7 +5,7 @@ import { updateDraft, subscribeAgentState, type AgentDraftState } from "./dashbo
 import { AgentComposer } from "./agent-composer.ts";
 import { ConversationView } from "./conversation-view.ts";
 import type { AgentCardLookup } from "./tool-cards.ts";
-import { agentStatusLines, type AgentModelInfo, type DelegatedFigures } from "./agent-footer.ts";
+import { agentStatusLines, type AgentModelInfo } from "./agent-footer.ts";
 import type { UsageState } from "@earendil-works/pi-durable";
 import { contextTokens } from "./agent-usage.ts";
 export class AgentConsole {
@@ -61,16 +61,8 @@ export class AgentConsole {
 	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[] = []): void {
 		this.conversation.setContent(entries, live, this.row.cwd);
 	}
-	messageLabel(): string {
-		return this.messageMode().toLowerCase();
-	}
-	messageMode(): string {
-		return this.row.state === "working"
-			? this.state.mode === "steer" ? "Correction at next step" : "New work at next step"
-			: "Send";
-	}
-	statusLines(width: number, info?: AgentModelInfo, branch?: string, delegated?: DelegatedFigures): string[] {
-		return agentStatusLines(this.row, width, this.theme, this.context, info, this.usage, branch, delegated);
+	statusLines(width: number, info?: AgentModelInfo, branch?: string): string[] {
+		return agentStatusLines(this.row, width, this.theme, this.context, info, this.usage, branch);
 	}
 	save(): void {
 		updateDraft(this.state, this.composer.getText());

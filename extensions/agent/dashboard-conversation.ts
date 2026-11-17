@@ -1,5 +1,4 @@
 import { stripVTControlCharacters } from "node:util";
-import { AGENT_INPUT_KIND, isInputKind } from "./input-entry.ts";
 import type { AssistantMessage, Message, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { NestedToolSlot } from "@earendil-works/pi-durable";
 import {
@@ -85,7 +84,9 @@ class ReadingToolComponent extends ToolExecutionComponent {
 		const index = lines.findIndex((line) => stripVTControlCharacters(line).trim().length > 0);
 		if (index < 0) return [truncateToWidth(note.trim(), Math.max(1, width), "…")];
 		const next = [...lines];
-		next[index] = truncateToWidth(`${next[index]}${note}`, Math.max(1, width), "…");
+		const contentWidth = visibleWidth(stripVTControlCharacters(next[index]).trimEnd());
+		const content = truncateToWidth(next[index], contentWidth, "");
+		next[index] = truncateToWidth(`${content}${note}`, Math.max(1, width), "…");
 		return next;
 	}
 	override invalidate(): void {
@@ -102,10 +103,10 @@ function isItemClick(event: TuiMouseEvent): boolean {
 	return event.type === "click" && event.button === "left" && !event.shift && !event.alt && !event.ctrl && (event.clickCount ?? 1) === 1;
 }
 
-function contentText(content: Message["content"], includeImageLabels = true): string {
+function contentText(content: Message["content"]): string {
 	if (typeof content === "string") return content;
 	return content
-		.flatMap((part) => (part.type === "text" ? [part.text] : includeImageLabels && part.type === "image" ? ["[Image]"] : []))
+		.flatMap((part) => (part.type === "text" ? [part.text] : part.type === "image" ? ["[Image]"] : []))
 		.join("\n");
 }
 
@@ -143,38 +144,6 @@ export function renderableEntries(entries: readonly AgentConversationEntry[]): A
 		if (entry.kind === "pi.tool-result") return true;
 		return (entry.model ?? []).some(messageIsRenderable);
 	});
-}
-
-/** The first non-empty line of a task, without Markdown heading marks, bounded for one row. */
-function firstTaskLine(text: string): string {
-	const line = text.split("\n").map((part) => part.replace(/^#+\s*/u, "").trim()).find((part) => part.length > 0) ?? "";
-	const characters = Array.from(line);
-	return characters.length > 160 ? `${characters.slice(0, 159).join("")}…` : line;
-}
-
-/**
- * Historical first input recovered from the session summary when the bounded
- * transcript dropped the oldest entries. It is not the current task or role.
- * It shows as one line; the agent's Details keep the whole text.
- */
-export function firstTaskEntry(
-	snapshot: { readonly entries: readonly AgentConversationEntry[]; readonly partial: boolean },
-	row: { readonly firstMessage?: string } | undefined,
-): AgentConversationEntry | undefined {
-	if (!snapshot.partial) return undefined;
-	const first = (row?.firstMessage ?? "").trim();
-	if (first === "") return undefined;
-	const present = snapshot.entries.some(
-		(entry) =>
-			isInputKind(entry.kind) && (entry.model ?? []).some((message) => contentText(message.content, false).trimStart().startsWith(first)),
-	);
-	if (present) return undefined;
-	return {
-		id: "first-task",
-		kind: AGENT_INPUT_KIND,
-		data: { author: { role: "unknown" } },
-		model: [{ role: "user", content: `First task · ${firstTaskLine(first)}`, timestamp: 0 }],
-	};
 }
 
 /**
@@ -633,7 +602,7 @@ export class AgentConversation {
 		const cached = this.rendered.get(component);
 		return cached?.width === width ? cached.lines.length : 3;
 	}
-	/** A collapsed tool drawn as its one summary line. */
+	/** A native tool whose collapsed presentation occupies one row. */
 	private compactTool(component: Component, width: number): boolean {
 		return component instanceof ReadingToolComponent && this.contentHeight(component, width) === 1;
 	}

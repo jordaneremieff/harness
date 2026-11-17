@@ -110,12 +110,15 @@ it("opens Work with w, reads an arrived dependency, then reads the exact final r
 	const f: Fixture = fixture(140, 40, observed, { forms: (target) => formsHost(target, f.state, observed, f.calls, scenario.forms) });
 	try {
 		await settle();
-		assert.match(shown(f), /w work/u, "the footer offers Work while the agent owes a final report");
+		assert.doesNotMatch(visible(f).at(-1) ?? "", /w work/u, "the footer keeps only focus-specific controls");
+		press(f, "x");
+		assert.match(shown(f), /w\s+Work/u, "More offers the declared work view");
+		press(f, "\x1b");
 		press(f, "w");
 		await settle();
 		assert.equal(f.ui.focus.inspector, "Work");
 		let screen = shown(f);
-		assert.match(screen, /○ open · 1 of 2 arrived · Combine the/u);
+		assert.match(screen, /○ open · 1 of 2 arrived/u);
 		assert.match(screen, new RegExp(`↳ result arrived · ${scenario.surveyId} #${scenario.surveyInput}`, "u"));
 		assert.match(screen, new RegExp(`↳ pending · ${scenario.auditId} #${scenario.auditInput}`, "u"));
 		assert.match(screen, /│Combine the survey and the audit/u, "the detail holds the whole state note");
@@ -147,7 +150,7 @@ it("opens Work with w, reads an arrived dependency, then reads the exact final r
 		press(f, "r");
 		await settle();
 		screen = shown(f);
-		assert.match(screen, /✓ done · Combine the survey and the audit/u);
+		assert.match(screen, /✓ done · Combine the survey and the/u);
 		assert.match(screen, /↳ final report · delivering/u);
 		assert.doesNotMatch(screen, /read again · .*read again/u);
 		assert.match(screen, /0 open · 1 closed/u);
@@ -175,17 +178,17 @@ it("opens Work with w, reads an arrived dependency, then reads the exact final r
 	}
 });
 
-it("opens Work from a click on the header's work count and reads a result from the footer control", async (t) => {
+it("opens Work from More and reads a result from the footer control", async (t) => {
 	const scenario = await nativeScenario(t);
 	const observed = source([lead()]);
 	const f: Fixture = fixture(140, 40, observed, { forms: (target) => formsHost(target, f.state, observed, f.calls, scenario.forms) });
 	try {
 		await settle();
-		const header = visible(f).findIndex((line) => line.includes("work open: 1, oldest: 1m") && !line.includes("test"));
-		assert.ok(header >= 0, "the header shows the work count");
-		click(f, "work open: 1", 1, false);
+		assert.doesNotMatch(shown(f), /work open: 1, oldest/u, "the header omits work statistics");
+		press(f, "x");
+		click(f, "Work");
 		await settle();
-		assert.equal(f.ui.focus.inspector, "Work", "a click on the count opens Work, as w does");
+		assert.equal(f.ui.focus.inspector, "Work", "the More control opens Work, as w does");
 		click(f, "↳ result arrived");
 		await settle();
 		assert.match(shown(f), /Dependency of request task-a/u, "a click selects the dependency");
@@ -278,14 +281,16 @@ it("follows the live frame without a status read and shows unestablished evidenc
 		let screen = shown(f);
 		assert.equal(reads, 0, "a live frame supplies the items");
 		assert.match(screen, /1 open · 0 closed · live · 1 item could not be read/u);
-		assert.match(screen, /↳ not established · other-storage:4 #9/u);
+		assert.match(screen, /↳ not established · other-storage:/u);
+		assert.match(screen, /not established · other-storage:4 submission 9/u, "the detail keeps the exact dependency selectors");
 		assert.doesNotMatch(screen, /read again/u, "a live view offers no read again");
 		press(f, DOWN);
-		assert.match(shown(f), /No committed fact establishes its state: the producer is/u);
+		assert.match(shown(f), /No committed fact establishes its state: the producer/u);
+		assert.match(shown(f), /is in another storage/u);
 		assert.match(shown(f), /enter read result/u, "a dependency that is not established still reads its result");
 		frame = { ...frame, revision: 4, status: { ...frame.status, openWork: [closedItem("retained")] } };
 		screen = shown(f);
-		assert.match(screen, /✓ done · Combine the survey and the audit/u, "a newer frame replaces the items");
+		assert.match(screen, /✓ done · Combine the survey and the/u, "a newer frame replaces the items");
 		assert.match(screen, /↳ final report · kept for reading/u);
 		assert.equal(reads, 0);
 	} finally {

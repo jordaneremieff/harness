@@ -19,7 +19,8 @@ for (const width of [40, 80, 120]) it(`shows malformed arguments on one terminal
 	conversation.update(buildLiveEntries({ generation: { attempt: 1, message } }, []));
 	const lines = conversation.render(width).lines.map(stripVTControlCharacters);
 	assert.equal(lines.filter((line) => line.includes("Arguments error:")).length, 1);
-	assert.match(lines.join("\n"), /lookup → pending/u);
+	assert.match(lines.join("\n"), /lookup call.*Arguments error:/u);
+	assert.doesNotMatch(lines.join("\n"), /→ pending/u);
 	assert.ok(lines.every((line) => !line.includes("\n")));
 	assert.deepEqual(message, before);
 	conversation.update(buildLiveEntries({ generation: { attempt: 1, message: { ...message, content: [{ type: "toolCall", id: call.id, name: call.name, arguments: {} }] } } }, []));
