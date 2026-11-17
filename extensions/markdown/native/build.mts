@@ -64,7 +64,7 @@ export function sourceDigest(root: string = packageDir): string {
 			else if (entry.isFile()) files.push(path);
 		}
 	};
-	for (const dir of ["Sources", "Licenses"]) walk(dir);
+	for (const dir of ["Sources", "Licenses", "web"]) walk(dir);
 	const helper = join("..", "..", "rex", "terminal-origin.ts");
 	if (existsSync(join(root, helper))) files.push(helper);
 	for (const name of EDITOR_WRITER_SOURCES) files.push(join("..", name));
@@ -136,6 +136,64 @@ function embedTerminalOrigin(resources: string): { helper: string; node: string 
 	const node = ["/opt/homebrew/bin/node", "/usr/local/bin/node"].find((path) => existsSync(path)) ?? process.execPath;
 	console.log(`Pane return helper embedded; Node: ${node}`);
 	return { helper: "terminal-origin.ts", node };
+}
+
+/** Directory names whose contents are test inputs and never ship with the web page. */
+const WEB_TEST_DIRECTORIES = new Set(["test", "tests", "fixtures", "__tests__", "__fixtures__"]);
+
+/** True for a web file that is a test, a type declaration or an unshipped TypeScript module. */
+function webTestFile(name: string): boolean {
+	return name.endsWith(".mts") || name.endsWith(".d.ts") || /\.(?:test|spec)\./u.test(name);
+}
+
+/** Rejects a web source without its entry page, before Swift compilation or any staging. */
+function assertWebSource(webSourceDir: string): void {
+	const indexPath = join(webSourceDir, "index.html");
+	let stat: ReturnType<typeof lstatSync>;
+	try {
+		stat = lstatSync(indexPath);
+	} catch {
+		throw new Error(`The web source has no entry page: ${indexPath} is missing.`);
+	}
+	if (stat.isSymbolicLink()) throw new Error(`The web entry page is a symbolic link: ${indexPath}.`);
+	if (!stat.isFile()) throw new Error(`The web entry page is not a regular file: ${indexPath}.`);
+}
+
+/**
+ * Stages the Markdown web page under Resources/web. HTML, CSS, assets and scripts keep their
+ * subdirectories; a .ts module ships as a type-stripped .js file. Hidden entries, test inputs and
+ * .mts/.d.ts modules are skipped, and symbolic or other non-regular entries are rejected.
+ */
+export function stageWeb(resources: string, webSourceDir: string = join(packageDir, "web")): void {
+	assertWebSource(webSourceDir);
+	copyWebDirectory(webSourceDir, join(resources, "web"), webSourceDir);
+}
+function copyWebEntry(from: string, to: string, name: string, root: string): void {
+	const source = join(from, name);
+	const stat = lstatSync(source);
+	if (stat.isSymbolicLink()) throw new Error(`The web source contains a symbolic link: ${relative(root, source)}.`);
+	if (name.startsWith(".")) return;
+	if (stat.isDirectory()) {
+		if (!WEB_TEST_DIRECTORIES.has(name)) copyWebDirectory(source, join(to, name), root);
+		return;
+	}
+	if (!stat.isFile()) throw new Error(`The web source contains a non-regular entry: ${relative(root, source)}.`);
+	if (webTestFile(name)) return;
+	if (name.endsWith(".ts")) {
+		const stripped = stripTypeScriptTypes(readFileSync(source, "utf8"), { mode: "strip", sourceMap: false });
+		writeFileSync(join(to, name.replace(/\.ts$/u, ".js")), stripped);
+	} else cpSync(source, join(to, name));
+}
+function copyWebDirectory(from: string, to: string, root: string): void {
+	mkdirSync(to, { recursive: true });
+	const directory = opendirSync(from);
+	try {
+		let entry = directory.readSync();
+		while (entry) {
+			copyWebEntry(from, to, entry.name, root);
+			entry = directory.readSync();
+		}
+	} finally { directory.closeSync(); }
 }
 
 /** The Markdown-owned editor writer sources, shipped beside the helper as stripped .mjs modules. */
@@ -341,6 +399,8 @@ function main(): void {
 		process.exit(2);
 	}
 	const { app: destination, dir: store } = settingValues();
+	const webSourceDir = join(packageDir, "web");
+	assertWebSource(webSourceDir);
 	const digest = sourceDigest();
 	const swiftVersion =
 		run("swift", ["--version"])
@@ -369,6 +429,7 @@ function main(): void {
 		cpSync(join(packageDir, "Licenses"), join(contents, "Resources", "Licenses"), { recursive: true });
 		const terminalOrigin = embedTerminalOrigin(join(contents, "Resources"));
 		stageEditorWriter(join(contents, "Resources"));
+		stageWeb(join(contents, "Resources"), webSourceDir);
 		const editorWriter = editorWriterMetadata();
 		console.log(`Editor writer staged; Node: ${editorWriter.node}`);
 		const build = {
@@ -377,7 +438,7 @@ function main(): void {
 			paneOpen: PANE_OPEN,
 			paneOpenRequest: PANE_OPEN_REQUEST,
 			editorOpen: EDITOR_OPEN,
-			live: 1,
+			live: 2,
 			sourceDigest: digest,
 			builtAt: new Date().toISOString(),
 			swift: swiftVersion,

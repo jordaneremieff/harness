@@ -12,6 +12,7 @@ import { createPublishTool, createNativePublishTool } from "./publish.ts";
 import { createReadTool, createNativeReadTool } from "./read.ts";
 import { MarkdownStore } from "./store.ts";
 import { withLiveShow } from "./live-launch.ts";
+import { materializeAndReveal, openScratchpad, selectStored, type RevealRuntime } from "./reveal.ts";
 const config = { version: 1 as const, endpoint: "http://127.0.0.1:12345", token: "ab".repeat(32) };
 async function fixture(t: TestContext) {
 	const root = await mkdtemp(join(tmpdir(), "markdown-live-launch-"));
@@ -77,6 +78,51 @@ test("native publication and read prepare show commands from their actual callin
 		}
 		assert.deepEqual(calls, [String(conversation.id), String(conversation.id)]);
 	} finally { await harness.close(context); }
+});
+test("pane and editor openers accept live versions 1 and 2 without changing their launch contracts", async (t) => {
+	const f = await fixture(t);
+	const previous = process.env.PI_MARKDOWN_APP;
+	process.env.PI_MARKDOWN_APP = f.app;
+	t.after(() => { if (previous === undefined) delete process.env.PI_MARKDOWN_APP; else process.env.PI_MARKDOWN_APP = previous; });
+	const stored = await f.store.create({ title: "Exact", source: "captured", contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() } });
+	const saved = await selectStored(f.store.root, stored.document.id);
+	for (const live of [1, 2, 3]) {
+		await writeFile(join(f.app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1, pane: 1, paneOpenRequest: 1, editorOpen: 1, live }));
+		let dispatches = 0;
+		const runtime: RevealRuntime = { platform: "darwin", acceptanceMs: 5, run: async (_exe, args, options) => {
+			if (args[1] === "capture") return { stdout: "null" };
+			dispatches++;
+			const payload = JSON.parse(options.input ?? "null");
+			await checkLaunch(payload.argv, JSON.stringify(payload));
+			return { stdout: JSON.stringify({ version: 1, outcome: "created", detail: "Created.", receipt: { opaque: "pane" } }) };
+		} };
+		const result = await materializeAndReveal(async () => saved, new AbortController().signal, { gui: true, runtime, live: config });
+		if (live === 1 || live === 2) {
+			assert.equal(result.state, "not-confirmed");
+			await openScratchpad(new AbortController().signal, { runtime, live: config });
+			assert.equal(dispatches, 2);
+		} else {
+			assert.equal(result.state, "reveal-failed");
+			await assert.rejects(openScratchpad(new AbortController().signal, { runtime, live: config }), /cannot connect/u);
+			assert.equal(dispatches, 0);
+		}
+	}
+});
+test("show attaches live versions 1 and 2 but refuses unknown capabilities", async (t) => {
+	const f = await fixture(t);
+	for (const live of [1, 2, 3, undefined]) {
+		await writeFile(join(f.app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1, pane: 1, live }));
+		let calls = 0;
+		const outcome = await withLiveShow({ show: ["reader", "--pane", "document"] }, f.app, async () => { calls++; return config; });
+		if (live === 1 || live === 2) {
+			assert.ok(outcome.show);
+			await checkLaunch(outcome.show, JSON.stringify(outcome));
+			assert.equal(calls, 1);
+		} else {
+			assert.equal(outcome.show, undefined);
+			assert.equal(calls, 0);
+		}
+	}
 });
 test("a missing live app or closed conversation preserves the successful document outcome", async (t) => {
 	const f = await fixture(t);

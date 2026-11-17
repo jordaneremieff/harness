@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
-import { EDITOR_WRITER_HELPER, EDITOR_WRITER_SOURCES, editorWriterMetadata, installBundle, sourceDigest, stageEditorWriter } from "./native/build.mts";
+import { EDITOR_WRITER_HELPER, EDITOR_WRITER_SOURCES, editorWriterMetadata, installBundle, sourceDigest, stageEditorWriter, stageWeb } from "./native/build.mts";
 
 function fixture(t: TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "markdown-install-"));
@@ -185,6 +185,7 @@ function digestFixture(t: TestContext) {
 	const native = join(sourceDir, "native");
 	mkdirSync(join(native, "Sources"), { recursive: true });
 	mkdirSync(join(native, "Licenses"));
+	mkdirSync(join(native, "web"));
 	writeFileSync(join(native, "Package.swift"), "// package");
 	writeFileSync(join(native, "Package.resolved"), "{}");
 	writeFileSync(join(native, "build.mts"), "// build");
@@ -223,4 +224,69 @@ test("staging copies the real writer sources of this checkout", (t) => {
 	for (const name of EDITOR_WRITER_SOURCES) {
 		assert.ok(existsSync(join(f.resources, "editor-writer", name.replace(/\.ts$/, ".mjs"))), `shipped: ${name}`);
 	}
+});
+
+function webFixture(t: TestContext) {
+	const root = mkdtempSync(join(tmpdir(), "markdown-web-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const source = join(root, "web");
+	const resources = join(root, "Reader.app", "Contents", "Resources");
+	mkdirSync(source, { recursive: true });
+	mkdirSync(resources, { recursive: true });
+	return { root, source, resources, web: join(resources, "web") };
+}
+
+test("staging ships the web page with stripped scripts and without test inputs", (t) => {
+	const f = webFixture(t);
+	writeFileSync(join(f.source, "index.html"), "<!doctype html><title>Reader</title>");
+	mkdirSync(join(f.source, "styles"));
+	writeFileSync(join(f.source, "styles", "site.css"), "body { color: black; }");
+	mkdirSync(join(f.source, "assets"));
+	writeFileSync(join(f.source, "assets", "logo.svg"), "<svg></svg>");
+	mkdirSync(join(f.source, "scripts"));
+	writeFileSync(join(f.source, "scripts", "app.ts"), "const message: string = \"hello\";\nconsole.log(message);\n");
+	writeFileSync(join(f.source, "scripts", "app.test.ts"), "// test");
+	writeFileSync(join(f.source, "scripts", "app.test.mts"), "// node test");
+	writeFileSync(join(f.source, "scripts", "module.mts"), "// module");
+	writeFileSync(join(f.source, "scripts", "types.d.ts"), "export type Value = string;");
+	writeFileSync(join(f.source, ".hidden"), "secret");
+	mkdirSync(join(f.source, "test"));
+	writeFileSync(join(f.source, "test", "helper.js"), "// test helper");
+	mkdirSync(join(f.source, "__tests__"));
+	writeFileSync(join(f.source, "__tests__", "page.js"), "// test page");
+	mkdirSync(join(f.source, "nested"));
+	writeFileSync(join(f.source, "nested", "notes.spec.js"), "// spec");
+
+	stageWeb(f.resources, f.source);
+
+	assert.equal(readFileSync(join(f.web, "index.html"), "utf8"), "<!doctype html><title>Reader</title>");
+	assert.equal(readFileSync(join(f.web, "styles", "site.css"), "utf8"), "body { color: black; }");
+	assert.equal(readFileSync(join(f.web, "assets", "logo.svg"), "utf8"), "<svg></svg>");
+	const script = readFileSync(join(f.web, "scripts", "app.js"), "utf8");
+	assert.ok(script.includes("const message"), "the script is stripped and shipped as .js");
+	assert.ok(!script.includes(": string"), "the script keeps no type annotation");
+	assert.deepEqual(readdirSync(join(f.web, "scripts")), ["app.js"]);
+	for (const path of ["scripts/app.ts", "scripts/app.test.ts", "scripts/app.test.mts", "scripts/module.mts", "scripts/types.d.ts", ".hidden", "test", "__tests__", "nested/notes.spec.js"]) {
+		assert.equal(existsSync(join(f.web, ...path.split("/"))), false, `not staged: ${path}`);
+	}
+});
+
+test("staging fails clearly when the web page has no index", (t) => {
+	const f = webFixture(t);
+	mkdirSync(join(f.source, "styles"));
+	writeFileSync(join(f.source, "styles", "site.css"), "body { color: black; }");
+	assert.throws(() => stageWeb(f.resources, f.source), /web source has no entry page: .*index\.html is missing/u);
+	assert.equal(existsSync(join(f.web, "index.html")), false);
+});
+
+test("the embedded web page is part of the build identity", (t) => {
+	const f = digestFixture(t);
+	writeFileSync(join(f.native, "web", "index.html"), "<!doctype html>");
+	const before = sourceDigest(f.native);
+	writeFileSync(join(f.native, "web", "index.html"), "<!doctype html><p>changed</p>");
+	const changedPage = sourceDigest(f.native);
+	assert.notEqual(changedPage, before, "a web page change changes the build identity");
+	mkdirSync(join(f.native, "web", "assets"));
+	writeFileSync(join(f.native, "web", "assets", "app.js"), "console.log(1);");
+	assert.notEqual(sourceDigest(f.native), changedPage, "a web asset change changes the build identity");
 });

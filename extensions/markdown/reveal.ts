@@ -114,7 +114,7 @@ async function appStatus(app: string, presentation: Presentation, live = false):
 		if (!stat.isFile() || stat.size > 8192) return "app-incompatible";
 		const build: unknown = JSON.parse(await readFile(manifest, "utf8"));
 		if (typeof build !== "object" || build === null || !("contract" in build) || build.contract !== 1) return "app-incompatible";
-		if (live && (!("live" in build) || build.live !== 1)) return "app-incompatible";
+		if (live && (!("live" in build) || (build.live !== 1 && build.live !== 2))) return "app-incompatible";
 		if (presentation === "pane" && (!("pane" in build) || build.pane !== 1 || !("paneOpenRequest" in build) || build.paneOpenRequest !== 1)) return "app-incompatible";
 		return undefined;
 	} catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "app-missing" : "app-incompatible"; }

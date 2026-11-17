@@ -152,6 +152,76 @@ test("native source integrity, retention and edit bounds fail without truncation
 	const action = { op: "apply", operationId: randomUUID(), baseGeneration: 0, baseDigest: responseDigest("old"), edits: [{ start: 0, end: 2, expected: "old", replacement: "new" }] };
 	assert.throws(() => readLiveAction(action), /UTF-16/u);
 });
+test("claims and releases forward only to a version 2 pane and preserve held outcomes", { timeout: 10000 }, async () => {
+	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) });
+	const config = await bridge.start();
+	const pane = binding();
+	try {
+		const handle = (await post(config, "/connect", pane)).data.handle;
+		const claim = { op: "claim" as const, baseGeneration: 4, baseDigest: responseDigest("exact"), ranges: [{ start: 0, end: 5 }], label: "Revise passage" };
+		assert.equal(bridge.list()[0].live, 1);
+		assert.equal((await bridge.execute(handle, claim)).status, "error");
+		assert.equal((await bridge.execute(handle, { op: "release", claimId: randomUUID() })).status, "error");
+		assert.equal((await post(config, "/connect", { ...pane, live: 3 })).status, 409);
+		await post(config, "/connect", { ...pane, live: 2 });
+		assert.equal(bridge.list()[0].live, 2);
+		const claimId = randomUUID();
+		const results = [
+			{ status: "busy", message: "The person is typing in this passage (UTF-16 0–5). Read again after a pause, or edit elsewhere." },
+			{ status: "stale", message: "The base changed." },
+			{ status: "claimed", claimId, expiresAt: Date.now() + 90000 },
+		];
+		for (const result of results) {
+			const waiting = bridge.execute(handle, claim);
+			const command = (await post(config, "/poll", { ...pane, after: 0 })).data.command;
+			assert.deepEqual(command, { ...pane, ...claim, requestId: command.requestId });
+			assert.equal((await post(config, "/result", { ...pane, requestId: command.requestId, result })).status, 200);
+			assert.deepEqual(await waiting, result);
+		}
+		const release = bridge.execute(handle, { op: "release", claimId });
+		const command = (await post(config, "/poll", { ...pane, after: 0 })).data.command;
+		assert.equal(command.op, "release");
+		assert.ok(command.op === "release" && command.claimId === claimId);
+		assert.equal((await post(config, "/result", { ...pane, requestId: command.requestId, result: { status: "released", claimId: randomUUID() } })).status, 409);
+		await post(config, "/result", { ...pane, requestId: command.requestId, result: { status: "released", claimId } });
+		assert.deepEqual(await release, { status: "released", claimId });
+	} finally { bridge.close(); }
+});
+test("unconfirmed claims release queue slots without changing apply retry identities", { timeout: 10000 }, async () => {
+	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) }, 10);
+	const config = await bridge.start();
+	const pane = binding();
+	try {
+		const handle = (await post(config, "/connect", { ...pane, live: 2 })).data.handle;
+		for (let index = 0; index < 17; index++) {
+			const result = await bridge.execute(handle, { op: "claim", baseGeneration: 0, baseDigest: responseDigest("x"), ranges: [{ start: 0, end: 1 }] });
+			assert.equal(result.status, "uncertain");
+		}
+		const controller = new AbortController();
+		const waiting = bridge.execute(handle, { op: "release", claimId: randomUUID() }, controller.signal);
+		controller.abort();
+		assert.equal((await waiting).status, "uncertain");
+	} finally { bridge.close(); }
+});
+test("claim and release decoders check bases, UTF-16 ranges, labels and receipts", () => {
+	const claim = { op: "claim" as const, baseGeneration: 0, baseDigest: responseDigest("🧭text"), ranges: [{ start: 0, end: 2 }, { start: 2, end: 6 }], label: "a".repeat(80) };
+	assert.deepEqual(readLiveAction(claim), claim);
+	for (const invalid of [
+		{ baseGeneration: -1 }, { baseGeneration: Number.MAX_SAFE_INTEGER + 1 }, { baseDigest: "bad" },
+		{ ranges: [] }, { ranges: Array.from({ length: 17 }, (_, i) => ({ start: i, end: i + 1 })) },
+		{ ranges: [{ start: 1, end: 0 }] }, { ranges: [{ start: 0, end: 2 }, { start: 1, end: 3 }] },
+		{ ranges: [{ start: 0.5, end: 1 }] }, { ranges: [{ start: 0, end: Infinity }] },
+		{ label: "a".repeat(81) }, { label: "bad\nlabel" }, { label: "\uD800" },
+	]) assert.throws(() => readLiveAction({ ...claim, ...invalid }));
+	assert.throws(() => readLiveAction({ op: "release", claimId: "bad" }));
+	const claimId = randomUUID();
+	assert.deepEqual(readLiveAction({ op: "release", claimId }), { op: "release", claimId });
+	assert.deepEqual(readLiveResult({ status: "claimed", claimId, expiresAt: 90000 }, claim), { status: "claimed", claimId, expiresAt: 90000 });
+	for (const invalid of [{ claimId: "bad" }, { expiresAt: 0 }, { expiresAt: 1.5 }, { expiresAt: Number.MAX_SAFE_INTEGER + 1 }]) assert.throws(() => readLiveResult({ status: "claimed", claimId, expiresAt: 90000, ...invalid }, claim));
+	assert.throws(() => readLiveResult({ status: "released", claimId }, claim));
+	assert.throws(() => readLiveResult({ status: "claimed", claimId, expiresAt: 90000 }, { op: "read" }));
+	assert.deepEqual(readLiveResult({ status: "uncertain", message: "No receipt." }, claim), { status: "uncertain", message: "No receipt." });
+});
 test("a live poll wakes on progress and cancelled commands do not dispatch", { timeout: 10000 }, async () => {
 	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) });
 	const config = await bridge.start();

@@ -34,6 +34,7 @@ export class LiveBridge {
 	private readonly token = randomBytes(32).toString("hex");
 	private readonly bindings = new Map<string, LiveBinding>();
 	private readonly retired = new Set<string>();
+	private readonly versions = new Map<string, 1 | 2>();
 	private readonly documents = new Set<string>();
 	private readonly pending = new Map<string, Pending>();
 	private readonly edits = new Map<string, { fingerprint: string; pending: Pending }>();
@@ -75,8 +76,8 @@ export class LiveBridge {
 		this.wakes.get(handle)?.();
 	}
 	private stateFor(handle: string): LiveState { return this.states.get(handle) ?? { sequence: 0, status: "idle", text: "", truncated: false }; }
-	list(): { handle: string; workspace: string; document: string }[] {
-		return [...this.bindings.values()].map((binding) => ({ handle: liveHandle(binding), ...binding }));
+	list(): { handle: string; workspace: string; document: string; live: 1 | 2 }[] {
+		return [...this.bindings.values()].map((binding) => ({ handle: liveHandle(binding), ...binding, live: this.versions.get(liveHandle(binding)) ?? 1 }));
 	}
 	private binding(binding: LiveBinding): string {
 		const handle = liveHandle(binding);
@@ -87,6 +88,7 @@ export class LiveBridge {
 		const action = readLiveAction(input);
 		const binding = this.list().find((row) => row.handle === handle);
 		if (!binding) return failure("closed", "The exact live document is no longer connected. Do not replace it with a stored document.");
+		if ((action.op === "claim" || action.op === "release") && binding.live !== 2) return { status: "error", message: "This exact pane does not support claims. Claim and release require live: 2." };
 		signal?.throwIfAborted();
 		let pending = action.op === "apply" ? this.priorEdit(handle, action) : undefined;
 		if (!pending) {
@@ -115,6 +117,10 @@ export class LiveBridge {
 			const finish = (result: LiveResult) => { clearTimeout(timer); signal?.removeEventListener("abort", abort); resolve(result); };
 			const abort = () => {
 				selected.cancelled = true;
+				if (selected.command.op === "claim" || selected.command.op === "release") {
+					const result = failure("uncertain", "The claim result is unconfirmed. Claims expire automatically and never block the person.");
+					this.complete(selected, result); finish(result); return;
+				}
 				if (!selected.delivered || selected.command.op === "read") this.complete(selected, failure("closed", "The live read or undelivered command was cancelled."));
 				finish(failure("uncertain", "The caller withdrew its wait. Reconcile the same operation ID; do not create a replacement edit."));
 			};
@@ -123,7 +129,11 @@ export class LiveBridge {
 					const result: LiveResult = { status: "error", message: "The live read timed out. No edit was requested. Retry the read when the exact pane is available." };
 					this.complete(selected, result);
 					finish(result);
-				} else finish(failure("uncertain", "The native result is unconfirmed. Retry only the same operation ID and identical edit; do not infer that it failed."));
+				} else if (selected.command.op === "apply") finish(failure("uncertain", "The native result is unconfirmed. Retry only the same operation ID and identical edit; do not infer that it failed."));
+				else {
+					const result = failure("uncertain", "The claim result is unconfirmed. Claims expire automatically and never block the person.");
+					this.complete(selected, result); finish(result);
+				}
 			}, this.commandTimeoutMs);
 			signal?.addEventListener("abort", abort, { once: true });
 			void selected.promise.then(finish);
@@ -145,6 +155,7 @@ export class LiveBridge {
 		if (retire) {
 			this.retired.add(liveHandle(binding));
 			this.states.delete(liveHandle(binding));
+			this.versions.delete(liveHandle(binding));
 		}
 		for (const pending of [...this.pending.values()]) if (liveHandle(pending.command) === liveHandle(binding)) this.complete(pending, failure("closed", "The exact native document disconnected; no replacement target was selected."));
 		this.wakes.get(liveHandle(binding))?.();
@@ -180,13 +191,15 @@ export class LiveBridge {
 		const expected = Buffer.from(`Bearer ${this.token}`);
 		return !this.closed && request.method === "POST" && request.headers.origin === undefined && request.headers.host === this.config?.endpoint.slice(7) && request.headers["content-type"]?.split(";", 1)[0] === "application/json" && auth.length === expected.length && timingSafeEqual(auth, expected);
 	}
-	private connect(binding: LiveBinding): object {
+	private connect(binding: LiveBinding, version: unknown): object {
+		if (version !== undefined && version !== 1 && version !== 2) throw new Error("Invalid live Markdown capability version.");
 		const handle = liveHandle(binding);
 		if (this.retired.has(handle) || (!this.documents.has(handle) && this.documents.size >= 512)) throw new Error("The native document capability expired. It is not reconnected by document identity.");
 		const previous = this.bindings.get(binding.workspace);
 		if (previous && previous.document !== binding.document) this.disconnect(previous, false);
 		if (!previous && this.bindings.size >= 8) throw new Error("The native workspace limit is reached.");
 		this.bindings.set(binding.workspace, binding);
+		this.versions.set(handle, version === 2 ? 2 : 1);
 		this.documents.add(handle);
 		return { ok: true, handle };
 	}
@@ -241,7 +254,7 @@ export class LiveBridge {
 	}
 	private async dispatch(path: string, body: Record<string, unknown>, response: ServerResponse): Promise<object> {
 		const binding = readLiveBinding(body);
-		if (path === "/connect") return this.connect(binding);
+		if (path === "/connect") return this.connect(binding, body.live);
 		if (path === "/close") { this.disconnect(binding); return { ok: true }; }
 		this.binding(binding);
 		switch (path) {

@@ -21,7 +21,7 @@ async function supportsLive(app?: string): Promise<boolean> {
 		const info = await lstat(path);
 		if (!info.isFile() || info.size > 8192) return false;
 		const build: unknown = JSON.parse(await readFile(path, "utf8"));
-		return typeof build === "object" && build !== null && "live" in build && build.live === 1;
+		return typeof build === "object" && build !== null && "live" in build && (build.live === 1 || build.live === 2);
 	} catch { return false; }
 }
 /** A failed live route does not turn a completed publication or read into a failed document operation. */

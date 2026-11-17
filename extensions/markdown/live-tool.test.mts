@@ -1,14 +1,52 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { randomUUID } from "node:crypto";
+import { compile } from "@earendil-works/pi-schema";
+import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
 import type { LiveBridge } from "./live-bridge.ts";
-import { createNativeLiveTool, liveSourcePage } from "./live-tool.ts";
-import type { LiveResult } from "./live-protocol.ts";
+import { createLiveTool, createNativeLiveTool, liveSourcePage } from "./live-tool.ts";
+import type { LiveAction, LiveResult } from "./live-protocol.ts";
 import { responseDigest } from "./responses.ts";
 
+test("the live tool validates claim fields and forwards exact claim and release actions", async () => {
+	const claimId = randomUUID();
+	const expiresAt = Date.now() + 90000;
+	const seen: { handle: string; action: LiveAction }[] = [];
+	const bridge = { execute: async (handle: string, action: LiveAction) => {
+		seen.push({ handle, action });
+		return action.op === "claim" ? { status: "claimed", claimId, expiresAt } : { status: "released", claimId };
+	} } as unknown as LiveBridge;
+	const tool = createLiveTool(async () => bridge);
+	const check = compile(tool.parameters).check;
+	const claim = { op: "claim" as const, handle: "exact-handle", baseGeneration: 3, baseDigest: responseDigest("🧭"), ranges: [{ start: 0, end: 2 }], label: "Review" };
+	assert.ok(check(claim));
+	for (const invalid of [
+		{ ranges: [] }, { ranges: Array.from({ length: 17 }, () => ({ start: 0, end: 1 })) },
+		{ ranges: [{ start: -1, end: 2 }] }, { ranges: [{ start: 0.5, end: 2 }] },
+		{ ranges: [{ start: 0, end: 2, extra: true }] }, { label: "x".repeat(81) }, { extra: true },
+	]) assert.equal(check({ ...claim, ...invalid }), false);
+	const signal = new AbortController().signal;
+	const ctx = {} as ExtensionToolContext;
+	const claimed = await tool.execute("claim", claim, signal, undefined, ctx);
+	assert.deepEqual(claimed.details, { status: "claimed", claimId, expiresAt });
+	assert.deepEqual(JSON.parse((claimed.content[0] as { text: string }).text), claimed.details);
+	const release = { op: "release" as const, handle: claim.handle, claimId };
+	assert.ok(check(release));
+	const released = await tool.execute("release", release, signal, undefined, ctx);
+	assert.deepEqual(released.details, { status: "released", claimId });
+	assert.deepEqual(seen, [
+		{ handle: claim.handle, action: { op: "claim", baseGeneration: 3, baseDigest: claim.baseDigest, ranges: claim.ranges, label: "Review" } },
+		{ handle: claim.handle, action: { op: "release", claimId } },
+	]);
+	for (const input of [{ ...claim, baseGeneration: undefined }, { ...claim, baseDigest: "bad" }, { ...claim, ranges: [{ start: 2, end: 0 }] }, { ...release, claimId: "bad" }, { ...claim, handle: undefined }]) await assert.rejects(tool.execute("invalid", input, signal, undefined, ctx));
+	assert.equal(seen.length, 2, "invalid actions never reach the pane");
+	assert.match(tool.description, /claim.*before composing/iu);
+	assert.match(tool.description, /never block the person/iu);
+});
 test("live source pages preserve exact UTF-16 continuation and all source bytes", () => {
 	const source = `${"a".repeat(65535)}🧭${"b".repeat(65536)}\nend`;
 	const result: Extract<LiveResult, { status: "ok" }> = { status: "ok", source, generation: 8, digest: responseDigest(source), assets: [{ reference: "./image.svg", digest: responseDigest("image") }] };
