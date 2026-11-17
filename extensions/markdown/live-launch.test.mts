@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -11,7 +13,8 @@ import * as Durable from "@earendil-works/pi-durable";
 import { createPublishTool, createNativePublishTool } from "./publish.ts";
 import { createReadTool, createNativeReadTool } from "./read.ts";
 import { MarkdownStore } from "./store.ts";
-import { withLiveShow } from "./live-launch.ts";
+import { liveArguments, withLiveShow } from "./live-launch.ts";
+import { LiveBridge } from "./live-bridge.ts";
 import { materializeAndReveal, openScratchpad, selectStored, type RevealRuntime } from "./reveal.ts";
 const config = { version: 1 as const, endpoint: "http://127.0.0.1:12345", token: "ab".repeat(32) };
 async function fixture(t: TestContext) {
@@ -33,6 +36,63 @@ async function checkLaunch(argv: string[], text: string) {
 	assert.ok(!text.includes(config.token), "the tool output carries a private path, never its token");
 	await rm(path);
 }
+test("closing a bridge removes unused launch files without changing consumed files or another live owner's files", { timeout: 10000 }, async (t) => {
+	const f = await fixture(t);
+	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) });
+	t.after(() => bridge.close());
+	const live = await bridge.start();
+	const show = await withLiveShow({ show: ["reader", "--pane", "document"] }, f.app, async () => live);
+	assert.ok(show.show);
+	const unusedPath = show.show.at(-1);
+	assert.ok(unusedPath);
+	const consumed = await liveArguments(["reader", "--pane", "document"], live);
+	const consumedPath = consumed.argv.at(-1);
+	assert.ok(consumedPath);
+	assert.deepEqual(JSON.parse(await readFile(unusedPath, "utf8")), { version: 1, endpoint: live.endpoint, token: live.token });
+	await rm(consumedPath);
+	const other = new LiveBridge({ submit: async () => ({ status: "requested" }) });
+	t.after(() => other.close());
+	const otherLaunch = await liveArguments(["reader"], await other.start());
+	const otherPath = otherLaunch.argv.at(-1);
+	assert.ok(otherPath);
+	const unrelatedPath = join(f.root, "markdown-live", "11111111-1111-4111-8111-111111111111.json");
+	await writeFile(unrelatedPath, "unattributed configuration", { mode: 0o600 });
+	const pendingLaunch = assert.rejects(liveArguments(["reader"], live), /closed/u);
+	bridge.close();
+	bridge.close();
+	await pendingLaunch;
+	await assert.rejects(stat(unusedPath), { code: "ENOENT" });
+	await assert.rejects(stat(consumedPath), { code: "ENOENT" });
+	await consumed.remove();
+	assert.ok((await stat(otherPath)).isFile());
+	assert.equal(await readFile(unrelatedPath, "utf8"), "unattributed configuration");
+	await assert.rejects(liveArguments(["reader"], live), /closed/u);
+	assert.deepEqual((await readdir(join(f.root, "markdown-live"))).sort(), [unrelatedPath, otherPath].map((path) => path.split("/").at(-1)).sort());
+	other.close();
+	await assert.rejects(stat(otherPath), { code: "ENOENT" });
+});
+test("a live process keeps its launch file until exit and another bridge never prunes it", { timeout: 10000 }, async (t) => {
+	const f = await fixture(t);
+	const child = spawn(process.execPath, ["--input-type=module", "-e", `
+		import { liveArguments } from ${JSON.stringify(new URL("./live-launch.ts", import.meta.url).href)};
+		const launch = await liveArguments(["reader"], ${JSON.stringify(config)});
+		process.send(launch.argv.at(-1));
+		process.stdin.once("data", () => process.exit(0));
+	`], { env: { ...process.env, PI_CODING_AGENT_DIR: f.root }, stdio: ["pipe", "pipe", "pipe", "ipc"] });
+	t.after(() => { if (child.exitCode === null) child.kill(); });
+	const [path] = await once(child, "message");
+	assert.equal(typeof path, "string");
+	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) });
+	t.after(() => bridge.close());
+	await liveArguments(["reader"], await bridge.start());
+	bridge.close();
+	assert.ok((await stat(path as string)).isFile());
+	const exited = once(child, "exit");
+	assert.ok(child.stdin);
+	child.stdin.end("close\n");
+	assert.deepEqual(await exited, [0, null]);
+	await assert.rejects(stat(path as string), { code: "ENOENT" });
+});
 test("ordinary publication and read show commands carry private one-use connections without revealing tokens", { timeout: 10000 }, async (t) => {
 	const f = await fixture(t);
 	const calls: ExtensionContext[] = [];

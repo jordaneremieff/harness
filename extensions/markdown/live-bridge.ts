@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { isRecord, LIVE_PROMPT_BYTES, LIVE_WIRE_BYTES, liveHandle, liveId, readLiveAction, readLiveBinding, readLiveResult, type LiveAction, type LiveBinding, type LiveCommand, type LiveConfig, type LivePromptReceipt, type LiveResult, type LiveState } from "./live-protocol.ts";
+import { isRecord, LIVE_LIFETIME, LIVE_PROMPT_BYTES, LIVE_WIRE_BYTES, liveHandle, liveId, readLiveAction, readLiveBinding, readLiveResult, type LiveAction, type LiveBinding, type LiveCommand, type LiveConfig, type LivePromptReceipt, type LiveResult, type LiveState } from "./live-protocol.ts";
 import { validUnicode } from "./responses.ts";
 
 export interface LiveRoute {
@@ -30,6 +30,7 @@ export class LiveBridge {
 	private server?: Server;
 	private config?: LiveConfig;
 	private closed = false;
+	private readonly lifetime = new AbortController();
 	private detach?: () => void;
 	private readonly token = randomBytes(32).toString("hex");
 	private readonly bindings = new Map<string, LiveBinding>();
@@ -60,7 +61,7 @@ export class LiveBridge {
 		await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
 		const address = server.address();
 		if (!address || typeof address === "string" || this.closed) { this.close(); throw new Error("The live Markdown connection closed before startup."); }
-		this.config = { version: 1, endpoint: `http://127.0.0.1:${address.port}`, token: this.token };
+		this.config = { version: 1, endpoint: `http://127.0.0.1:${address.port}`, token: this.token, [LIVE_LIFETIME]: this.lifetime.signal };
 		try {
 			this.detach = await this.route.observe?.((status, text, operationId) => this.publish(status, text, operationId));
 			if (this.closed) { this.detach?.(); throw new Error("The live Markdown host closed."); }
@@ -163,6 +164,7 @@ export class LiveBridge {
 	close(): void {
 		if (this.closed) return;
 		this.closed = true;
+		this.lifetime.abort();
 		this.detach?.();
 		for (const binding of [...this.bindings.values()]) this.disconnect(binding);
 		this.server?.close();
