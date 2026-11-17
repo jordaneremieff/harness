@@ -75,10 +75,24 @@
 				copyOf: mirror.meta.documentId,
 				capturedSource: false,
 			};
-   return true;
+			return true;
 		}
 		function matching(edits: ReaderEdit[]) {
 			return edits.every((e) => e.end <= mirror.source.length && mirror.source.slice(e.start, e.end) === e.expected);
+		}
+		function commitMirror(source: string, generation: number) {
+			const copied = copyMeta();
+			mirror.source = source;
+			mirror.generation = generation;
+			payload = { ...payload, source, generation, meta: mirror.meta };
+			retained = { ...payload };
+			if (input.meta.capturedSource) draft = { ...payload };
+			emit("ack", {
+				generation,
+				digest: `memory-${generation}`,
+				...(copied ? { meta: clone(mirror.meta) } : {}),
+				recovery: "retained",
+			});
 		}
 		function mirrorEdit(m: ReaderHostMessage) {
 			if (m.baseGeneration !== mirror.generation) {
@@ -101,18 +115,7 @@
 				refuse("size");
 				return;
 			}
-   const copied=copyMeta();
-			mirror.source = next;
-			mirror.generation = m.generation as number;
-   payload={...payload,source:mirror.source,generation:mirror.generation,meta:mirror.meta};
-   retained={...payload};
-   if(input.meta.capturedSource)draft={...payload};
-			emit("ack", {
-				generation: mirror.generation,
-				digest: `memory-${mirror.generation}`,
-    ...(copied?{meta:clone(mirror.meta)}:{}),
-				recovery: "retained",
-			});
+			commitMirror(next, m.generation as number);
 		}
 		function send(type: string, fields: Fields = {}) {
 			if (disposed) throw new Error("Memory host is disposed.");
