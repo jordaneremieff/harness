@@ -41,9 +41,9 @@ Use the Markdown reader for material that is hard to read in a terminal,
 without waiting to be asked: a reply with headings, a table, or three or more
 explained points, a reply longer than about ten lines, a document, a
 comparison, a diagram, or a worker's findings and progress. Open it in a
-floating pane on the tab where the work belongs, not a split: your own tab, or
-for an agent without a pane of its own, the tab of the ordinary session that
-started its work. Leave the operator's focus where it is unless they asked to
+pane on the tab where the work belongs: your own tab, or for an agent
+without a pane of its own, the tab of the ordinary session that started its
+work. Leave the operator's focus where it is unless they asked to
 see it now. Then give the answer and any decision you need in a few sentences
 of chat, and say what the pane holds; do not repeat the pane. A plain answer
 of a few sentences stays in the chat. Agents that work for other agents do

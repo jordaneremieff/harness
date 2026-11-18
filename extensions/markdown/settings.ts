@@ -25,6 +25,14 @@ export const settings = {
 			description:
 				"Composer mode. manual opens the native composer only through /compose; auto opens it automatically in an ordinary interactive Pi session in Rex with a capable macOS reader. No mode disables /compose.",
 		},
+		agentPane: {
+			type: "enum",
+			env: "PI_MARKDOWN_AGENT_PANE",
+			choices: ["split", "float"],
+			default: "split",
+			description:
+				"Pane in which the markdown_publish guidance of an ordinary session shows a publication. split names a split on the right of the session's own pane; float names a floating pane over its window. Agents without a pane of their own, such as Durable workers, always use a floating pane on the tab of the ordinary session that started them. An operator's request for another pane still applies, and /markdown always opens a split. A new or reloaded session applies a change.",
+		},
 	},
 } as const;
 
@@ -35,8 +43,10 @@ export type Environment = Readonly<Record<string, string | undefined>>;
 export type Origin = "env" | "file" | "default";
 export type ReadOptions = { agentDir: string; env?: Environment };
 type Key = keyof typeof settings.fields;
-type ComposerMode = (typeof settings.fields.composer.choices)[number];
-type Values = { app: string; dir: string; composer: ComposerMode };
+type EnumKey = "composer" | "agentPane";
+type Choice<K extends EnumKey> = (typeof settings.fields)[K]["choices"][number];
+export type AgentPane = Choice<"agentPane">;
+type Values = { app: string; dir: string; composer: Choice<"composer">; agentPane: AgentPane };
 export type Diagnostic = {
 	field: string;
 	source: Origin;
@@ -154,20 +164,18 @@ function checked(value: unknown, agentDir: string): string {
 	if (path.length > 4096) throw new Error("Resolved path exceeds length bound");
 	return path;
 }
-function defaultPath(agentDir: string, key: Exclude<Key, "composer">): string {
+function defaultPath(agentDir: string, key: Exclude<Key, EnumKey>): string {
 	try {
 		return checked(resolve(agentDir, key === "dir" ? "markdown" : "markdown-reader/Markdown Reader.app"), agentDir);
 	} catch {
 		throw new Error(`Invalid default for markdown.${key}`);
 	}
 }
-function composerMode(value: unknown): ComposerMode {
-	if (
-		typeof value !== "string" ||
-		!(settings.fields.composer.choices as readonly string[]).includes(value)
-	)
-		throw new Error("Invalid composer mode");
-	return value as ComposerMode;
+const isEnum = (key: Key): key is EnumKey => settings.fields[key].type === "enum";
+function choice<K extends EnumKey>(key: K, value: unknown): Choice<K> {
+	if (typeof value !== "string" || !(settings.fields[key].choices as readonly string[]).includes(value))
+		throw new Error(`Invalid markdown.${key} choice`);
+	return value as Choice<K>;
 }
 type Selection = { value: string; origin: Origin; invalid: boolean };
 function readSection(options: ReadOptions) {
@@ -205,7 +213,7 @@ function selectField(
 	if (origin === undefined) return { value: fallback, origin: "default", invalid };
 	try {
 		const input = origin === "env" ? env[field.env] : section[key];
-		const value = key === "composer" ? composerMode(input) : checked(input, options.agentDir);
+		const value = isEnum(key) ? choice(key, input) : checked(input, options.agentDir);
 		return { value, origin, invalid };
 	} catch {
 		add(diagnostic(name, origin, "invalid"));
@@ -232,7 +240,7 @@ export function readSettings(options: ReadOptions): Snapshot {
 	const selectedValues = Object.create(null) as Record<Key, string>;
 	const records: SettingRecord[] = [];
 	for (const key of Object.keys(settings.fields) as Key[]) {
-		const fallback = key === "composer" ? settings.fields.composer.default : defaultPath(options.agentDir, key);
+		const fallback = isEnum(key) ? settings.fields[key].default : defaultPath(options.agentDir, key);
 		const selected = selectField(key, fallback, section, options, add);
 		selectedValues[key] = selected.value;
 		records.push(settingRecord(key, selected));
@@ -240,7 +248,8 @@ export function readSettings(options: ReadOptions): Snapshot {
 	const values: Values = {
 		app: selectedValues.app,
 		dir: selectedValues.dir,
-		composer: composerMode(selectedValues.composer),
+		composer: choice("composer", selectedValues.composer),
+		agentPane: choice("agentPane", selectedValues.agentPane),
 	};
 	return { version: 1, slice: settings.slice, source, values, records, diagnostics };
 }

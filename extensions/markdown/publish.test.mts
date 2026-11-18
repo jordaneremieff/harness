@@ -11,7 +11,7 @@ import * as Durable from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { captureReferences, inspectReferences, fileSnapshotInput, createNativePublishTool, createPublishTool, invocationDigest, NATIVE_PUBLISH_GUIDANCE, publish, publicationText, withPanes, type InspectionResult, type PublishOutcome, type PublishInput } from "./publish.ts";
+import { captureReferences, inspectReferences, fileSnapshotInput, createNativePublishTool, createPublishTool, invocationDigest, NATIVE_PUBLISH_GUIDANCE, publish, publishDescription, publicationText, withPanes, type InspectionResult, type PublishOutcome, type PublishInput } from "./publish.ts";
 import { LIMITS, MarkdownStore, type PublicationPlan, type WriteResult } from "./store.ts";
 import { paneCommand, PANE_MODE, PANE_OPEN } from "./pane-command.ts";
 const scratch = tmpdir();
@@ -227,17 +227,20 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 	assert.deepEqual(result.structuredContent, result.details);
 	assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /^Saved new document md-[a-f0-9]{20} revision 1 \(7 bytes, sha256:[a-f0-9]{64}\)\. No window opened\.\n/u);
 	assert.ok(tool.outputSchema);
-	assert.match(tool.promptGuidelines?.join("\n") ?? "", /^Before you send a reply with headings, a table, three or more explained points, or more than about ten lines, publish it with markdown_publish and run its show command in a floating pane/u, "the reply decision itself carries the publication rule");
-	for (const guidance of [tool.description, NATIVE_PUBLISH_GUIDANCE, tool.promptGuidelines?.join("\n") ?? ""]) {
+	const guideline = tool.promptGuidelines?.join("\n") ?? "";
+	assert.match(guideline, /^Before you send a reply with headings, a table, three or more explained points, or more than about ten lines, publish it with markdown_publish and run its show command in a new split on the right of your own pane, with no target;/u, "the reply decision itself carries the publication rule");
+	assert.match(tool.description, /new split on the right of your own pane that closes when its program ends, and give it no target/u);
+	assert.doesNotMatch(tool.description + guideline, /float/u);
+	const floating = createPublishTool({ store, cwd: root, pane: "float" });
+	for (const guidance of [floating.description, floating.promptGuidelines?.join("\n") ?? "", publishDescription("float"), NATIVE_PUBLISH_GUIDANCE]) assert.match(guidance, /floating pane that stays (?:where it is|in place)/u, "agents without a pane of their own always float");
+	for (const guidance of [tool.description, guideline, floating.description, NATIVE_PUBLISH_GUIDANCE]) {
 		assert.match(guidance, /Ask card, give the substantive answer in your final message/u);
-		assert.match(guidance, /floating pane that stays (?:where it is|in place)/u);
 		assert.match(guidance, /no target/u, "the pane opens on the tab where the work belongs, not wherever the operator looks");
-		assert.doesNotMatch(guidance, /operator's (?:focus|tab)/u);
+		assert.doesNotMatch(guidance, /operator's (?:focus|tab)|default|setting|agentPane/u, "the guidance names a pane, not a default or the setting behind it");
 	}
 	assert.match(NATIVE_PUBLISH_GUIDANCE, /tab of the ordinary session that started your chain of agents/u);
 	for (const guidance of [tool.description, NATIVE_PUBLISH_GUIDANCE]) {
 		assert.doesNotMatch(guidance, /not every reply|do not publish every reply|explicitly requested document/u, "no wording limits publication to requested documents");
-		assert.match(guidance, /floating pane/u);
 		assert.match(guidance, /A report to another agent stays complete/u);
 	}
 	const first = success(result.details);
