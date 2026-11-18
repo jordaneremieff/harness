@@ -755,7 +755,8 @@ public final class ReaderModel {
         case .success(let prepared):
             if automatic, await interacting() { return }
             let interaction = interactionGeneration
-            if case .current = restore { position = cachedReadingPosition }
+            // The cached place counts offsets in the shown text; the new revision's text can differ above it.
+            if case .current = restore { position = cachedReadingPosition?.carried(from: source, to: prepared.snapshot.source) }
             if automatic, await interacting() { return }
             guard token == generation, !closed else { return }
             if automatic, interaction != interactionGeneration { return }

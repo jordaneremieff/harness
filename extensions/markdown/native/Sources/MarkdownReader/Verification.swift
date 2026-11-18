@@ -2097,7 +2097,8 @@ struct Context {
             let stale = await scroll(model, to: 1200)
             let gate = RevisionPreparationGate()
             model.preparationGate = { revision in if revision == 2 { await gate.wait() } }
-            try store.write(id, revision: 2, source: Self.longDocument(insert: "An introduction.\n", change: 30))
+            let next = Self.longDocument(insert: "An introduction.\n", change: 30)
+            try store.write(id, revision: 2, source: next)
             let reached = await wait(seconds: 5) { gate.reached }
             let moved = await scroll(model, to: 5000)
             let settled = await wait(seconds: 2) { !model.isScrollingForCheck }
@@ -2105,7 +2106,8 @@ struct Context {
             let followed = await wait(seconds: 5) { model.snapshot?.revision == 2 && !model.isLoadingForCheck }
             _ = await wait(seconds: 3) { model.lastRestore == .block }
             let restored = await model.capturePositionForCheck()
-            let preserved = Self.sameSourcePosition(moved, restored) && stale?.blockStart != restored?.blockStart
+            // Text above the reading place changed, so the place is compared in the new revision's text.
+            let preserved = Self.sameSourcePosition(moved?.carried(from: Self.longDocument(), to: next), restored) && stale?.blockStart != restored?.blockStart
             let pass = reached && settled && followed && preserved && model.lastRestore == .block
             await model.close()
             return .init(name: "position-captured-at-installation", pass: pass, detail: "preparation gated: \(reached); scroll settled before installation: \(settled); followed: \(followed); requested source point retained: \(preserved)")
@@ -2123,7 +2125,8 @@ struct Context {
             let stale = await scroll(model, to: 1200)
             let scrollGate = RevisionPreparationGate()
             model.preparationGate = { revision in if revision == 2 { await scrollGate.wait() } }
-            try store.write(id, revision: 2, source: Self.longDocument(insert: "A new introduction.\n", change: 30))
+            let next = Self.longDocument(insert: "A new introduction.\n", change: 30)
+            try store.write(id, revision: 2, source: next)
             let prepared = await wait(seconds: 5) { scrollGate.reached }
             let moved = await scroll(model, to: 5000)
             scrollGate.release()
@@ -2132,7 +2135,7 @@ struct Context {
             let followed = await wait(seconds: 5) { model.snapshot?.revision == 2 }
             _ = await wait(seconds: 3) { model.lastRestore == .block }
             let restored = await model.capturePositionForCheck()
-            let preserved = Self.sameSourcePosition(moved, restored) && stale?.blockStart != restored?.blockStart
+            let preserved = Self.sameSourcePosition(moved?.carried(from: Self.longDocument(), to: next), restored) && stale?.blockStart != restored?.blockStart
             let selectionGate = RevisionPreparationGate()
             model.preparationGate = { revision in if revision == 3 { await selectionGate.wait() } }
             try store.write(id, revision: 3, source: Self.longDocument(insert: "Another introduction.\n", change: 31))
@@ -2164,7 +2167,8 @@ struct Context {
             const block = [...document.querySelectorAll('[data-block]')].find(b => b.textContent.trim().startsWith('Paragraph 120 '));
             const rect = block.getBoundingClientRect();
             const scroller = document.querySelector('[data-role="scroller"]');
-            scroller.scrollTo(0, rect.top - scroller.getBoundingClientRect().top + scroller.scrollTop + 0.4 * rect.height);
+            // The reading line, 46 points under the scroller's top, crosses the paragraph at 40 percent of its height.
+            scroller.scrollTo(0, rect.top - scroller.getBoundingClientRect().top + scroller.scrollTop - 46 + 0.4 * rect.height);
             document.body.dataset.marker = "kept";
             return true;
             """)

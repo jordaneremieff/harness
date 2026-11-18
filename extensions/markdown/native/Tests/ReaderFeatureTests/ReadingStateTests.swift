@@ -275,3 +275,27 @@ import Testing
         #expect(later.position(for: Self.reference(2))?.blockKey == "other")
     }
 }
+
+/// A reading place carried into the text of another revision.
+@Suite struct ReadingPositionCarry {
+    static func offset(_ text: String, of part: String) -> Int { (text as NSString).range(of: part).location }
+
+    @Test func placeAfterTheChangeFollowsItsText() {
+        let old = "# Title\n\n👩🏽‍💻 First paragraph.\n\n## Section\n\nLast paragraph.\n"
+        let new = "# Title\n\nAn inserted paragraph.\n\n👩🏽‍💻 First paragraph, changed.\n\n## Section\n\nLast paragraph.\n"
+        let moved = ReadingPosition(blockStart: Self.offset(old, of: "## Section"), offsetY: 36, revision: 1).carried(from: old, to: new)
+        #expect(moved.blockStart == Self.offset(new, of: "## Section"))
+        #expect(moved.offsetY == 36)
+        #expect(moved.revision == 1)
+    }
+
+    @Test func placeBeforeTheChangeStaysAndPlaceInsideGoesToItsStart() {
+        let old = "# Title\n\nFirst paragraph.\n\n## Section\n"
+        let new = "# Title\n\nAn inserted paragraph.\n\nFirst paragraph, changed.\n\n## Section\n"
+        #expect(ReadingPosition(blockStart: 0, offsetY: 4, revision: 1).carried(from: old, to: new).blockStart == 0)
+        let inside = ReadingPosition(blockStart: Self.offset(old, of: "paragraph."), offsetY: 0, revision: 1).carried(from: old, to: new)
+        #expect(inside.blockStart == Self.offset(old, of: "First"))
+        let same = ReadingPosition(blockStart: 12, offsetY: 0, revision: 1)
+        #expect(same.carried(from: old, to: old) == same)
+    }
+}

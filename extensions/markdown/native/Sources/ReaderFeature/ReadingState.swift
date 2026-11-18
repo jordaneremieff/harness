@@ -29,6 +29,23 @@ public struct ReadingPosition: Codable, Sendable, Equatable {
         self.blockStart = blockStart
         self.offsetY = offsetY
     }
+
+    /// The same reading place in another text of the document. The texts are compared by their
+    /// common start and common end: a place after the changed span moves by the change in length,
+    /// a place before it stays, and a place inside it goes to the span's start. Offsets count
+    /// UTF-16 code units, as the page does.
+    public func carried(from old: String, to new: String) -> ReadingPosition {
+        guard let start = blockStart, old != new else { return self }
+        let a = Array(old.utf16), b = Array(new.utf16)
+        var prefix = 0
+        while prefix < a.count, prefix < b.count, a[prefix] == b[prefix] { prefix += 1 }
+        var suffix = 0
+        while suffix < a.count - prefix, suffix < b.count - prefix, a[a.count - 1 - suffix] == b[b.count - 1 - suffix] { suffix += 1 }
+        var moved = self
+        if start >= a.count - suffix { moved.blockStart = start + b.count - a.count }
+        else if start > prefix { moved.blockStart = prefix }
+        return moved
+    }
 }
 
 public struct RecentDocument: Codable, Sendable, Equatable, Identifiable {
