@@ -121,6 +121,39 @@ it("the attached composer sends playbook controls, never model input, to the cap
 	}
 });
 
+it("the attached Playbooks view shows the selected agent's choice and saves another row with Enter", async (t) => {
+	const agentDir = mkdtempSync(join(tmpdir(), "terminal-playbooks-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+	mkdirSync(join(agentDir, "playbooks"), { mode: 0o700 });
+	for (const [name, summary] of [["architect", "Keep the context clear."], ["maker", "Do the work yourself."]]) {
+		writeFileSync(join(agentDir, "playbooks", `${name}.md`), `# ${name}\n\n${summary}\n\nInstructions for ${name}.\n`, { mode: 0o600 });
+	}
+	const f = fixture();
+	f.responses.set("playbook-read", { name: "maker", origin: "creator" });
+	f.responses.set("configure", { outcome: "applied", playbook: { name: "architect", origin: "operator" } });
+	const controller = new TerminalController({ manager: f.manager, caller: { id: "terminal", cwd: "/work" }, agentDir });
+	const s = screenFixture(controller, 120, 32);
+	try {
+		await settle(() => s.screen.view.selectedRow?.id === "a", "target A in the roster");
+		s.screen.handleInput("\r");
+		s.type("/agent playbook");
+		s.screen.handleInput("\r");
+		await settle(() => /uses maker \(set by its creator\)/u.test(s.text()), "the agent's choice");
+		assert.match(s.text(), /›● maker\s+Do the work yourself\./u, "the list opens on the saved choice");
+		assert.match(s.text(), /enter open/u, "Enter reads the saved choice");
+		s.screen.handleInput("\x1b[A");
+		await settle(() => /enter use/u.test(s.text()), "Use on another row");
+		s.screen.handleInput("\r");
+		await settle(() => /Playbook: architect \(operator\)/u.test(s.text()), "the receipt");
+		assert.deepEqual(f.calls.filter((item) => item.method === "configure"), [{ method: "configure", input: { sessionId: "a", playbook: "architect", origin: "operator" } }]);
+		assert.equal(f.calls.some((item) => item.method === "submit"), false);
+	} finally {
+		s.screen.dispose();
+		await controller.close();
+		await f.controller.close();
+	}
+});
+
 it("a terminal with an older manager reports unknown and refuses a playbook configure before effects", async () => {
 	const f = fixture();
 	const { playbookControlContract: _old, ...manager } = f.manager;

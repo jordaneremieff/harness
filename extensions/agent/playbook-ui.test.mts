@@ -50,11 +50,15 @@ it("routes ordinary selection and exact target clear separately; help and comple
 		},
 	};
 	const command = createAgentCommand([], source, wiring as AgentViewWiring);
-	const items = await command.getArgumentCompletions?.("playbook maker");
+	assert.equal(await command.getArgumentCompletions?.("playbook"), null, "the complete action opens no menu, so Enter opens the view");
+	assert.ok((await command.getArgumentCompletions?.("playb"))?.some((item) => item.value === "playbook "));
+	const items = await command.getArgumentCompletions?.("playbook mak");
 	assert.match(items?.find((item) => item.value === "playbook maker")?.description ?? "", /Bundled, not installed/);
 	assert.match(items?.find((item) => item.value === "playbook @maker ")?.description ?? "", /Agent target/);
+	assert.equal(await command.getArgumentCompletions?.("playbook maker"), null, "a complete name opens no menu, so Enter runs the command");
 	const after = await command.getArgumentCompletions?.("playbook @maker ");
 	assert.ok(after?.some((item) => item.value === "playbook @maker off"));
+	assert.equal(await command.getArgumentCompletions?.("playbook @maker off"), null);
 	assert.ok(after?.every((item) => !item.label.startsWith("@") && item.label !== "--import"));
 	for (const action of ["help", "help playbook"]) {
 		await command.handler(action, ctx);

@@ -29,6 +29,7 @@ import {
 import { ordinaryReportedUsage } from "./agent-usage.ts";
 import { readPlaybookCatalog } from "./playbook-catalog.ts";
 import { OrdinaryPlaybook } from "./ordinary-playbook.ts";
+import { agentCell } from "./footer.ts";
 import { PlaybookParameter, playbookParameter } from "./playbook.ts";
 import { appendProviderBlockReceipt, ProviderBlockNotes, renderProviderBlockSection } from "./provider-block-notes.ts";
 import { checkInMinutes } from "./check-in-options.ts";
@@ -348,7 +349,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		(query as { provide: (launch: IndependentCommandLaunch) => void }).provide((input) => getManager().launchIndependent(input));
 	});
 	const catalog = (initialize = false) => readPlaybookCatalog(settingsAgentDir, { initialize });
-	const ordinaryPlaybook = new OrdinaryPlaybook(pi, catalog);
+	// One footer cell holds this session's agent figures and its playbook.
+	let agentFigures = "";
+	const showAgentCell = (ctx: ExtensionContext) => ctx.ui.setStatus("agent", agentCell(agentFigures, ordinaryPlaybook.badge) || undefined);
+	const ordinaryPlaybook = new OrdinaryPlaybook(pi, catalog, (ctx) => { if (ctx.hasUI) showAgentCell(ctx); });
 	let currentCatalog = catalog();
 	let playbookSchema = playbookParameter(currentCatalog).schema;
 	let registrationPreferences = readAgentPreferences();
@@ -945,6 +949,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			playbookAgentDir: settingsAgentDir,
 			playbooks: (_ctx, initialize) => catalog(initialize),
 			currentPlaybook: (ctx) => ordinaryPlaybook.status(ctx),
+			playbookState: (ctx) => ordinaryPlaybook.state(ctx),
 			setPlaybook: (name, ctx) => ordinaryPlaybook.set(name, ctx),
 			newAgent: async ({ prompt, preset, cwd, playbook }, ctx, onCreated) => {
 				const created = (await managerFor({ playbook }).spawn({ prompt, preset, cwd, ...(playbook === undefined ? {} : { playbook }), origin: "operator" }, caller(ctx, pi), onCreated)) as { sessionId: string; cwd?: string; status?: { name?: string } };
@@ -958,7 +963,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			},
 		},
 		(input, ctx) => getManager().collaborate({ ...input, origin: "operator" }, caller(ctx, pi)),
-		(ctx, page) => getManager().sessionFigures(ctx.sessionManager.getSessionId(), page),
+		async (ctx, page) => agentCell(await getManager().sessionFigures(ctx.sessionManager.getSessionId(), page), ordinaryPlaybook.badge),
 		{
 			efforts: (ctx) => getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd),
 			observeEffort: async (id) => formatPrimaryObservation(await getManager().observePrimary(id, { view: "activity" })),
@@ -986,6 +991,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		resetThreadNotices();
 		selfCompaction.clear();
 		refreshPreferences(ctx);
+		agentFigures = "";
 		ordinaryPlaybook.restore(ctx);
 		const sessionId = ctx.sessionManager.getSessionId();
 		primaries.get(sessionId)?.abort();
@@ -1020,7 +1026,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				retention.deliver(sourceId, text, details, requireRetained);
 				continuity.delivered(sessionId, results);
 			},
-			status: (text) => ctx.ui.setStatus("agent", text),
+			status: (text) => {
+				agentFigures = text ?? "";
+				showAgentCell(ctx);
+			},
 			promptTrust: (cwd) =>
 				ctx.hasUI
 					? promptProjectTrust(cwd, { select: (question, options) => ctx.ui.select(question, [...options]) })

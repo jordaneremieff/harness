@@ -30,6 +30,7 @@ export const theme = {
 	bg: (_color: string, text: string) => text,
 	getBgAnsi: (_color: string) => "",
 	bold: (text: string) => text,
+	italic: (text: string) => text,
 } as unknown as Theme;
 export const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 export function deferred<T = void>() {

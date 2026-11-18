@@ -634,7 +634,7 @@ its warning over the work view and the message field.
 | `/agent new` | Open New conversation. |
 | `/agent browse` | Open the selected conversation's owner views. |
 | `/agent recover` | Open Recover input for the selected conversation. |
-| `/agent playbook`, `/agent playbook [target] <name or off>` | Read the selection or change it for the selected or named agent. No message goes to the model. |
+| `/agent playbook [target]`, `/agent playbook [target] <name or off>` | Open the Playbooks view for the selected or named agent, or change its playbook directly. No message goes to the model. |
 | `/agent playbook --import <starter>` | Review a local starter before replacing or adding that file. |
 | `/agent help`, `/agent help playbook` | Open Help or the playbook command reference and local catalog. |
 | PageUp / PageDown | Read the conversation or the open thread; PageUp at the oldest loaded entry reads earlier entries. |
@@ -1677,6 +1677,15 @@ agent data. The
 statement. Cost uses two decimals; the entire cost segment is hidden below half
 a cent, leaving, for example, `agents: 0/1 active`. The dashboard shows unreadable
 agents and partial costs.
+
+The same cell carries this session's [playbook](#playbooks) in a bracket after
+`agents`, the way the model's reasoning level follows the model:
+`agents [architect]: 1/3 active · ~$0.12`, or `agents [architect]` with no
+scoped rows. No playbook adds nothing. A choice saved during a run shows the
+run's playbook and the next one, `agents [architect → maker]`, until the run
+ends. A saved name whose file supplies no instructions reads
+`agents [architect unavailable]`; an unsupported saved form reads
+`agents [unknown]`. The dashboard heading shows the same text.
 
 ## Agent collaboration and placement
 
@@ -4462,13 +4471,24 @@ reasoning level, tools, role or permissions. A task-specific instruction takes
 precedence. With no playbook, decide per task. The [delegation guide](delegation.md)
 covers briefs, supervision, acceptance and operator status reports with or without a playbook.
 
-- `/agent playbook` shows this branch's choice and the local catalog. `/agent playbook maker`
-  selects a playbook. `/agent playbook off` clears it. Use Tab or `/agent help playbook`
-  for names and summaries. Help and completion do not install files.
-- `/agent playbook @editor architect` selects a playbook for an agent. Use its
-  exact `@handle` or canonical ID. Omit `architect` to see its choice. In the attached
-  agent terminal a command without a target refers to the selected conversation.
-  The dashboard also offers playbooks when creating or configuring an agent.
+- `/agent playbook` opens the Playbooks view for this session: `off` and every
+  catalog playbook, with the saved choice marked `●` and the list opened on it.
+  The selected playbook's full instructions show beside the list at 90 columns or
+  more, and in their own view from Right below that. Enter uses the selected row
+  for this session and closes the view; on the saved choice Enter reads it. `c`
+  compares a bundled starter with the installed file (the import review below),
+  and `r` in More reads the catalog again. A run in progress keeps its playbook:
+  the view marks it `○` and says that the choice applies from the next run.
+  Selecting a row changes nothing. Outside the TUI the command prints the choice
+  and the catalog.
+- `/agent playbook maker` selects a playbook without the view. `/agent playbook off`
+  clears it. Use Tab or `/agent help playbook` for names and summaries. Help and
+  completion do not install files.
+- `/agent playbook @editor` opens the same view for an agent, and
+  `/agent playbook @editor architect` selects one directly. Use its exact
+  `@handle` or canonical ID. In the attached agent terminal a command without a
+  target refers to the selected conversation. The dashboard also offers
+  playbooks when creating or configuring an agent.
 - `agent_spawn({playbook:"maker", ...})` chooses a new agent's playbook before its
   first prompt. A new agent does not inherit its creator's choice. Handle reuse does
   not set a playbook. Use `agent_configure({sessionId, playbook:"off"})` to clear it.
@@ -4478,7 +4498,7 @@ covers briefs, supervision, acceptance and operator status reports with or witho
 
 An ordinary session reads the chosen text before each run, including a fresh run
 from an agent reply. Its tool rounds keep that text. A command during a run saves the
-next choice; the receipt and footer distinguish the current run. Selections belong to
+next choice; the receipt, the view and the agent cell distinguish the current run. Selections belong to
 branch ancestry, survive compaction and resume, and follow only copied history on a fork.
 In `/tree`, choosing a question restores its parent so you can edit that question.
 A playbook change after the preceding answer can therefore belong to that branch, even

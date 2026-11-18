@@ -7,6 +7,7 @@ import { HANDLE_PATTERN } from "./identity.ts";
 import { STORAGE_STATUS_ID_PATTERN } from "./storage-status.ts";
 import { bundledPlaybooks, type PlaybookCatalog } from "./playbook-catalog.ts";
 import { configurationPlaybook } from "./configuration.ts";
+import type { PlaybookTargetState } from "./playbook-browser.ts";
 
 export const PLAYBOOK_HELP = [
 	"/agent playbook [name or off]",
@@ -67,7 +68,10 @@ export async function playbookCompletions(rest: string, catalog: PlaybookCatalog
 			...playbookChoices(catalog, { value: "", label: "" }).slice(1),
 			...(!secondSlot ? [{ value: "--import ", label: "--import", description: "Review one bundled starter" }, ...await targets().catch(() => [])] : []),
 		];
-	return fuzzyFilter(choices, secondSlot ? next : first, (item) => `${item.value} ${item.label}`).map((item) => ({
+	const word = secondSlot ? next : first;
+	// A complete name needs no menu, so Enter runs the command instead of accepting a completion.
+	if (choices.some((item) => item.value === word) && !choices.some((item) => item.value !== word && item.value.startsWith(word))) return null;
+	return fuzzyFilter(choices, word, (item) => `${item.value} ${item.label}`).map((item) => ({
 		...item, value: `playbook ${secondSlot ? `${first} ` : ""}${item.value}`,
 	}));
 }
@@ -91,6 +95,13 @@ export function playbookSelectionText(value: PlaybookSelection | undefined, cata
 	const summary = catalog?.state === "ready" ? catalog.entries.find((item) => item.name === value.name)?.summary : undefined;
 	const local = catalog && value.name !== null ? ` · ${summary ?? "unavailable in the local catalogue; see Playbooks in Help"}` : "";
 	return `Playbook: ${name} (${value.origin}${value.actor ? `: ${plainLine(value.actor)}` : ""})${local}`;
+}
+
+/** A native agent's choice in the terms of the playbook browser. */
+export function nativeTargetState(value: PlaybookSelection | undefined): PlaybookTargetState {
+	if (!value) return { saved: undefined, note: "The agent's host did not report its choice" };
+	const origin = value.origin === "operator" ? "you chose it" : value.origin === "creator" ? "set by its creator" : undefined;
+	return { saved: value.name, ...(origin ? { origin } : {}) };
 }
 
 export type PlaybookControl = (method: string, input: Record<string, unknown>) => Promise<unknown>;

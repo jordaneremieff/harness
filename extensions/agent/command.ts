@@ -5,7 +5,7 @@ import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 import type { DashboardState } from "./dashboard-state.ts";
 import type { DashboardPreferences } from "./dashboard-preferences.ts";
 import { randomUUID } from "node:crypto";
-import type { JsonValue } from "./view-model.ts";
+import type { JsonValue, ViewHost, ViewTarget } from "./view-model.ts";
 import type { ToolDisplayLookup } from "./tool-display.ts";
 import type { DashboardOperations, DashboardResult, NewAgentDefaults } from "./dashboard.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
@@ -16,7 +16,8 @@ import type { TimerListRow, TimerMode } from "./durable-timers.ts";
 import type { AgentConversationPage, AgentConversationSummary, AgentObservationSources } from "./dashboard-types.ts";
 import { actionOutcomeText, agentDisplayName, outcomeSessionId } from "./action-outcome.ts";
 import type { PlaybookCatalog } from "./playbook-catalog.ts";
-import { PLAYBOOK_HELP, PlaybookViews, configureNativePlaybook, isPlaybookTarget, parsePlaybookCommand, playbookCatalogText, playbookCompletions, playbookSelectionText, readNativePlaybook, requirePlaybookReceipt } from "./playbook-ui.ts";
+import { PLAYBOOK_HELP, PlaybookViews, configureNativePlaybook, isPlaybookTarget, nativeTargetState, parsePlaybookCommand, playbookCatalogText, playbookCompletions, playbookSelectionText, readNativePlaybook, requirePlaybookReceipt } from "./playbook-ui.ts";
+import type { PlaybookBrowserSource, PlaybookTargetState } from "./playbook-browser.ts";
 
 interface DashboardRuntime {
 	readonly showAgentDashboard: typeof import("./dashboard.ts").showAgentDashboard;
@@ -67,6 +68,7 @@ export interface AgentViewWiring {
 	newDefaults(ctx: ExtensionContext): NewAgentDefaults;
 	playbooks?(ctx?: ExtensionContext, initialize?: boolean): PlaybookCatalog;
 	currentPlaybook?(ctx: ExtensionContext): string;
+	playbookState?(ctx: ExtensionContext): PlaybookTargetState;
 	setPlaybook?(name: string, ctx: ExtensionContext): string;
 	playbookAgentDir?: string;
 }
@@ -258,6 +260,34 @@ export function createAgentCommand(
 		});
 	};
 	const playbooksFor = (ctx: ExtensionContext) => wiring.playbooks?.bind(wiring, ctx);
+	/** The browser for this session, or for one agent named by an exact target. */
+	const playbookBrowserPage = async (ctx: ExtensionContext, agent: string | undefined, target: ViewTarget | undefined) => {
+		const [{ PlaybookBrowser }, { preparePlaybookComparison }] = await Promise.all([import("./playbook-browser.ts"), import("./playbook-comparison.ts")]);
+		const dir = wiring.playbookAgentDir;
+		const notify = (receipt: string) => ctx.ui.notify(receipt, "info");
+		const compare = dir === undefined ? undefined : (name: string) => preparePlaybookComparison(dir, name).open;
+		const source: PlaybookBrowserSource = agent === undefined
+			? {
+				subject: "This session",
+				catalog: () => wiring.playbooks?.(ctx, true),
+				read: () => wiring.playbookState?.(ctx) ?? { saved: undefined, note: "This session's playbook is unavailable here" },
+				apply: (name) => {
+					if (!wiring.setPlaybook) throw new Error("This session's playbook is not configurable here.");
+					return wiring.setPlaybook(name, ctx);
+				},
+				applied: notify,
+				compare,
+			}
+			: {
+				subject: agent,
+				catalog: () => wiring.playbooks?.(ctx, false),
+				read: async (signal) => nativeTargetState(await readNativePlaybook((method, input) => wiring.control(method, input, ctx, signal), agent)),
+				apply: (name, signal) => configureNativePlaybook((method, input) => wiring.control(method, input, ctx, signal), agent, name),
+				applied: notify,
+				compare,
+			};
+		return { title: "Playbooks", target, text: "", open: (host: ViewHost) => new PlaybookBrowser(host, source) };
+	};
 	const commands: AgentCommandAction[] = [
 		...actions,
 		{
@@ -272,8 +302,9 @@ export function createAgentCommand(
 					return { text: wiring.setPlaybook(command.name, ctx) };
 				}
 				await views.show(ctx, async (signal) => {
-					const catalog = wiring.playbooks?.(ctx, !command.target);
 					const target = command.target ? { id: command.target, label: command.target } : undefined;
+					if (ctx.mode === "tui" && ctx.hasUI) return playbookBrowserPage(ctx, command.target, target);
+					const catalog = wiring.playbooks?.(ctx, !command.target);
 					const current = target
 						? `${target.label}\n${playbookSelectionText(await readNativePlaybook((method, input) => wiring.control(method, input, ctx, signal), target.id), catalog)}`
 						: wiring.currentPlaybook?.(ctx) ?? "This session's playbook is unavailable.";
@@ -296,6 +327,12 @@ export function createAgentCommand(
 			},
 		},
 	];
+	/** A complete action that needs no argument opens no menu, so Enter runs it. */
+	const actionCompletions = (text: string): AutocompleteItem[] | null => {
+		const exact = find(text);
+		if (exact?.args.every((arg) => arg.optional) && !commands.some((action) => action !== exact && action.name.startsWith(text))) return null;
+		return actionItems(text);
+	};
 	const actionItems = (query: string, before = ""): AutocompleteItem[] =>
 		fuzzyFilter(commands, query, (action) => `${action.name} ${action.description}`).map((action) => ({
 			value: `${before}${action.name}${!before && action.args.length ? " " : ""}`,
@@ -423,7 +460,7 @@ export function createAgentCommand(
 		async getArgumentCompletions(prefix) {
 			const text = prefix.trimStart();
 			const split = /^(\S+)\s+([\s\S]*)$/.exec(text);
-			if (!split) return actionItems(text);
+			if (!split) return actionCompletions(text);
 			const action = find(split[1]);
 			if (!action) return actionItems(text);
 			const rest = split[2];

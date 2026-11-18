@@ -10,6 +10,8 @@ const SPLIT_MIN_WIDTH = 90;
 
 export interface ListBrowserOptions<T> {
 	readonly title: string;
+	/** The first row when it says more than the title, re-read at every render. */
+	heading?(): string;
 	readonly host: ViewHost;
 	key(item: T): string;
 	/** One display line for an item, without selection styling. */
@@ -129,6 +131,11 @@ export class ListBrowser<T> implements View {
 		if (wanted !== undefined && items.some((item) => this.options.key(item) === wanted)) return;
 		const fallback = items[Math.max(0, Math.min(items.length - 1, previousIndex < 0 ? 0 : previousIndex))];
 		this.selectedKey = fallback === undefined ? undefined : this.options.key(fallback);
+	}
+
+	/** Select a listed item by key and keep it in view; an unlisted key changes nothing. */
+	selectKey(key: string): void {
+		if (this.itemOf(key) !== undefined) this.select(key);
 	}
 
 	itemOf(key: string): T | undefined {
@@ -269,7 +276,7 @@ export class ListBrowser<T> implements View {
 		this.reader.focused = this.focused && this.region === "detail";
 		const status = this.options.status?.();
 		const lines = [
-			fitCells(theme.bold(plainLine(this.title)), width),
+			fitCells(theme.bold(plainLine(this.options.heading?.() ?? this.title)), width),
 			fitCells(status ? theme.fg("muted", plainLine(status)) : "", width),
 		];
 		const bodyHeight = Math.max(1, height - lines.length);

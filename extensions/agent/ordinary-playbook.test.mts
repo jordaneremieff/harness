@@ -4,20 +4,44 @@ import { SessionManager, type ExtensionContext } from "@earendil-works/pi-coding
 import { OrdinaryPlaybook } from "./ordinary-playbook.ts";
 import type { PlaybookCatalog } from "./playbook-catalog.ts";
 
-it("keeps the active playbook and its pending successor visible without replacing the Agent footer", () => {
+function fixture() {
 	const sessionManager = SessionManager.inMemory();
-	const statuses = new Map<string, string>([["agent", "Worker is busy"]]);
-	const ctx = { sessionManager, hasUI: true, ui: { setStatus: (key: string, value: string) => statuses.set(key, value) } } as unknown as ExtensionContext;
-	const catalog: PlaybookCatalog = { state: "ready", dir: "/catalog", entries: [{ name: "maker", summary: "Build directly.", body: "Make the changes." }], diagnostics: [] };
-	const controller = new OrdinaryPlaybook({ appendEntry: (type, data) => { sessionManager.appendCustomEntry(type, data); } }, () => catalog);
+	const shown: Array<string | undefined> = [];
+	const ctx = { sessionManager, hasUI: true } as unknown as ExtensionContext;
+	const ready: PlaybookCatalog = { state: "ready", dir: "/catalog", entries: [{ name: "maker", summary: "Build directly.", body: "Make the changes." }], diagnostics: [] };
+	let catalog = ready;
+	const controller = new OrdinaryPlaybook({ appendEntry: (type, data) => { sessionManager.appendCustomEntry(type, data); } }, () => catalog, (_ctx, badge) => shown.push(badge));
+	return { ctx, shown, ready, controller, sessionManager, setCatalog: (next: PlaybookCatalog) => { catalog = next; } };
+}
+
+it("shows only a chosen playbook in the agent cell and marks a choice that waits for the next run", () => {
+	const { ctx, shown, ready, controller } = fixture();
 	controller.restore(ctx);
-	assert.match(controller.set("maker", ctx), /maker \(operator\).*Build directly/u);
-	assert.match(controller.start(ctx, catalog) ?? "", /Make the changes/u);
-	const receipt = controller.set("off", ctx);
-	assert.match(receipt, /current: maker \(operator\).*next run: off \(operator\)/u);
-	assert.equal(statuses.get("agent-playbook"), receipt);
+	assert.equal(shown.at(-1), undefined, "no choice adds nothing to the agent cell");
+	assert.equal(controller.status(ctx), "This session: no playbook.");
+	assert.equal(controller.set("maker", ctx), "This session now uses the maker playbook.");
+	assert.equal(shown.at(-1), "maker");
+	assert.equal(controller.badge, "maker");
+	assert.match(controller.start(ctx, ready) ?? "", /Make the changes/u);
+	assert.equal(controller.set("off", ctx), "This session now uses no playbook. The current run keeps the maker playbook; the next run uses it.");
+	assert.equal(shown.at(-1), "maker \u2192 off");
+	assert.deepEqual(controller.state(ctx), { saved: null, origin: "you chose it", running: "maker" });
 	controller.restore(ctx);
-	assert.equal(statuses.get("agent-playbook"), "Playbook: off (operator)");
-	assert.equal(statuses.get("agent"), "Worker is busy");
-	assert.equal(controller.start(ctx, catalog), undefined);
+	assert.equal(shown.at(-1), undefined);
+	assert.deepEqual(controller.state(ctx), { saved: null, origin: "you chose it" });
+	assert.equal(controller.start(ctx, ready), undefined);
+	assert.equal(controller.set("maker", ctx), "This session now uses the maker playbook. The current run keeps no playbook; the next run uses it.");
+	assert.equal(shown.at(-1), "off \u2192 maker");
+});
+
+it("flags a saved playbook whose file no longer supplies instructions and an unsupported saved form", () => {
+	const { ctx, shown, controller, setCatalog, sessionManager } = fixture();
+	controller.set("maker", ctx);
+	setCatalog({ state: "ready", dir: "/catalog", entries: [], diagnostics: [] });
+	assert.match(controller.status(ctx), /maker playbook\. Its file supplies no instructions now/u);
+	assert.equal(shown.at(-1), "maker unavailable");
+	sessionManager.appendCustomEntry("agent.playbook", { version: 2, origin: "operator", name: "maker" });
+	controller.restore(ctx);
+	assert.equal(shown.at(-1), "unknown");
+	assert.equal(controller.state(ctx).saved, undefined);
 });

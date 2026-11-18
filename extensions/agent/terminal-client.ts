@@ -39,7 +39,7 @@ import type { ActionResult, AgentFormHost } from "./agent-forms.ts";
 import type { ProfileDraft } from "./profile-dialog.ts";
 import { readPlaybookCatalog } from "./playbook-catalog.ts";
 import { PLAYBOOK_CONTROL_CONTRACT } from "./version-contract.ts";
-import { PLAYBOOK_HELP, configureNativePlaybook, parsePlaybookCommand, playbookCatalogText, playbookSelectionText, readNativePlaybook, requirePlaybookReceipt } from "./playbook-ui.ts";
+import { PLAYBOOK_HELP, configureNativePlaybook, nativeTargetState, parsePlaybookCommand, playbookCatalogText, playbookSelectionText, readNativePlaybook, requirePlaybookReceipt } from "./playbook-ui.ts";
 
 /** The placement that a receipt states: whether the input is in the recipient's context. Empty when the receipt states none. */
 export function placementText(receipt: unknown): string {
@@ -605,16 +605,18 @@ export class TerminalScreen implements Component {
 			if (!this.disposed) this.view.notify(text, "success");
 			return;
 		}
-		const catalog = agentDir ? readPlaybookCatalog(agentDir, { initialize: command.target === undefined }) : undefined;
-		this.view.openViewAction("Playbooks", (host) => {
-			let current = "Playbook: reading…";
-			void readNativePlaybook((method, input) => this.controller.playbookControl(method, input, host.signal), target).then((selection) => {
-				if (host.signal.aborted) return;
-				current = playbookSelectionText(selection, catalog);
-				host.requestRender();
-			});
-			return new ReaderView("Playbooks", host, () => `${target}\n${current}\n\n${playbookCatalogText(catalog)}`);
-		});
+		const [{ PlaybookBrowser }, { preparePlaybookComparison }] = await Promise.all([import("./playbook-browser.ts"), import("./playbook-comparison.ts")]);
+		if (this.disposed || (command.target === undefined && this.view.selectedRow?.id !== selected)) return;
+		const subject = command.target ?? this.view.selectedRow?.name ?? target;
+		const control = (signal: AbortSignal) => (method: string, input: Record<string, unknown>) => this.controller.playbookControl(method, input, signal);
+		this.view.openViewAction("Playbooks", (host) => new PlaybookBrowser(host, {
+			subject,
+			catalog: () => (agentDir ? readPlaybookCatalog(agentDir, { initialize: command.target === undefined }) : undefined),
+			read: async (signal) => nativeTargetState(await readNativePlaybook(control(signal), target)),
+			apply: (name, signal) => configureNativePlaybook(control(signal), target, name),
+			applied: (receipt) => { if (!this.disposed) this.view.notify(receipt, "success"); },
+			compare: agentDir ? (name) => preparePlaybookComparison(agentDir, name).open : undefined,
+		}));
 	}
 
 	/** Review unconfirmed input of one target; recovery restores a draft and sends nothing. */
