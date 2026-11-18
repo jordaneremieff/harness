@@ -75,6 +75,7 @@ The adapter prints one JSON record and exits zero for domain results:
   receipt?: {
     server: string; hostId: string; instanceId: string;
     sessionId: string; windowId: string; anchorId: string; blockId: string;
+    direction: "horizontal" | "vertical";
   };
 }
 ```
@@ -100,6 +101,28 @@ is local opening context, not document metadata or permission for later effects.
 never reuses, types into, closes or cleans up existing panes. The new program owns its terminal
 lifetime; normal completion closes the pane under Rex's exit policy, while a quick failure stays
 available for inspection. Later resource changes need the exact receipt and their own authority.
+
+## Resize a confirmed split
+
+Invoke `node <package>/extensions/rex/terminal-pane.ts resize` with one bounded JSON record:
+
+```ts
+{ version: 1; receipt: PaneReceipt; share: number }
+```
+
+Pass the receipt from a `created` result unchanged. The new pane's share is inclusive from
+0.1 to 0.9. The adapter checks the inherited anchor, server host and instance, and both blocks'
+membership in the receipt window. Rex selects the innermost split in the receipt's direction
+with the anchor before the new block, then sets its ratio to `1 - share`. The adapter makes one
+attempt with the split operation's deadlines and output bounds. It neither moves focus nor picks
+an alternate border.
+
+The result is `{ version: 1, outcome, detail }`. `resized` means Rex acknowledged the change,
+not that a client rendered it. `stale` means the inherited anchor, server identity or window
+membership changed. `unavailable` means the required terminal service is unavailable before
+mutation. `uncertain` means no resize acknowledgement; do not retry automatically.
+
+## Consumers
 
 Two Markdown actions consume the adapter. The Markdown command's deliberate Read action passes
 its configured native reader and a pinned open-request path with the default placement; the

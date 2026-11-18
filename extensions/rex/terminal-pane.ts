@@ -6,7 +6,10 @@ import { parseOrigin, trustedRexExecutable, type Runner, type RunResult, type Te
 
 export type PanePlacement = { side: "right" | "below"; share: number };
 export interface PaneRequest { version: 1; origin: TerminalOrigin | null; argv: string[]; cwd: string; placement?: PanePlacement; label?: string }
-export interface PaneReceipt { server: string; hostId: string; instanceId: string; sessionId: string; windowId: string; anchorId: string; blockId: string }
+type Direction = "horizontal" | "vertical";
+export interface PaneResizeRequest { version: 1; receipt: PaneReceipt; share: number }
+export interface PaneResizeResult { version: 1; outcome: "resized" | "stale" | "unavailable" | "uncertain"; detail: string }
+export interface PaneReceipt { server: string; hostId: string; instanceId: string; sessionId: string; windowId: string; anchorId: string; blockId: string; direction: Direction }
 export interface PaneResult { version: 1; outcome: "created" | "stale" | "unavailable" | "uncertain"; detail: string; receipt?: PaneReceipt }
 const LIMIT = 16384;
 const DEFAULT_PLACEMENT: PanePlacement = { side: "right", share: 0.5 };
@@ -38,7 +41,7 @@ export function parsePaneRequest(input: string): PaneRequest {
 
 // Identity validation and the single mutation share one Rex connection. A block anchor never
 // means global focus, and placement is checked again without a second creation attempt.
-const splitScript = `
+const identityScript = `
 local a = rex.args
 local s = rex.call("server.status")
 if not s then return {outcome="unavailable", detail="Rex server identity is unavailable."} end
@@ -53,6 +56,8 @@ local function placement(v, id)
     end
   end
 end
+`;
+const splitScript = `${identityScript}
 local before = rex.call("session.view", {session_id=a.sessionId})
 local window = placement(before, a.blockId)
 if not window then return {outcome="stale", detail="The invoking terminal block is gone or detached."} end
@@ -61,13 +66,25 @@ local created = rex.call("session.new_split", {session_id=a.sessionId, anchor_id
 if not created or created.anchor_id ~= a.blockId or type(created.block_ids) ~= "table" or #created.block_ids ~= 1 or type(created.block_ids[1]) ~= "string" then
   return {outcome="uncertain", detail="Rex did not confirm split creation. Do not retry automatically."}
 end
-local receipt = {server=a.server, hostId=a.hostId, instanceId=a.instanceId, sessionId=a.sessionId, windowId=window, anchorId=a.blockId, blockId=created.block_ids[1]}
+local receipt = {server=a.server, hostId=a.hostId, instanceId=a.instanceId, sessionId=a.sessionId, windowId=window, anchorId=a.blockId, blockId=created.block_ids[1], direction=a.direction}
 local after = rex.call("session.view", {session_id=a.sessionId})
 local anchorWindow = placement(after, a.blockId)
 local paneWindow = placement(after, receipt.blockId)
 if not anchorWindow or anchorWindow ~= paneWindow then return {outcome="uncertain", receipt=receipt, detail="Rex created a block but same-tab placement is unconfirmed. Do not retry automatically."} end
 receipt.windowId = paneWindow
 return {outcome="created", receipt=receipt, detail="Rex created a split beside the invoking terminal. Visibility and program acceptance are not verified."}
+`;
+const resizeScript = `${identityScript}
+local view = rex.call("session.view", {session_id=a.sessionId})
+if placement(view, a.anchorId) ~= a.windowId or placement(view, a.blockId) ~= a.windowId then
+  return {outcome="stale", detail="The terminal blocks are no longer in the receipt window."}
+end
+-- The server selects the innermost split in the requested direction with this ordered pair.
+local resized = rex.call("session.resize_pane", {session_id=a.sessionId, before_block_id=a.anchorId, after_block_id=a.blockId, direction=a.direction, ratio=a.ratio})
+if not resized or type(resized.revision) ~= "number" then
+  return {outcome="uncertain", detail="Rex did not confirm the resize. Do not retry automatically."}
+end
+return {outcome="resized", detail="Rex confirmed the split resize."}
 `;
 const runChild: Runner = (executable, args, options) => new Promise((done) => {
 	execFile(executable, [...args], { ...options, encoding: "utf8", killSignal: "SIGKILL" }, (error, stdout, stderr) => {
@@ -77,20 +94,35 @@ const runChild: Runner = (executable, args, options) => new Promise((done) => {
 });
 const result = (outcome: PaneResult["outcome"], detail: string): PaneResult => ({ version: 1, outcome, detail });
 const uuid = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
-function readReceipt(value: unknown, exact: NonNullable<TerminalOrigin["exact"]>): PaneReceipt | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return;
+const receiptFields = ["server", "hostId", "instanceId", "sessionId", "windowId", "anchorId", "blockId", "direction"];
+function readReceipt(value: unknown): PaneReceipt | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !receiptFields.includes(key))) return;
 	const r = value as PaneReceipt;
-	if (r.server !== exact.server || r.hostId !== exact.hostId || r.instanceId !== exact.instanceId || r.sessionId !== exact.sessionId || r.anchorId !== exact.blockId) return;
-	if (typeof r.blockId !== "string" || !new RegExp(`^block:${uuid}$`).test(r.blockId) || r.blockId === exact.blockId || typeof r.windowId !== "string" || !new RegExp(`^window:${uuid}$`).test(r.windowId)) return;
-	return { server: r.server, hostId: r.hostId, instanceId: r.instanceId, sessionId: r.sessionId, windowId: r.windowId, anchorId: r.anchorId, blockId: r.blockId };
+	const id = (value: unknown, prefix = "") => typeof value === "string" && new RegExp(`^${prefix}${uuid}$`).test(value);
+	if (!validText(r.server, 4096) || !r.server.length || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(r.server) || !id(r.hostId) || !id(r.instanceId) || !id(r.sessionId, "session:") || !id(r.windowId, "window:") || !id(r.anchorId, "block:") || !id(r.blockId, "block:") || r.anchorId === r.blockId || (r.direction !== "horizontal" && r.direction !== "vertical")) return;
+	return r;
+}
+export function parseResizeRequest(input: string): PaneResizeRequest {
+	if (Buffer.byteLength(input) > LIMIT) throw new Error("Pane request exceeds 16384 bytes.");
+	const value = JSON.parse(input) as Partial<PaneResizeRequest>;
+	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["version", "receipt", "share"].includes(key)) || value.version !== 1 || typeof value.share !== "number" || !Number.isFinite(value.share) || value.share < 0.1 || value.share > 0.9) throw new Error("Invalid pane resize request.");
+	const receipt = readReceipt(value.receipt);
+	if (!receipt) throw new Error("Pane resize requires an exact split receipt.");
+	return { version: 1, receipt, share: value.share };
+}
+function matchesOrigin(env: Readonly<NodeJS.ProcessEnv>, server: string, session: string, block: string): boolean {
+	return env.REX_SERVER === server && env.REX_SESSION === session && env.REX_BLOCK === block;
+}
+function runRex(run: Runner, server: string, sessionId: string, script: string, args: object): Promise<RunResult> {
+	const env = { ...process.env };
+	for (const key of Object.keys(env)) if (key.startsWith("REX_")) delete env[key];
+	return run(trustedRexExecutable(), ["--autostart=false", "--color=never", "--timeout=3s", `--server=${server}`, "do", "--session", sessionId, "-e", script, "--args", JSON.stringify(args), "--json"], { timeout: 5000, maxBuffer: 32768, env });
 }
 export async function splitPane(request: PaneRequest, env: Readonly<NodeJS.ProcessEnv> = process.env, run: Runner = runChild): Promise<PaneResult> {
 	request = parsePaneRequest(JSON.stringify(request));
 	const exact = request.origin?.exact;
 	if (!exact) return result("unavailable", "No verified invoking terminal is available. No pane was created.");
-	if (env.REX_SERVER !== exact.server || env.REX_SESSION !== exact.sessionId || env.REX_BLOCK !== exact.blockId) return result("stale", "The inherited terminal differs from the captured origin. No pane was created.");
-	const childEnv = { ...process.env };
-	for (const key of Object.keys(childEnv)) if (key.startsWith("REX_")) delete childEnv[key];
+	if (!matchesOrigin(env, exact.server, exact.sessionId, exact.blockId)) return result("stale", "The inherited terminal differs from the captured origin. No pane was created.");
 	// The program learns which content of the window lies over its pane from Rex's layout, as panes that rex_terminal creates do.
 	const argv = withPaneStacking(request.argv, paneStackingCommand(exact.server, env));
 	const placement = request.placement ?? DEFAULT_PLACEMENT;
@@ -99,23 +131,39 @@ export async function splitPane(request: PaneRequest, env: Readonly<NodeJS.Proce
 	const label = request.label ?? DEFAULT_LABEL;
 	let child: RunResult;
 	try {
-		child = await run(trustedRexExecutable(), ["--autostart=false", "--color=never", "--timeout=3s", `--server=${exact.server}`, "do", "--session", exact.sessionId, "-e", splitScript, "--args", JSON.stringify({ ...exact, argv, cwd: request.cwd, direction, ratio, label }), "--json"], { timeout: 5000, maxBuffer: 32768, env: childEnv });
+		child = await runRex(run, exact.server, exact.sessionId, splitScript, { ...exact, argv, cwd: request.cwd, direction, ratio, label });
 	} catch { return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically."); }
 	if (child.failure === "missing") return result("unavailable", "The trusted Rex program is missing. No pane was created.");
 	if (child.failure || child.code !== 0 || Buffer.byteLength(child.stdout) > 32768) return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically.");
-	return readResult(child.stdout, exact);
+	return readResult(child.stdout, exact, direction);
 }
-function readResult(stdout: string, exact: NonNullable<TerminalOrigin["exact"]>): PaneResult {
+function readResult(stdout: string, exact: NonNullable<TerminalOrigin["exact"]>, direction: Direction): PaneResult {
 	try {
 		const value = JSON.parse(stdout) as PaneResult;
 		if (!["created", "stale", "unavailable", "uncertain"].includes(value.outcome) || !validText(value.detail, 256) || !value.detail.length || /[\p{Cc}\p{Cf}]/u.test(value.detail)) throw new Error("Invalid result.");
-		const receipt = readReceipt(value.receipt, exact);
+		const r = readReceipt(value.receipt);
+		const receipt = r?.server === exact.server && r.hostId === exact.hostId && r.instanceId === exact.instanceId && r.sessionId === exact.sessionId && r.anchorId === exact.blockId && r.direction === direction ? r : undefined;
 		if (value.outcome === "created" && !receipt) throw new Error("Missing receipt.");
 		return { version: 1, outcome: value.outcome, detail: value.detail, ...(receipt ? { receipt } : {}) };
 	} catch { return result("uncertain", "Rex returned an invalid creation result. Do not retry automatically."); }
 }
+export async function resizePane(request: PaneResizeRequest, env: Readonly<NodeJS.ProcessEnv> = process.env, run: Runner = runChild): Promise<PaneResizeResult> {
+	const { receipt, share } = parseResizeRequest(JSON.stringify(request));
+	const response = (outcome: PaneResizeResult["outcome"], detail: string): PaneResizeResult => ({ version: 1, outcome, detail });
+	if (!matchesOrigin(env, receipt.server, receipt.sessionId, receipt.anchorId)) return response("stale", "The inherited terminal differs from the receipt anchor.");
+	try {
+		const child = await runRex(run, receipt.server, receipt.sessionId, resizeScript, { ...receipt, ratio: 1 - share });
+		if (child.failure === "missing") return response("unavailable", "The trusted Rex program is missing.");
+		if (!child.failure && child.code === 0 && Buffer.byteLength(child.stdout) <= 32768) {
+			const { outcome, detail } = JSON.parse(child.stdout) as PaneResizeResult;
+			if (["resized", "stale", "unavailable", "uncertain"].includes(outcome) && validText(detail, 256) && detail.length && !/[\p{Cc}\p{Cf}]/u.test(detail)) return response(outcome, detail);
+		}
+	} catch { /* An unconfirmed mutation is not safe to repeat. */ }
+	return response("uncertain", "Rex resize is unconfirmed. Do not retry automatically.");
+}
 async function main(): Promise<void> {
-	if (process.argv.length !== 3 || process.argv[2] !== "split") throw new Error("Use terminal-pane.ts split with one JSON request on stdin.");
+	const operation = process.argv[2];
+	if (process.argv.length !== 3 || (operation !== "split" && operation !== "resize")) throw new Error("Use terminal-pane.ts split or resize with one JSON request on stdin.");
 	const chunks: Buffer[] = [];
 	let size = 0;
 	for await (const chunk of process.stdin) {
@@ -124,7 +172,7 @@ async function main(): Promise<void> {
 		chunks.push(Buffer.from(chunk));
 	}
 	const input = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-	process.stdout.write(`${JSON.stringify(await splitPane(parsePaneRequest(input)))}\n`);
+	process.stdout.write(`${JSON.stringify(await (operation === "split" ? splitPane(parsePaneRequest(input)) : resizePane(parseResizeRequest(input))))}\n`);
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	void main().catch((error) => { process.stderr.write(`${String(error instanceof Error ? error.message : error).replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 256)}\n`); process.exitCode = 1; });

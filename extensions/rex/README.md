@@ -153,7 +153,11 @@ Placement defaults to the right side with an even share. A `right` placement is 
 split and a `below` placement is a vertical split, both after the anchor, with `ratio` set to
 one minus the requested share; the share is inclusive from 0.15 to 0.85. The optional label
 holds 1 to 32 printable Unicode characters and defaults to `Reader`. Neither option changes
-focus.
+focus. The receipt records the split direction.
+
+The fixed `terminal-pane.ts resize` operation accepts that receipt and a share from 0.1 to 0.9.
+It checks both blocks in the receipt window. Rex selects the innermost split with that ordered
+block pair and direction. The adapter makes one attempt and never retries an unconfirmed resize.
 
 Markdown uses this contract for explicit Read actions. It supplies only its configured
 native reader and a pinned open request; document text never supplies a terminal program.
