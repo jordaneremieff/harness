@@ -5,7 +5,10 @@
  * Ordinary Pi and the attached terminal supply the same host interface with their own routes.
  */
 
-import { type Choice, Form, LoadingView, type OperatorView, plainLine, ReaderView, type ViewHost } from "../../operator-ui/index.ts";
+import { type Choice, Form } from "./view-form.ts";
+import type { View, ViewHost } from "./view-model.ts";
+import { LoadingView, ReaderView } from "./view-reader.ts";
+import { plainLine } from "./view-text.ts";
 import type { AgentActionOutcome } from "./command.ts";
 import { AGENT_INPUT_KIND, isInputKind } from "./input-entry.ts";
 import type { AgentConversationEntry, AgentConversationSummary } from "./dashboard-types.ts";
@@ -136,7 +139,7 @@ function configurationPatch(host: AgentFormHost, values: Readonly<Record<string,
 	return validateConfigurationPatch(patch);
 }
 
-function configureView(host: AgentFormHost, view: ViewHost): OperatorView {
+function configureView(host: AgentFormHost, view: ViewHost): View {
 	return new LoadingView("Configure", view, async () => {
 		const models = await host.models();
 		const current = host.row.model ? `${host.row.model.provider}/${host.row.model.modelId}` : "";
@@ -193,7 +196,7 @@ function branchForm(host: AgentFormHost, view: ViewHost, rewind: boolean, choice
 	});
 }
 
-function branchView(host: AgentFormHost, view: ViewHost, rewind: boolean, pages = 1): OperatorView {
+function branchView(host: AgentFormHost, view: ViewHost, rewind: boolean, pages = 1): View {
 	return new LoadingView(rewind ? "Rewind" : "Fork", view, async () => {
 		const { choices, more } = await entryChoices(host, pages);
 		if (!choices.length && rewind) throw new Error("No committed message is available to rewind before.");
@@ -205,7 +208,7 @@ function branchView(host: AgentFormHost, view: ViewHost, rewind: boolean, pages 
 	});
 }
 
-function contextView(host: AgentFormHost, view: ViewHost, reset: boolean): OperatorView {
+function contextView(host: AgentFormHost, view: ViewHost, reset: boolean): View {
 	return new Form({
 		title: reset ? "Reset context" : "Compact",
 		heading: `${reset ? "Reset the context of" : "Compact"} ${label(host)}`,
@@ -222,7 +225,7 @@ function contextView(host: AgentFormHost, view: ViewHost, reset: boolean): Opera
 	});
 }
 
-function commandView(host: AgentFormHost, view: ViewHost): OperatorView {
+function commandView(host: AgentFormHost, view: ViewHost): View {
 	return new LoadingView("Run command", view, async () => {
 		const commands = await host.commands();
 		if (commands && !commands.length) throw new Error("This agent's host lists no native commands.");
@@ -244,7 +247,7 @@ function commandView(host: AgentFormHost, view: ViewHost): OperatorView {
 	});
 }
 
-function scheduleView(host: AgentFormHost, view: ViewHost): OperatorView {
+function scheduleView(host: AgentFormHost, view: ViewHost): View {
 	const record = agentState(host.state, host.row.id);
 	record.schedule ??= { message: "", time: "", mode: "followUp" };
 	const draft = record.schedule;
@@ -284,7 +287,7 @@ function scheduleView(host: AgentFormHost, view: ViewHost): OperatorView {
 	return form;
 }
 
-function timersView(host: AgentFormHost, view: ViewHost): OperatorView {
+function timersView(host: AgentFormHost, view: ViewHost): View {
 	return new LoadingView("Scheduled messages", view, async () => {
 		const timers = await host.timers();
 		const rows = timers.map((timer) => ({ value: String(timer.timerId), label: `${new Date(timer.deadline).toLocaleString()} · ${timer.status} · ${plainLine(timer.messagePreview)}` }));
@@ -302,13 +305,13 @@ function timersView(host: AgentFormHost, view: ViewHost): OperatorView {
 	});
 }
 
-function confirmView(view: ViewHost, title: string, heading: string, intro: string, action: string, run: () => Promise<ReturnType<typeof finish>>, tone: "accent" | "danger" = "accent"): OperatorView {
+function confirmView(view: ViewHost, title: string, heading: string, intro: string, action: string, run: () => Promise<ReturnType<typeof finish>>, tone: "accent" | "danger" = "accent"): View {
 	return new Form({ title, heading, intro, fields: [], action: { label: action, tone }, host: view, submit: run });
 }
 
 const hasPatch = (draft: ProfileDraft) => draft.role !== undefined || draft.expertise !== undefined;
 
-function profileEditView(host: AgentFormHost, view: ViewHost, profile: AgentProfile, draft: ProfileDraft, reread: () => void): OperatorView {
+function profileEditView(host: AgentFormHost, view: ViewHost, profile: AgentProfile, draft: ProfileDraft, reread: () => void): View {
 	const conflict = draft.needsRead || draft.expectedRevision !== profile.revision;
 	return new Form({
 		title: "Edit profile",
@@ -348,7 +351,7 @@ function profileEditView(host: AgentFormHost, view: ViewHost, profile: AgentProf
 	});
 }
 
-function profileView(host: AgentFormHost, view: ViewHost): OperatorView {
+function profileView(host: AgentFormHost, view: ViewHost): View {
 	let profile: AgentProfile | undefined;
 	let error: string | undefined;
 	const read = () => {
@@ -389,7 +392,7 @@ function profileView(host: AgentFormHost, view: ViewHost): OperatorView {
 	);
 }
 
-function detailsView(host: AgentFormHost, view: ViewHost): OperatorView {
+function detailsView(host: AgentFormHost, view: ViewHost): View {
 	let content = "Reading details…";
 	host.status(view.signal).then(
 		(value) => {
@@ -408,7 +411,7 @@ function detailsView(host: AgentFormHost, view: ViewHost): OperatorView {
 }
 
 /** Open one agent action as its inspector view. */
-export function actionView(name: string, host: AgentFormHost, view: ViewHost): OperatorView {
+export function actionView(name: string, host: AgentFormHost, view: ViewHost): View {
 	const who = label(host);
 	const run = (action: string, args: string[] = []) => async () => finish(host, action, await host.run(action, args));
 	switch (name) {

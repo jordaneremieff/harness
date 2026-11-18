@@ -13,31 +13,16 @@ import {
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
-import {
-	type Action,
-	actionControl,
-	type Choice,
-	type Control,
-	type Destination,
-	Footer,
-	Form,
-	HitMap,
-	keyInput,
-	keyMatches,
-	keyText,
-	menuControl,
-	MORE_CHORD,
-	MORE_KEY,
-	NavigationFrame,
-	type Notice,
-	type OperatorView,
-	plainLine,
-	TextField,
-	type ViewHost,
-	type ViewTarget,
-	ReaderView,
-	wrap,
-} from "../../operator-ui/index.ts";
+import { actionControl, type Control, KeyRow, menuControl } from "./key-row.ts";
+import { Inspector } from "./inspector.ts";
+import type { OwnerView } from "./panel-modules.ts";
+import { type Choice, Form } from "./view-form.ts";
+import { TextField } from "./view-fields.ts";
+import { HitMap } from "./view-hits.ts";
+import { keyInput, keyMatches, keyText, MORE_CHORD, MORE_KEY } from "./view-keys.ts";
+import type { Action, Notice, View, ViewHost, ViewTarget } from "./view-model.ts";
+import { ReaderView } from "./view-reader.ts";
+import { plainLine, wrap } from "./view-text.ts";
 import { DashboardResize } from "./dashboard-resize.ts";
 import { mergeAgentCoverage, type AgentConversationPage, type AgentConversationSummary, type AgentConversationSnapshot } from "./dashboard-types.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
@@ -110,7 +95,7 @@ export interface DashboardOperations {
 	/** The forms host for one captured target. */
 	forms(target: AgentConversationSummary): AgentFormHost;
 	/** Owner views the target's live host advertises, bound to that target. */
-	panels?(target: AgentConversationSummary): Promise<readonly Destination[]>;
+	panels?(target: AgentConversationSummary): Promise<readonly OwnerView[]>;
 	/** The selected conversation or its observed state changed; a host may read per-target display data. Reading never starts a host. */
 	observed?(row: AgentConversationSummary | undefined): void;
 	/** Composer text the host handles itself, such as the attached terminal's /agent routes. Returns true when handled. */
@@ -202,9 +187,30 @@ function admittedText(row: AgentConversationSummary, mode: "steer" | "followUp")
 	return mode === "steer" ? `Steer admitted for ${agentDisplayName(row)}` : `Follow-up admitted for ${agentDisplayName(row)}`;
 }
 
+/**
+ * The owner views of one agent, when its host advertises several. Up and Down choose and Open shows
+ * the chosen owner view alone under its title, nested above the list, so Escape returns here.
+ * Choosing sends nothing; an unavailable view explains itself when opened.
+ */
+function ownerViewChooser(views: readonly OwnerView[], row: AgentConversationSummary, host: ViewHost): View {
+	const choices: Choice[] = views.map((view) => ({ value: view.key, label: plainLine(view.label), ...(view.unavailable ? { description: `unavailable: ${plainLine(view.unavailable)}` } : {}) }));
+	return new Form({
+		title: "Owner views",
+		heading: `Owner views of ${plainLine(agentDisplayName(row))}`,
+		fields: [{ kind: "choice", id: "view", label: "View", rows: Math.min(8, choices.length), choices }],
+		action: { label: "Open" },
+		host,
+		submit: async (values) => {
+			const chosen = views.find((view) => view.key === values.view);
+			if (chosen) host.push((child) => chosen.open(child));
+			return undefined;
+		},
+	});
+}
+
 /** An open inspector: forms, details or owner views for one captured target. */
-interface Inspector {
-	readonly frame: NavigationFrame;
+interface OpenInspector {
+	readonly frame: Inspector;
 	readonly target: string;
 }
 
@@ -220,11 +226,11 @@ export class AgentDashboard implements Component, Focusable {
 	private efforts?: EffortView;
 	private readonly hits = new HitMap();
 	/** The key footer on the last row, with the More menu it opens. */
-	private readonly footer = new Footer();
+	private readonly footer = new KeyRow();
 	/** First row of the open More menu at the last paint. */
 	private menuTop = 0;
 	private readonly resize: DashboardResize;
-	private inspector?: Inspector;
+	private inspector?: OpenInspector;
 	private surface: Surface = "work";
 	/** The surface Threads returns to: Related efforts when a contact thread opened from there. */
 	private threadsFrom: Surface = "work";
@@ -737,8 +743,8 @@ export class AgentDashboard implements Component, Focusable {
 	}
 
 	/** Open one host-specific view in the inspector, bound to the selected agent. */
-	openViewAction(title: string, open: (host: ViewHost) => OperatorView): void {
-		if (this.console) this.openInspector([{ key: title, label: title, open }]);
+	openViewAction(title: string, open: (host: ViewHost) => View): void {
+		if (this.console) this.openInspector(title, open);
 		else this.show("Select an agent first", "warning");
 	}
 
@@ -967,15 +973,15 @@ export class AgentDashboard implements Component, Focusable {
 	}
 
 	/** Open an inspector for the selected agent. Its views keep the target captured now. */
-	private openInspector(destinations: readonly Destination[], initial?: string, target?: ViewTarget): void {
+	private openInspector(title: string, open: (host: ViewHost) => View, target?: ViewTarget): void {
 		this.newerIntent();
 		const row = target ? undefined : this.console?.row;
 		this.closeInspector();
-		const frame = new NavigationFrame({
+		const frame = new Inspector({
 			theme: this.theme,
 			target: target ?? (row ? { id: row.id, label: this.targetLabel(row) } : { id: "agents", label: "Agents" }),
-			destinations: () => destinations,
-			initial,
+			title,
+			open,
 			rows: () => this.inspectorRows,
 			requestRender: () => this.redraw(),
 			close: (then) => {
@@ -986,8 +992,8 @@ export class AgentDashboard implements Component, Focusable {
 				this.redraw();
 				then?.();
 			},
-			closeLabel: destinations.length > 1 ? "close owner views" : `close ${plainLine(destinations[0]?.label ?? "form").toLocaleLowerCase()}`,
-			// The dashboard draws one footer for the whole screen; it shows the form's keys while the form has focus.
+			closeLabel: `close ${plainLine(title).toLocaleLowerCase()}`,
+			// The dashboard draws one key row for the whole screen; it shows the form's keys while the form has focus.
 			footer: false,
 		});
 		this.inspector = { frame, target: target?.id ?? row?.id ?? "" };
@@ -1019,9 +1025,9 @@ export class AgentDashboard implements Component, Focusable {
 			this.show("Select an agent first", "warning");
 			return;
 		}
-		let frame: NavigationFrame | undefined;
+		let frame: Inspector | undefined;
 		const host = this.formsFor(row, () => frame !== undefined && this.inspector?.frame === frame);
-		this.openInspector([{ key: name, label: this.actionLabel(name), open: (view) => actionView(name, host, view) }]);
+		this.openInspector(this.actionLabel(name), (view) => actionView(name, host, view));
 		frame = this.inspector?.frame;
 	}
 
@@ -1090,16 +1096,16 @@ export class AgentDashboard implements Component, Focusable {
 			},
 			inspect: (call, signal) => forms.inspect({ ...call }, signal),
 		};
-		this.openInspector([{ key: "work", label: "Work", open: (view) => new WorkView(view, source) }]);
+		this.openInspector("Work", (view) => new WorkView(view, source));
 	}
 
 	private openTasks(): void {
 		const row = this.console?.row;
 		if (!row) return;
-		this.openInspector([{ key: "tasks", label: "Tasks", open: (view) => this.tasksView(row, view) }]);
+		this.openInspector("Tasks", (view) => this.tasksView(row, view));
 	}
 
-	private tasksView(row: AgentConversationSummary, view: ViewHost): OperatorView {
+	private tasksView(row: AgentConversationSummary, view: ViewHost): View {
 		const tasks = new AgentTasksView({
 			theme: this.theme,
 			source: this.source,
@@ -1130,7 +1136,7 @@ export class AgentDashboard implements Component, Focusable {
 		};
 	}
 
-	private chooseConversation(labels: readonly TaskLabel[], view: ViewHost): OperatorView {
+	private chooseConversation(labels: readonly TaskLabel[], view: ViewHost): View {
 		return new Form({
 			title: "Conversations",
 			heading: "Choose the conversation to open",
@@ -1159,7 +1165,7 @@ export class AgentDashboard implements Component, Focusable {
 	private openHelp(): void {
 		const view = (host: ViewHost) =>
 			new ReaderView("Help", host, () => ["Machine execution preferences", ...this.machinePreferences, "", ...HELP].join("\n"));
-		this.openInspector([{ key: "help", label: "Help", open: view }]);
+		this.openInspector("Help", view);
 	}
 
 	private async openBrowsers(): Promise<void> {
@@ -1171,10 +1177,12 @@ export class AgentDashboard implements Component, Focusable {
 		this.notice = notice;
 		this.redraw();
 		try {
-			const destinations = await panels(row);
+			const views = await panels(row);
 			if (!this.ownerViewIsCurrent(intent, row, notice)) return;
-			if (!destinations.length) return this.show("This agent's host advertises no owner views. A stored or stopped host shows none.", "warning");
-			this.openInspector(destinations);
+			if (!views.length) return this.show("This agent's host advertises no owner views. A stored or stopped host shows none.", "warning");
+			const only = views.length === 1 ? views[0] : undefined;
+			if (only) this.openInspector(only.label, (host) => only.open(host));
+			else this.openInspector("Owner views", (host) => ownerViewChooser(views, row, host));
 		} catch (error) {
 			if (!this.ownerViewIsCurrent(intent, row, notice)) return;
 			this.show(`Owner views could not be read: ${error instanceof Error ? error.message : String(error)}`, "error");
@@ -1230,7 +1238,7 @@ export class AgentDashboard implements Component, Focusable {
 				},
 				submit: (values) => this.startAgent(newAgent, values),
 			});
-		this.openInspector([{ key: "new", label: "New conversation", open }], undefined, { id: "new", label: "New conversation" });
+		this.openInspector("New conversation", open, { id: "new", label: "New conversation" });
 	}
 
 	private async startAgent(newAgent: NonNullable<DashboardOperations["newAgent"]>, values: Readonly<Record<string, string>>) {
@@ -1276,7 +1284,7 @@ export class AgentDashboard implements Component, Focusable {
 	}
 
 	/** A created conversation takes the selection only while its own form still owns the view. */
-	private creationIsCurrent(intent: number, form: NavigationFrame | undefined): boolean {
+	private creationIsCurrent(intent: number, form: Inspector | undefined): boolean {
 		return !this.closed && this.surface === "work" && this.intent === intent && form !== undefined && this.inspector?.frame === form;
 	}
 
@@ -1853,7 +1861,7 @@ export class AgentDashboard implements Component, Focusable {
 	/** The key footer on the last row: the open form's keys while it has focus, else the focused surface's. */
 	private renderFooter(width: number, y: number): string {
 		if (this.surface === "work" && this.region === "inspector" && this.inspector) return this.inspector.frame.renderFooter(width, this.hits, y);
-		const { controls, menu } = this.footer.menuShown ? { controls: Footer.menuControls(this.footer, (key) => this.sendKey(key)), menu: [] } : this.footerControls();
+		const { controls, menu } = this.footer.menuShown ? { controls: KeyRow.menuControls(this.footer, (key) => this.sendKey(key)), menu: [] } : this.footerControls();
 		return this.footer.render(controls, width, this.theme, this.hits, y, 0, menu, this.footerEditing());
 	}
 

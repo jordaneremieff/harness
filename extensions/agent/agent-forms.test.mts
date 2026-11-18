@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { NavigationFrame } from "../../operator-ui/index.ts";
+import { Inspector } from "./inspector.ts";
 import { actionView, deliveryText, scheduleDeadline, type ActionResult, type AgentFormHost } from "./agent-forms.ts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
@@ -17,10 +17,11 @@ const ESCAPE = "\u001b";
 /** One agent form mounted in a frame, as the work view's inspector mounts it. */
 function mount(name: string, host: AgentFormHost) {
 	let closes = 0;
-	const frame = new NavigationFrame({
+	const frame = new Inspector({
 		theme,
 		target: { id: host.row.id, label: "Target" },
-		destinations: () => [{ key: name, label: name, open: (view) => actionView(name, host, view) }],
+		title: name,
+		open: (view) => actionView(name, host, view),
 		rows: () => 30,
 		requestRender: () => {},
 		close: () => {
@@ -45,9 +46,9 @@ function setup(options: Setup = {}) {
 	return { target, state, calls, outcomes, host };
 }
 
-const text = (frame: NavigationFrame, width = 100) => frame.render(width).map(stripVTControlCharacters).join("\n");
+const text = (frame: Inspector, width = 100) => frame.render(width).map(stripVTControlCharacters).join("\n");
 
-async function until(frame: NavigationFrame, pattern: RegExp, width = 100): Promise<string> {
+async function until(frame: Inspector, pattern: RegExp, width = 100): Promise<string> {
 	for (let attempt = 0; attempt < 200; attempt++) {
 		const shown = text(frame, width);
 		if (pattern.test(shown)) return shown;
@@ -56,14 +57,14 @@ async function until(frame: NavigationFrame, pattern: RegExp, width = 100): Prom
 	throw new Error(`the form never showed ${pattern}\n${text(frame)}`);
 }
 
-function act(frame: NavigationFrame, label: string): void {
+function act(frame: Inspector, label: string): void {
 	const action = frame.viewActions.find((candidate) => candidate.label === label);
 	assert.ok(action, `no action ${label}: ${frame.viewActions.map((candidate) => candidate.label).join(", ")}`);
 	assert.equal(action.disabled, undefined, `${label} is unavailable: ${action.disabled}`);
 	action.run();
 }
 
-function type(frame: NavigationFrame, value: string): void {
+function type(frame: Inspector, value: string): void {
 	for (const character of value) frame.handleInput(character);
 }
 

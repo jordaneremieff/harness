@@ -6,7 +6,9 @@ import { matchesKey, visibleWidth, wrapTextWithAnsi, truncateToWidth, type TUI, 
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { RelatedEffort } from "./effort-presence.ts";
 import type { DashboardResult } from "./dashboard.ts";
-import { type Action, type Control, actionControl, keyInput, keyMatches, keyText, menuControl } from "../../operator-ui/index.ts";
+import { type Control, actionControl, menuControl } from "./key-row.ts";
+import { keyInput, keyMatches, keyText } from "./view-keys.ts";
+import type { Action } from "./view-model.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { cleanDashboardText } from "./dashboard-conversation.ts";
 import { DashboardMouse } from "./dashboard-mouse.ts";

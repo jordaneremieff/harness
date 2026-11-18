@@ -7,7 +7,10 @@
  */
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Static } from "@earendil-works/pi-schema";
-import { type Action, Browser, type KeyHint, type OperatorView, plainLine, plainText, ReaderView, type ViewHost } from "../../operator-ui/index.ts";
+import type { Action, KeyHint, View, ViewHost } from "./view-model.ts";
+import { ListBrowser } from "./view-list.ts";
+import { ReaderView } from "./view-reader.ts";
+import { plainLine, plainText } from "./view-text.ts";
 import type { TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { dashboardClock } from "./dashboard-time.ts";
 import { ResultOutputSchema } from "./observation-schema.ts";
@@ -190,12 +193,12 @@ export function workDetail(row: WorkRow, target: string): string {
 const errorText = (error: unknown) => plainLine(error instanceof Error ? error.message : String(error));
 
 /** The declared work of one conversation as a list with a detail. */
-export class WorkView implements OperatorView {
+export class WorkView implements View {
 	readonly title = "Work";
 	focused = false;
 	private readonly host: ViewHost;
 	private readonly source: WorkSource;
-	private readonly browser: Browser<WorkRow>;
+	private readonly browser: ListBrowser<WorkRow>;
 	private items: readonly OpenWorkView[] = [];
 	private unreadable = 0;
 	private observedAt?: number;
@@ -207,7 +210,7 @@ export class WorkView implements OperatorView {
 	constructor(host: ViewHost, source: WorkSource) {
 		this.host = host;
 		this.source = source;
-		this.browser = new Browser<WorkRow>({
+		this.browser = new ListBrowser<WorkRow>({
 			title: "Declared work",
 			host,
 			key: (row) => row.key,
@@ -313,9 +316,6 @@ export class WorkView implements OperatorView {
 	keys(): readonly KeyHint[] {
 		return this.browser.keys();
 	}
-	editing(): boolean {
-		return this.browser.editing();
-	}
 	escape(): boolean {
 		return this.browser.escape();
 	}
@@ -400,7 +400,7 @@ class PagedReader {
 		this.paging = paging;
 	}
 
-	view(): OperatorView {
+	view(): View {
 		void this.read();
 		return new ReaderView(this.paging.title, this.host, () => this.content(), () => this.actions());
 	}
@@ -492,6 +492,6 @@ class PagedReader {
 	}
 }
 
-function pagedReader(host: ViewHost, source: WorkSource, paging: Paging): OperatorView {
+function pagedReader(host: ViewHost, source: WorkSource, paging: Paging): View {
 	return new PagedReader(host, source, paging).view();
 }

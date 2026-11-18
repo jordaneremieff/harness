@@ -712,8 +712,10 @@ the reading position and each card's disclosure survive it. Builtin,
 codemode and Agent cards keep their precedence. A host from another release
 refuses the status read through the existing operation identity check; there
 is no older reader. Owner views (clipboard, markdown, pillars, policy, stash) load the
-same way and open from `o owner views` in the footer; see
-[operator views](../../docs/conventions/operator-panels.md#attached-panels).
+same way and open from Owner views (`o`) in the key row; see
+[operator panels](../../docs/conventions/operator-panels.md#attached-panels).
+The client accepts a module only in the current `version: 2` shape and refuses
+any other value with its reason; it never adapts an older shape.
 
 The terminal sets the window title to the observed conversation name and the
 last segment of its working directory (`Parser review · harness`) through Pi's
@@ -816,8 +818,7 @@ wider thread evidence. No relationship store or host protocol is added.
 ### Focus and input
 
 Tab and Shift+Tab move between the list, the conversation, the message field
-and an open form. In owner views, Tab passes the view's own regions and then
-the row of owner views, where Left and Right choose one and Enter opens it.
+and an open form. In an owner view, Tab passes the view's own regions.
 Escape leaves an inspector form, then the message field,
 then the view; it never stops work. `/` moves to Find, where letters narrow
 the list: the selection follows the first match, and the pane previews it
@@ -877,10 +878,15 @@ A form binds to the agent it opened for; selecting another agent closes it
 without sending anything. Fields keep their values after a refusal; only the
 effect-labelled action calls the owner, and Cancel or Escape sends nothing.
 
-Owner views (`o`) read the selected host's advertised views. The answer opens
-only while that agent and that view still own the screen: after another form
-opens, another agent is selected, or the view is left, the late answer opens
-nothing and states no failure.
+Owner views (`o`) read the selected host's advertised views. One view opens
+alone in the inspector under its own title. Several open as a list: Up and
+Down choose, and Open shows the chosen view alone, nested above the list, so
+Escape returns to the list. Choosing sends nothing. Each view's requests carry
+the agent and command captured when it opened; leaving the view withdraws its
+unanswered requests, and nothing is resent. The answer opens only while that
+agent and that view still own the screen: after another form opens, another
+agent is selected, or the view is left, the late answer opens nothing and
+states no failure.
 
 - **Configure** stages Name, Model and Reasoning, then Apply. Models come from
   the host's model list, narrowed as you type; a current model the host does
@@ -955,6 +961,11 @@ form is described above. The unsent purpose survives closing the form.
 **Help** lists every key and pointer route, and starts with the machine
 execution preferences: the file path, document status, digest, diagnostics,
 enforcement setting, and every preset with its model.
+
+The work view draws its key row, More, forms, readers and inspector with the
+agent extension's own code on Pi's `pi-tui` components: forms use `Input` and
+`Editor` fields, and the inspector hosts owner views in the
+[operator panel](../../docs/conventions/operator-panels.md) view shape.
 
 ### Layout and resizing
 

@@ -14,7 +14,9 @@ import {
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import { KeybindingsManager, ProcessTerminal, TuiAltScreen, TUI_KEYBINDINGS, setKeybindings, type Component, type ProgramStatus, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { JsonValue } from "@earendil-works/chord/json";
-import { type Action, type Choice, Form, plainLine, type ViewHost } from "../../operator-ui/index.ts";
+import type { Action, ViewHost } from "./view-model.ts";
+import { type Choice, Form } from "./view-form.ts";
+import { plainLine } from "./view-text.ts";
 import { AgentManager, type AgentCaller } from "./manager.ts";
 import { createAgentObservationSource, type AgentObservationSource } from "./agent-observation.ts";
 import { AgentDashboard, type DashboardOperations, type DashboardResult, type NewAgentDefaults, type NewAgentInput } from "./dashboard.ts";
@@ -24,7 +26,7 @@ import { TerminalProgramStatus } from "./terminal-status.ts";
 import { ModelChoicesSchema } from "./observation-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { loadDisplayModules, noDisplayModules, type DisplayModules } from "./display-modules.ts";
-import { loadPanelModules, noPanelModules, panelDestinations, type PanelModules } from "./panel-modules.ts";
+import { loadPanelModules, noPanelModules, ownerViews, type PanelModules } from "./panel-modules.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import { readAgentBranch } from "./agent-git.ts";
 import { admittedResult } from "./result-reference.ts";
@@ -478,7 +480,7 @@ export class TerminalScreen implements Component {
 			panels: async (target) => {
 				if (controller.selected !== target.id) controller.select(target.id);
 				await controller.displaySettled();
-				return panelDestinations(controller.panels, target.id, (command, data, signal) => controller.panelRequest(target.id, command, data, signal));
+				return ownerViews(controller.panels, target.id, (command, data, signal) => controller.panelRequest(target.id, command, data, signal));
 			},
 			observed: (row) => {
 				controller.select(row?.id);

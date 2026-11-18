@@ -4,7 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { TuiMouseEvent } from "@earendil-works/pi-tui";
 import { fixture, source, row, turn, deferred, page } from "./dashboard-test-fixture.mts";
 import { agentState } from "./dashboard-state.ts";
-import type { Destination } from "../../operator-ui/index.ts";
+import type { OwnerView } from "./panel-modules.ts";
 import type { AgentConversationPage } from "./dashboard-types.ts";
 
 type Fixture = ReturnType<typeof fixture>;
@@ -37,14 +37,14 @@ function clickLabel(f: Fixture, label: string): void {
 }
 
 /** An owner view whose label is all it shows. */
-const destination = (label: string): Destination => ({
+const destination = (label: string): OwnerView => ({
 	key: label.toLocaleLowerCase(),
 	label,
 	open: () => ({ title: label, render: (width) => [label.padEnd(width)], handleInput: () => true }),
 });
 
 it("an owner-view read that finishes after Configure opened leaves the form and its staged name", async () => {
-	const panels = deferred<readonly Destination[]>();
+	const panels = deferred<readonly OwnerView[]>();
 	const f = fixture(140, 40, source([row("one", { state: "idle", name: "Alpha" })]), { panels: () => panels.promise });
 	try {
 		await turn();
@@ -72,7 +72,7 @@ it("an owner-view read that finishes after Configure opened leaves the form and 
 for (const outcome of ["resolves", "fails"] as const) {
 	it(`an owner-view read that ${outcome} after the operator returns to the agent opens nothing`, async () => {
 		let finish!: (opened: boolean) => void;
-		const panels = new Promise<readonly Destination[]>((resolve, reject) => {
+		const panels = new Promise<readonly OwnerView[]>((resolve, reject) => {
 			finish = (opened) => (opened ? resolve([destination("Stash")]) : reject(new Error("host unavailable")));
 		});
 		const f = fixture(140, 40, source([row("one", { state: "idle", name: "Alpha" }), row("two", { state: "idle", name: "Bravo" })]), {
@@ -155,8 +155,8 @@ it("New, leave, select B, then onCreated keeps B and its draft and retains the c
 	}
 });
 
-it("Tab reaches the owner views' destination row, where an arrow and Enter open another owner view", async () => {
-	const body = (label: string): Destination => ({
+it("several owner views open as a list, and Open shows the chosen one alone with Escape back to the list", async () => {
+	const body = (label: string): OwnerView => ({
 		key: label.toLocaleLowerCase(),
 		label,
 		open: () => ({ title: label, render: (width) => [`${label} body`.padEnd(width)], handleInput: () => true }),
@@ -168,14 +168,44 @@ it("Tab reaches the owner views' destination row, where an arrow and Enter open 
 		press(f, "o");
 		await turn();
 		await turn();
-		assert.match(shown(f), /Stash body/u, "the first owner view opens");
-		press(f, "\t");
-		assert.equal(f.ui.focus.region, "inspector", "Tab stays in the owner views while the destination row is next");
-		assert.match(shown(f), /←→ choose · enter open/u, "the footer shows the destination row's keys");
-		press(f, "\x1b[C", "\r");
+		assert.equal(f.ui.focus.inspector, "Owner views");
+		assert.match(shown(f), /Owner views of Alpha/u);
+		assert.match(shown(f), /● Stash/u, "the list names each owner view");
+		assert.match(shown(f), /○ Notes/u);
+		assert.doesNotMatch(shown(f), /Stash body|Notes body/u, "choosing waits for Open");
+		assert.match(visible(f).at(-1) ?? "", /↑↓ choose · enter open/u, "the key row shows the list's keys");
+		press(f, "\x1b[B");
+		assert.doesNotMatch(shown(f), /Notes body/u, "selection alone opens nothing");
+		press(f, "\r");
+		assert.equal(f.ui.focus.inspector, "Notes");
 		assert.match(shown(f), /Notes body/u, "the chosen owner view opens");
-		assert.doesNotMatch(shown(f), /Stash body/u);
-		assert.deepEqual(f.calls, [], "choosing an owner view sends nothing");
+		assert.doesNotMatch(shown(f), /Stash body|○ Stash/u, "it shows alone");
+		assert.match(shown(f), /Owner views › Notes/u, "the trail names the way back");
+		press(f, "\x1b");
+		assert.equal(f.ui.focus.inspector, "Owner views", "Escape returns to the list");
+		assert.doesNotMatch(shown(f), /Notes body/u);
+		assert.deepEqual(f.calls, [], "choosing and opening an owner view send nothing");
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("one owner view opens alone under its own title, and Escape returns to the agent", async () => {
+	const stash: OwnerView = { key: "stash", label: "Stash", open: () => ({ title: "Stashes", render: (width) => ["Stash body".padEnd(width)], handleInput: () => true }) };
+	const f = fixture(140, 40, source([row("one", { state: "idle", name: "Alpha" })]), { panels: async () => [stash] });
+	try {
+		await turn();
+		await turn();
+		press(f, "o");
+		await turn();
+		await turn();
+		assert.equal(f.ui.focus.inspector, "Stashes");
+		assert.match(shown(f), /─ Stash ─+ +Alpha · work ─/u, "the title row names the owner view and its bound agent");
+		assert.match(shown(f), /Stash body/u);
+		assert.match(visible(f).at(-1) ?? "", /esc close stash/u, "the way out names the view");
+		press(f, "\x1b");
+		assert.equal(f.ui.focus.inspector, undefined);
+		assert.deepEqual(f.calls, []);
 	} finally {
 		f.ui.dispose();
 	}

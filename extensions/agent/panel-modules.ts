@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
-import { type Destination, type JsonValue, type OperatorPanelModule, plainLine, readPanelModule, type ViewHost } from "../../operator-ui/index.ts";
+import type { JsonValue, OperatorPanelModule, View, ViewHost } from "./view-model.ts";
+import { plainLine } from "./view-text.ts";
 import { DurableInventorySchema } from "./observation-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { resolvePanelEntry } from "./display-descriptor.ts";
@@ -20,6 +21,29 @@ export interface PanelModules {
 }
 
 export const noPanelModules: PanelModules = Object.freeze({ panels: [], diagnostics: [] });
+
+/** One owner view the inspector can open for a captured conversation, or the reason it cannot. */
+export interface OwnerView {
+	readonly key: string;
+	readonly label: string;
+	readonly unavailable?: string;
+	open(host: ViewHost): View;
+}
+
+/**
+ * Accept an `operatorPanel` export only in the current shape: a function that returns a version 2
+ * module with a title and an open function. Any other value is refused, never adapted.
+ */
+export function readPanelModule(exported: unknown): OperatorPanelModule {
+	if (typeof exported !== "function") throw new Error("operatorPanel is not a function");
+	const module: unknown = exported();
+	if (typeof module !== "object" || module === null) throw new Error("operatorPanel returned no module");
+	const candidate = module as Partial<OperatorPanelModule>;
+	if (candidate.version !== 2) throw new Error(`unsupported panel module version ${String(candidate.version)}`);
+	if (typeof candidate.title !== "string" || !candidate.title.trim()) throw new Error("panel module has no title");
+	if (typeof candidate.open !== "function") throw new Error("panel module has no open function");
+	return candidate as OperatorPanelModule;
+}
 
 const bounded = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]+/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 160);
 const title = (text: string) => bounded(text).slice(0, 32);
@@ -75,11 +99,11 @@ function withdrawable<T>(request: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 /**
- * Frame destinations for the loaded panels of one target. Each view's requests carry the target
+ * Owner views for the loaded panels of one target. Each view's requests carry the target
  * captured here and its own command; leaving the view withdraws its unanswered requests through
  * `request`'s signal, and nothing is resent.
  */
-export function panelDestinations(panels: PanelModules, targetKey: string, request: PanelRequest): Destination[] {
+export function ownerViews(panels: PanelModules, targetKey: string, request: PanelRequest): OwnerView[] {
 	return panels.panels.map((panel) => ({
 		key: `${targetKey}\u0000${panel.contribution}`,
 		label: plainLine(panel.title),

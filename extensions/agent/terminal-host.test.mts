@@ -5,7 +5,7 @@ import { it } from "node:test";
 import { randomUUID } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { NavigationFrame } from "../../operator-ui/index.ts";
+import { Inspector } from "./inspector.ts";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { settleDeliveries, type AgentDeliveryState } from "./durable-controls.ts";
 import { actionView, committedChoices, type ActionResult, type AgentFormHost } from "./agent-forms.ts";
@@ -45,12 +45,13 @@ function formsFor(controller: TerminalController, target: AgentConversationSumma
 }
 
 /** Mount one form as the work view's inspector does, then run its labelled action until the form closes. */
-async function runForm(name: string, host: AgentFormHost, ready: RegExp, action: string, prepare?: (frame: NavigationFrame) => void): Promise<void> {
+async function runForm(name: string, host: AgentFormHost, ready: RegExp, action: string, prepare?: (frame: Inspector) => void): Promise<void> {
 	let closed = false;
-	const frame = new NavigationFrame({
+	const frame = new Inspector({
 		theme,
 		target: { id: host.row.id, label: "Target" },
-		destinations: () => [{ key: name, label: name, open: (view) => actionView(name, host, view) }],
+		title: name,
+		open: (view) => actionView(name, host, view),
 		rows: () => 30,
 		requestRender: () => {},
 		close: () => {

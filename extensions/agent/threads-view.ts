@@ -12,7 +12,11 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { type Action, type Control, HitMap, TextField, actionControl, keyInput, keyMatches, keyText, menuControl } from "../../operator-ui/index.ts";
+import { type Control, actionControl, menuControl } from "./key-row.ts";
+import { TextField } from "./view-fields.ts";
+import { HitMap } from "./view-hits.ts";
+import { keyInput, keyMatches, keyText } from "./view-keys.ts";
+import type { Action } from "./view-model.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import type { CollaborationEvent, CollaborationPage, CollaborationSummary } from "./collaboration-contract.ts";
 import { fitLine, highlightRow, readingGeometry } from "./dashboard-layout.ts";

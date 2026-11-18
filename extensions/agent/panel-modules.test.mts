@@ -6,7 +6,8 @@ import { it } from "node:test";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { createDurableServices } from "./durable-services.ts";
 import { readPanelDescriptor, resolvePanelEntry } from "./display-descriptor.ts";
-import { loadPanelModules } from "./panel-modules.ts";
+import { loadPanelModules, ownerViews, type PanelModules, readPanelModule } from "./panel-modules.ts";
+import type { JsonValue, PanelHost, ViewHost } from "./view-model.ts";
 
 const panel = { version: 1, entry: "./panel.ts", export: "operatorPanel", command: "browse" } as const;
 
@@ -84,6 +85,46 @@ it("imports advertised panel modules and lists every failure as an unavailable o
 	const instance = good.open({ target: { id: "conversation-1" } } as never);
 	assert.deepEqual(instance.render(8, 1), ["conversa"]);
 	assert.match(result.panels[1].unavailable ?? "", /unsupported panel module version 1/, "an older module shape is refused, never adapted");
+});
+
+it("an operatorPanel export is accepted only in the version 2 shape", () => {
+	const view = { title: "Stashes", render: () => [], handleInput: () => false };
+	assert.equal(readPanelModule(() => ({ version: 2, title: "Stashes", open: () => view })).title, "Stashes");
+	assert.throws(() => readPanelModule({ version: 2, title: "Stashes", open: () => view }), /not a function/);
+	assert.throws(() => readPanelModule(() => null), /returned no module/);
+	assert.throws(() => readPanelModule(() => ({ version: 1, title: "Old", open: () => view })), /unsupported panel module version 1/);
+	assert.throws(() => readPanelModule(() => ({ version: "2", title: "Text", open: () => view })), /unsupported panel module version 2/);
+	assert.throws(() => readPanelModule(() => ({ version: 2, title: " ", open: () => view })), /no title/);
+	assert.throws(() => readPanelModule(() => ({ version: 2, title: "No open" })), /no open function/);
+});
+
+it("an owner view's requests carry the captured target and its command, and leaving the view withdraws them", async () => {
+	let captured: PanelHost | undefined;
+	const panels: PanelModules = {
+		panels: [
+			{ contribution: "stash", command: "stash-browse", title: "Stashes", module: { version: 2, title: "Stashes", open: (host) => { captured = host; return { title: "Stashes", render: () => [], handleInput: () => false }; } } },
+			{ contribution: "notes", command: "notes-browse", title: "notes", unavailable: "module not loaded" },
+		],
+		diagnostics: [],
+	};
+	const sent: Array<{ command: string; data: JsonValue }> = [];
+	let answer!: (value: { text: string }) => void;
+	const views = ownerViews(panels, "conversation-1", (command, data) => {
+		sent.push({ command, data });
+		return new Promise((resolve) => { answer = resolve; });
+	});
+	assert.deepEqual(views.map((view) => [view.key, view.label, view.unavailable]), [["conversation-1\u0000stash", "Stashes", undefined], ["conversation-1\u0000notes", "notes", "module not loaded"]]);
+	assert.throws(() => views[1].open({} as ViewHost), /module not loaded/, "an unavailable view explains itself when opened");
+	const left = new AbortController();
+	views[0].open({ signal: left.signal } as ViewHost);
+	assert.ok(captured);
+	const first = captured.request({ page: 1 });
+	assert.deepEqual(sent, [{ command: "stash-browse", data: { page: 1 } }]);
+	left.abort();
+	await assert.rejects(first, /The view closed; the request was withdrawn/);
+	answer({ text: "late" });
+	await assert.rejects(captured.request({ page: 2 }), /withdrawn/, "a request after leaving is refused");
+	assert.deepEqual(sent.map((item) => item.data), [{ page: 1 }, { page: 2 }], "the first request is never resent");
 });
 
 it("a malformed inventory yields no owner views and one diagnostic", async () => {

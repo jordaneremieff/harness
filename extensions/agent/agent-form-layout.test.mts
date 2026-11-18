@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { CURSOR_MARKER, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import { NavigationFrame } from "../../operator-ui/index.ts";
+import { Inspector } from "./inspector.ts";
 import { actionView, type AgentFormHost } from "./agent-forms.ts";
 import { createDashboardState } from "./dashboard-state.ts";
 import { type FormCall, fixture, formsHost, row, source, theme, turn } from "./dashboard-test-fixture.mts";
@@ -70,10 +70,11 @@ it("the profile editor reveals the expertise caret at the end of a long value", 
 		profile: async (method) =>
 			method === "profile-read" ? profile : { outcome: "applied", deduped: false, profile: { ...profile, revision: "b".repeat(64) } },
 	});
-	const frame = new NavigationFrame({
+	const frame = new Inspector({
 		theme,
 		target: { id: target.id, label: "Parser review" },
-		destinations: () => [{ key: "profile", label: "Profile", open: (view) => actionView("profile", host, view) }],
+		title: "Profile",
+		open: (view) => actionView("profile", host, view),
 		rows: () => 24,
 		requestRender: () => {},
 		close: () => {},

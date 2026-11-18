@@ -5,7 +5,7 @@ import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 import type { DashboardState } from "./dashboard-state.ts";
 import type { DashboardPreferences } from "./dashboard-preferences.ts";
 import { randomUUID } from "node:crypto";
-import type { JsonValue } from "../../operator-ui/index.ts";
+import type { JsonValue } from "./view-model.ts";
 import type { ToolDisplayLookup } from "./tool-display.ts";
 import type { DashboardOperations, DashboardResult, NewAgentDefaults } from "./dashboard.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
@@ -311,9 +311,9 @@ export function createAgentCommand(
 		const status = (await wiring.control("status", { sessionId: row.id }, ctx)) as { inventory?: unknown };
 		if (status?.inventory === undefined) return [];
 		// Owner views load with their first use, like the work view itself.
-		const { loadPanelModules, panelDestinations } = await loadPanelModulesRuntime();
+		const { loadPanelModules, ownerViews } = await loadPanelModulesRuntime();
 		const loaded = await loadPanelModules(status.inventory);
-		return panelDestinations(loaded, row.id, async (command, data: JsonValue, signal) => {
+		return ownerViews(loaded, row.id, async (command, data: JsonValue, signal) => {
 			const answer = (await wiring.control("command", { sessionId: row.id, name: command, data, origin: "operator", invocationId: randomUUID() }, ctx, signal)) as { text?: unknown; data?: JsonValue };
 			if (typeof answer?.text !== "string") throw new Error("The host answered without command text");
 			return { text: answer.text, ...(answer.data === undefined ? {} : { data: answer.data }) };
