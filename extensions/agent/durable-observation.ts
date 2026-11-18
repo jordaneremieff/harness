@@ -33,6 +33,7 @@ import { snapshotProviderBlock, snapshotInputProviderBlock, snapshotInputRecover
 import { modelFailureText, PROVIDER_BLOCK_ERROR, type ProviderBlockFact } from "./provider-block-facts.ts";
 import type { CommunicationView } from "./communication.ts";
 import { captureCommunicationReader, type CapturedCommunicationReader } from "./communication-observation.ts";
+import { threadNoticeSummary } from "./thread-notice-display.ts";
 import { TASK_SENDER_ENTRY_KIND } from "./task-senders.ts";
 import { TASK_HOOK_REPORT_KIND } from "./task-hook-reports.ts";
 
@@ -455,6 +456,26 @@ function messageTextOf(entry: EntryRecord | undefined): string | null {
 	return cut.text;
 }
 
+/** A passive thread notice entry, or an admitted input that carries a notified thread notice. */
+function threadNoticeEntry(entry: EntryRecord): boolean {
+	if (entry.kind === "agent.thread-notice") return true;
+	return entry.kind === AGENT_INPUT_KIND && entry.data !== null && typeof entry.data === "object" && (entry.data as { class?: unknown }).class === "thread-notice";
+}
+
+/**
+ * The newest entry's text for a status. A thread notice reads as one line about what happened in the thread,
+ * built from its verified communication; its model text names identifiers and read calls instead.
+ */
+async function newestTextOf(harness: Harness, storageId: string, conversation: Conversation, entry: EntryRecord | undefined, context: Context): Promise<string | null> {
+	if (entry !== undefined && threadNoticeEntry(entry)) {
+		try {
+			const [view] = await (await captureCommunicationReader(harness, storageId, conversation, context)).views([entry]);
+			if (view?.state === "ready" && view.value.kind === "notice") return fragment(threadNoticeSummary(view.value), 0, ENTRY_PREVIEW_UNITS).text;
+		} catch { /* An unreadable communication keeps the retained model text. */ }
+	}
+	return messageTextOf(entry);
+}
+
 /** Author role of one entry's retained text: the first model message's role, else its kind. */
 function textRoleOf(entry: EntryRecord | undefined): DurableTextRole | undefined {
 	if (!entry) return undefined;
@@ -767,7 +788,7 @@ export async function readConversationStatus(
 		...(providerBlock === undefined ? {} : { providerBlock }),
 		...summary,
 		...optionalParam("cwd", agent.cwd ?? options.cwd),
-		lastText: messageTextOf(newest.items[0]),
+		lastText: await newestTextOf(harness, storageId, conversation, newest.items[0], context),
 		...(textRoleOf(newest.items[0]) === undefined ? {} : { lastTextRole: textRoleOf(newest.items[0]) }),
 		live: publicLiveState(live),
 		inbox: inbox ?? null,

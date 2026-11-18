@@ -479,6 +479,8 @@ function reportOptionalDetails(report: DeliveryReport) {
 		...(report.passive === undefined ? {} : { passive: report.passive }),
 		...(report.threadId === undefined ? {} : { threadId: report.threadId }),
 		...(report.threadTitle === undefined ? {} : { threadTitle: report.threadTitle }),
+		...(report.threadEvent === undefined ? {} : { threadEvent: report.threadEvent }),
+		...(report.threadEventKind === undefined ? {} : { threadEventKind: report.threadEventKind }),
 		...(report.operatorMessage === undefined ? {} : { operatorMessage: boundedReportText(report, report.operatorMessage).text }),
 	};
 }

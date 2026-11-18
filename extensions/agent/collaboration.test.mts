@@ -398,8 +398,8 @@ it("rejoin replaces only the caller contribution and retains independent holds a
 	const notice = ledger?.reports.find((report) => report.senderIdentity === actor && report.ownerId === peer);
 	assert.equal(notice?.passive, true);
 	assert.equal(notice?.steer, false);
-	assert.equal(notice?.operatorMessage, "");
-	assert.ok(!notice?.message.includes(release), "Passive facts carry no discussion excerpt");
+	assert.equal(notice?.operatorMessage, `${release}\n\nSource: Verification release event`, "The display copy says what the member declared");
+	assert.ok(!notice?.message.includes(release), "Passive model facts carry no discussion excerpt");
 	await f.reopen();
 	assert.deepEqual(await readCollaboration(f.host.harness, { threadId: created.threadId }, context), page);
 	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "peer-release", { threadId: created.threadId, senderIdentity: peer, participation: "Dependency released. Source: dependency release event." }), context);

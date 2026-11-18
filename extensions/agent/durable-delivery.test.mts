@@ -2751,7 +2751,9 @@ for (const evidence of ["name", "purpose", "identity", "dead"] as const) it(`car
 	assert.equal(details.metadataSource, "primary-endpoint");
 	assert.equal(details.threadId, thread.threadId);
 	assert.equal(details.threadTitle, "Parser contract");
-	assert.match(String(details.operatorMessage), /"restrictions":"No publication"/u);
+	assert.match(String(details.operatorMessage), /\*\*Restrictions:\*\* No publication/u, "the display copy names the frame fields instead of the stored JSON");
+	assert.equal(details.threadEvent, 1);
+	assert.equal(details.threadEventKind, "create");
 	assert.equal(details.wake, true);
 	assert.equal(details.provider, named ? fixtureProvider : undefined);
 	assert.equal(details.modelId, named ? fixtureModelId : undefined);

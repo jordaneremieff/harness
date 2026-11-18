@@ -25,6 +25,7 @@ import {
 import { ThreadDeliveryDoc, type DeliveryReport } from "./durable-controls.ts";
 import { storeDeliveryRow } from "./delivery-store.ts";
 import { threadNoticeText, utcTime } from "./thread-notice-projection.ts";
+import { threadNoticeDisplayText } from "./thread-notice-display.ts";
 
 const MAX_THREADS = MAX_COLLABORATION_THREADS;
 const MAX_MEMBERS = MAX_COLLABORATION_MEMBERS;
@@ -70,7 +71,7 @@ async function appendEvent(tx: Tx, thread: CollaborationThread, event: Collabora
 		const passive = !event.notify.includes(recipient);
 		const requestId = `thread:${thread.id}:${event.sequence}:${recipient}`;
 		const message = threadNoticeText(event, passive);
-		const report: DeliveryReport = { sourceId: `report:${requestId}`, requestId, ownerId: recipient, senderIdentity: event.sender, message, replyTo: null, acknowledged: false, createdAt: event.at, direct: true, steer: !passive, passive, threadId: thread.id, threadTitle: thread.title, threadEvent: event.sequence, threadFrameRevision: event.revision, threadEventKind: event.kind, operatorMessage: passive ? "" : event.message };
+		const report: DeliveryReport = { sourceId: `report:${requestId}`, requestId, ownerId: recipient, senderIdentity: event.sender, message, replyTo: null, acknowledged: false, createdAt: event.at, direct: true, steer: !passive, passive, threadId: thread.id, threadTitle: thread.title, threadEvent: event.sequence, threadFrameRevision: event.revision, threadEventKind: event.kind, operatorMessage: threadNoticeDisplayText(event, passive) };
 		await storeDeliveryRow(tx, "report", report, true);
 	}
 }

@@ -663,8 +663,10 @@ it("a notice names its thread, post number and copy notes when opened", () => {
 	assert.match(screen(new AgentConversation([communicationEntry(value)], "/work", tui, false, false, undefined, undefined, undefined, lookup)), /▸ Peer name in Density round · #25 · /u);
 	const opened = screen(new AgentConversation([communicationEntry(value)], "/work", tui, true, false)).replace(/\s+/gu, " ");
 	assert.match(opened, /Notice copy; the full post #25 is in Threads\./u);
-	assert.match(opened, /threadId: storage\/thread-1 event: 25/u);
+	assert.match(opened, /Thread ID: storage\/thread-1 Event: #25 Delivery: passive, no wake requested/u);
 	assert.match(opened, /Recorded: 2023-11-14T22:13:20\.000Z/u);
+	const closed = screen(new AgentConversation([communicationEntry({ ...value, metadata: { ...value.metadata, eventKind: "close" } })], "/work", tui, false, false, undefined, undefined, undefined, lookup));
+	assert.match(closed, /▸ Peer name closed Density round · #25 · /u, "a known event kind says what happened");
 });
 
 it("an open result card lists every retained reference and the full request identifiers", () => {

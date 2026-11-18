@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { boundCommunicationViews, communicationFingerprint, communicationIdentity, communicationSerializedBytes, parseCommunication, parseCommunicationCompanion, parseCommunicationPassive, parseCommunicationView, type Communication, type CommunicationView } from "./communication.ts";
+import { boundCommunicationViews, COMMUNICATION_PAGE_BYTES, communicationFingerprint, communicationIdentity, communicationSerializedBytes, parseCommunication, parseCommunicationCompanion, parseCommunicationPassive, parseCommunicationView, type Communication, type CommunicationView } from "./communication.ts";
 
 const storageId = "00000000-0000-4000-8000-000000000071";
 const report = (): Extract<Communication, { kind: "report" }> => ({ format: "agent.communication/1", sender: { identity: storageId }, body: { text: "A retained contribution.\n", complete: true, redacted: false }, recordedAt: 123, kind: "report", metadata: { sourceId: "report:one", requestId: "one" } });
@@ -71,12 +71,15 @@ test("stable fingerprints ignore object key order but retain reference order", (
 
 test("added views reserve remaining markers and allocate in returned order", () => {
 	const large = ready({ ...report(), body: { text: "x".repeat(16_384), complete: false, redacted: false } });
-	const values = [large, large, large, large, ...Array.from({ length: 196 }, (): CommunicationView => ({ state: "unresolved" }))];
+	const marker: CommunicationView = { state: "unavailable", reason: "limit" };
+	const reserve = communicationSerializedBytes(marker);
+	const fitting = Math.floor((COMMUNICATION_PAGE_BYTES - 200 * reserve) / (communicationSerializedBytes(large) - reserve));
+	const values = [...Array.from({ length: fitting + 2 }, () => large), ...Array.from({ length: 198 - fitting }, (): CommunicationView => ({ state: "unresolved" }))];
 	const bounded = boundCommunicationViews(values);
 	assert.equal(bounded.length, 200);
-	assert.equal(bounded[0]?.state, "ready");
-	assert.equal(bounded[1]?.state, "ready");
-	assert.equal(bounded[2]?.state, "ready");
-	assert.deepEqual(bounded[3], { state: "unavailable", reason: "limit" });
-	assert.ok(bounded.reduce((sum, value) => sum + communicationSerializedBytes(value), 0) <= 65_536);
+	assert.ok(fitting >= 3);
+	for (let index = 0; index < fitting; index++) assert.equal(bounded[index]?.state, "ready");
+	assert.deepEqual(bounded[fitting], marker);
+	assert.deepEqual(bounded[fitting + 1], marker);
+	assert.ok(bounded.reduce((sum, value) => sum + communicationSerializedBytes(value), 0) <= COMMUNICATION_PAGE_BYTES);
 });

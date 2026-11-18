@@ -19,7 +19,7 @@ import { createAgentContribution } from "./durable-agents.ts";
 import { CommunicationIndexDoc, communicationIndexKey, reconcileInputCommunications, retainCommunicationIntent } from "./communication-retention.ts";
 import { AwaitDoc, AWAIT_PROVENANCE_LIMIT, recordInputProvenance, type AwaitState } from "./awaited-results.ts";
 import type { ConversationFrame } from "./live-frames.ts";
-import { parseCommunicationView, type Communication } from "./communication.ts";
+import { COMMUNICATION_PAGE_BYTES, parseCommunicationView, type Communication } from "./communication.ts";
 import { InspectOutputSchema, InspectToolOutputSchema, ResultToolOutputSchema } from "./observation-schema.ts";
 import { readableControlText } from "./control-result.ts";
 import { DurableObservation, readInspection, readConversationSnapshotPage, RESULT_PAGE_BYTES, RESULT_PAGE_UNITS } from "./durable-observation.ts";
@@ -822,7 +822,7 @@ it("bounds added views without removing native passive rows", async () => {
 		assert.equal(views.every((view) => view !== undefined), true);
 		assert.ok(views.some((view) => view?.state === "ready"));
 		assert.ok(views.some((view) => view?.state === "unavailable" && view.reason === "limit"));
-		assert.ok(views.reduce((bytes, view) => bytes + Buffer.byteLength(JSON.stringify(view)), 0) <= 65_536);
+		assert.ok(views.reduce((bytes, view) => bytes + Buffer.byteLength(JSON.stringify(view)), 0) <= COMMUNICATION_PAGE_BYTES);
 		assert.deepEqual(page.entries.map((entry) => entry.model?.[0]?.content), Array.from({ length: 20 }, (_, index) => `Native ${index}`));
 	});
 });
@@ -865,5 +865,21 @@ it("continues an all-bookkeeping bounded page from the native scan", async () =>
 		const older = await readConversationSnapshotPage(host.harness, ROOT, { before: page.nextBefore as NonNullable<Parameters<typeof readConversationSnapshotPage>[2]["before"]> }, BACKGROUND_CONTEXT, storageId);
 		assert.equal(older.coverage.complete, true);
 		assert.equal(older.coverage.hiddenExcluded, 1);
+	});
+});
+
+it("names a passive thread notice in the status tail by what happened in the thread", async () => {
+	await withHost(async (host) => {
+		const modelText = "Thread notice from the sender. Collaboration thread thread-a, event 4, frame revision 1, contribution from the sender.";
+		const notice: Communication = { format: "agent.communication/1", kind: "notice", sender: { identity: sender, name: "Peer" }, body: { text: "The parser now\nrejects empty frames.", complete: false, redacted: false }, recordedAt: 0, metadata: { threadId: "thread-a", title: "Parser contract", event: 4, frameRevision: 1, eventKind: "contribution", passive: true } };
+		await host.request("passive-submit", { requestId: "status-notice", message: modelText, communication: notice });
+		const { conversation: status } = await host.request("status", { conversationId: ROOT }) as { conversation: { lastText: string | null; lastTextRole?: string } };
+		assert.equal(status.lastText, "Peer posted in thread “Parser contract” (#4): The parser now rejects empty frames.");
+		assert.equal(status.lastTextRole, "user");
+		const native = await (await host.harness.conversation(ROOT, BACKGROUND_CONTEXT))?.entries({}, 1, undefined, BACKGROUND_CONTEXT);
+		assert.equal(native?.items[0]?.model?.[0]?.content, modelText, "the model text of the notice stays unchanged");
+		await host.request("passive-submit", { requestId: "status-invalid", message: "Native passive text", communication: { wrong: true } });
+		const { conversation: invalid } = await host.request("status", { conversationId: ROOT }) as { conversation: { lastText: string | null } };
+		assert.equal(invalid.lastText, "Native passive text", "a notice without a verified communication keeps its retained text");
 	});
 });

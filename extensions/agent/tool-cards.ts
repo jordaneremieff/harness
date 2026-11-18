@@ -17,6 +17,7 @@ import { dashboardClock, dashboardTime } from "./dashboard-time.ts";
 import type { Communication } from "./communication.ts";
 import { receiptContinuationLine, resultContinuationLines } from "./control-result.ts";
 import { planningBudgetSelfFacts } from "./continuity-budget.ts";
+import { threadEventPhrase } from "./thread-notice-display.ts";
 
 /**
  * Observed display facts for cards: the roster rows, and in the dashboard also known thread titles and
@@ -1422,6 +1423,27 @@ function checkInElapsed(value: unknown): string {
 	return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m elapsed`;
 }
 
+/** The event of an ordinary thread notice: its own fields, then the retained passive communication. */
+function peerThreadEvent(details: Record<string, unknown>): { phrase?: string; number?: number; notified: boolean } {
+	const metadata = record(record(record(details.communicationPassive).value).metadata);
+	const phrase = threadEventPhrase(text(details.threadEventKind) || text(metadata.eventKind) || undefined);
+	const number = count(details.threadEvent) ?? count(metadata.event);
+	return { ...(phrase === undefined ? {} : { phrase }), ...(number === undefined ? {} : { number }), notified: details.passive === false };
+}
+
+/** The card heading; a thread notice with a known event and sender says who did what in which thread. */
+function peerHeading(details: Record<string, unknown>, title: string): { title: string; label?: string; metadata: string[] } {
+	if (details.threadId === undefined) return { title, label: peerLabel(details), metadata: peerMetadata(details) };
+	const thread = text(details.threadTitle) || text(details.threadId);
+	const event = peerThreadEvent(details);
+	const sender = peerLabel(details);
+	if (event.phrase === undefined || !sender) return { title, label: thread, metadata: peerMetadata(details) };
+	return {
+		title: `${sender} ${event.phrase} ${thread}`,
+		metadata: [event.number === undefined ? "" : `#${event.number}`, event.notified ? "notified this session" : "", resolvedModelLine(text(details.provider), text(details.modelId), text(details.thinkingLevel))],
+	};
+}
+
 function peerMetadata(details: Record<string, unknown>): string[] {
 	const checkIn = record(details.checkIn);
 	const cost = count(checkIn.cost);
@@ -1457,9 +1479,12 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 	const reason = text(details.reason);
 	if (reason) body.push(theme.fg("text", displayPreview(reason, 240)));
 	const checkIn = details.checkIn === undefined ? undefined : record(details.checkIn);
-	body.push(noticeBody(checkIn === undefined ? (typeof details.operatorMessage === "string" ? details.operatorMessage : operatorNoticeBody(content)) : boundedSource(text(details.message)), theme));
+	const shown = checkIn === undefined ? (typeof details.operatorMessage === "string" ? details.operatorMessage : operatorNoticeBody(content)) : boundedSource(text(details.message));
+	// A thread event without text, such as a join without a statement, says everything in its heading.
+	if (details.threadId === undefined || shown.trim() !== "") body.push(noticeBody(shown, theme));
 	const sourceDetails = (): (string | Component)[] => [
-		new Spacer(1),
+		// The header already ends with a blank line, so details right under it need no spacer.
+		...(body.length === 0 ? [] : [new Spacer(1)]),
 		theme.fg("muted", theme.bold("Source details")),
 		...peerConfiguration(details).map((line) => theme.fg("muted", line)),
 		...peerScalarFields(details).map((line) => theme.fg("muted", line)),
@@ -1467,8 +1492,7 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 		theme.fg("muted", checkIn === undefined ? "Reported result · not operator authority or task acceptance" : "Check-in · task not finished · not operator authority or task acceptance"),
 		theme.fg("dim", "/agent opens the dashboard"),
 	];
-	const subject = details.threadId !== undefined ? text(details.threadTitle) || text(details.threadId) : peerLabel(details);
-	return cardLayout({ tag: "[agent]", title: label, label: subject, metadata: peerMetadata(details), body, details: sourceDetails, previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad, keys: options, message });
+	return cardLayout({ tag: "[agent]", ...peerHeading(details, label), body, details: sourceDetails, previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad, keys: options, message });
 };
 
 function messageText(content: Parameters<MessageRenderer>[0]["content"]): string {
@@ -1541,11 +1565,30 @@ function communicationMetadataLines(value: Communication, key: string, item: unk
 /** Every validated metadata field in full, as plain lines; the schema already bounds each value, so nothing is previewed. */
 function communicationSourceLines(value: Communication): string[] {
 	const lines = [`Sender identity: ${displayIdentity(value.sender.identity)}${value.sender.kind ? ` (${value.sender.kind})` : ""}`, `Recorded: ${new Date(value.recordedAt).toISOString()}`];
-	for (const [key, item] of Object.entries(value.metadata)) {
+	if (value.kind === "notice") lines.push(...noticeSourceLines(value));
+	else for (const [key, item] of Object.entries(value.metadata)) {
 		if (item !== undefined) lines.push(...communicationMetadataLines(value, key, item));
 	}
 	lines.push("Retained communication · not operator authority or task acceptance · the authoring model is not retained");
 	return lines;
+}
+
+/** A notice's retained thread fields under plain labels, each value in full. */
+function noticeSourceLines(value: Extract<Communication, { kind: "notice" }>): string[] {
+	const { threadId, title, event, eventKind, frameRevision, passive } = value.metadata;
+	const eventFacts = [event === undefined ? "" : `#${event}`, eventKind ? displayText(eventKind) : "", frameRevision === undefined ? "" : `frame revision ${frameRevision}`].filter(Boolean);
+	return [
+		...(title ? [`Thread: ${displayText(title)}`] : []),
+		`Thread ID: ${displayIdentity(threadId)}`,
+		...(eventFacts.length ? [`Event: ${eventFacts.join(" · ")}`] : []),
+		...(passive === true ? ["Delivery: passive, no wake requested"] : passive === false ? ["Delivery: this agent was notified"] : []),
+	];
+}
+
+/** The sentence heading of a notice whose event kind is known: sender, what happened, and the thread. */
+function noticeHeading(value: Extract<Communication, { kind: "notice" }>, sender: string): string | undefined {
+	const phrase = threadEventPhrase(value.metadata.eventKind);
+	return phrase === undefined ? undefined : `${sender} ${phrase} ${value.metadata.title?.trim() || value.metadata.threadId}`;
 }
 
 function communicationDetailLines(value: Communication, theme: Theme): (string | Component)[] {
@@ -1561,10 +1604,14 @@ export function renderCommunicationCard(value: Communication, theme: Theme, opti
 	if (!value.body.complete) body.push(theme.fg("warning", "Partial body"));
 	if (value.body.redacted) body.push(theme.fg("warning", "Redacted body"));
 	if (value.kind === "result" && value.metadata.reason) body.push(theme.fg("text", displayPreview(value.metadata.reason, 240)));
-	body.push(noticeBody(value.body.text, theme));
+	if (value.kind !== "notice" || value.body.text.trim() !== "") body.push(noticeBody(value.body.text, theme));
 	const sender = value.sender.name ? displayPreview(value.sender.name, 80) : displayIdentity(value.sender.identity);
+	const sentence = value.kind === "notice" ? noticeHeading(value, sender) : undefined;
+	const heading = value.kind === "notice" && sentence !== undefined
+		? { title: sentence, metadata: [value.metadata.event === undefined ? "" : `#${value.metadata.event}`, value.metadata.passive ? "" : "notified this agent", dashboardTime(value.recordedAt, true)] }
+		: { title: communicationKind(value), label: communicationSubject(value), metadata: [`from ${sender}`, dashboardTime(value.recordedAt, true)] };
 	return cardLayout(
-		{ tag: "[agent]", title: communicationKind(value), label: communicationSubject(value), metadata: [`from ${sender}`, dashboardTime(value.recordedAt, true)], body, details: communicationDetails(value, theme), previewLines: NOTICE_PREVIEW_LINES },
+		{ tag: "[agent]", ...heading, body, details: communicationDetails(value, theme), previewLines: NOTICE_PREVIEW_LINES },
 		theme,
 		{ expanded: options.expanded, peerPadding: options.outputPad ?? 0, keys: options, message: options.message },
 	);
@@ -1595,7 +1642,8 @@ function compactHeadline(value: Communication, sender: string, theme: Theme, loo
 	switch (value.kind) {
 		case "notice": {
 			const title = value.metadata.title?.trim() || lookup?.threadTitle?.(value.metadata.threadId)?.trim() || "a thread";
-			return { lead: `${name}${theme.fg("text", ` in ${displayPreview(title, 120)}`)}`, facts: [value.metadata.event === undefined ? "" : `#${value.metadata.event}`, value.metadata.passive ? "" : "notified this agent"] };
+			const phrase = threadEventPhrase(value.metadata.eventKind) ?? "in";
+			return { lead: `${name}${theme.fg("text", ` ${phrase} ${displayPreview(title, 120)}`)}`, facts: [value.metadata.event === undefined ? "" : `#${value.metadata.event}`, value.metadata.passive ? "" : "notified this agent"] };
 		}
 		case "report": return { lead: `${theme.fg("text", "Report from ")}${name}`, facts: [] };
 		case "result": return { lead: `${theme.fg("text", "Result from ")}${name}`, facts: [value.metadata.status === "done" ? "" : "unanswered", record(value.metadata).receiptContinuation === undefined ? "" : "more receipt references"] };
@@ -1637,7 +1685,8 @@ class CompactCommunication implements Component {
 		this.disclosure = disclosureFor(options.message);
 		this.global = options.expanded;
 		this.expanded = this.disclosure.get(options.expanded) ?? options.expanded;
-		this.body = noticeBody(value.body.text, theme);
+		// A thread event without text, such as a join without a statement, says everything in its header.
+		this.body = value.kind === "notice" && value.body.text.trim() === "" ? { render: () => [], invalidate: () => {} } : noticeBody(value.body.text, theme);
 	}
 	render(width: number): string[] {
 		const theme = this.theme;

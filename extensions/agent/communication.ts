@@ -5,7 +5,8 @@ import { ReceiptContinuationSchema } from "./result-schema.ts";
 export const COMMUNICATION_BODY_BYTES = 16_384;
 export const COMMUNICATION_VALUE_BYTES = 24_576;
 export const COMMUNICATION_READY_BYTES = 32_768;
-export const COMMUNICATION_PAGE_BYTES = 65_536;
+/** Every view of one page; a page of passive notices at the default snapshot size fits with their display excerpts. */
+export const COMMUNICATION_PAGE_BYTES = 98_304;
 export const COMMUNICATION_PAGE_ENTRIES = 200;
 
 const positive = int({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });

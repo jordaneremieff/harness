@@ -263,3 +263,55 @@ describe("human-readable agent targets", () => {
 		assert.deepEqual(receipt, before);
 	});
 });
+
+describe("thread notice cards", () => {
+	const sender = "7f7f7f7f-1111-4222-8333-444444444444";
+	const notice = (metadata: Partial<Extract<Communication, { kind: "notice" }>["metadata"]>, text: string): Communication => ({
+		format: "agent.communication/1", kind: "notice", sender: { identity: sender }, recordedAt: 1, body: { text, complete: false, redacted: false },
+		metadata: { threadId: "storage/thread-a", title: "Parser contract", event: 27, frameRevision: 2, eventKind: "close", passive: true, ...metadata },
+	});
+	const compact = (value: Communication, expanded: boolean) => {
+		const component = compactCommunicationRenderer(Object.assign((): AgentConversationSummary[] => [], { nameFor: (identity: string) => identity === sender ? "Reviewer" : undefined }))({ role: "custom", customType: "agent.communication", content: value.body.text, details: value, timestamp: 1, display: true }, { expanded, outputPad: 0, ...cardKeys }, theme);
+		assert.ok(component);
+		return screen(component);
+	};
+
+	it("says who did what in which thread and shows what was said", () => {
+		const closed = compact(notice({}, "Landed the four repairs on main."), false);
+		assert.match(closed, /^▸ Reviewer closed Parser contract · #27 · /u);
+		assert.match(closed, /Landed the four repairs on main\./u);
+		const posted = compact(notice({ eventKind: "contribution", passive: false }, "Please check the frame bound."), false);
+		assert.match(posted, /^▸ Reviewer posted in Parser contract · #27 · notified this agent · /u);
+		assert.match(compact(notice({ eventKind: undefined }, ""), false), /^▸ Reviewer in Parser contract · #27/u, "an unknown event kind keeps the plain thread line");
+	});
+
+	it("shows no placeholder for an event without text and names the facts in plain labels", () => {
+		const collapsed = compact(notice({}, ""), false);
+		assert.doesNotMatch(collapsed, /no text/u);
+		assert.equal(collapsed.split("\n").length, 1);
+		const expanded = compact(notice({}, ""), true);
+		for (const line of ["Thread: Parser contract", "Thread ID: storage/thread-a", "Event: #27 · close · frame revision 2", "Delivery: passive, no wake requested", `Sender identity: ${sender}`]) assert.ok(expanded.includes(line), line);
+		assert.doesNotMatch(expanded, /frameRevision:|eventKind:|passive: true|threadId:/u);
+		const card = screen(renderCommunicationCard(notice({ eventKind: "join" }, ""), theme, { expanded: false, ...cardKeys }));
+		assert.match(card, new RegExp(`\\[agent\\] ${sender} joined Parser contract`, "u"));
+		assert.doesNotMatch(card, /no text/u);
+	});
+
+	it("gives an ordinary peer notice the same sentence, event number and text", () => {
+		const details = { kind: "report", senderIdentity: sender, label: "Reviewer", threadId: "storage/thread-a", threadTitle: "Parser contract", threadEvent: 12, threadEventKind: "contribution", passive: false, operatorMessage: "Please check the frame bound." };
+		const card = renderPeerNoticeCard({ content: "Thread notice from the model text", details, timestamp: 1 }, theme, false, cardKeys);
+		assert.ok(card);
+		const output = screen(card);
+		assert.match(output, /\[agent\] Reviewer posted in Parser contract/u);
+		assert.match(output, /#12 · notified this session/u);
+		assert.match(output, /Please check the frame bound\./u);
+		assert.doesNotMatch(output, /model text/u);
+		const passive = { ...details, passive: true, threadEvent: undefined, threadEventKind: undefined, operatorMessage: "", communicationPassive: { value: { metadata: { event: 13, eventKind: "join" } } } };
+		const joined = renderPeerNoticeCard({ content: "Thread notice from the model text", details: passive, timestamp: 1 }, theme, false, cardKeys);
+		assert.ok(joined);
+		const joinedOutput = screen(joined);
+		assert.match(joinedOutput, /\[agent\] Reviewer joined Parser contract/u);
+		assert.match(joinedOutput, /#13/u);
+		assert.doesNotMatch(joinedOutput, /no text|notified this session/u);
+	});
+});

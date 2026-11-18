@@ -327,9 +327,17 @@ evidence. Closing the caller's temporary connection does not cancel that work.
 ### Tool cards
 
 Agent tool and peer cards use one two-tier layout. The first header line shows
-the tool name or message kind and the target or sender label. Thread notices
-use the thread title, or full thread identity when no title is known, as their
-subject; their second line starts with `from <sender>` when known. The muted
+the tool name or message kind and the target or sender label. A thread notice
+whose sender and event kind are known says on its first line who did what in
+which thread: `Reviewer posted in Parser contract`. The thread events read
+`posted in`, `relayed operator direction in`, `joined`, `left`, `closed`,
+`revised the frame of` and `created`; the thread is its title, or its full
+identity when no title is known. Its second line holds the event number
+(`#12`) and `notified this session` for a notice that asked for attention.
+Other thread notices keep `thread notice` with the thread as their subject, and
+their second line starts with `from <sender>` when known. The body is what the
+event says (see [peer threads](#peer-threads)); an event without text, such as a
+join without a statement, has no body. The muted
 second line shows known provider/model, thinking level, and other secondary
 facts. All card kinds use the same `provider/model · xhigh` form, without
 redundant `Model:`, `thinking`, or `reasoning` labels. Ambiguous values retain labels such as
@@ -374,7 +382,10 @@ In ordinary chat, retained communications (reports, thread notices, results and
 check-ins carried by a conversation's `communication` view) use the Agent card:
 the first line names the kind (`Report`, `Thread notice`, `Result`,
 `Result unanswered`, `Check-in`) and the thread or work it belongs to; the second
-line names the sender and the recorded local time. The body renders as Markdown
+line names the sender and the recorded local time. A thread notice with a known
+event kind instead reads `<sender> closed <thread title>` on its first line, with
+the event number, `notified this agent` for an addressed notice and the time on
+its second line. The body renders as Markdown
 with `Partial body` and `Redacted body` marks when they apply. Disclosure adds
 the exact sender identity, the recorded timestamp and every retained metadata
 field in full: a result lists each retained reference on its own line with its
@@ -384,18 +395,23 @@ configuration as if it were.
 
 The agent work view and the attached terminal show the same communications in
 a compact form without a background. One header row holds a disclosure mark
-(`▸` closed, `▾` open), the sender in bold and what it is (`<sender> in <thread
-title>`, `Report from <sender>`, `Result from <sender>`, `Check-in from
-<sender>`), then muted facts: the post number, `notified this agent` for a
+(`▸` closed, `▾` open), the sender in bold and what it is (`<sender> posted in
+<thread title>` and the other thread event phrases of the tool cards, `<sender>
+in <thread title>` for an unknown event kind, `Report from <sender>`, `Result
+from <sender>`, `Check-in from <sender>`), then muted facts: the post number,
+`notified this agent` for a
 notice that woke it, `unanswered` for an unanswered result, a check-in's elapsed
 time, and the recorded local time (the clock time today, the date and time on
 other days). Two rows of the Markdown body follow; a longer body ends its
-second row with a muted `+N lines`. A plain click on the header row or on that
+second row with a muted `+N lines`. A thread event without text shows its header
+row alone, with no placeholder. A plain click on the header row or on that
 row opens the card; there is no repeated key hint, and Ctrl+O (the footer's
 `expand all`) opens every card. The open card shows the complete retained body, then muted
 notes, then every retained field in full: the sender identity, the recorded
 time, the thread, event, request and source identifiers, and each retained
-reference of a result. A notice copy that is not marked complete says
+reference of a result. A thread notice names its fields in plain labels:
+`Thread`, `Thread ID`, `Event` (number, kind and frame revision) and
+`Delivery` (passive without a wake, or notified). A notice copy that is not marked complete says
 `Notice copy; the full post #N is in Threads.`; another incomplete copy says
 `Retained copy; it may be shorter than the original.`; a redacted copy says so.
 A collapsed preview never claims the copy is incomplete; the notes say it once.
@@ -491,6 +507,14 @@ marks a correction. The
 status card labels its newest text by role and state: `Latest reply` or
 `Latest input` when idle, and `Replying` or `Working on input` while active.
 Text without a retained author role uses `Latest message` or `Working on the task`.
+When the newest entry is a thread notice, its status text (`lastText`) is one
+line from the notice's verified communication rather than its model text: the
+sender's retained name or full identity, the thread event phrase, the thread,
+the event number and the start of what the event says, for example
+`Peer posted in thread “Parser contract” (#4): The parser rejects empty frames.`
+A notice without a verified communication keeps its retained text. Source:
+`durable-observation.ts` (`newestTextOf`) and `thread-notice-display.ts`
+(`threadNoticeSummary`).
 
 ### Transcript messages
 
@@ -501,7 +525,7 @@ is left out:
 
 | Message type | First line | Second line |
 | --- | --- | --- |
-| `agent.peer` | `[agent] result · Parser review`, `[agent] report · …`, `[agent] thread notice · …` | `provider/model · high` and other known facts |
+| `agent.peer` | `[agent] result · Parser review`, `[agent] report · …`, `[agent] Reviewer posted in Parser contract` | `provider/model · high`, `#12` and other known facts |
 | `agent.compaction` | `[agent] Compaction not applied` | none |
 | `agent.planning-budget` | `[agent] Planning budget reached` | `210000 of 200000 tokens · openai-codex/gpt-6.1-sol` |
 
@@ -2410,7 +2434,24 @@ the exact `agent_collaborate` read call for the retained event. A notice for a
 named `notify` recipient states that attention was requested and adds an
 excerpt of at most 512 UTF-16 code units. The excerpt ends at a word boundary
 where one exists, a cut excerpt ends with `[cut]`, and the same read call
-returns the full event. A native write places a passive notice
+returns the full event.
+
+Each notice also carries a display copy for people, which cards and status
+lines show and which no model request contains: the conversation entry keeps it
+as communication data, and an ordinary primary keeps it in the message details.
+The copy says what the event says: a post, a join or leave statement or the
+conclusion of a close, each followed by `Source: <source>` when the event names
+one, or the labelled `Purpose`, `Operator direction (as carried)`, `Source`,
+`Restrictions` and `Acceptance` fields of a created or revised frame instead of
+its stored JSON. A join or leave without a statement has no text. A notified
+recipient's copy keeps the whole text. A passive recipient's copy keeps at most
+280 UTF-16 code units, cut at a word boundary where one exists and ended with
+`…`, so the passive model text stays free of message text while a person still
+sees what was said. One page of conversation snapshot views has a 96 KiB
+budget, enough for a default page of passive notices with their copies. Source:
+`thread-notice-display.ts` and `collaboration.ts` (`appendEvent`).
+
+A native write places a passive notice
 at an existing conversation boundary without starting a model turn. An idle
 peer learns it on later work, not immediately. If a run ends with only writes
 queued, the host places those writes at an idle boundary without starting a run.
