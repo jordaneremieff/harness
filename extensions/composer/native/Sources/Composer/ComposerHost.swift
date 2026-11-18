@@ -225,13 +225,15 @@ final class ComposerHost {
         settleJob = nil
         let move = handoff.update(waiting: true, answersComposer: waiting["command"] is String, composerHasKeyboard: hasKeyboard)
         guard move == .release else { return }
-        // Rex focuses Pi's pane before the composer lets go, so no key reaches another pane.
+        // The composer lets go only once Rex can focus Pi's pane. Rex can restore the pane that
+        // its window focused before when that window becomes key, so Pi's pane takes focus again.
         Task { [weak self] in
             guard let self else { return }
             let reply = try? await request("/terminal")
             guard reply?["focused"] as? Bool == true, state?["waiting"] != nil, hasKeyboard, !closing else { return }
             Self.perf.debug("handoff.release")
             overlay.releaseFocus()
+            _ = try? await request("/terminal")
         }
     }
 
