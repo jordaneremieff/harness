@@ -1,0 +1,22 @@
+# Composer.app
+
+Composer is the native draft editor for the `composer` extension. It loads its bundled web page in system WebKit and uses [`NativePane`](../../../native-pane/) to cover the launching Rex pane, follow its placement and return the keyboard to Rex. The authenticated loopback bridge belongs to Composer; this app does not use Markdown Reader or its state.
+
+```sh
+node extensions/composer/native/build.mts
+node extensions/composer/native/build.mts test
+```
+
+The builder takes `PI_COMPOSER_APP`, then the extension's `composer.app` setting, then `<agentDir>/composer/Composer.app`. It stages and ad-hoc signs the bundle before replacing the installed app. The install lock sits beside the app; exit 75 means another install owns it. `Contents/Resources/build.json` records the build contract, composer capability, source digest and Git provenance. The digest includes `native-pane/Package.swift` and its sources.
+
+The extension starts `Contents/MacOS/Composer --composer <absolute launch file>` in a terminal pane. The one-use launch file identifies Pi and its authenticated endpoint. The app keeps drafts, images and preferences under `~/Library/Application Support/Composer/`. For trials, set `PI_COMPOSER_STATE_DIRECTORY` to an absolute private directory and set `PI_COMPOSER_APP` to a private bundle path. Do not reuse the live app or state. Composer creates a missing state directory with mode `0700`. If an existing directory has wider permissions, Composer names it at startup. Set its mode to `0700` before sending. A failed send leaves the draft editable and shows the reason until dismissal or a successful send.
+
+The page requests more space as a draft grows, up to twelve text rows. Deleting lines keeps the space until the draft is sent or cleared. The status line, menus and completion do not resize the terminal.
+
+Composer waits for the first terminal resize signal and 200 ms without a change to the anchor frame before it uses the frame for fit. If no signal arrives within two seconds, a stable anchor frame is enough. Composer estimates the current share from the settled frame and `frame height = slope × share + offset`. The launch share is a request, not a measurement of the Rex client. The first slope is the height of the nearest vertical split above Composer, or the outer split group or window height if AX does not expose the pair. The first offset is the saved offset or zero. Once Pi confirms the pane is visible, Composer uses the same model to calculate the requested share. A second observation at the same Rex window height calibrates both terms. If the slope exceeds 115% of the split group height (or the window height if the group is unavailable), Composer retains the previous slope and adjusts only the offset. It saves calibrated offsets within ±200 pt in `fit-offset.json` with mode `0600`. A window-height change at the same share recalibrates the slope.
+
+After Pi confirms a resize, the first frame height change of at least 1 pt in the requested direction identifies the result. Terminal rows do not affect fit. If the frame moves less than half the prediction, or does not move within two seconds, Composer does not calibrate from the result. A clamped shrink sets a height floor for future requests. If the pane remains too short, Composer requests a larger share until the pane fits, up to four attempts per layout and a 40% share. It rounds shares upward, never goes below 10%, and skips predicted moves under 2 pt. An unexpected frame height change without a request or against its direction stops automatic resize.
+
+Menus request an extension above the pane with `{type:"overlay", above}`. Composer keeps the bottom edge fixed and clamps the extension to the outer Rex split group. It sends the actual extension to the page after the move. Menus do not resize the split. The `pasteText` request reads only the plain-text representation from the general pasteboard. When the editor is empty, Composer offers the newest retained draft from a closed Composer in the same Pi session.
+
+Run `Contents/MacOS/Composer --export-composer <absolute output directory>` to capture the real page in an offscreen panel. This check uses fixtures, not Pi or Rex. It does not activate the app or read live drafts.

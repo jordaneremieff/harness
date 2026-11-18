@@ -1,7 +1,7 @@
 # Composer presence
 
-The ordinary Pi extension bus carries one presentation fact. The Markdown
-composer publishes it; the statusline uses it to avoid a duplicate footer.
+The ordinary Pi extension bus carries one presentation fact. The composer extension
+publishes it; the statusline uses it to avoid a duplicate footer.
 Neither extension imports the other or transfers ownership of a UI slot.
 
 | Event | Payload | Meaning |
@@ -9,7 +9,7 @@ Neither extension imports the other or transfers ownership of a UI slot.
 | `harness:composer:presence` | `{ version: 1, present: boolean }` | A present **and visible** composer replaces the terminal input. `false` restores the terminal presentation. |
 | `harness:composer:presence-request` | `{ version: 1 }` | Request the current value on the same bus. |
 
-The composer publishes when the value changes and answers a valid request
+The composer extension publishes when the value changes and answers a valid request
 synchronously. The initial value is `false`. Hide, poll gaps, and disposal of
 the composer restore `false`; a new or reattached composer publishes `true`
 only when it replaces terminal entry. The statusline subscribes before it

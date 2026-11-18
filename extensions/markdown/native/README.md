@@ -21,7 +21,8 @@ The package's only external dependency is the pinned swift-cmark parser.
 | `MarkdownCore` | document store, identities, open requests, asset resolution, cmark rendering, source blocks, revision comparison, export and source transforms |
 | `ReaderFeature` | `WKWebView` adapter, bridge codec, local page scheme, document preparation, reading state, library query and overlay data |
 | `EditorFeature` | edit sessions, immutable recovery snapshots, local-file saves, publication client and staged assets |
-| `MacPlatform` | pasteboard, browser hand-off, Finder reveal, terminal return, placement, stacking and terminal text |
+| `MacPlatform` | pasteboard, browser hand-off, Finder reveal, terminal return |
+| [`NativePane`](../../../native-pane/) | shared Rex pane placement, stacking, focus release, terminal input and size |
 | `MarkdownReader` | application entry, AppKit windows, page-to-mirror integration, live protocol, menus and check modes |
 | `markdown-core` | headless reference inventory |
 
@@ -219,39 +220,6 @@ A pinned open request displays its exact revision and digest. `:open <document I
 pane selects the current revision in the same window. The placeholder names the displayed
 document, revision and build. A malformed request leaves the current document intact.
 Closing restores the terminal and retains the reading position within the shutdown deadline.
-
-## Pi composer
-
-A bundle with `"composer": 1` in its build manifest accepts `--composer <absolute launch file>`.
-The one-use launch file names the Pi process and an authenticated loopback connection. The composer
-shares the reader's pane placement and stacking but uses its own WebKit page and bridge handler.
-It claims keyboard focus after hello. When its pane is concealed it informs Pi, which owns the
-fallback terminal editor. Escape closes the open menu, stops active work, or returns keyboard focus
-to the terminal window. For a dialog in Pi, select the Pi pane in that window. Command-W closes
-the composer. In the composer's raw terminal, Ctrl-D closes and printable text enters the draft.
-
-Return sends. While Pi works, the icon beside Send switches between steer and queue. Option-Return
-uses the other mode. Shift-Return adds a line. Use the Add menu to switch the primary send key to
-Command-Return. The model name opens a filterable model list. The adjacent level opens its own
-menu. In short panes, Edit queued shows the count in place of the queue tray. Use it to bring all
-waiting messages back to the draft. The PTY grid sets the default text
-size. Command-Plus, Command-Minus and Command-Zero change or reset the saved adjustment. The Add
-menu offers the same controls. History recall operates at the edge of an empty or recalled draft.
-The editor uses native spell check, selection and undo. Programmatic changes use the same undo history.
-
-Unsent drafts are private records under `Composer/` in application state. The composer retains an
-unconfirmed send. It stays editable during reconnect. After a connection gap it retries the
-same bridge while it watches for a replacement launch file. After an explicit detach it waits
-for the file. If Pi does not answer, the composer reports the outage and keeps retrying until
-you close it or Pi ends. If Pi returns a draft at handoff, it replaces the current text with
-that draft, even when Pi cleared it. An empty field offers the most recent abandoned draft. Close sends the current draft back to Pi when connected. File references
-are absolute paths at the caret. Supported pasted images are retained under `Composer/Images/`;
-image thumbnails are generated from local paths and removing a thumbnail removes its path from
-the draft. Shell-mode paths use single-quote escaping.
-
-`MarkdownReader --export-composer <absolute output directory>` captures the real composer page
-at full, split, narrow and short pane sizes in both appearances. The check exercises page message
-handling and rendering, not Rex keyboard focus or Finder paste and drop.
 
 ## Licences
 

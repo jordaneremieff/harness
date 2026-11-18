@@ -1,0 +1,53 @@
+/* Fixed popovers use viewport coordinates from the live toolbar, caret or pointer. */
+.composer-menu {
+	inset: auto;
+	position-anchor: auto;
+	max-height: 360px;
+}
+
+.composer-menu:is([data-kind="add"], [data-kind="history"], [data-kind="model"]) {
+	position-anchor: auto;
+}
+
+.composer-menu:popover-open {
+	transition: none;
+}
+
+.composer-menu[data-no-space] {
+	opacity: 0;
+	pointer-events: none;
+}
+
+.composer-menu[data-kind="model"] { --menu-width: min(32em, calc(100vw - 12px)); min-width: min(420px, calc(100vw - 12px)); }
+.model-results:not(:has(*)) { padding: 4px 7px; }
+.thinking-choices { flex: none; display: flex; align-items: center; gap: 4px; padding: 4px; }
+.thinking-choices .menu-heading { padding-inline: 3px; }
+.thinking-segments { display: grid; flex: 1; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; }
+.thinking-segments .menu-row { justify-content: center; padding: 3px 2px; font-size: .86em; background: var(--hover); }
+.thinking-segments .menu-row:is(:hover, .current) { background: var(--pressed); }
+.thinking-segments .menu-row[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--accent-text); }
+@media (width < 432px) {
+	.thinking-segments { grid-auto-flow: row; grid-template-columns: repeat(4, 1fr); }
+}
+
+.composer-menu[data-kind="completion"] {
+	--menu-width: clamp(min(320px, 100vw - 12px), var(--editor-width, 320px), calc(100vw - 12px));
+}
+.composer-menu[data-kind="completion"] .menu-row { justify-content: start; gap: 12px; }
+.composer-menu[data-kind="completion"] .menu-row span { font-weight: 600; flex: 0 1 auto; }
+.composer-menu[data-kind="completion"] .menu-row small { flex: 1; max-width: none; text-align: left; white-space: nowrap; font-size: .857em; color: var(--ink-2); }
+
+.composer-menu[data-kind="context"] {
+	--menu-width: min(230px, calc(100vw - 12px));
+}
+
+.composer-menu[data-kind="context"] hr {
+	margin: 4px 3px;
+	border: 0;
+	border-top: 1px solid var(--line);
+}
+
+.composer-menu .menu-row:disabled {
+	opacity: .45;
+	background: none;
+}

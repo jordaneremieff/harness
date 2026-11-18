@@ -183,6 +183,10 @@ function digestFixture(t: TestContext) {
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const sourceDir = join(root, "extensions", "markdown");
 	const native = join(sourceDir, "native");
+	const pane = join(root, "native-pane");
+	mkdirSync(join(pane, "Sources"), { recursive: true });
+	writeFileSync(join(pane, "Package.swift"), "// pane package");
+	writeFileSync(join(pane, "Sources", "Pane.swift"), "// pane source");
 	mkdirSync(join(native, "Sources"), { recursive: true });
 	mkdirSync(join(native, "Licenses"));
 	mkdirSync(join(native, "web"));
@@ -212,6 +216,9 @@ test("writer sources and build.mts are part of the build identity", (t) => {
 	f.write("pane-command.ts", "// contract");
 	writeFileSync(join(f.root, "package-lock.json"), "{\"lockfileVersion\":3}");
 	assert.notEqual(sourceDigest(f.native), before, "the runtime dependency lock changes the build identity");
+	const beforePane = sourceDigest(f.native);
+	writeFileSync(join(f.native, "../../../native-pane/Sources/Pane.swift"), "// new pane source");
+	assert.notEqual(sourceDigest(f.native), beforePane, "a shared pane source changes the build identity");
 });
 
 test("staging copies the real writer sources of this checkout", (t) => {

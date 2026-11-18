@@ -19,14 +19,6 @@ export const settings = {
 			defaultText: "<agentDir>/markdown",
 			description: "Private directory for Markdown documents.",
 		},
-		composer: {
-			type: "enum",
-			env: "PI_MARKDOWN_COMPOSER",
-			choices: ["manual", "auto"],
-			default: "manual",
-			description:
-				"Composer mode. manual opens the native composer only through /compose; auto opens it automatically in an ordinary interactive Pi session in Rex with a capable macOS reader. No mode disables /compose.",
-		},
 		checks: {
 			type: "enum", env: "PI_MARKDOWN_CHECKS", choices: ["off", "warn", "block"], default: "block",
 			description: "Writing checks for new Markdown publications and updates. off skips validation, warn saves and reports findings, and block refuses a publication with findings. Exact captures and saved replays are unchanged.",
@@ -57,11 +49,11 @@ export type Environment = Readonly<Record<string, string | undefined>>;
 export type Origin = "env" | "file" | "default";
 export type ReadOptions = { agentDir: string; env?: Environment };
 type Key = keyof typeof settings.fields;
-type EnumKey = "composer" | "agentPane" | "checks";
+type EnumKey = "agentPane" | "checks";
 export type CheckMode = Choice<"checks">;
 type Choice<K extends EnumKey> = (typeof settings.fields)[K]["choices"][number];
 export type AgentPane = Choice<"agentPane">;
-type Values = { app: string; dir: string; composer: Choice<"composer">; agentPane: AgentPane; checks: CheckMode; checksRules: CheckOverrides; readerFile: string };
+type Values = { app: string; dir: string; agentPane: AgentPane; checks: CheckMode; checksRules: CheckOverrides; readerFile: string };
 export type Diagnostic = {
 	field: string;
 	source: Origin;
@@ -296,7 +288,6 @@ export function readSettings(options: ReadOptions): Snapshot {
 	const values: Values = {
 		app: selectedValues.app,
 		dir: selectedValues.dir,
-		composer: choice("composer", selectedValues.composer),
 		agentPane: choice("agentPane", selectedValues.agentPane),
 		checks: choice("checks", selectedValues.checks),
 		checksRules: overrides.value,

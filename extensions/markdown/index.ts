@@ -2,7 +2,6 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { registerComposer } from "./composer.ts";
 import type { Frame } from "./frame.ts";
 import { markdownContribution } from "./durable.ts";
 import { createBriefTool } from "./brief-tool.ts";
@@ -288,7 +287,6 @@ function readPresentation(value: string): { value: string; presentation: Present
 	return { value, presentation: "pane" };
 }
 export default function markdown(pi: ExtensionAPI): void {
-	registerComposer(pi);
 	const states = new Map<string, MarkdownViewState>();
 	const lifecycle = ordinaryLifecycle(pi);
 	const updateReader = readerUpdates(pi);

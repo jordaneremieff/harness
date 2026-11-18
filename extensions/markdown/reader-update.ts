@@ -12,7 +12,7 @@ export interface InstalledBuild {
 	digest?: string;
 	source?: SourceRecord;
 }
-/** The build inputs that this extension instance loaded. */
+/** The build inputs that this extension instance loaded, including the shared native pane package. */
 export interface LoadedBuild {
 	digest: string;
 	source?: SourceRecord;

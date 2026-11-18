@@ -1,4 +1,5 @@
 import AppKit
+import NativePane
 import MacPlatform
 import MarkdownCore
 import ReaderFeature
@@ -45,7 +46,7 @@ struct CheckRunner {
         case .usage(let text):
             FileHandle.standardError.write(Data(TerminalText.line("usage: MarkdownReader \(text)").utf8))
             status = 2
-        case .application, .pane, .editor, .composer, .exportComposer:
+        case .application, .pane, .editor:
             status = 0
         }
         exit(status)

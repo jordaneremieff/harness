@@ -16,4 +16,6 @@ dump/
 
 # SwiftPM build output of the native reader
 extensions/markdown/native/.build/
+extensions/composer/native/.build/
+native-pane/.build/
 extensions/markdown/native/.swiftpm/

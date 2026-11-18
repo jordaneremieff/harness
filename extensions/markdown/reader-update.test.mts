@@ -181,6 +181,10 @@ function checkoutFixture(t: TestContext) {
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const slice = join(root, "extensions", "markdown");
 	const native = join(slice, "native");
+	const pane = join(root, "native-pane");
+	mkdirSync(join(pane, "Sources"), { recursive: true });
+	writeFileSync(join(pane, "Package.swift"), "// pane package");
+	writeFileSync(join(pane, "Sources", "Pane.swift"), "// pane source");
 	for (const dir of ["Sources", "Licenses", "web"]) mkdirSync(join(native, dir), { recursive: true });
 	for (const [path, content] of [["Package.swift", "// package"], ["Package.resolved", "{}"], ["build.mts", "// build"], ["Sources/main.swift", "// one"]]) writeFileSync(join(native, path), content);
 	writeFileSync(join(slice, "pane-command.ts"), "// contract");

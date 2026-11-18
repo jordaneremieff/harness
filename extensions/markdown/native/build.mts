@@ -47,6 +47,7 @@ export const BUNDLE_ID = "local.harness.markdown-reader";
 export const APP_NAME = "Markdown Reader.app";
 
 const packageDir = dirname(fileURLToPath(import.meta.url));
+const sharedPane = "../../../native-pane";
 
 /**
  * The slice's settings: `app` is the install path (PI_MARKDOWN_APP, harness.json, default) and
@@ -87,7 +88,7 @@ export function prepareBuildCache(cache: string, root: string = packageDir): boo
 /** Digest of the files that define the build: manifest, lockfile, sources, licence notices and the embedded helper. */
 export function sourceDigest(root: string = packageDir): string {
 	const hash = createHash("sha256");
-	const files: string[] = ["Package.swift", "Package.resolved", "build.mts", "../pane-command.ts", "../../../package-lock.json"];
+	const files: string[] = ["Package.swift", "Package.resolved", "build.mts", "../pane-command.ts", "../../../package-lock.json", `${sharedPane}/Package.swift`];
 	const walk = (dir: string): void => {
 		for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
 			if (entry.name.startsWith(".")) continue;
@@ -96,7 +97,7 @@ export function sourceDigest(root: string = packageDir): string {
 			else if (entry.isFile()) files.push(path);
 		}
 	};
-	for (const dir of ["Sources", "Licenses", "web"]) walk(dir);
+	for (const dir of ["Sources", "Licenses", "web", `${sharedPane}/Sources`]) walk(dir);
 	const helper = join("..", "..", "rex", "terminal-origin.ts");
 	if (existsSync(join(root, helper))) files.push(helper);
 	for (const name of EDITOR_WRITER_SOURCES) files.push(join("..", name));
@@ -128,7 +129,7 @@ const runGit: GitRunner = (cwd, args) => {
 export function sourceRecord(root: string = packageDir, git: GitRunner = runGit): SourceRecord | undefined {
 	const commit = git(root, ["rev-parse", "--verify", "HEAD"]);
 	if (!commit || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(commit)) return undefined;
-	const inputs = [".", "../pane-command.ts", "../../../package-lock.json", "../../rex/terminal-origin.ts", ...EDITOR_WRITER_SOURCES.map((name) => `../${name}`)];
+	const inputs = [".", "../pane-command.ts", "../../../package-lock.json", "../../rex/terminal-origin.ts", `${sharedPane}/Package.swift`, `${sharedPane}/Sources`, ...EDITOR_WRITER_SOURCES.map((name) => `../${name}`)];
 	const status = git(root, ["status", "--porcelain", "--untracked-files=all", "--", ...inputs]);
 	if (status === undefined) return undefined;
 	return { commit, modified: status.length > 0 };
@@ -557,7 +558,6 @@ function main(): void {
 	const { app: destination, dir: store } = settingValues();
 	const webSourceDir = join(packageDir, "web");
 	assertWebSource(webSourceDir);
-	assertWebSource(webSourceDir, "composer.html");
 	const parent = dirname(destination);
 	mkdirSync(parent, { recursive: true, mode: 0o700 });
 	const release = lockInstall(parent);
@@ -616,7 +616,6 @@ function install(destination: string, store: string, webSourceDir: string): void
 			paneOpenRequest: PANE_OPEN_REQUEST,
 			editorOpen: EDITOR_OPEN,
 			live: 2,
-			composer: 1,
 			sourceDigest: digest,
 			...(source ? { source } : {}),
 			builtAt: new Date().toISOString(),

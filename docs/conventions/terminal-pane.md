@@ -124,10 +124,10 @@ mutation. `uncertain` means no resize acknowledgement; do not retry automaticall
 
 ## Consumers
 
-Two Markdown actions consume the adapter. The Markdown command's deliberate Read action passes
-its configured native reader and a pinned open-request path with the default placement; the
-reader's separate request-consumption signal establishes acceptance. The `/compose` command
-passes the same native app in composer mode with its private launch file, placement
-`{ side: "below", share: 0.3 }` and the label `Composer`; the composer's first authenticated
-request on its own connection establishes acceptance. Browse-only selection and publication
-never invoke this adapter.
+The Markdown command's deliberate Read action uses the default placement with its own native
+reader and a pinned open-request path. Request consumption separately establishes acceptance.
+Browse-only selection and publication do not invoke the adapter.
+
+The composer extension's `/composer` command opens Composer.app with a private launch file in
+a split below Pi labelled `Composer`. An authenticated request establishes app acceptance.
+Once visible, the composer asks Pi to resize the split through its confirmed receipt.
