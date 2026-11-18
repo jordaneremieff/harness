@@ -69,8 +69,7 @@ function publishSeed(dir: string): string | undefined {
 		return `Data directory ${safeLabel(backing)} is already present without a catalog link. A seed may be in progress or interrupted; inspect the directory and retry. It was not changed.`;
 	}
 	const backingStat = requirePrivateDirectory(backing);
-	const written = new Map<string, ReturnType<typeof readPlaybookFile>>();
-	let published = false;
+	const written: SeedFiles = new Map();
 	try {
 		for (const { name, source } of files) {
 			writeNewPlaybookFile(join(backing, name), source.bytes);
@@ -82,43 +81,115 @@ function publishSeed(dir: string): string | undefined {
 		if (!sameEntry(parentStat, requirePrivateDirectory(parent)) || !sameEntry(parentStat, statSync(dirname(dir), { bigint: true })) || !sameEntry(backingStat, entry(backing)))
 			throw new Error("seed directory identity changed");
 		symlinkSync(backingName(dir), actual);
-		published = true;
-		try { syncPlaybookDirectory(parent); }
-		catch { return "The catalog link was published, but syncing its parent failed. Inspect the link before retrying."; }
-		return undefined;
 	} catch (error) {
-		const winner = entry(actual);
-		const raced = hasCode(error, "EEXIST") && winner !== undefined;
-		// Do not clean backing bytes if another entry may already reference them.
-		if (winner?.isSymbolicLink()) {
-			try { if (readlinkSync(actual) === backingName(dir)) return undefined; }
-			catch { return `Inspect unpublished data at ${safeLabel(backing)}; it was not removed.`; }
-		}
-		// Clean only files this operation wrote and verified. Never follow or remove a winning catalog.
-		if (!published && sameEntry(backingStat, entry(backing))) {
-			try {
-				for (const [name, expected] of written) {
-					const path = join(backing, name);
-					const current = readPlaybookFile(path);
-					if (sameEntry(expected.stat, current.stat) && current.digest === expected.digest) unlinkSync(path);
-				}
-				rmdirSync(backing);
-			} catch { return `Seed was not applied. Inspect unpublished data at ${safeLabel(backing)}; it was retained for recovery.`; }
-		}
-		if (raced) return undefined;
-		return `Seed was not applied. Inspect the catalog location and data directory ${safeLabel(backing)}.`;
+		return recoverUnpublishedSeed(dir, actual, backing, backingStat, written, error);
 	}
+	try { syncPlaybookDirectory(parent); }
+	catch { return "The catalog link was published, but syncing its parent failed. Inspect the link before retrying."; }
+	return undefined;
+}
+
+type SeedFiles = Map<string, ReturnType<typeof readPlaybookFile>>;
+
+function removeVerifiedSeedFiles(backing: string, written: SeedFiles): void {
+	// Never remove a file whose identity or contents no longer match our write.
+	for (const [name, expected] of written) {
+		const path = join(backing, name);
+		const current = readPlaybookFile(path);
+		if (sameEntry(expected.stat, current.stat) && current.digest === expected.digest) unlinkSync(path);
+	}
+	rmdirSync(backing);
+}
+
+function recoverUnpublishedSeed(dir: string, actual: string, backing: string, backingStat: ReturnType<typeof requirePrivateDirectory>, written: SeedFiles, error: unknown): string | undefined {
+	const winner = entry(actual);
+	const raced = hasCode(error, "EEXIST") && winner !== undefined;
+	// Do not clean backing bytes if another entry may already reference them.
+	if (winner?.isSymbolicLink()) {
+		try { if (readlinkSync(actual) === backingName(dir)) return undefined; }
+		catch { return `Inspect unpublished data at ${safeLabel(backing)}; it was not removed.`; }
+	}
+	if (sameEntry(backingStat, entry(backing))) {
+		try { removeVerifiedSeedFiles(backing, written); }
+		catch { return `Seed was not applied. Inspect unpublished data at ${safeLabel(backing)}; it was retained for recovery.`; }
+	}
+	if (raced) return undefined;
+	return `Seed was not applied. Inspect the catalog location and data directory ${safeLabel(backing)}.`;
+}
+
+function listMarkdownCandidates(root: PlaybookRoot, note: (text: string) => void): string[] | undefined {
+	const names: string[] = [];
+	const listing = opendirSync(root.physical);
+	try {
+		for (let visited = 0;; visited++) {
+			const item = listing.readSync();
+			if (!item) break;
+			if (visited >= MAX_VISITED) { note("Catalog inventory exceeds 512 directory entries."); return undefined; }
+			if (item.name.startsWith(IMPORT_LOCK_PREFIX)) note(`${safeLabel(item.name)}: an import is active or interrupted. Inspect its recovery data before removing the lock.`);
+			if (item.name.startsWith(IMPORT_PREFIX)) note(`${safeLabel(item.name)}: retained import recovery data in the catalog directory.`);
+			if (item.name.startsWith(".") || !/\.md$/iu.test(item.name)) continue;
+			if (names.length === MAX_CANDIDATES) { note("Catalog inventory exceeds 128 Markdown candidates."); return undefined; }
+			names.push(item.name);
+		}
+	} finally { listing.closeSync(); }
+	return names;
+}
+
+function readMarkdownCandidates(root: PlaybookRoot, names: string[], presets: ReturnType<typeof playbookLocation>["presets"], note: (text: string) => void): Playbook[] | undefined {
+	const entries: Playbook[] = [];
+	let bytes = 0;
+	for (const filename of names.sort()) {
+		const name = filename.slice(0, -3);
+		if (!filename.endsWith(".md") || !playbookName(name)) { note(`${safeLabel(filename)}: invalid or reserved playbook name; use a lowercase slug and .md.`); continue; }
+		try {
+			const file = readPlaybookFile(join(root.physical, filename));
+			bytes += file.bytes.length;
+			if (bytes > MAX_TOTAL_BYTES) { note("Catalog content exceeds 2 MiB."); return undefined; }
+			entries.push(parsePlaybook(name, playbookText(file.bytes)));
+			if (Object.hasOwn(presets, name)) note(`${safeLabel(filename)}: name also used by an execution preset; the playbook remains available.`);
+		} catch (error) {
+			const reason = error instanceof Error && !("code" in error) ? error.message : "file could not be read";
+			note(`${safeLabel(filename)}: ${reason}.`);
+		}
+	}
+	return entries;
+}
+
+function catalogResult(dir: string) {
+	const diagnostics: string[] = [];
+	let omitted = 0;
+	return {
+		note(text: string): void {
+			if (diagnostics.length < MAX_DIAGNOSTICS) diagnostics.push(text);
+			else omitted++;
+		},
+		finish(state: PlaybookCatalog["state"], entries: Playbook[] = [], root?: PlaybookRoot): PlaybookCatalog {
+			return {
+				dir, state, entries, diagnostics: omitted ? [...diagnostics, `${omitted} additional diagnostics omitted.`] : diagnostics,
+				...(root && root.physical !== join(root.parent, basename(dir)) ? { backingDir: root.physical } : {}),
+			};
+		},
+	};
+}
+
+function missingCatalog(dir: string, invalid: boolean, { note, finish }: ReturnType<typeof catalogResult>): PlaybookCatalog {
+	if (entry(join(dirname(dir), backingName(dir)))) note(`Sibling data directory ${safeLabel(backingName(dir))} exists without the catalog link. Inspect it before seeding.`);
+	return finish(invalid ? "unavailable" : "missing");
+}
+
+function scanPlaybookRoot(root: PlaybookRoot, presets: ReturnType<typeof playbookLocation>["presets"], { note, finish }: ReturnType<typeof catalogResult>): PlaybookCatalog {
+	const names = listMarkdownCandidates(root, note);
+	if (names === undefined) return finish("incomplete", [], root);
+	const entries = readMarkdownCandidates(root, names, presets, note);
+	if (entries === undefined) return finish("incomplete", [], root);
+	if (!sameRoot(root, inspectPlaybookRoot(root.dir))) { note("Catalog directory changed during the read."); return finish("unavailable"); }
+	return finish("ready", entries, root);
 }
 
 export function readPlaybookCatalog(agentDir: string, options: { initialize?: boolean } = {}): PlaybookCatalog {
 	const { dir, invalid, presets } = playbookLocation(agentDir);
-	const diagnostics: string[] = [];
-	let omitted = 0;
-	const note = (text: string) => { if (diagnostics.length < MAX_DIAGNOSTICS) diagnostics.push(text); else omitted++; };
-	const finish = (state: PlaybookCatalog["state"], entries: Playbook[] = [], root?: PlaybookRoot): PlaybookCatalog => ({
-		dir, state, entries, diagnostics: omitted ? [...diagnostics, `${omitted} additional diagnostics omitted.`] : diagnostics,
-		...(root && root.physical !== join(root.parent, basename(dir)) ? { backingDir: root.physical } : {}),
-	});
+	const result = catalogResult(dir);
+	const { note, finish } = result;
 	if (invalid) note("The playbooksDir setting or its source is invalid or unavailable. Check configuration before writing the catalog.");
 	try {
 		let root = inspectPlaybookRoot(dir);
@@ -128,42 +199,8 @@ export function readPlaybookCatalog(agentDir: string, options: { initialize?: bo
 			root = inspectPlaybookRoot(dir);
 			if (!root && issue) return finish("unavailable");
 		}
-		if (!root) {
-			if (entry(join(dirname(dir), backingName(dir)))) note(`Sibling data directory ${safeLabel(backingName(dir))} exists without the catalog link. Inspect it before seeding.`);
-			return finish(invalid ? "unavailable" : "missing");
-		}
-		const names: string[] = [];
-		const listing = opendirSync(root.physical);
-		try {
-			for (let visited = 0;; visited++) {
-				const item = listing.readSync();
-				if (!item) break;
-				if (visited >= MAX_VISITED) { note("Catalog inventory exceeds 512 directory entries."); return finish("incomplete", [], root); }
-				if (item.name.startsWith(IMPORT_LOCK_PREFIX)) note(`${safeLabel(item.name)}: an import is active or interrupted. Inspect its recovery data before removing the lock.`);
-				if (item.name.startsWith(IMPORT_PREFIX)) note(`${safeLabel(item.name)}: retained import recovery data in the catalog directory.`);
-				if (item.name.startsWith(".") || !/\.md$/iu.test(item.name)) continue;
-				if (names.length === MAX_CANDIDATES) { note("Catalog inventory exceeds 128 Markdown candidates."); return finish("incomplete", [], root); }
-				names.push(item.name);
-			}
-		} finally { listing.closeSync(); }
-		const entries: Playbook[] = [];
-		let bytes = 0;
-		for (const filename of names.sort()) {
-			const name = filename.slice(0, -3);
-			if (!filename.endsWith(".md") || !playbookName(name)) { note(`${safeLabel(filename)}: invalid or reserved playbook name; use a lowercase slug and .md.`); continue; }
-			try {
-				const file = readPlaybookFile(join(root.physical, filename));
-				bytes += file.bytes.length;
-				if (bytes > MAX_TOTAL_BYTES) { note("Catalog content exceeds 2 MiB."); return finish("incomplete", [], root); }
-				entries.push(parsePlaybook(name, playbookText(file.bytes)));
-				if (Object.hasOwn(presets, name)) note(`${safeLabel(filename)}: name also used by an execution preset; the playbook remains available.`);
-			} catch (error) {
-				const reason = error instanceof Error && !("code" in error) ? error.message : "file could not be read";
-				note(`${safeLabel(filename)}: ${reason}.`);
-			}
-		}
-		if (!sameRoot(root, inspectPlaybookRoot(dir))) { note("Catalog directory changed during the read."); return finish("unavailable"); }
-		return finish("ready", entries, root);
+		if (!root) return missingCatalog(dir, invalid, result);
+		return scanPlaybookRoot(root, presets, result);
 	} catch (error) {
 		const reason = error instanceof Error && !("code" in error) ? error.message : "directory could not be accessed";
 		note(`Catalog unavailable: ${reason}.`);
