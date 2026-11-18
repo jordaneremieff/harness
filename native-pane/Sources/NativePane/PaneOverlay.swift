@@ -49,6 +49,7 @@ public final class PaneOverlay: NSObject, NSWindowDelegate {
         window.hidesOnDeactivate = false
         window.becomesKeyOnlyIfNeeded = false
         window.hasShadow = false
+        window.animationBehavior = .none
         window.isMovable = false
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .ignoresCycle]
         super.init()
