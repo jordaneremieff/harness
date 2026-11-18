@@ -10,34 +10,37 @@
     --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, monospace;
 
-    /* Surfaces: the page is paper; panels sit one step off it; menus and cards are raised. */
-    --paper: light-dark(oklch(99.4% 0.002 250), oklch(17.2% 0.007 262));
-    --panel: light-dark(oklch(97.5% 0.004 255), oklch(19.6% 0.009 262));
-    --raised: light-dark(#fff, oklch(23.2% 0.011 262));
-    --sunk: light-dark(oklch(96.3% 0.005 255), oklch(21.2% 0.01 262));
-    --hover: light-dark(oklch(94.6% 0.006 255), oklch(25.5% 0.012 262));
-    --pressed: light-dark(oklch(92.4% 0.008 255), oklch(28.5% 0.014 262));
-    --line: light-dark(oklch(91.6% 0.006 255), oklch(28.4% 0.012 262));
-    --line-strong: light-dark(oklch(85.5% 0.008 255), oklch(35% 0.014 262));
+    /* Surfaces: the page is paper; the outline sits one step behind it; menus and cards are
+       raised. The dark paper sits near the lightness of common dark terminal themes, so a reader
+       pane reads as part of its terminal window rather than as a hole in it. */
+    --paper: light-dark(oklch(98.9% 0.003 268), oklch(23.4% 0.013 268));
+    --panel: light-dark(oklch(96.8% 0.005 268), oklch(21.2% 0.012 268));
+    --raised: light-dark(#fff, oklch(27.8% 0.016 268));
+    --sunk: light-dark(oklch(96.2% 0.006 268), oklch(26.4% 0.015 268));
+    --hover: light-dark(oklch(94.2% 0.007 268), oklch(30.4% 0.017 268));
+    --pressed: light-dark(oklch(91.8% 0.009 268), oklch(33.6% 0.019 268));
+    --line: light-dark(oklch(91.2% 0.007 268), oklch(32.2% 0.016 268));
+    --line-strong: light-dark(oklch(85% 0.009 268), oklch(39% 0.018 268));
 
-    /* Text tiers. The faintest tier still reads at 4.5:1 on every surface above. */
-    --heading: light-dark(oklch(17% 0.02 266), oklch(97.4% 0.004 262));
-    --ink: light-dark(oklch(23% 0.016 266), oklch(91.5% 0.006 262));
-    --ink-2: light-dark(oklch(40% 0.015 266), oklch(79% 0.009 262));
-    --ink-3: light-dark(oklch(51% 0.013 266), oklch(67% 0.011 262));
+    /* Text tiers. The faintest tier still reads at 5:1 on every surface above. */
+    --heading: light-dark(oklch(19% 0.02 268), oklch(96.6% 0.005 268));
+    --ink: light-dark(oklch(26% 0.016 268), oklch(89.5% 0.008 268));
+    --ink-2: light-dark(oklch(41% 0.015 268), oklch(79.5% 0.011 268));
+    --ink-3: light-dark(oklch(50% 0.013 268), oklch(70.5% 0.013 268));
 
     /* Meaning. Accent: links, primary actions, the current section. Agent: anything the agent does. */
-    --accent: light-dark(oklch(53% 0.19 262), oklch(74% 0.13 258));
+    --accent: light-dark(oklch(52% 0.17 260), oklch(75% 0.12 256));
     --accent-ink: light-dark(#fff, oklch(18% 0.03 262));
     --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
-    --accent-text: light-dark(oklch(45% 0.17 262), oklch(80% 0.11 258));
+    --accent-text: light-dark(oklch(46% 0.16 260), oklch(82% 0.1 256));
     --agent: light-dark(oklch(53% 0.21 300), oklch(75% 0.14 300));
     --agent-soft: color-mix(in oklch, var(--agent) 13%, transparent);
     --agent-text: light-dark(oklch(45% 0.19 300), oklch(82% 0.11 300));
     --ok: light-dark(oklch(52% 0.13 152), oklch(76% 0.14 152));
     --warn: light-dark(oklch(58% 0.14 68), oklch(80% 0.13 78));
     --err: light-dark(oklch(54% 0.19 25), oklch(72% 0.16 25));
-    --code-ink: light-dark(oklch(48% 0.16 12), oklch(80% 0.09 15));
+    /* Inline code is warm and calm, so it marks code without reading as an error. */
+    --code-ink: light-dark(oklch(47% 0.12 40), oklch(85% 0.07 55));
     --mark: light-dark(oklch(90% 0.13 95), oklch(52% 0.11 85));
     --mark-current: light-dark(oklch(80% 0.17 75), oklch(68% 0.16 70));
 

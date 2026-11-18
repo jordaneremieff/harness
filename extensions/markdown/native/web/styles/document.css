@@ -1,14 +1,15 @@
 @layer doc {
   .doc {
     max-width:var(--measure);margin:0 auto;
-    padding:calc(var(--bar-h) + 72px + var(--copy-space)) clamp(20px,6cqw,48px) 40vh;
+    padding:calc(var(--bar-h) + clamp(16px,7cqh,64px) + var(--copy-space)) clamp(20px,6cqw,48px) 40vh;
     font:1rem/1.68 var(--font);color:var(--ink);font-kerning:normal;
     hanging-punctuation:first;overflow-wrap:break-word;
   }
   .doc > .reader-block { margin:0 0 1.05em;border-radius:6px;position:relative; }
   .doc h1,.doc h2,.doc h3,.doc h4,.doc h5,.doc h6 { color:var(--heading);text-wrap:balance;font-family:var(--font-display);margin:0; }
-  .doc h1 { font-size:2.05rem;font-weight:720;letter-spacing:-.024em;line-height:1.16; }
-  .doc h2 { font-size:1.42rem;font-weight:660;letter-spacing:-.015em;line-height:1.26; }
+  /* Headings scale with the pane, so a small floating pane is not filled by its title. */
+  .doc h1 { font-size:clamp(1.55rem,1.15rem + 1.6cqi,2.05rem);font-weight:700;letter-spacing:-.022em;line-height:1.16; }
+  .doc h2 { font-size:clamp(1.24rem,1.06rem + .7cqi,1.42rem);font-weight:650;letter-spacing:-.014em;line-height:1.26; }
   .doc h3 { font-size:1.16rem;font-weight:650;letter-spacing:-.008em;line-height:1.32; }
   .doc h4 { font-size:1rem;font-weight:650; }
   .doc h5,.doc h6 { font-size:.82rem;font-weight:650;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2); }
@@ -40,8 +41,22 @@
   .doc .code-copy:hover { background:var(--hover); }.doc .code-copy .i { width:14px;height:14px; }
   #app[data-wrap] .doc pre { white-space:pre-wrap;overflow-wrap:anywhere; }
   .syn-k { color:var(--syn-key); }.syn-s { color:var(--syn-str); }.syn-n { color:var(--syn-num); }.syn-c { color:var(--syn-com);font-style:italic; }.syn-t { color:var(--syn-type); }.syn-f { color:var(--syn-fn); }
-  .doc table { width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;font-size:.92em;line-height:1.5; }
-  .doc th,.doc td { text-align:left;vertical-align:top;padding:.55em clamp(.35em,1.2cqw,.8em);overflow-wrap:anywhere; }
+  /* Columns take the width their content needs and cells never split a word. A table whose words
+     cannot fit scrolls inside its frame, and an edge shadow shows that more of it lies beside the
+     frame; the page itself never scrolls sideways. Only a long unbroken code token may wrap. */
+  .doc .table-frame {
+    overflow-x:auto;overscroll-behavior-x:contain;
+    background:
+      linear-gradient(to right,var(--paper) 40%,transparent) left center / 32px 100% no-repeat local,
+      linear-gradient(to left,var(--paper) 40%,transparent) right center / 32px 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%,light-dark(rgb(16 24 40 / .16),rgb(0 0 0 / .5)),transparent) left center / 12px 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%,light-dark(rgb(16 24 40 / .16),rgb(0 0 0 / .5)),transparent) right center / 12px 100% no-repeat scroll;
+  }
+  .doc table { width:100%;table-layout:auto;border-collapse:separate;border-spacing:0;font-size:.92em;line-height:1.5; }
+  .doc th,.doc td { text-align:left;vertical-align:top;padding:.55em clamp(.4em,1.2cqw,.8em);overflow-wrap:break-word; }
+  .doc :is(th,td) code { overflow-wrap:break-word; }
+  .doc :is(th,td) code[data-wrap] { overflow-wrap:anywhere; }
+  .doc :is(th,td)[data-prose] { min-width:9em; }
   .doc th { font-weight:620;color:var(--heading);background:var(--sunk); }.doc th:first-child { border-radius:8px 0 0 8px; }.doc th:last-child { border-radius:0 8px 8px 0; }
   .doc td { border-bottom:1px solid var(--line); }.doc tr:last-child td { border-bottom:0; }.doc tbody tr:hover td { background:color-mix(in oklch,var(--hover) 55%,transparent); }
   .doc img { max-width:100%;height:auto;border-radius:10px;display:block;cursor:pointer; }
@@ -63,7 +78,7 @@
   .diff-head { display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:10px;font:500 12px/1.4 var(--font);color:var(--agent-text); }.diff-head > span { margin-right:auto; }.diff-head .btn-i { width:24px;height:24px; }
   .diff-words del { color:var(--ink-2);background:color-mix(in oklch,var(--err) 10%,transparent);text-decoration:line-through; }.diff-words ins { color:var(--agent-text);background:var(--agent-soft);text-decoration:none; }
   @container app (width < 720px) { .doc .reader-block .pin { right:0;top:-24px; } }
-  @container app (width < 600px) { .doc { padding-top:calc(var(--bar-h) + 66px + var(--copy-space)); }#app[data-copy] .doc { --copy-space:60px; } }
+  @container app (width < 600px) { #app[data-copy] .doc { --copy-space:60px; } }
   @container app (width < 560px) { .doc .agent-claimed { padding-top:8px; }.doc .agent-claimed::before { position:static;display:block;text-align:right;margin-bottom:4px; } }
 }
 ::highlight(find) { background-color:var(--mark);color:var(--heading); }

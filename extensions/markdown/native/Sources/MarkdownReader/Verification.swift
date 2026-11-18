@@ -24,7 +24,7 @@ struct Verification {
     }
 
     static let pageCheckNames = [
-        "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry",
+        "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry", "layout-fits-every-pane-size",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
         "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
@@ -67,6 +67,7 @@ struct Verification {
                 await run("find-across-inline-formatting") { await context.inlineFind(keep: &keep) }
                 await run("code-copy-crlf") { await context.codeLineEndings(keep: &keep) }
                 await run("table-column-geometry") { await context.tableColumnWidths(keep: &keep) }
+                await run("layout-fits-every-pane-size") { await context.layoutAcrossPaneSizes(keep: &keep) }
                 await run("document-script-inert-under-csp") { await context.contentScript(keep: &keep) }
                 await run("reading-lock-blocks-edit") { await context.readingLock(keep: &keep) }
                 await run("bridge-typing-exact-line-endings") { await context.typing(keep: &keep) }
@@ -1994,6 +1995,150 @@ struct Context {
             }
             return .init(name: "table-column-geometry", pass: pass, detail: details.joined(separator: "; "))
         } catch { return .init(name: "table-column-geometry", pass: false, detail: String(describing: error)) }
+    }
+
+    /// Pane sizes from a small floating pane to a wide split. At each size, in Reading, Writing,
+    /// with the outline closed, with find open and with each bar panel open, the page never scrolls
+    /// sideways, bar controls stay apart inside the bar, hidden bar controls take no room, open
+    /// panels and cards stay inside the window, and table cells never split a word across lines.
+    static let layoutSizes: [(Double, Double)] = [(320, 260), (380, 420), (460, 320), (540, 600), (620, 380), (700, 520), (780, 460), (880, 620), (1024, 700), (1280, 820)]
+    static let layoutProbe = """
+    await Promise.race([new Promise(r => requestAnimationFrame(r)), new Promise(r => setTimeout(r, 60))]);
+    const vw = innerWidth, vh = innerHeight, out = [];
+    const shown = (e) => {
+      if (!e || !e.isConnected) return null;
+      const s = getComputedStyle(e);
+      if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) return null;
+      const r = e.getBoundingClientRect();
+      return r.width >= 1 && r.height >= 1 ? r : null;
+    };
+    const label = (e) => (e.id ? '#' + e.id : (e.getAttribute('aria-label') || e.dataset.role || String(e.className || e.tagName))).slice(0, 40);
+    const overlap = (a, b) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.5;
+    const inside = (r, box) => r.left >= box.left - 0.5 && r.right <= box.right + 0.5 && r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5;
+    const page = document.getElementById('page');
+    if (document.scrollingElement.scrollWidth > vw + 1) out.push('the page scrolls sideways');
+    if (page.scrollWidth > page.clientWidth + 1) out.push('the document is wider than its column: ' + page.scrollWidth + ' > ' + page.clientWidth);
+    const bar = document.querySelector('.bar'), barBox = bar.getBoundingClientRect();
+    const room = { left: Math.max(0, barBox.left), top: barBox.top, right: Math.min(vw, barBox.right), bottom: barBox.bottom };
+    const parts = [...bar.querySelectorAll('button, input, [data-role="status"]')].map((e) => [e, shown(e)]).filter(([, r]) => r);
+    for (const [e, r] of parts) {
+      const row = e.closest('.replace'), own = row && getComputedStyle(row).position === 'absolute';
+      if (!inside(r, own ? { left: 0, top: 0, right: vw, bottom: vh } : room)) out.push((own ? 'the replace row leaves the window: ' : 'a bar control leaves the bar: ') + label(e));
+    }
+    for (let i = 0; i < parts.length; i++) for (let j = i + 1; j < parts.length; j++) {
+      const [a, ra] = parts[i], [b, rb] = parts[j];
+      if (!a.contains(b) && !b.contains(a) && overlap(ra, rb)) out.push('bar controls overlap: ' + label(a) + ' / ' + label(b));
+    }
+    for (const e of bar.querySelectorAll('*')) {
+      const s = getComputedStyle(e), r = e.getBoundingClientRect();
+      if (s.visibility === 'hidden' && r.width > 1 && getComputedStyle(e.parentElement).visibility !== 'hidden') out.push('a hidden bar control takes room: ' + label(e) + ' ' + Math.round(r.width));
+    }
+    const floating = document.querySelectorAll('[popover]:popover-open, dialog[open], #askcard[data-open], #seltools[data-open], .context-menu, #toast:not([hidden]), #linkcard:not([hidden]), #jumps > *, #notices > *');
+    for (const e of floating) {
+      const r = shown(e);
+      if (r && !inside(r, { left: 0, top: 0, right: vw, bottom: vh })) out.push('leaves the window: ' + label(e) + ' ' + [r.left, r.top, r.right, r.bottom].map(Math.round).join(','));
+    }
+    for (const cell of document.querySelectorAll('.doc td, .doc th')) {
+      const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        for (const m of node.data.matchAll(/[\\p{L}\\p{N}]{2,}/gu)) {
+          const range = document.createRange();
+          range.setStart(node, m.index);
+          range.setEnd(node, m.index + m[0].length);
+          const tops = new Set([...range.getClientRects()].filter((q) => q.width > 0).map((q) => Math.round(q.top)));
+          if (tops.size > 1) out.push('a table cell splits a word: ' + m[0]);
+        }
+      }
+    }
+    return out;
+    """
+
+    func layoutAcrossPaneSizes(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "layout-fits-every-pane-size"
+        do {
+            let source = """
+            # A long report title that needs several lines in a small floating pane, 18 November 2026
+
+            Every fix is on `main`. A long path such as `extensions/markdown/native/web/app/ui/interface.ts` and a [link](https://example.test) sit in this paragraph.
+
+            ## Findings and dispositions
+
+            | # | Finding | Slice | Disposition | Evidence | Commit |
+            |---|---|---|---|---|---|
+            | 1 | Exact handles ranked below fuzzy matches in queried discovery | agent | fixed | `catalog-view.test.mts` | `5abd3552e` |
+            | 2 | Old terminal attention crowded the overview | agent | fixed | `status.test.mts` | `1a78208d0` |
+
+            ### Verification
+
+            1. Focused tests of every changed file and of its direct consumers.
+            2. `npm run check`, `npm run typecheck` and `npm run lint` on the composed tree.
+
+            > A quoted passage that wraps over several lines in a narrow pane.
+
+            ```ts
+            export async function floatPane(request: PaneRequest, env: Readonly<NodeJS.ProcessEnv> = process.env): Promise<PaneResult> {}
+            ```
+
+            ## Next steps
+
+            - [ ] Rebuild the reader app.
+            - [x] Push the main branch.
+
+            """
+            let file = workspace.appendingPathComponent("layout.md")
+            try Data(source.utf8).write(to: file)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: ReadingStateStore(directory: nil))
+            let window = CheckRunner.offscreenWindow(page: model.page, width: 1280, height: 820)
+            keep.append(window)
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            var findings: [(place: String, text: String)] = []
+            func probe(_ size: String, _ state: String) async {
+                let found = await js(model, Self.layoutProbe) as? [String] ?? ["the probe did not run"]
+                findings += found.map { (place: "\(size) \(state)", text: $0) }
+            }
+            let closePopovers = "document.querySelectorAll('[popover]:popover-open').forEach((p) => p.hidePopover()); return true;"
+            for (width, height) in Self.layoutSizes {
+                let size = "\(Int(width))x\(Int(height))"
+                progress?.stage = "layout \(size)"
+                window.setContentSize(NSSize(width: width, height: height))
+                window.contentView?.layoutSubtreeIfNeeded()
+                await probe(size, "reading")
+                _ = await js(model, "document.getElementById('b-outline').click(); return true;")
+                await probe(size, "outline toggled")
+                _ = await js(model, "document.getElementById('b-outline').click(); return true;")
+                for (button, panel) in [("b-title", "document menu"), ("b-view", "text panel"), ("b-ask", "agent activity")] {
+                    _ = await js(model, "document.getElementById('\(button)').click(); return true;")
+                    await probe(size, panel)
+                    _ = await js(model, closePopovers)
+                }
+                await model.sendCommand("find", args: ["query": "passage"])
+                await probe(size, "find")
+                await model.sendCommand("toggleLock", args: ["lock": "writing"])
+                await probe(size, "writing with find")
+                _ = await js(model, "document.querySelector('[aria-label=\"Replace\"]')?.click(); return true;")
+                await probe(size, "writing with replace")
+                _ = await js(model, "document.querySelector('[aria-label=\"Replace\"]')?.click(); document.querySelector('[aria-label=\"Close find\"]')?.click(); return true;")
+                await probe(size, "writing")
+                await model.sendCommand("toggleLock", args: ["lock": "reading"])
+            }
+            await model.close()
+            if findings.isEmpty {
+                return .init(name: name, pass: true, detail: "\(Self.layoutSizes.count) sizes, 9 states each: no overlap, overflow or split word")
+            }
+            // Each distinct finding once, with the first places where it occurs.
+            var order: [String] = []
+            var places: [String: [String]] = [:]
+            for finding in findings {
+                if places[finding.text] == nil { order.append(finding.text) }
+                places[finding.text, default: []].append(finding.place)
+            }
+            let detail = order.prefix(24).map { text in
+                let at = places[text] ?? []
+                return "\(text) [\(at.prefix(4).joined(separator: ", "))\(at.count > 4 ? ", +\(at.count - 4)" : "")]"
+            }.joined(separator: "; ")
+            return .init(name: name, pass: false, detail: "\(findings.count) findings: \(detail)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
     func codeCopy(keep: inout [NSWindow]) async -> Verification.Check {

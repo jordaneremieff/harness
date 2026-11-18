@@ -64,8 +64,9 @@
   #app[data-outline="closed"] .grip { display: none; }
   #app[data-resizing], #app[data-resizing] * { user-select: none; cursor: col-resize !important; }
 
-  /* Narrow panes: the outline becomes a sheet over the page. */
-  @container app (width < 720px) {
+  /* Below this width a docked outline would squeeze the reading column, so the outline becomes a
+     sheet over the page. Navigation reads the sheet's position to choose between the two. */
+  @container app (width < 860px) {
     .shell, #app[data-outline="closed"] .shell { grid-template-columns: 0 minmax(0, 1fr); }
     .outline {
       position: absolute; z-index: 8; top: var(--bar-h); bottom: 0; left: 0; padding-top: 6px;

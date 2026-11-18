@@ -61,8 +61,9 @@
 			target.addEventListener(type, fn, options);
 			off.push(() => target.removeEventListener(type, fn, options));
 		}
+		// The stylesheet owns the width at which the outline turns into a sheet over the page.
 		function narrow() {
-			return app.clientWidth < 720;
+			return getComputedStyle(toc).position === "absolute";
 		}
 		let blockElements = new Map<number, HTMLElement>();
 		function block(start: number) {
@@ -228,9 +229,12 @@
 			row.setAttribute("aria-current", "true");
 			row.dataset.role = "outline-current";
 			if (hover) return;
+			// Only the list scrolls. Scrolling the row into view would also scroll its ancestors, and a
+			// closed outline sheet lies outside the window, so the whole page would move.
 			const r = row.getBoundingClientRect(),
 				box = rows.getBoundingClientRect();
-			if (r.top < box.top || r.bottom > box.bottom) row.scrollIntoView({ block: "nearest" });
+			if (r.top < box.top) rows.scrollTop += r.top - box.top;
+			else if (r.bottom > box.bottom) rows.scrollTop += r.bottom - box.bottom;
 		}
 		function toggleSheet() {
 			app.dataset.sheet = app.dataset.sheet === "open" ? "closed" : "open";
@@ -241,6 +245,12 @@
 			app.dataset.outline = app.dataset.outline === "closed" ? "open" : "closed";
 			void ctx.hostCommand("saveSettings", { patch: { outlineOpen: app.dataset.outline === "open" } });
 			return app.dataset.outline === "open";
+		}
+		// The outline control shows whether the outline is in view: the docked outline on a wide pane,
+		// the sheet on a narrow one. A resize across the width that switches them updates it.
+		function syncOutlineButton() {
+			const shown = narrow() ? app.dataset.sheet === "open" : app.dataset.outline !== "closed";
+			get("#b-outline").setAttribute("aria-pressed", String(shown));
 		}
 		function sourceEdit(match: ReturnType<ReaderEditor["find"]>[number], source: string): ReaderEdit | null {
 			const b = controller.blocks.find((b) => b.key === match.key);
@@ -275,6 +285,7 @@
 		function outlineSettings(patch: Record<string, unknown>) {
 			if (typeof patch.outlineWidth === "number") setWidth(patch.outlineWidth, false);
 			if (typeof patch.outlineOpen === "boolean") app.dataset.outline = patch.outlineOpen ? "open" : "closed";
+			syncOutlineButton();
 		}
 		const nav: ReaderNavigation = {
 			rebuild() {
@@ -308,12 +319,14 @@
 				}
 			},
 			toggleOutline() {
-				get("#b-outline").setAttribute("aria-pressed", String(narrow() ? toggleSheet() : toggleDock()));
+				if (narrow()) toggleSheet();
+				else toggleDock();
+				syncOutlineButton();
 			},
 			closeSheet() {
 				if (app.dataset.sheet !== "open") return false;
 				app.dataset.sheet = "closed";
-				get("#b-outline").setAttribute("aria-pressed", "false");
+				syncOutlineButton();
 				return true;
 			},
 			find(args = {}) {
@@ -418,6 +431,7 @@
 			}
 		}) as EventListener);
 		listen(get("#scrim"), "click", () => nav.closeSheet());
+		listen(window, "resize", syncOutlineButton);
 		listen(
 			page,
 			"scroll",

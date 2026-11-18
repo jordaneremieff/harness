@@ -276,9 +276,29 @@
 			if (!before.el.isConnected) return;
 			adjustScroll(before.el.getBoundingClientRect().top - before.top);
 		}
+		// A table sits in a frame that scrolls sideways when its words cannot fit the column. A code
+		// token longer than a typical identifier may wrap, so one long token does not widen its column,
+		// and a cell that holds a sentence keeps a reading width even when the table must scroll.
+		// The frame and the marks add no text, so visible-text offsets are unchanged.
+		function markTable(table: Element) {
+			for (const code of table.querySelectorAll<HTMLElement>("code"))
+				code.toggleAttribute("data-wrap", /\S{25}/u.test(code.textContent ?? ""));
+			for (const cell of table.querySelectorAll<HTMLElement>("td, th"))
+				cell.toggleAttribute("data-prose", (cell.textContent ?? "").trim().split(/\s+/u).length >= 5);
+		}
+		function frameTable(el: HTMLElement) {
+			const table = el.querySelector(":scope > table");
+			if (!table) return;
+			const frame = el.ownerDocument.createElement("div");
+			frame.className = "table-frame";
+			table.before(frame);
+			frame.append(table);
+			markTable(table);
+		}
 		function setBody(el: HTMLElement, body: string) {
 			if (html.get(el) === body) return;
 			api.setRenderedHTML(el, body);
+			if (el.dataset.type === "table") frameTable(el);
 			html.set(el, body);
 		}
 		function ensureBlockElement(block: ReaderMappedBlock) {

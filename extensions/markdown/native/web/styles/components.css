@@ -55,12 +55,14 @@
   }
   .spacer { flex: 1; min-width: 8px; }
 
-  /* Find takes the title's place in the bar. */
+  /* Find takes the title's place in the bar. A field shrinks inside its own box and never spills
+     over the buttons beside it; the bar hides other controls first so the field keeps its room. */
   .find {
     display: none; align-items: center; gap: 2px; min-width: 0; flex: 1;
     margin-left: 4px;
     .field {
-      display: flex; align-items: center; gap: 6px; height: 32px; min-width: 0; flex: 0 1 300px;
+      display: flex; align-items: center; gap: 6px; height: 32px; min-width: 0; flex: 1 1 260px; max-width: 320px;
+      overflow: hidden;
       padding: 0 8px; border-radius: 8px; background: var(--sunk);
       box-shadow: inset 0 0 0 1px var(--line);
       &:focus-within { box-shadow: inset 0 0 0 1.5px var(--accent); }
@@ -127,7 +129,8 @@
     position-try-fallbacks: flip-inline, flip-block;
     margin-top: 6px;
   }
-  .menu { width: 300px; padding: 6px; max-height: min(560px, 80cqh); overflow: auto; }
+  /* Menus and panels keep inside the window at every pane size. */
+  .menu { width: min(300px, calc(100cqw - 16px)); padding: 6px; max-height: min(560px, calc(100cqh - var(--bar-h) - 16px)); overflow: auto; }
   #docmenu { position-anchor: --title; }
   #viewpanel { position-anchor: --view; position-area: block-end span-inline-start; }
   #activity { position-anchor: --ask; position-area: block-end span-inline-start; }
@@ -146,7 +149,7 @@
   .menu .sep { height: 1px; background: var(--line); margin: 6px 4px; }
   .rev .lbl b { font-weight: 600; }
 
-  .panel { width: 290px; padding: 14px; display: grid; gap: 14px; align-content: start; }
+  .panel { width: min(290px, calc(100cqw - 16px)); max-height: calc(100cqh - var(--bar-h) - 16px); overflow: auto; padding: 14px; display: grid; gap: 14px; align-content: start; }
   .row { display: flex; align-items: center; gap: 10px; font-size: 13.5px; }
   .row > .lbl { flex: 1; }
   .stepper {
@@ -197,7 +200,8 @@
   }
   /* The reader's own context menu, in the selection strip's dark family. */
   .context-menu {
-    position: absolute; z-index: 40; min-width: 232px; max-width: min(300px, calc(100cqw - 12px));
+    position: absolute; z-index: 40; min-width: min(232px, calc(100cqw - 12px)); max-width: min(300px, calc(100cqw - 12px));
+    max-height: calc(100cqh - 12px);
     padding: 5px; overflow: auto; display: grid;
     background: var(--toolbar-bg); color: var(--toolbar-ink);
     border-radius: 11px; box-shadow: var(--shadow-l), 0 0 0 1px rgb(255 255 255 / .06);
@@ -282,7 +286,7 @@
   .link.agent { color: var(--agent-text); }
 
   /* Activity panel: comment threads of this document. */
-  #activity { width: 340px; padding: 6px; }
+  #activity { width: min(340px, calc(100cqw - 16px)); padding: 6px; }
   .thread { display: flex; gap: 10px; padding: 8px 10px; border-radius: 9px; text-align: left; width: 100%; }
   .thread:hover { background: var(--hover); }
   .thread .tx { flex: 1; min-width: 0; font-size: 13px; }
@@ -293,7 +297,7 @@
   /* Notices sit just under the bar, inside the reading column. */
   .notices { position: absolute; z-index: 5; top: calc(var(--bar-h) + 6px); left: 0; right: 0; display: grid; gap: 6px; padding: 0 12px; pointer-events: none; }
   #app:not([data-outline="closed"]) .notices { left: var(--outline-w); }
-  @container app (width < 720px) { #app:not([data-outline="closed"]) .notices { left: 0; } }
+  @container app (width < 860px) { #app:not([data-outline="closed"]) .notices { left: 0; } }
   .notice {
     pointer-events: auto;
     justify-self: center; width: min(var(--measure), 100%);
@@ -331,14 +335,15 @@
 
   /* Open: documents, drafts and headings in one searchable list. */
   dialog.palette {
-    margin: 10vh auto auto; padding: 0; border: 0; width: min(580px, 92vw);
+    margin: min(10vh, 56px) auto auto; padding: 0; border: 0; width: min(580px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
     background: var(--raised); color: var(--ink); border-radius: 16px;
     box-shadow: var(--shadow-l), 0 0 0 1px var(--line);
     &::backdrop { background: light-dark(rgb(16 20 30 / .16), rgb(0 0 0 / .45)); }
     .q { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
     .q svg { color: var(--ink-3); }
     .q input { flex: 1; border: 0; outline: 0; background: none; font-size: 16px; }
-    .list { max-height: min(440px, 60vh); overflow: auto; padding: 6px; }
+    .list { max-height: min(440px, calc(100vh - min(10vh, 56px) - 120px)); overflow: auto; padding: 6px; }
     .grp { padding: 10px 10px 4px; font: 600 11.5px/1 var(--font); color: var(--ink-3); }
     .opt { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border-radius: 9px; text-align: left; font-size: 14px; }
     .opt .lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -368,14 +373,20 @@
   #b-ask { anchor-name: --ask; }
   .bar .status { position: static; display: inline-flex; gap: 5px; align-items: center; color: var(--ink-3); white-space: nowrap; font: 500 11.5px/1.2 var(--font); }
   .bar .status .i { width: 13px; height: 13px; }
-  #app[data-mode="reading"] .bar .status, .history-controls.idle { visibility:hidden; }
+  /* Controls with nothing to offer take no room, so the title keeps it. */
+  #app[data-mode="reading"] .bar .status, .history-controls.idle { display:none; }
   .history-controls { display: flex; gap: 2px; }
   .btn-i:disabled { opacity: .35; pointer-events: none; }
   .toc a .t { display:block; overflow:visible; white-space:normal; overflow-wrap:anywhere; -webkit-line-clamp:unset; }
   .query-limit,.query-error,.empty { font: 13px/1.5 var(--font); color:var(--ink-3); padding:10px; }
   .query-error { color:var(--err); }
   .find { min-width:0; }
-  .find input { min-width:60px; }
+  .find .field { min-width:min-content; }
+  /* A text field's own intrinsic width would count toward the bar's minimum; only its minimum does. */
+  .find .field input { width:0; min-width:48px; }
+  /* While find is open, the bar's own Find control is redundant and the find section takes the
+     spacer's room; the controls after it stay at the right edge. */
+  #app[data-find] #b-find, #app[data-find] .bar .spacer { display:none; }
   #jumps { position:absolute; bottom:18px; left:calc(var(--outline-w) + 18px); z-index:9; display:flex; gap:6px; }
   #app[data-outline="closed"] #jumps { left:18px; }
   .back { display:flex; align-items:center; gap:5px; padding:7px 10px; border-radius:8px; background:var(--raised); box-shadow:var(--shadow),0 0 0 1px var(--line); color:var(--ink-2); font:500 12px/1.2 var(--font); }
@@ -415,22 +426,36 @@
   .image-controls { display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:13px;margin-bottom:18px; }.image-controls button{display:flex;align-items:center;gap:5px;color:var(--accent-text); }
   .image-stage { min-height:240px;max-height:60vh;overflow:auto;display:grid;place-items:center;background:var(--sunk);border-radius:10px;padding:16px; }
   .image-stage[data-zoom="fit"] img { max-width:100%;max-height:55vh;width:auto;height:auto;object-fit:contain; }.image-stage[data-zoom="actual"] { display:block; }.image-stage[data-zoom="actual"] img { max-width:none; }
-  @container app (width < 720px) { #jumps { left:12px; }.bar .status .save-word { display:none; } }
+  @container app (width < 860px) {
+    #jumps { left:12px; }
+    /* Replace opens as its own row under the bar, so the find field keeps its room. */
+    #app[data-find][data-replace] .find .replace {
+      position:absolute; top:calc(100% + 4px); left:8px; right:8px; max-width:none; height:38px;
+      background:var(--raised); box-shadow:var(--shadow), inset 0 0 0 1px var(--line);
+    }
+    #app[data-find][data-replace] .notices { top:calc(var(--bar-h) + 50px); }
+  }
+  @container app (width < 720px) { .bar .status .save-word { display:none; } }
   @container app (width < 560px) {
     .bar .hide-narrow { display:none; }.bar { gap:3px;padding-inline:6px; }.bar .title { min-width:40px; }
+    /* Panels open under the bar inside the window; the text panel's own button is hidden here. */
+    #viewpanel { position-area:none; inset:calc(var(--bar-h) + 6px) 8px auto auto; margin:0; }
+    #activity { position-area:none; inset:calc(var(--bar-h) + 6px) 8px auto auto; margin:0; }
+    #docmenu { position-area:none; inset:calc(var(--bar-h) + 6px) auto auto 8px; margin:0; }
     .bar .status { flex:none;width:auto;overflow:visible; }.bar .status .save-word { display:none; }.history-controls{gap:0;}.history-controls .btn-i{width:26px;}
     .ask-messages{max-height:140px;}
     .notice { flex-wrap:wrap;font-size:12px;gap:4px 7px;padding:8px; }.notice .tx{flex:1 1 calc(100% - 32px);}.notice .acts{flex-wrap:nowrap;white-space:nowrap;margin-left:auto;}.notice .acts button{font-size:12px;padding-inline:6px;}
     .overlay-head{padding:12px 16px;}.overlay-body{padding:18px 16px;}.facts{gap:10px 12px;grid-template-columns:minmax(0,1fr) minmax(0,2fr);}
     .library-search{flex-wrap:wrap;}.library-search input{flex-basis:55%;}.library-search select{max-width:130px;}
     .seltools { max-width:calc(100cqw - 16px); }.seltools .copy-selection { font-size:0;gap:0; }
-    #app[data-find] .bar :is(.status,.history-controls,#b-find,#b-ask) { display:none; }
+    #app[data-find] .bar :is(.status,.history-controls,#b-ask,#b-close) { display:none; }
+  }
+  @container app (width < 420px) {
+    #app[data-find] .bar :is(#b-outline,#b-edit) { display:none; }
   }
 }
 
 @container app (width < 520px) {
-  .bar .hide-narrow { display: none; }
-  #viewpanel { position-anchor: --title; position-area: block-end span-inline-end; }
   .title .name { font-size: 13.5px; }
 }
 

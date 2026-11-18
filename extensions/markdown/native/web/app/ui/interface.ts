@@ -53,6 +53,8 @@
 			className: "btn-i agent",
 		});
 		askButton.id = "b-ask";
+		const closeButton = button("Close", "x", () => void hostCommand("close"), { iconOnly: true });
+		closeButton.id = "b-close";
 		bar.append(
 			outline,
 			title,
@@ -63,7 +65,7 @@
 			find,
 			appearance,
 			askButton,
-			button("Close", "x", () => void hostCommand("close"), { iconOnly: true }),
+			closeButton,
 		);
 		function listen(
 			target: EventTarget,
@@ -264,7 +266,7 @@
 			redo.dataset.tip = historyLabel(next.redo, "Redo");
 			undo.setAttribute("aria-label", undo.dataset.tip);
 			redo.setAttribute("aria-label", redo.dataset.tip);
-			// Idle controls keep their space so the edit control never moves when Writing starts.
+			// Idle controls take no room; they sit left of the edit control, which therefore stays put.
 			history.classList.toggle("idle", controller.lock === "reading" && !next.undo && !next.redo);
 		}
 		function copyPassage() {
