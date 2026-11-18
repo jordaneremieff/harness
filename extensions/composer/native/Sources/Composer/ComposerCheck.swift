@@ -26,6 +26,10 @@ enum ComposerCheck {
         var overlayRevision = 0
         var checkedRevision = 0
         var acknowledgedAbove: Int?
+        var modelRequests = 0
+        var holdModels = false
+        var holdGrowth = false
+        var growthRequested = false
     }
 
     private final class LoadFlag { var value = false }
@@ -41,6 +45,7 @@ enum ComposerCheck {
         window.orderFrontRegardless()
         defer { page.receive = nil; window.close() }
         let baseFrame = window.frame
+        window.holdModels = theme == "dark" && width == 812
         let loaded = LoadFlag()
         var currentDraft = ""
         var heights: [Int] = []
@@ -54,12 +59,24 @@ enum ComposerCheck {
             case "ready": loaded.value = true
             case "layout":
                 if let height = fields["height"] as? Int { heights.append(height) }
+                if window.holdGrowth {
+                    window.growthRequested = true
+                    try await wait { !window.holdGrowth }
+                    var frame = baseFrame
+                    frame.size.height += 24
+                    window.setFrame(frame, display: true, animate: false)
+                    return ["above": 24]
+                }
                 return ["above": 0]
             case "overlay":
-                guard let above = fields["above"] as? Int, above >= 0 else {
+                guard let page, let above = fields["above"] as? Int, above >= 0 else {
                     throw composerRefusal("Invalid fixture overlay height.")
                 }
+                if above > 0 && window.acknowledgedAbove == 0 {
+                    try await evaluate(page, "return !document.querySelector('#menu').matches(':popover-open') || getComputedStyle(document.querySelector('#menu')).visibility === 'hidden';")
+                }
                 window.overlayRevision += 1
+                let revision = window.overlayRevision
                 window.acknowledgedAbove = nil
                 var frame = baseFrame
                 frame.size.height += CGFloat(above)
@@ -67,8 +84,15 @@ enum ComposerCheck {
                 guard window.frame == frame else {
                     throw composerRefusal("The fixture could not apply \(above) px above the composer.")
                 }
-                window.acknowledgedAbove = above
-                return ["above": above]
+                if above > 0 {
+                    try await wait { (try? await javascript(page, "return innerHeight === \(height + above);")) == true }
+                    try await evaluate(page, "return document.querySelector('#composer').getBoundingClientRect().top === \(above);")
+                }
+                if theme == "light" {
+                    guard await page.send("overlay", ["above": above]) else { throw composerRefusal("No overlay receiver.") }
+                }
+                if revision == window.overlayRevision { window.acknowledgedAbove = above }
+                return theme == "dark" ? ["above": above] : [:]
             case "pasteText":
                 pasteRequests += 1
                 return ["text": clipboard]
@@ -83,7 +107,10 @@ enum ComposerCheck {
                 ["value": "reload", "label": "reload", "description": "Reload keybindings, extensions, skills, prompts, themes, and context files"],
                 ["value": "/review", "label": "/review", "description": "Review local changes"],
             ]]
-            case "models": return ["models": [
+            case "models":
+                window.modelRequests += 1
+                if window.holdModels { try await wait { !window.holdModels } }
+                return ["models": [
                 ["provider": "provider-a", "id": "studio", "name": "Claude Sonnet 4.6", "current": true],
                 ["provider": "provider-a", "id": "swift", "name": "Claude Haiku 4.5"],
                 ["provider": "provider-a", "id": "large", "name": "Claude Opus 4.6"],
@@ -141,6 +168,27 @@ enum ComposerCheck {
                 do { try await wait { heights.last == expected } }
                 catch { throw composerRefusal("\(step) did not request \(expected) px: \(heights).") }
             }
+        }
+        if theme == "light" && width == 812 && height == 170 {
+            let rows = try await page.view.callAsyncJavaScript("return Number(document.querySelector('.composer').style.getPropertyValue('--visible-rows'));", arguments: [:], in: nil, contentWorld: .page) as? Int ?? 0
+            guard rows > 0, rows < 12 else { throw composerRefusal("Invalid fixture row count.") }
+            await page.send("replace", ["text": Array(repeating: "Line", count: rows).joined(separator: "\n")])
+            try await expectHeight(emptyHeight + (rows - 1) * lineHeight, after: "Filled editor")
+            window.holdGrowth = true
+            try await evaluate(page, """
+                const field = document.querySelector('#input');
+                field.focus(); field.setSelectionRange(field.value.length, field.value.length);
+                field.dispatchEvent(new InputEvent('beforeinput', {inputType:'insertLineBreak', bubbles:true}));
+                return document.execCommand('insertText', false, '\\nNext');
+                """)
+            try await wait { window.growthRequested }
+            try await evaluate(page, "return document.querySelector('#input').scrollTop === 0 && Number(document.querySelector('.composer').style.getPropertyValue('--visible-rows')) === \(rows);")
+            window.holdGrowth = false
+            try await wait { (try? await javascript(page, "return document.querySelector('#input').scrollTop === 0 && Number(document.querySelector('.composer').style.getPropertyValue('--visible-rows')) === \(rows + 1);")) == true }
+            guard await page.send("growth", ["above": 0]) else { throw composerRefusal("No growth receiver.") }
+            await page.send("replace", ["text": ""])
+            window.setFrame(baseFrame, display: true, animate: false)
+            try await expectHeight(emptyHeight, after: "Cleared expanded editor")
         }
         var working = base
         working["phase"] = "working"
@@ -367,8 +415,19 @@ enum ComposerCheck {
     }
 
     private static func checkMenus(_ page: ComposerPage, _ directory: URL, _ theme: String, _ width: Int, _ height: Int) async throws {
-        try await evaluate(page, "document.querySelector('#model').click(); return true;")
+        guard let window = page.view.window as? KeyPanel, window.modelRequests == 1 else {
+            throw composerRefusal("Expected one model list request before the first click.")
+        }
+        let start = window.overlayRevision, cold = window.holdModels
+        try await evaluate(page, """
+            document.querySelector('#model').click();
+            const menu = document.querySelector('#menu');
+            return !menu.matches(':popover-open') && getComputedStyle(menu).visibility === 'hidden'
+                && menu.querySelectorAll('.model-results button').length === \(cold ? 0 : 14);
+            """)
         try await waitForOverlay(page, baseHeight: height, kind: "model")
+        try await evaluate(page, "return document.querySelector('#menu').offsetHeight === 360;")
+        window.holdModels = false
         try await wait { (try? await javascript(page, "return document.querySelectorAll('.menu-group').length === 2;")) == true }
         try await evaluate(page, """
             const list = document.querySelector('.model-list'), filter = document.querySelector('#menu input');
@@ -381,6 +440,10 @@ enum ComposerCheck {
             return document.activeElement === filter && filter.getBoundingClientRect().bottom <= visible.top
                 && rows.some(row => row.textContent.includes('✓ Current')) && (innerHeight < 240 || count >= 4);
             """)
+        guard window.overlayRevision == start + 1, window.modelRequests == (cold ? 1 : 2) else {
+            throw composerRefusal("Expected one overlay size for the model list.")
+        }
+        try await evaluate(page, "return document.querySelector('#menu').offsetHeight === 360;")
         try await snapshot(page, directory, "models", theme, width, height)
         try await evaluate(page, """
             const list = document.querySelector('.model-list'), footer = document.querySelector('.thinking-choices');
@@ -406,7 +469,7 @@ enum ComposerCheck {
         try await snapshot(page, directory, "filtered-models", theme, width, height)
         await page.send("escape")
         try await waitForOverlay(page, baseHeight: height, kind: nil)
-        try await wait { (try? await javascript(page, "return document.querySelector('#thinking-level').textContent === 'max';")) == true }
+        try await evaluate(page, "return document.activeElement === document.querySelector('#input') && document.querySelector('#thinking-level').textContent === 'max';")
     }
 
     private static func checkHandoff(_ page: ComposerPage) async throws {

@@ -59,6 +59,7 @@
 	interface Change { start: number; end: number; text: string; cursor?: number }
 	interface Controls {
 		overlay(above: number): void;
+		prefetch(): void;
 		key(event: KeyboardEvent): boolean;
 		sync(state: Record<string, unknown>, connection: string): void;
 		updated(person?: boolean): void;
@@ -96,7 +97,7 @@
 
 	const root = globalThis as typeof globalThis & {
 		composer?: ComposerRoot;
-		composerLayout: { mount(input: HTMLTextAreaElement, report: (height: number) => void): () => void };
+		composerLayout: { mount(input: HTMLTextAreaElement, report: (height: number) => Promise<Record<string, unknown>>): { (): void; growth(above: number): void } };
 		webkit?: { messageHandlers?: { composer?: Transport } };
 		mountComposerControls?: (host: { input: HTMLTextAreaElement; request: typeof request; edit: typeof edit; notice: (message: string) => void; icon: typeof icon; preferences: typeof preferences }) => Controls;
 	};
@@ -175,7 +176,7 @@
 	const returnButton = get<HTMLButtonElement>("return");
 	const actionButton = get<HTMLButtonElement>("action");
 	const notice = get<HTMLElement>("notice"), statusIcon = get("status-icon");
-	const fitEditor = root.composerLayout.mount(input, (height) => send("layout", { height }));
+	const fitEditor = root.composerLayout.mount(input, (height) => request("layout", { height }));
 
 	let status: ComposerStatus = { connection: "connecting" };
 	let sendKey: SendKey = "return";
@@ -211,9 +212,14 @@
 	function send(type: string, fields: Record<string, unknown> = {}): unknown {
 		return post({ ...fields, type });
 	}
-	function sendDraft(): void {
-		if (handshake) send("draft", { text: input.value });
-		controls?.updated();
+	let lastDraft: string | undefined;
+	function sendDraft(person = false): void {
+		const text = input.value;
+		if (handshake && lastDraft !== text) {
+			lastDraft = text;
+			send("draft", { text });
+		}
+		controls?.updated(person);
 	}
 	function sendFlush(): void {
 		if (handshake) send("flush", { text: input.value });
@@ -555,12 +561,17 @@
 				if (typeof value.textAdjust === "number" && Number.isFinite(value.textAdjust)) textAdjust = value.textAdjust;
 				applySize(textAdjust);
 				takeInit(value.text, key);
+				controls?.prefetch();
 				return true;
 			}
 			case "overlay": {
 				if (typeof value.above !== "number" || !Number.isFinite(value.above) || value.above < 0) return false;
-				document.documentElement.style.setProperty("--above", `${value.above}px`);
 				controls?.overlay(value.above);
+				return true;
+			}
+			case "growth": {
+				if (typeof value.above !== "number" || !Number.isFinite(value.above) || value.above < 0) return false;
+				fitEditor.growth(value.above);
 				return true;
 			}
 			case "metrics":
@@ -618,9 +629,12 @@
 	}
 
 	input.addEventListener("input", () => {
+		if (applying) return;
 		captureSelection();
-		if (!applying) { sendDraft(); controls?.updated(true); }
-		render();
+		sendDraft(true);
+		const disabled = logic.actionFor(status.state, { submitting, hasDraft: hasDraft(), connection: status.connection }).disabled;
+		if (actionButton.disabled !== disabled) actionButton.disabled = disabled;
+		fitEditor();
 	});
 	input.addEventListener("blur", () => {
 		captureSelection();
@@ -641,6 +655,7 @@
 	input.addEventListener("keydown", (event) => {
 		if (composing) return;
 		if (controls?.key(event)) { event.preventDefault(); return; }
+		if (event.key !== "Escape" && event.key !== "Enter") return;
 		const decision = logic.keyDecision(
 			{
 				key: event.key,

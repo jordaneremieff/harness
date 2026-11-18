@@ -9,7 +9,7 @@ const source = stripTypeScriptTypes(readFileSync(new URL("./layout.ts", import.m
 function load(globals: Record<string, unknown> = {}) {
 	const scope = globals as { composerLayout: {
 		stack(parts: typeof empty, viewport: number): { height: number; visibleRows: number; tight: boolean };
-		mount(input: { value: string }, report: (height: number) => void): () => void;
+		mount(input: { value: string }, report: (height: number) => Promise<Record<string, unknown>>): { (): void; growth(above: number): void };
 	} };
 	runInNewContext(source, scope);
 	return scope.composerLayout;
@@ -46,14 +46,14 @@ test("a manually enlarged editor gains whole visible rows without inflating fitt
 	assert.equal(stack({ ...empty, draft: 1000 }, 800).height, 400);
 });
 
-function page() {
+function page(reply: (height: number) => Promise<Record<string, unknown>> = () => new Promise(() => {})) {
 	const geometry = { viewport: 136, footer: 26, queue: 0, images: 0, wrap: 1 };
 	let tight = false;
 	const properties = new Map<string, string>();
 	const box = (height: () => number) => ({ getBoundingClientRect: () => ({ height: height() }) });
 	const flags = new Map<string, boolean>();
-	let scroll = () => {};
-	const input = { value: "", scrollTop: 0, scrollHeight: 32, clientHeight: 32, addEventListener(_event: string, fn: () => void) { scroll = fn; } };
+	const events = new Map<string, () => void>();
+	const input = { value: "", scrollTop: 0, scrollHeight: 32, clientHeight: 32, addEventListener(_event: string, fn: () => void) { events.set(_event, fn); } };
 	const measure = {
 		value: "",
 		getBoundingClientRect() {
@@ -80,7 +80,7 @@ function page() {
 	const observed: unknown[] = [];
 	let resized = () => {};
 	const { mount } = load({
-		document: { querySelector: (key: keyof typeof nodes) => nodes[key] },
+		setTimeout, clearTimeout, document: { querySelector: (key: keyof typeof nodes) => nodes[key] },
 		getComputedStyle(node: unknown) {
 			const writer = node === nodes[".writer"], panel = node === nodes[".panel"];
 			const pads = writer ? [12, 4] : panel ? [8, 4] : [4, 0];
@@ -94,10 +94,10 @@ function page() {
 		},
 	});
 	const heights: number[] = [];
-	const sync = mount(input, (height) => heights.push(height));
+	const sync = mount(input, height => { heights.push(height); return reply(height); });
 	return {
-		geometry, heights, sync, input, flags, scroll, resize() { resized(); },
-		type(value: string) { input.value = value; sync(); },
+		geometry, heights, sync() { sync(); resized(); }, input, flags, events, scroll() { events.get("scroll")?.(); }, resize() { resized(); },
+		type(value: string) { input.value = value; sync(); resized(); },
 		get tight() { return tight; },
 		get rows() { return Number(properties.get("--visible-rows")); },
 		observed, nodes,
@@ -132,7 +132,7 @@ test("the draft stops posting growth after twelve rows", () => {
 test("manual height and transient UI affect visible rows without posting a new fit", () => {
 	const view = page();
 	view.sync();
-	assert.deepEqual(view.observed, [view.nodes[".composer"], view.nodes[".queued"], view.nodes[".images"]]);
+	assert.deepEqual(view.observed, [view.nodes[".composer"], view.nodes[".queued"], view.nodes[".images"], view.nodes["#measure"], view.nodes["footer.status"], view.nodes[".shelf"], view.input]);
 	view.geometry.viewport = 400;
 	view.resize();
 	assert.equal(view.rows, 12);
@@ -179,4 +179,24 @@ test("the editor fades only edges that hide more draft text", () => {
 	view.scroll(); check(true, false);
 	view.input.scrollTop = 0;
 	view.scroll(); check(false, true);
+});
+
+
+test("growth holds the first line until its layout reply, then reveals one more row", async () => {
+	let resolve!: (reply: Record<string, unknown>) => void;
+	const gate = new Promise<Record<string, unknown>>(done => { resolve = done; });
+	const view = page(() => gate);
+	view.sync();
+	view.events.get("beforeinput")?.();
+	view.input.scrollTop = 24;
+	view.type("first\nsecond");
+	assert.equal(view.input.scrollTop, 0);
+	assert.equal(view.rows, 1);
+	view.input.scrollTop = 24;
+	view.scroll();
+	assert.equal(view.input.scrollTop, 0);
+	resolve({ above: 24 });
+	await gate;
+	assert.equal(view.rows, 2);
+	assert.equal(view.input.scrollTop, 0);
 });

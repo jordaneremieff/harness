@@ -53,18 +53,40 @@
 		let mode = "", selected = 0, options: HTMLButtonElement[] = [], epoch = 0, timer: ReturnType<typeof setTimeout> | undefined;
 		let queueKey = "";
 		let menuAnchor: HTMLElement | undefined, contextPoint: Point | undefined;
-		let wantedAbove = 0, appliedAbove = 0;
+		let wantedAbove = 0, appliedAbove = 0, overlayRevision = 0;
+		let waiting = false, replyPending = false, messageAbove: number | undefined;
+		let placement: { bottom: number; left: number; height: number; base: number } | undefined;
+		let modelCache: Model[] | undefined, fetching: Promise<void> | undefined, prefetched = false;
+		let cachedHeight = menuMaxHeight;
 		let recoveryLabel = "", recovering = false;
+		let imageSignature = "";
 		let imageTimer: ReturnType<typeof setTimeout> | undefined;
 		const fail = (error: unknown) => notice(error instanceof Error ? error.message : String(error));
 		const removeSelection = () => ({ start: input.selectionStart, end: input.selectionEnd });
 		const whole = (text: string) => edit({ start: 0, end: input.value.length, text });
 
 		function askOverlay(above: number, force = false) {
-			if (!force && above === wantedAbove) return;
+			if (!force && above === wantedAbove) { if (!waiting) revealMenu(); return; }
+			// WebKit can receive the larger viewport before the bridge acknowledgement.
+			// Keep the paper pinned to the bottom at its previous pixel height in that interval.
+			if (!pane.style.height) pane.style.height = `${innerHeight - appliedAbove}px`;
 			wantedAbove = above;
-			void request("overlay", { above }).catch((error) => {
-				if (above === wantedAbove && mode) fail(error);
+			waiting = true;
+			replyPending = true;
+			messageAbove = undefined;
+			const revision = ++overlayRevision;
+			void request("overlay", { above }).then(reply => {
+				if (revision !== overlayRevision) return;
+				replyPending = false;
+				const amount = reply.above;
+				if (typeof amount === "number" && Number.isFinite(amount) && amount >= 0) overlay(amount);
+				else if (messageAbove !== undefined) overlay(messageAbove);
+			}, error => {
+				if (revision !== overlayRevision) return;
+				replyPending = false;
+				waiting = false;
+				pane.style.height = "";
+				if (mode) { closeMenu(); fail(error); }
 			});
 		}
 		function resetMenu() {
@@ -78,6 +100,8 @@
 		function closeMenu() {
 			if (!mode) return;
 			mode = "";
+			placement = undefined;
+			delete menu.dataset.staged;
 			menu.hidePopover();
 			menu.hidden = true;
 			resetMenu();
@@ -86,7 +110,12 @@
 			askOverlay(0, true);
 		}
 		function openMenu(kind: string, title: string, anchor?: HTMLElement) {
+			if (kind !== mode && menu.matches(":popover-open")) {
+				menu.hidePopover();
+				menu.hidden = true;
+			}
 			resetMenu();
+			menu.style.height = "";
 			menu.dataset.kind = kind;
 			mode = kind;
 			if (kind !== "model" && kind !== "context") {
@@ -101,9 +130,11 @@
 			menuAnchor = anchor;
 		}
 		function showMenu() {
-			const opening = menu.hidden;
+			const opening = menu.hidden || !menu.matches(":popover-open");
+			if (opening) menu.dataset.staged = "";
 			menu.hidden = false;
-			if (opening) menu.showPopover();
+			menu.style.maxHeight = `${menuMaxHeight}px`;
+			if (mode === "completion") menu.style.setProperty("--editor-width", `${input.clientWidth}px`);
 			positionMenu(opening);
 		}
 		function caretLine() {
@@ -158,22 +189,43 @@
 			return Math.min(menuMaxHeight, menu.scrollHeight + menu.offsetHeight - menu.clientHeight + listOverflow);
 		}
 		function positionMenu(opening = false) {
-			if (menu.hidden) return;
+			if (!mode || menu.hidden || (waiting && !opening)) return;
 			const point = anchorPoint();
 			if (!point) { closeMenu(); return; }
-			if (mode === "completion") menu.style.setProperty("--editor-width", `${input.clientWidth}px`);
-			const available = Math.floor(point.top - menuGap - menuInset);
-			const height = menuHeight();
+			const height = menu.style.height ? parseFloat(menu.style.height) : menuHeight();
+			const bottom = innerHeight - point.top + menuGap;
+			const left = Math.max(menuInset, Math.min(point.left, innerWidth - menu.offsetWidth - menuInset));
+			const base = innerHeight - appliedAbove;
+			placement = { bottom, left, height, base };
+			const above = Math.max(0, Math.ceil(height + bottom + menuInset - base));
+			if (above > appliedAbove) menu.dataset.staged = "";
+			askOverlay(above, opening);
+		}
+		function revealMenu() {
+			if (!mode || !placement) return;
+			const { bottom, left, height, base } = placement;
+			// The bridge acknowledgement and WebKit's viewport resize can arrive separately.
+			if (innerHeight + 1 < base + appliedAbove && menu.hasAttribute("data-staged")) return;
+			const available = Math.floor(innerHeight - bottom - menuInset);
 			menu.style.maxHeight = `${Math.max(0, Math.min(height, available))}px`;
-			menu.style.bottom = `${innerHeight - point.top + menuGap}px`;
-			menu.style.left = `${Math.max(menuInset, Math.min(point.left, innerWidth - menu.offsetWidth - menuInset))}px`;
+			menu.style.bottom = `${bottom}px`;
+			menu.style.left = `${left}px`;
 			menu.toggleAttribute("data-no-space", available < 12);
-			// Do not request space a second time when the pane moves down by the applied extension.
-			askOverlay(Math.max(0, height - available + appliedAbove), opening);
+			delete menu.dataset.staged;
+			if (!menu.matches(":popover-open")) {
+				menu.showPopover();
+				if (mode === "model") menu.querySelector("input")?.focus({ preventScroll: true });
+			}
 		}
 		function overlay(above: number) {
-			appliedAbove = above;
-			positionMenu();
+			if (replyPending) { messageAbove = above; return; }
+			waiting = false;
+			if (appliedAbove !== above) {
+				appliedAbove = above;
+				document.documentElement.style.setProperty("--above", `${above}px`);
+			}
+			pane.style.height = "";
+			revealMenu();
 		}
 		function iconButton(glyph: string, label: string, action: () => unknown) {
 			const node = button("", action, label);
@@ -368,7 +420,20 @@
 				}
 			} catch (error) { fail(error); }
 		}
-		async function openModels() {
+		function loadModels() {
+			fetching ??= request("models").then(result => {
+				if (!Array.isArray(result.models)) throw Error("Pi did not return models.");
+				const next = result.models as Model[];
+				if (JSON.stringify(next) !== JSON.stringify(modelCache)) modelCache = next;
+			}).finally(() => { fetching = undefined; });
+			return fetching;
+		}
+		function prefetch() {
+			if (prefetched) return;
+			prefetched = true;
+			void loadModels().catch(() => {});
+		}
+		function openModels() {
 			openMenu("model", "Model", model);
 			const version = epoch;
 			const filter = document.createElement("input");
@@ -382,24 +447,24 @@
 			heading.textContent = "Model";
 			const results = document.createElement("div");
 			results.className = "model-results";
-			results.textContent = "Loading models…";
 			list.append(heading, results);
 			menu.append(filter, list, thinkingChoices());
+			const paint = () => {
+				if (modelCache) modelRows(results, modelCache, filter.value);
+				else results.textContent = "Loading models…";
+				options.push(...menu.querySelectorAll<HTMLButtonElement>(".thinking-choices button"));
+			};
+			const previous = modelCache;
+			paint();
+			if (!previous) menu.style.height = `${cachedHeight}px`;
 			showMenu();
-			filter.focus({ preventScroll: true });
-			try {
-				const data = await request("models");
-				if (version !== epoch) return;
-				const models = (data.models as Model[] | undefined) ?? [];
-				const paint = () => {
-					modelRows(results, models, filter.value);
-					list.scrollTop = 0;
-					options.push(...menu.querySelectorAll<HTMLButtonElement>(".thinking-choices button"));
-					positionMenu();
-				};
-				filter.addEventListener("input", paint);
-				paint();
-			} catch (error) { if (version === epoch) { closeMenu(); fail(error); } }
+			cachedHeight = placement?.height ?? cachedHeight;
+			// Reserve this opening's height. Background changes scroll inside the model list.
+			menu.style.height = `${cachedHeight}px`;
+			filter.addEventListener("input", () => { paint(); list.scrollTop = 0; });
+			void loadModels().then(() => {
+				if (version === epoch && previous !== modelCache) paint();
+			}, error => { if (version === epoch && !modelCache) { closeMenu(); fail(error); } });
 		}
 		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Ordered guards preserve menu and caret state.
 		function modelRows(list: HTMLElement, models: Model[], filter: string) {
@@ -473,19 +538,34 @@
 				queued.append(line);
 			}
 		}
+		let coloured: string | undefined;
+		function updateSpan(span: HTMLElement, part: {text: string; kind?: string}) {
+			if (span.textContent !== part.text) span.textContent = part.text;
+			if (span.dataset.syntax !== part.kind) {
+				if (part.kind) span.dataset.syntax = part.kind;
+				else delete span.dataset.syntax;
+			}
+			if (!span.parentNode) backdrop.insertBefore(span, backdrop.lastChild);
+		}
 		function colour() {
-			const spans = assist.syntaxParts(input.value).map((part) => {
-				const node = document.createElement("span");
-				node.textContent = part.text;
-				if (part.kind) node.dataset.syntax = part.kind;
-				return node;
-			});
-			backdrop.replaceChildren(...spans, "\u200b");
-			backdrop.scrollTop = input.scrollTop;
-			backdrop.scrollLeft = input.scrollLeft;
+			if (coloured === input.value) return;
+			coloured = input.value;
+			// Keep unchanged spans (and WebKit's line boxes) when typing at the end of a draft.
+			const parts = assist.syntaxParts(coloured);
+			let node = backdrop.firstElementChild;
+			for (const part of parts) {
+				const span = node as HTMLElement | null ?? document.createElement("span");
+				node = span.nextElementSibling;
+				updateSpan(span, part);
+			}
+			while (node) { const next = node.nextElementSibling; node.remove(); node = next; }
+			if (backdrop.lastChild?.nodeType !== Node.TEXT_NODE) backdrop.append("\u200b");
 		}
 		function imageStrip() {
 			const matches = assist.imagePaths(input.value).slice(0, 12);
+			const signature = JSON.stringify(matches.map(({ path, start }) => [path, start, Boolean(imageCache.get(path))]));
+			if (signature === imageSignature) return;
+			imageSignature = signature;
 			images.replaceChildren();
 			for (const match of matches) {
 				const url = imageCache.get(match.path);
@@ -520,7 +600,7 @@
 			colour();
 			if (mode === "add") openAdd();
 			clearTimeout(imageTimer);
-			if (images.children.length) imageStrip();
+			if (images.childElementCount) imageStrip();
 			else imageTimer = setTimeout(imageStrip, 170);
 			if (person && (!mode || mode === "completion")) complete();
 		}
@@ -573,12 +653,15 @@
 			closeMenu();
 		});
 		input.addEventListener("selectionchange", () => protectCaret(true));
-		input.addEventListener("scroll", () => { colour(); protectCaret(false); if (mode === "completion") positionMenu(); });
+		input.addEventListener("scroll", () => { backdrop.scrollLeft = input.scrollLeft; backdrop.scrollTop = input.scrollTop; protectCaret(false); if (mode === "completion") positionMenu(); });
 		input.addEventListener("select", () => { if (mode === "completion") positionMenu(); });
-		new ResizeObserver(() => { colour(); protectCaret(true); positionMenu(); }).observe(input);
+		new ResizeObserver(() => { protectCaret(true); if (!menu.hasAttribute("data-staged")) positionMenu(); }).observe(input);
 		document.addEventListener("dragover", (event) => { if (event.dataTransfer?.types.includes("Files")) event.preventDefault(); });
 		document.addEventListener("drop", drop);
-		window.addEventListener("resize", () => positionMenu());
+		window.addEventListener("resize", () => {
+			if (!waiting && menu.hasAttribute("data-staged")) revealMenu();
+			else positionMenu();
+		});
 		input.addEventListener("paste", (event) => {
 			if (event.clipboardData?.types.includes("Files") || !event.clipboardData?.getData("text/plain")) {
 				event.preventDefault();
@@ -588,7 +671,7 @@
 		add.addEventListener("click", () => { if (mode === "add") closeMenu(); else openAdd(); });
 		model.addEventListener("click", () => { if (mode === "model") closeMenu(); else void openModels(); });
 		return {
-			key, sync, updated, overlay, paste: (paths: unknown) => addPaths(paths),
+			key, sync, updated, overlay, prefetch, paste: (paths: unknown) => addPaths(paths),
 			history(next: string[]) { entries = next; recalled = null; },
 			recovery(label: string) { recoveryLabel = label; if (mode === "add") openAdd(); },
 			models: openModels,

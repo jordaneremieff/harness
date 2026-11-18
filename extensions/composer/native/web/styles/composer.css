@@ -261,8 +261,6 @@ svg.i {
 #add { anchor-name: --add; }
 #model { anchor-name: --model; }
 .composer-menu[data-placement="beside"] { left: clamp(6px, calc(anchor(right) + 6px), calc(100vw - var(--menu-width) - 6px)); }
-.composer-menu:popover-open { transition: transform 90ms ease-out; }
-@starting-style { .composer-menu:popover-open { transform: translateY(1px); } }
 .composer-menu .tool { font-size: inherit; }
 .menu-heading, .menu-group { color: var(--ink-3); padding: 4px 7px; font-size: .86em; font-weight: 650; }
 .menu-row { display: flex; justify-content: space-between; gap: 8px; text-align: left; width: 100%; min-height: 28px; align-items: center; padding: 4px 7px; border-radius: 6px; }

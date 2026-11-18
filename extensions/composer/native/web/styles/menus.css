@@ -9,9 +9,8 @@
 	position-anchor: auto;
 }
 
-.composer-menu:popover-open {
-	transition: none;
-}
+.composer-menu[data-staged] { display: block; visibility: hidden; pointer-events: none; }
+.composer-menu[data-kind="model"][data-staged] { display: flex; }
 
 .composer-menu[data-no-space] {
 	opacity: 0;
