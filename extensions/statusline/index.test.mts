@@ -1,14 +1,10 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { type NavigationFrame, type OrdinaryView, publishOperatorViews, viewKey } from "../../operator-ui/index.ts";
+import type { Frame } from "./frame.ts";
 import registerStatusline from "./index.ts";
 import type { SessionEntryLike } from "./metrics.ts";
-
-/** The statusline entrypoint; the frame binds each statusline view to this registration of its command. */
-const ENTRY = fileURLToPath(new URL("./index.ts", import.meta.url));
 
 // --- Fake timers: capture interval create/clear so tick ownership is testable ---
 
@@ -62,7 +58,11 @@ interface MockSessionManager {
 }
 
 type CustomFactory = (tui: MockTui, theme: MockTheme, keybindings: unknown, done: (result: unknown) => void) => unknown;
-type CustomDriver = (factory: CustomFactory, resolve: (result: unknown) => void, reject: (error: unknown) => void) => void;
+type CustomDriver = (
+	factory: CustomFactory,
+	resolve: (result: unknown) => void,
+	reject: (error: unknown) => void,
+) => void;
 
 interface MockUi {
 	setFooter(factory: MockFactory | undefined): void;
@@ -168,11 +168,17 @@ function registration(name: string, over: RegistrationOverrides = {}): SlashComm
 		name,
 		description: over.description ?? `${name} description`,
 		source: over.source ?? "extension",
-		sourceInfo: { path: `/ext/${name}/index.ts`, source: "../../harness", scope: "user", origin: "package", ...over.sourceInfo },
+		sourceInfo: {
+			path: `/ext/${name}/index.ts`,
+			source: "../../harness",
+			scope: "user",
+			origin: "package",
+			...over.sourceInfo,
+		},
 	};
 }
 
-/** A small synchronous event bus, as Pi's extension bus delivers publications and frame requests. */
+/** A small synchronous event bus, as Pi delivers composer presence. */
 function eventBus() {
 	const handlers = new Map<string, Set<(data: unknown) => void>>();
 	return {
@@ -193,7 +199,10 @@ interface PiOptions {
 	setModel?: (model: MockModel) => boolean;
 }
 
-function makePi(inventory: () => SlashCommandInfo[] = () => [registration("evo"), registration("review:1")], options: PiOptions = {}) {
+function makePi(
+	inventory: () => SlashCommandInfo[] = () => [registration("evo"), registration("review:1")],
+	options: PiOptions = {},
+) {
 	const handlers = new Map<string, SessionHandler[]>();
 	const commands = new Registry<MockCommand>();
 	const owned: string[] = [];
@@ -208,7 +217,7 @@ function makePi(inventory: () => SlashCommandInfo[] = () => [registration("evo")
 			commands.set(name, command);
 			owned.push(name);
 		},
-		getCommands: () => [...owned.map((name) => registration(name, { sourceInfo: { path: ENTRY } })), ...inventory()],
+		getCommands: () => [...owned.map((name) => registration(name)), ...inventory()],
 		sendUserMessage: (content: string, options: unknown) => {
 			sent.push({ content, options });
 		},
@@ -232,9 +241,7 @@ function makePi(inventory: () => SlashCommandInfo[] = () => [registration("evo")
 			for (const handler of registered) await handler(payload, ctx);
 		},
 	};
-	/** Announce another owner's destinations, as that owner's extension would. */
-	const publish = (owner: string, views: OrdinaryView[]) => publishOperatorViews({ events } as unknown as Pick<ExtensionAPI, "events">, { version: 2, owner, views });
-	return { handlers: session, commands, sent, models, levels, publish, events };
+	return { handlers: session, commands, sent, models, levels, events };
 }
 
 function makeCtx(over: CtxOverrides = {}) {
@@ -246,7 +253,13 @@ function makeCtx(over: CtxOverrides = {}) {
 	const state = { idle: true, aborts: 0 };
 	let editorText = over.editorText ?? "";
 	let customDriver: CustomDriver | undefined;
-	const model = over.model ?? { id: "test-model", name: "Test Model", api: "anthropic-messages", provider: "test", reasoning: true };
+	const model = over.model ?? {
+		id: "test-model",
+		name: "Test Model",
+		api: "anthropic-messages",
+		provider: "test",
+		reasoning: true,
+	};
 	const ctx: MockCtx = {
 		mode: over.mode ?? "tui",
 		hasUI: over.hasUI ?? true,
@@ -296,7 +309,11 @@ function makeCtx(over: CtxOverrides = {}) {
 			return () => branchChangeCbs.splice(branchChangeCbs.indexOf(callback), 1);
 		},
 	};
-	const theme: MockTheme = { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t };
+	const theme: MockTheme = {
+		fg: (_c: string, t: string) => t,
+		bg: (_c: string, t: string) => t,
+		bold: (t: string) => t,
+	};
 	const tui: MockTui = {
 		renders: 0,
 		mode: over.tuiMode,
@@ -309,15 +326,12 @@ function makeCtx(over: CtxOverrides = {}) {
 	 * Drive the next frame this context opens: run the script against it, then close it. The promise
 	 * settles when the script ends, so a footer click that opens the frame without waiting is awaitable.
 	 */
-	const onNextFrame = (script: (frame: NavigationFrame) => unknown): Promise<void> =>
+	const onNextFrame = (script: (frame: Frame) => unknown): Promise<void> =>
 		new Promise<void>((finished, failed) => {
 			customDriver = (factory, resolve, reject) => {
-				const frame = factory(tui, theme, { getKeys: () => [] }, resolve) as NavigationFrame;
+				const frame = factory(tui, theme, { getKeys: () => [] }, resolve) as Frame;
 				Promise.resolve()
-					.then(async () => {
-						await loaded(frame);
-						return script(frame);
-					})
+					.then(() => script(frame))
 					.then(
 						() => {
 							frame.close();
@@ -332,11 +346,36 @@ function makeCtx(over: CtxOverrides = {}) {
 					);
 			};
 		});
-	return { ctx, state, footerCalls, notifications, footerData, theme, tui, branchChangeCbs, customCalls, editorCalls, onNextFrame, editorText: () => editorText };
+	return {
+		ctx,
+		state,
+		footerCalls,
+		notifications,
+		footerData,
+		theme,
+		tui,
+		branchChangeCbs,
+		customCalls,
+		editorCalls,
+		onNextFrame,
+		editorText: () => editorText,
+	};
 }
 
 function click(x: number, y: number, width: number): TuiMouseEvent {
-	return { type: "click", button: "left", x, y, screenX: x, screenY: y, width, height: 2, shift: false, alt: false, ctrl: false };
+	return {
+		type: "click",
+		button: "left",
+		x,
+		y,
+		screenX: x,
+		screenY: y,
+		width,
+		height: 2,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	};
 }
 
 const strip = (text: string) => text.replace(/\x1b\[[0-9;:]*m/g, "").replace(/\x1b_[^\x07]*\x07/g, "");
@@ -349,39 +388,46 @@ function installFooter(mocks: ReturnType<typeof makeCtx>) {
 	return factory(mocks.tui, mocks.theme, mocks.footerData);
 }
 
-const frameText = (frame: NavigationFrame, width = 100) => frame.render(width).map(strip).join("\n");
-
-/** A destination shows a reading placeholder until its view module loads. */
-async function loaded(frame: NavigationFrame): Promise<void> {
-	for (let attempt = 0; attempt < 400 && /Reading…/.test(frameText(frame)); attempt++) await turn();
-}
+const frameText = (frame: Frame, width = 100) => frame.render(width).map(strip).join("\n");
 
 /** Run one labelled action of the view the operator reads, as its control would. */
-function act(frame: NavigationFrame, label: string): void {
+function act(frame: Frame, label: string): void {
 	const action = frame.viewActions.find((candidate) => candidate.label === label);
 	assert.ok(action, `no action ${label}: ${frame.viewActions.map((candidate) => candidate.label).join(", ")}`);
 	assert.equal(action.disabled, undefined, `${label} is unavailable: ${action.disabled}`);
 	action.run();
 }
 
-function typeText(frame: NavigationFrame, text: string): void {
+function typeText(frame: Frame, text: string): void {
 	for (const character of text) frame.handleInput(character);
 }
 
 /** Focus the search field with `/`, type to filter the command list, then return to the list. */
-function filterTo(frame: NavigationFrame, text: string): void {
+function filterTo(frame: Frame, text: string): void {
 	frame.handleInput("/");
 	typeText(frame, text);
 	frame.handleInput("\r");
 }
 
 /** Click the footer control drawn as `label`, at the position the last render gave it. */
-function clickFooter(frame: NavigationFrame, label: string, width = 160): void {
+function clickFooter(frame: Frame, label: string, width = 160): void {
 	const lines = frame.render(width);
 	const row = strip(lines.at(-1) ?? "");
 	const at = row.indexOf(label);
 	assert.ok(at >= 0, `no footer control ${label} in: ${row}`);
-	const event: TuiMouseEvent = { type: "click", button: "left", x: at, y: lines.length - 1, screenX: at, screenY: lines.length - 1, width, height: lines.length, shift: false, alt: false, ctrl: false };
+	const event: TuiMouseEvent = {
+		type: "click",
+		button: "left",
+		x: at,
+		y: lines.length - 1,
+		screenX: at,
+		screenY: lines.length - 1,
+		width,
+		height: lines.length,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	};
 	assert.ok(frame.handleMouse(event)?.handled, `${label} is clickable`);
 }
 
@@ -392,8 +438,13 @@ describe("registration and mode gating", () => {
 		const { handlers, commands } = makePi();
 		assert.ok(handlers.has("session_start"));
 		assert.ok(handlers.has("session_shutdown"));
-		for (const name of ["statusline", "commands", "statuses", "dashboard"]) assert.ok(commands.has(name), name);
-		assert.equal(commands.has("model-reasoning"), false, "the Model view opens from the footer and /dashboard, not from a command of its own");
+		for (const name of ["statusline", "commands", "statuses"]) assert.ok(commands.has(name), name);
+		assert.equal(
+			commands.has("model-reasoning"),
+			false,
+			"the Model view opens from the footer, not from a command of its own",
+		);
+		assert.equal(commands.has("dashboard"), false);
 	});
 
 	it("installs the footer only in tui mode", async () => {
@@ -420,7 +471,7 @@ describe("composer presence", () => {
 		const mocks = makeCtx();
 		const presence = "harness:composer:presence";
 		let requests = 0;
-		events.on("harness:composer:presence-request", payload => {
+		events.on("harness:composer:presence-request", (payload) => {
 			assert.deepEqual(payload, { version: 1 });
 			requests++;
 			events.emit(presence, { version: 1, present: true });
@@ -430,14 +481,17 @@ describe("composer presence", () => {
 		const footer = installFooter(mocks);
 		try {
 			assert.deepEqual(footer.render(100), []);
-			for (const payload of [{ version: 2, present: false }, { version: 1, present: "false" }, null]) events.emit(presence, payload);
+			for (const payload of [{ version: 2, present: false }, { version: 1, present: "false" }, null])
+				events.emit(presence, payload);
 			assert.deepEqual(footer.render(100), []);
 			events.emit(presence, { version: 1, present: false });
 			assert.equal(footer.render(100).length, 2);
 			await handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, mocks.ctx);
 			events.emit(presence, { version: 1, present: true });
 			assert.equal(footer.render(100).length, 2);
-		} finally { footer.dispose(); }
+		} finally {
+			footer.dispose();
+		}
 	});
 });
 
@@ -448,7 +502,11 @@ describe("footer render", () => {
 			const mocks = makeCtx({
 				cwd: "/work/Workspace/harness.worktrees/sample",
 				gitBranch: "extension/sample",
-				statuses: new Map([["first", "workers 3 · $1.23"], ["second", "checks ready"], ["third", "links online"]]),
+				statuses: new Map([
+					["first", "workers 3 · $1.23"],
+					["second", "checks ready"],
+					["third", "links online"],
+				]),
 			});
 			await handlers.get("session_start")(sessionStart, mocks.ctx);
 			const footer = installFooter(mocks);
@@ -458,7 +516,10 @@ describe("footer render", () => {
 				assert.ok(visibleWidth(line2) <= width);
 				assert.match(text, /workers 3 · \$1\.23/);
 				if (width === 140) {
-					assert.equal(text, "/work/Workspace/harness.worktrees/sample (extension/sample) │ workers 3 · $1.23 │ checks ready │ links online");
+					assert.equal(
+						text,
+						"/work/Workspace/harness.worktrees/sample (extension/sample) │ workers 3 · $1.23 │ checks ready │ links online",
+					);
 				} else if (width >= 70) {
 					assert.match(text, /checks ready │ links online$/);
 					assert.match(text, /^….*sample /, "the last path component stays visible before the branch shrinks");
@@ -502,10 +563,18 @@ describe("footer render", () => {
 	it("includes recorded costs from all session entries, not only the current branch", async () => {
 		const { handlers } = makePi();
 		const usage = { input: 100, output: 20, cacheRead: 900, cacheWrite: 0, cost: { total: 0.25 } };
-		const entries = [{ type: "message", message: { role: "assistant", usage } },
-			{ type: "usage", kind: "cache_warm", usage }];
-		const mocks = makeCtx({ sessionManager: { getEntries: () => entries,
-			getBranch: () => { throw new Error("branch history omits paid work"); } } });
+		const entries = [
+			{ type: "message", message: { role: "assistant", usage } },
+			{ type: "usage", kind: "cache_warm", usage },
+		];
+		const mocks = makeCtx({
+			sessionManager: {
+				getEntries: () => entries,
+				getBranch: () => {
+					throw new Error("branch history omits paid work");
+				},
+			},
+		});
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		assert.match(installFooter(mocks).render(120)[0], /~\$0\.50/);
 	});
@@ -558,7 +627,10 @@ describe("footer render", () => {
 	});
 	it("sanitizes model and project labels before terminal rendering", async () => {
 		const { handlers } = makePi();
-		const mocks = makeCtx({ cwd: "/work/\x1b[2Jproject\nnext", model: { provider: "p", id: "\x1b]0;title\x07Model\nnext" } });
+		const mocks = makeCtx({
+			cwd: "/work/\x1b[2Jproject\nnext",
+			model: { provider: "p", id: "\x1b]0;title\x07Model\nnext" },
+		});
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const lines = installFooter(mocks).render(120);
 		assert.match(lines[0], /Model next/);
@@ -566,7 +638,12 @@ describe("footer render", () => {
 		for (const line of lines) assert.doesNotMatch(line, /\n|\[2J|title/);
 	});
 	for (const { label, overrides, lineIndex, following } of [
-		{ label: "model", overrides: { model: { provider: "p", id: "\x1b[8;5;41mLabel", reasoning: true } }, lineIndex: 0, following: "[high]" },
+		{
+			label: "model",
+			overrides: { model: { provider: "p", id: "\x1b[8;5;41mLabel", reasoning: true } },
+			lineIndex: 0,
+			following: "[high]",
+		},
 		{ label: "project", overrides: { cwd: "/work/\x1b[8;5;41mLabel" }, lineIndex: 1, following: "(main)" },
 		{ label: "branch", overrides: { gitBranch: "\x1b[8;5;41mLabel" }, lineIndex: 1, following: " │ " },
 	] as const) {
@@ -584,8 +661,10 @@ describe("footer render", () => {
 					const followingStart = line.indexOf(following, styleStart);
 					assert.ok(styleStart >= 0, "label styling remains inside its own cell");
 					assert.ok(followingStart > styleStart, "adjacent content remains present");
-					assert.ok(line.slice(styleStart, followingStart).includes("\x1b[0m"),
-						`${label} styles require a full reset before adjacent content`);
+					assert.ok(
+						line.slice(styleStart, followingStart).includes("\x1b[0m"),
+						`${label} styles require a full reset before adjacent content`,
+					);
 					assert.ok(visibleWidth(line) <= width);
 				}
 			} finally {
@@ -667,28 +746,55 @@ describe("footer render", () => {
 describe("metrics invalidation", () => {
 	it("does no history work on unchanged frames and catches new standalone usage outside paint", async () => {
 		const { handlers } = makePi();
-		const entries = [{ id: "a", parentId: null as string | null, type: "usage", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.25 } } }];
-		let scans = 0, points = 0, contextReads = 0;
-		const mocks = makeCtx({ getContextUsage: () => { contextReads += 1; return undefined; }, sessionManager: {
-			getEntries: () => { scans += 1; return entries; },
-			getLeafId: () => entries.at(-1)?.id ?? null,
-			getEntry: (id) => { points += 1; return entries.find((entry) => entry.id === id); },
-		} });
+		const entries = [
+			{
+				id: "a",
+				parentId: null as string | null,
+				type: "usage",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.25 } },
+			},
+		];
+		let scans = 0,
+			points = 0,
+			contextReads = 0;
+		const mocks = makeCtx({
+			getContextUsage: () => {
+				contextReads += 1;
+				return undefined;
+			},
+			sessionManager: {
+				getEntries: () => {
+					scans += 1;
+					return entries;
+				},
+				getLeafId: () => entries.at(-1)?.id ?? null,
+				getEntry: (id) => {
+					points += 1;
+					return entries.find((entry) => entry.id === id);
+				},
+			},
+		});
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks);
 		try {
 			for (let frame = 0; frame < 100; frame += 1) footer.render(120);
-			assert.equal(scans, 1); assert.equal(points, 0); assert.equal(contextReads, 1);
+			assert.equal(scans, 1);
+			assert.equal(points, 0);
+			assert.equal(contextReads, 1);
 			for (const tick of liveTicks) tick.callback();
-			assert.equal(scans, 1); assert.equal(points, 0);
+			assert.equal(scans, 1);
+			assert.equal(points, 0);
 			entries.push({ ...entries[0], id: "b", parentId: "a" });
 			for (const tick of liveTicks) tick.callback();
 			assert.match(footer.render(120)[0], /~\$0\.50/);
-			assert.equal(scans, 1); assert.equal(points, 1);
+			assert.equal(scans, 1);
+			assert.equal(points, 1);
 			await handlers.get("session_tree")({ type: "session_tree" }, mocks.ctx);
 			assert.equal(scans, 2);
 			assert.match(footer.render(120)[0], /~\$0\.50/);
-		} finally { footer.dispose(); }
+		} finally {
+			footer.dispose();
+		}
 	});
 });
 
@@ -761,17 +867,9 @@ describe("/statusline toggle", () => {
 	});
 });
 
-const STASH_OWNER = "/ext/stash/index.ts";
-
-/** A minimal published view: a list-free reader the frame can mount. */
-function stubView(title: string) {
-	return () => ({ title, render: () => [`${title} content`], handleInput: () => false });
-}
-
 describe("footer controls", () => {
-	it("keeps line 2 to status: no navigation labels, whatever owners publish", async () => {
-		const { handlers, publish } = makePi(() => [registration("stash")]);
-		publish(STASH_OWNER, [{ id: "stash", label: "Stashes", command: { name: "stash" }, order: 10, view: stubView("Stashes") }]);
+	it("keeps line 2 to status: no navigation labels", async () => {
+		const { handlers } = makePi(() => [registration("stash")]);
 		for (const tuiMode of ["fullscreen", "regular"] as const) {
 			const mocks = makeCtx({ tuiMode, cwd: "/work/project" });
 			await handlers.get("session_start")(sessionStart, mocks.ctx);
@@ -789,25 +887,41 @@ describe("footer controls", () => {
 	});
 
 	it("opens Model from the model identity and Statuses from the +N cell, only at the rendered width", async () => {
-		const statuses = new Map([["first", "alpha status"], ["second", "beta status"], ["third", "\x1b[2Jgamma\nstatus"]]);
+		const statuses = new Map([
+			["first", "alpha status"],
+			["second", "beta status"],
+			["third", "\x1b[2Jgamma\nstatus"],
+		]);
 		const { handlers } = makePi();
 		const mocks = makeCtx({ tuiMode: "fullscreen", statuses, cwd: "/work/project" });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks);
 		try {
 			footer.render(100);
-			assert.equal(footer.handleMouse?.(click(60, 0, 100)), undefined, "line 1 outside the model and level segments is not a target");
+			assert.equal(
+				footer.handleMouse?.(click(60, 0, 100)),
+				undefined,
+				"line 1 outside the model and level segments is not a target",
+			);
 			assert.equal(footer.handleMouse?.(click(2, 0, 90)), undefined, "a click at a stale width is ignored");
-			let opened = mocks.onNextFrame((frame) => assert.equal(frame.activeKey, viewKey(ENTRY, "model")));
+			let opened = mocks.onNextFrame((frame) => assert.equal(frame.viewTitle, "Model"));
 			assert.equal(footer.handleMouse?.(click(2, 0, 100))?.handled, true);
+			await opened;
+			opened = mocks.onNextFrame((frame) => assert.equal(frame.viewTitle, "Model"));
+			assert.equal(footer.handleMouse?.(click(visibleWidth("test/test-model "), 0, 100))?.handled, true);
 			await opened;
 			assert.equal(mocks.customCalls[0]?.options, undefined, "the frame takes the editor slot, not an overlay");
 			const text = strip(footer.render(40)[1]);
 			assert.match(text, /\+\d$/, text);
 			opened = mocks.onNextFrame((frame) => {
-				assert.equal(frame.activeKey, viewKey(ENTRY, "statuses"));
+				assert.equal(frame.viewTitle, "Statuses");
 				const shown = frameText(frame);
-				for (const [key, value] of [["first", "alpha status"], ["second", "beta status"], ["third", "gamma status"]]) assert.match(shown, new RegExp(`${key}  ${value}`));
+				for (const [key, value] of [
+					["first", "alpha status"],
+					["second", "beta status"],
+					["third", "gamma status"],
+				])
+					assert.match(shown, new RegExp(`${key}  ${value}`));
 				assert.doesNotMatch(shown, /\[2J/, "values are opaque and sanitized");
 			});
 			assert.equal(footer.handleMouse?.(click(text.length - 1, 1, 40))?.handled, true);
@@ -839,13 +953,16 @@ describe("Commands view", () => {
 	});
 
 	it("shows enter run in the footer, and Enter and a footer click both run the selected command", async () => {
-		const { handlers, commands, sent } = makePi(() => [registration("review:1", { description: "Review the current diff" })]);
+		const { handlers, commands, sent } = makePi(() => [
+			registration("review:1", { description: "Review the current diff" }),
+		]);
 		const mocks = makeCtx({});
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const byKey = mocks.onNextFrame((frame) => {
 			filterTo(frame, "review");
 			const row = strip(frame.render(160).at(-1) ?? "");
-			for (const control of ["enter run", "a arguments", "esc close"]) assert.ok(row.includes(control), `${control} in: ${row}`);
+			for (const control of ["enter run", "a arguments", "esc close"])
+				assert.ok(row.includes(control), `${control} in: ${row}`);
 			frame.handleInput("\r");
 		});
 		await commands.get("commands").handler("", mocks.ctx);
@@ -901,13 +1018,57 @@ describe("Commands view", () => {
 		assert.match(mocks.notifications.at(-1) ?? "", /no longer registered as selected; nothing was sent/);
 	});
 
+	it("refuses a same-name command when its provenance changes after selection", async () => {
+		const selected = registration("review:1");
+		const { commands, sent } = makePi(() => [selected]);
+		const mocks = makeCtx();
+		const done = mocks.onNextFrame((frame) => {
+			filterTo(frame, "review");
+			selected.sourceInfo.path = "/ext/replacement/index.ts";
+			frame.handleInput("\r");
+		});
+		await commands.get("commands").handler("", mocks.ctx);
+		await done;
+		assert.deepEqual(sent, []);
+		assert.match(mocks.notifications.at(-1) ?? "", /no longer registered as selected; nothing was sent/);
+	});
+
+	it("keeps printable keys in search and lets More and Escape leave the edit in order", async () => {
+		const { commands, sent } = makePi(() => [registration("example")]);
+		const mocks = makeCtx();
+		const done = mocks.onNextFrame((frame) => {
+			assert.equal(frame.capturesViewportInput, true);
+			frameText(frame);
+			frame.handleInput("/");
+			typeText(frame, "ex");
+			assert.match(frameText(frame), /1 of \d+ commands/);
+			assert.match(frameText(frame), /ctrl\+n more/);
+			frame.handleInput("\x0e");
+			assert.match(frameText(frame), /\nMore\s*\n/);
+			frame.handleInput("\x1b");
+			assert.doesNotMatch(frameText(frame), /\nMore\s*\n/);
+			assert.match(frameText(frame), /Search {2}ex/);
+			frame.handleInput("\x1b");
+			assert.match(frameText(frame), /type to find a command/);
+			frame.handleInput("\x1b");
+			assert.match(frameText(frame), /esc close/);
+		});
+		await commands.get("commands").handler("", mocks.ctx);
+		await done;
+		assert.deepEqual(sent, []);
+	});
+
 	it("prepares a prompt template into an empty editor and never sends it", async () => {
 		const { handlers, commands, sent } = makePi(() => [registration("recap", { source: "prompt" })]);
 		const mocks = makeCtx({});
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const done = mocks.onNextFrame((frame) => {
 			filterTo(frame, "recap");
-			assert.deepEqual(frame.viewActions.map((action) => action.label), ["Put in editor…"], "a prompt offers no Run");
+			assert.deepEqual(
+				frame.viewActions.map((action) => action.label),
+				["Put in editor…"],
+				"a prompt offers no Run",
+			);
 			act(frame, "Put in editor…");
 			assert.doesNotMatch(frameText(frame), /Placement/, "an empty editor needs no placement choice");
 			typeText(frame, "today");
@@ -947,14 +1108,14 @@ describe("Commands view", () => {
 		const { handlers, commands, sent } = makePi();
 		const mocks = makeCtx({});
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		let frame: NavigationFrame | undefined;
-		mocks.ctx.ui.custom = (factory) => new Promise((resolve) => {
-			frame = factory(mocks.tui, mocks.theme, { getKeys: () => [] }, resolve) as NavigationFrame;
-		});
+		let frame: Frame | undefined;
+		mocks.ctx.ui.custom = (factory) =>
+			new Promise((resolve) => {
+				frame = factory(mocks.tui, mocks.theme, { getKeys: () => [] }, resolve) as Frame;
+			});
 		const pending = commands.get("commands").handler("", mocks.ctx);
-		await turn();
+		for (let attempt = 0; !frame && attempt < 400; attempt++) await turn();
 		assert.ok(frame, "the frame opened");
-		await loaded(frame);
 		filterTo(frame, "review");
 		await handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, mocks.ctx);
 		await pending;
@@ -972,6 +1133,27 @@ describe("Commands view", () => {
 });
 
 describe("Statuses view", () => {
+	it("opens a narrow detail and pages within the view", async () => {
+		const text = Array.from({ length: 30 }, () => "unbroken status content").join(" ");
+		const { handlers, commands } = makePi();
+		const mocks = makeCtx({ statuses: new Map([["long", text]]) });
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const footer = installFooter(mocks);
+		const done = mocks.onNextFrame((frame) => {
+			frameText(frame, 32);
+			frame.handleInput("\r");
+			assert.equal(frame.viewTitle, "Detail");
+			assert.match(frameText(frame, 32), /\nlong /);
+			frame.handleInput("\x1b[6~");
+			assert.doesNotMatch(frameText(frame, 32), /\nlong /);
+			frame.handleInput("\x1b");
+			assert.equal(frame.viewTitle, "Statuses");
+		});
+		await commands.get("statuses").handler("", mocks.ctx);
+		await done;
+		footer.dispose();
+	});
+
 	it("needs the installed footer, then reads the live status map on every paint", async () => {
 		const statuses = new Map([["lint", "lint ok"]]);
 		const { handlers, commands } = makePi();
@@ -1000,41 +1182,46 @@ describe("Model view", () => {
 	];
 
 	it("stages model and reasoning and applies them only on Apply", async () => {
-		const { handlers, commands, models: applied, levels } = makePi();
-		const mocks = makeCtx({ models });
+		const { handlers, models: applied, levels } = makePi();
+		const mocks = makeCtx({ models, tuiMode: "fullscreen" });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const footer = installFooter(mocks);
+		footer.render(100);
 		const done = mocks.onNextFrame(async (frame) => {
-			frame.navigate(viewKey(ENTRY, "model"));
-			await loaded(frame);
+			assert.equal(frame.viewTitle, "Model");
 			assert.match(frameText(frame), /Model and reasoning for this session/);
 			frame.handleInput("\r");
 			frame.handleInput("\u001b[B");
 			assert.deepEqual(applied, [], "staging a level applies nothing");
 			act(frame, "Apply");
-			for (let attempt = 0; attempt < 20 && !/reasoning/.test(frameText(frame).split("\n").at(-1) ?? ""); attempt++) await turn();
+			for (let attempt = 0; attempt < 20 && !/reasoning/.test(frameText(frame).split("\n").at(-1) ?? ""); attempt++)
+				await turn();
 			assert.match(frameText(frame, 160), /Model test\/test-model · reasoning high for this session/);
 		});
-		await commands.get("dashboard").handler("", mocks.ctx);
+		assert.equal(footer.handleMouse?.(click(2, 0, 100))?.handled, true);
 		await done;
+		footer.dispose();
 		assert.deepEqual(applied, [], "the unchanged model is not set again");
 		assert.equal(levels.length, 1);
 	});
 
 	it("reports Pi's refusal and changes nothing", async () => {
-		const { handlers, commands, levels } = makePi(undefined, { setModel: (model) => model.provider !== "locked" });
-		const mocks = makeCtx({ models });
+		const { handlers, levels } = makePi(undefined, { setModel: (model) => model.provider !== "locked" });
+		const mocks = makeCtx({ models, tuiMode: "fullscreen" });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const footer = installFooter(mocks);
+		footer.render(100);
 		const done = mocks.onNextFrame(async (frame) => {
-			frame.navigate(viewKey(ENTRY, "model"));
-			await loaded(frame);
+			assert.equal(frame.viewTitle, "Model");
 			typeText(frame, "needs");
 			frame.handleInput("\u001b[B");
 			act(frame, "Apply");
 			for (let attempt = 0; attempt < 20 && !/refused/.test(frameText(frame)); attempt++) await turn();
 			assert.match(frameText(frame, 160), /Pi refused locked\/needs-auth: authentication is not configured for locked/);
 		});
-		await commands.get("dashboard").handler("", mocks.ctx);
+		assert.equal(footer.handleMouse?.(click(2, 0, 100))?.handled, true);
 		await done;
+		footer.dispose();
 		assert.deepEqual(levels, []);
 	});
 });

@@ -4,14 +4,11 @@ This extension replaces Pi's default footer with a two-line statusline for
 long-running agentic sessions. Line 1 carries the session's route identity and
 metrics; line 2 carries the project context and whatever extension statuses
 other extensions publish through `ctx.ui.setStatus()`. The footer shows status
-only: it adds no navigation labels and no menu. The statusline also owns three
-views of the shared browsing frame below the native transcript
-(`docs/conventions/operator-panels.md`): Commands, Model, and Statuses.
-Commands and Statuses open on their own from their commands; the Model view
-opens from the footer's model and level segments and has no command of its
-own. `/dashboard` shows every published view, including other extensions'
-views, as tabs of one frame. The three view modules load when a destination
-opens; until one is ready the frame shows a reading placeholder.
+only: it adds no navigation labels and no menu. The statusline owns three
+views in the editor slot below the native transcript: Commands, Model, and
+Statuses. Each opens on its own, following the [operator panel convention](../../docs/conventions/operator-panels.md).
+The Model view opens from the footer's model and level segments and has no
+command of its own. The code for these views loads on demand.
 
 ## Surfaces
 
@@ -21,15 +18,14 @@ opens; until one is ready the frame shows a reading placeholder.
 | `/statusline` | command | Toggle between the custom statusline and Pi's default footer. |
 | `/commands` | command | Open the Commands view: every command, prompt template, and skill, searchable. |
 | `/statuses` | command | Open the Statuses view: the complete extension status map. |
-| `/dashboard` | command | Open every published view as tabs of one frame, starting at the first. |
 | model and level segments | footer click targets | In fullscreen, a click on the `provider/model` segment or its `[level]` bracket opens the Model view. |
 | `+N` cell | footer click target | In fullscreen, the hidden-status count opens the Statuses view. |
 
 No extension-specific configuration is required. The custom footer starts
 enabled; use `/statusline` to switch to Pi's default footer or back. With the
-footer disabled, `/commands` and `/statuses` still open their views and
-`/dashboard` reaches Model; Statuses then explains that it needs the
-statusline footer. There are no tools, timers beyond one
+footer disabled, `/commands` and `/statuses` still open their views. Statuses
+explains that it needs the statusline footer, and the Model click targets are
+absent. There are no tools, timers beyond one
 footer-owned tick, or background work.
 
 ## Footer clicks
@@ -43,11 +39,13 @@ claims no click.
 
 ## Views
 
-All three views run in the shared frame. Escape leaves a nested view, then the
-frame; Pi then restores the editor and its draft. The footer at the bottom
-lists each control as its key and its short label. A click on a control runs
-the same action as its key. `/` focuses the search field. `x` opens the list of
-every other action.
+Each view shows its own title and a key row. A click on a control does the same
+thing as its key. `/` focuses search; Tab moves between regions. PageUp and
+PageDown read. Commands and Statuses show detail beside the list at 90 columns
+or wider, and in a nested view on narrower terminals. `x` opens More, or
+`ctrl+n` while a text field has focus. Escape closes More, leaves the current
+edit, runs Cancel if offered, leaves a nested view, or closes the frame, in
+that order. Pi then restores the editor and its draft.
 
 ### Commands
 
@@ -88,10 +86,11 @@ model. **Reasoning** lists the levels `getSupportedThinkingLevels(model)`
 reports for the staged model; a model without reasoning offers none. **Apply**
 calls `pi.setModel(model)` when the model changed, for this session only; a
 `false` return (authentication not configured for the provider) is shown as a
-refusal with the staged fields kept. Enter applies from any field. It then
-calls `pi.setThinkingLevel(level)`, which clamps to the model. Cancel and
-Escape change nothing. No builtin slash
-text is sent to the model to emulate these controls.
+refusal with the staged fields kept. Enter advances to the next field and
+applies from the last field. Apply is also in More before the last field.
+After the model change, the form calls `pi.setThinkingLevel(level)`, which
+clamps to the model. Cancel and Escape do not submit the form. No slash text
+is sent to the model to emulate these controls.
 
 ### Statuses
 
@@ -235,10 +234,13 @@ set the window title, write the clipboard, or emit a hyperlink.
 ## Files
 
 - `index.ts`: registration, the footer factory, the pointer targets, tick
-  ownership, the publication of this owner's views, and the
-  `/statusline`, `/commands`, `/statuses`, and `/dashboard` commands.
-- `views.ts`: the Commands, Model, and Statuses views in the shared frame.
-- `commands.ts`: editor placement for prompt templates and skills.
+  ownership, view lifecycle, and the `/statusline`, `/commands`, and
+  `/statuses` commands.
+- `views.ts`: the Commands, Model, and Statuses views.
+- `frame.ts`: the editor-slot frame, key row and More menu.
+- `browser.ts`, `form.ts`, `view-parts.ts`: list and detail layout, staged fields,
+  and bounded reading and selection.
+- `commands.ts`: exact command dispatch and editor placement for prompts and skills.
 - `metrics.ts`: session usage aggregation and bounded append catch-up.
 - `format.ts`: pure formatting, cache telemetry, and width-shedding composition
   with the model and count spans used for hit-testing.

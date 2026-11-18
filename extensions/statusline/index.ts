@@ -6,14 +6,11 @@
  *
  * The footer carries status only; it adds no navigation labels. In fullscreen the model, the
  * level and the +N cell are click targets for the Model and Statuses views; regular mode leaves
- * the mouse to the terminal. This owner publishes Commands, Model and Statuses as views of the
- * shared frame (docs/conventions/operator-panels.md); Commands and Statuses have commands, and
- * /dashboard shows every published view as tabs. Installed only in
- * TUI mode; setFooter is a documented no-op elsewhere. One unref'd 5s tick owns wall-clock
+ * the mouse to the terminal. Commands, Model and Statuses open independently in the editor slot.
+ * Installed only in TUI mode; setFooter is a documented no-op elsewhere. One unref'd 5s tick owns wall-clock
  * freshness for duration while idle.
  */
 
-import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -21,7 +18,6 @@ import type {
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { LoadingView, openOperatorFrame, publishOperatorViews } from "../../operator-ui/registration.ts";
 import {
 	buildBar,
 	composeLine1,
@@ -35,10 +31,10 @@ import {
 	type Line1Parts,
 	type Line2Layout,
 } from "./format.ts";
+import type { Frame } from "./frame.ts";
 import { MetricsCache, type SessionMetrics } from "./metrics.ts";
 import type { CommandsState } from "./views.ts";
 
-const OWNER = fileURLToPath(import.meta.url);
 const TICK_MS = 5_000;
 const PRESENCE_EVENT = "harness:composer:presence";
 const PRESENCE_REQUEST = "harness:composer:presence-request";
@@ -115,7 +111,13 @@ function buildLine1(
 	return { line: composeLine1(parts, sep, width, visibleWidth), spans };
 }
 
-function buildLine2(ctx: ExtensionContext, footerData: ReadonlyFooterDataProvider, fg: Fg, sep: string, width: number): Line2Layout {
+function buildLine2(
+	ctx: ExtensionContext,
+	footerData: ReadonlyFooterDataProvider,
+	fg: Fg,
+	sep: string,
+	width: number,
+): Line2Layout {
 	const branch = footerData.getGitBranch();
 	const project = {
 		folder: sanitizeDisplay(folderLabel(ctx.cwd || process.cwd(), process.env.HOME)),
@@ -141,7 +143,9 @@ function buildLine2(ctx: ExtensionContext, footerData: ReadonlyFooterDataProvide
 function onModel(spans: Line1Spans | undefined, x: number): boolean {
 	if (!spans) return false;
 	const { model, level } = spans;
-	return (x >= model.x && x < model.x + model.width) || (level !== undefined && x >= level.x && x < level.x + level.width);
+	return (
+		(x >= model.x && x < model.x + model.width) || (level !== undefined && x >= level.x && x < level.x + level.width)
+	);
 }
 
 function overflowHit(layout: Line2Layout, x: number): boolean {
@@ -153,8 +157,12 @@ function overflowHit(layout: Line2Layout, x: number): boolean {
  * The view under a plain left click: the model identity or its level bracket opens Model, and the
  * hidden-status count opens Statuses. Anything else stays with Pi, so drag selection keeps working.
  */
-function clickTarget(event: TuiMouseEvent, spans: Line1Spans | undefined, layout: Line2Layout): "model" | "statuses" | undefined {
-	if (event.type !== "click" || event.button !== "left") return undefined;
+function clickTarget(
+	event: TuiMouseEvent,
+	spans: Line1Spans | undefined,
+	layout: Line2Layout,
+): "model" | "statuses" | undefined {
+	if (event.type !== "click" || event.button !== "left" || event.shift || event.alt || event.ctrl) return undefined;
 	if (event.y === 0) return onModel(spans, event.x) ? "model" : undefined;
 	return event.y === 1 && overflowHit(layout, event.x) ? "statuses" : undefined;
 }
@@ -171,7 +179,16 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	let composerPresent = false;
 	let stopPresence: (() => void) | undefined;
 	function observePresence(payload: unknown): void {
-		if (!payload || typeof payload !== "object" || Array.isArray(payload) || !("version" in payload) || payload.version !== 1 || !("present" in payload) || typeof payload.present !== "boolean") return;
+		if (
+			!payload ||
+			typeof payload !== "object" ||
+			Array.isArray(payload) ||
+			!("version" in payload) ||
+			payload.version !== 1 ||
+			!("present" in payload) ||
+			typeof payload.present !== "boolean"
+		)
+			return;
 		if (payload.present === composerPresent) return;
 		composerPresent = payload.present;
 		requestRender();
@@ -179,67 +196,63 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	/** The installed footer's status provider; the Statuses view reads through it. */
 	let readStatuses: (() => ReadonlyMap<string, string>) | undefined;
 
-	/** Browsing state of the command list; the views module loads when a destination opens. */
 	let commandState: CommandsState | undefined;
-	let viewsPromise: Promise<typeof import("./views.ts")> | undefined;
-	const loadViews = () => (viewsPromise ??= import("./views.ts"));
+	let activeView: { frame?: Frame } | undefined;
+	const loadViews = () => Promise.all([import("./frame.ts"), import("./views.ts")]);
 
-	publishOperatorViews(pi, {
-		version: 2,
-		owner: OWNER,
-		views: [
-			{
-				id: "commands",
-				label: "Commands",
-				command: { name: "commands" },
-				order: 80,
-				view: (ctx, host) =>
-					new LoadingView("Commands", host, async () => {
-						const module = await loadViews();
-						commandState ??= module.createCommandsState();
-						return module.commandsView(pi, ctx, host, commandState);
-					}),
-			},
-			// Model has no command of its own: the footer's model and level segments and /dashboard open it.
-			{
-				id: "model",
-				label: "Model",
-				command: { name: "dashboard" },
-				order: 85,
-				view: (ctx, host) =>
-					new LoadingView("Model", host, async () => (await loadViews()).modelView(pi, ctx, host, () => requestRender())),
-			},
-			{
-				id: "statuses",
-				label: "Statuses",
-				command: { name: "statuses" },
-				order: 90,
-				view: (_ctx, host) => new LoadingView("Statuses", host, async () => (await loadViews()).statusesView(host, readStatuses)),
-			},
-		],
-	});
+	/** Commands wait for the view; footer clicks use the same path without waiting. */
+	async function openOwn(ctx: ExtensionContext, id: "commands" | "model" | "statuses"): Promise<void> {
+		if (ctx.mode !== "tui") {
+			if (ctx.hasUI) ctx.ui.notify("This view needs the interactive terminal.", "info");
+			return;
+		}
+		if (activeView) return;
+		const opening: { frame?: Frame } = {};
+		activeView = opening;
+		try {
+			const [{ openFrame }, views] = await loadViews();
+			if (activeView !== opening) return;
+			await openFrame(
+				ctx,
+				(host) => {
+					if (id === "model") return views.modelView(pi, ctx, host, () => requestRender());
+					if (id === "statuses") return views.statusesView(host, readStatuses);
+					commandState ??= views.createCommandsState();
+					return views.commandsView(pi, ctx, host, commandState);
+				},
+				(frame) => {
+					opening.frame = frame;
+					// Release the editor slot before a close continuation dispatches another command.
+					if (!frame && activeView === opening) activeView = undefined;
+				},
+			);
+		} finally {
+			if (activeView === opening) activeView = undefined;
+		}
+	}
 
 	function refresh(): void {
 		if (!current || !enabled) return;
 		contextUsage = current.getContextUsage();
 		if (!metrics.refresh(current.sessionManager) && catchup === undefined) {
-			catchup = setImmediate(() => { catchup = undefined; refresh(); });
+			catchup = setImmediate(() => {
+				catchup = undefined;
+				refresh();
+			});
 		}
 		requestRender();
 	}
 
 	const stopTick = () => {
-		if (catchup !== undefined) { clearImmediate(catchup); catchup = undefined; }
+		if (catchup !== undefined) {
+			clearImmediate(catchup);
+			catchup = undefined;
+		}
 		if (tick) {
 			clearInterval(tick);
 			tick = null;
 		}
 	};
-
-	/** Open one of this owner's views; the commands wait for the frame, footer clicks do not. */
-	function openOwn(ctx: ExtensionContext, id: string): Promise<void> {
-		return openOperatorFrame(pi, ctx, { owner: OWNER, id });
-	}
 
 	function install(ctx: ExtensionContext) {
 		if (ctx.mode !== "tui") return;
@@ -283,9 +296,12 @@ export default function registerStatusline(pi: ExtensionAPI) {
 					return [truncateToWidth(first.line, width), layout.line];
 				},
 				handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-					const target = !composerPresent && pointer && layout && event.width === renderedWidth ? clickTarget(event, spans, layout) : undefined;
+					const target =
+						!composerPresent && pointer && layout && event.width === renderedWidth
+							? clickTarget(event, spans, layout)
+							: undefined;
 					if (!target) return undefined;
-					void openOwn(session(), target);
+					void openOwn(session(), target).catch((error: unknown) => session().ui.notify(String(error), "error"));
 					return { handled: true };
 				},
 			};
@@ -302,6 +318,10 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		const closing = activeView;
+		activeView = undefined;
+		closing?.frame?.close();
+		commandState = undefined;
 		stopPresence?.();
 		stopPresence = undefined;
 		composerPresent = false;
@@ -311,7 +331,12 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		readStatuses = undefined;
 	});
 
-	const observe = (ctx: ExtensionContext) => { if (ctx.mode === "tui") { current = ctx; refresh(); } };
+	const observe = (ctx: ExtensionContext) => {
+		if (ctx.mode === "tui") {
+			current = ctx;
+			refresh();
+		}
+	};
 	pi.on("turn_end", (_event, ctx) => observe(ctx));
 	pi.on("agent_start", (_event, ctx) => observe(ctx));
 	pi.on("agent_end", (_event, ctx) => observe(ctx));
@@ -344,11 +369,6 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	pi.registerCommand("commands", {
 		description: "Browse every command, prompt and skill, and run or prepare one",
 		handler: async (_args, ctx) => openOwn(ctx, "commands"),
-	});
-
-	pi.registerCommand("dashboard", {
-		description: "Show every view (stashes, clipboard, policy, pillars, commands and more) as tabs of one frame",
-		handler: async (_args, ctx) => openOperatorFrame(pi, ctx, undefined, { tabs: true }),
 	});
 
 	pi.registerCommand("statuses", {
