@@ -7,8 +7,7 @@ import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import type { Browser, OperatorView, ViewHost } from "../../operator-ui/index.ts";
-import { NavigationFrame } from "../../operator-ui/index.ts";
+import { Frame, type View, type ViewHost } from "./frame.ts";
 import { loadArchive, loadRecent, loadSelectedPreview } from "./browser-views.ts";
 import { createStashViewState, type StashOperations, stashView } from "./operator-view.ts";
 import { rotateStash, transitionStash, writeStash, type StashEntry } from "./store.ts";
@@ -46,7 +45,7 @@ async function storeWithTwoRecords(): Promise<{ dir: string; bodies: Map<string,
 
 /** A frame-like host that keeps the nested form layers a real frame would keep. */
 function layeredHost() {
-	const layers: Array<{ view: OperatorView; controller: AbortController }> = [];
+	const layers: Array<{ view: View; controller: AbortController }> = [];
 	const notices: string[] = [];
 	const make = (controller: AbortController): ViewHost => ({
 		theme,
@@ -68,11 +67,11 @@ function layeredHost() {
 		notices,
 		open: (ops: StashOperations) => {
 			const controller = new AbortController();
-			const view = stashView(make(controller), ops, createStashViewState()) as Browser<StashEntry>;
+			const view = stashView(make(controller), ops, createStashViewState()) as View & { readonly selected: StashEntry | undefined };
 			layers.push({ view, controller });
 			return view;
 		},
-		top: (): OperatorView => layers.at(-1)?.view ?? assert.fail("no open layer"),
+		top: (): View => layers.at(-1)?.view ?? assert.fail("no open layer"),
 	};
 }
 
@@ -104,22 +103,22 @@ function storeOperations(dir: string, holdFirstPreview?: Promise<void>): StashOp
 	};
 }
 
-function screenOf(view: OperatorView, width = 120, height = 30): string {
+function screenOf(view: View, width = 120, height = 30): string {
 	return (view.render(width, height) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
 }
 
 /** The state line of the selected record's detail, once its read has settled. */
-const showsState = (view: OperatorView, state: string) => new RegExp(`${state} · stashed`).test(screenOf(view));
+const showsState = (view: View, state: string) => new RegExp(`${state} · stashed`).test(screenOf(view));
 
 /** Run one labelled action of the current layer, as its footer control would. */
-function act(view: OperatorView, label: string): void {
+function act(view: View, label: string): void {
 	const action = view.actions?.().find((candidate) => candidate.label === label);
 	assert.ok(action, `no ${label}: ${view.actions?.().map((candidate) => candidate.label).join(", ")}`);
 	assert.equal(action.disabled, undefined, `${label} is unavailable: ${action.disabled}`);
 	action.run();
 }
 
-function typeInto(view: OperatorView, text: string): void {
+function typeInto(view: View, text: string): void {
 	view.focused = true;
 	for (const character of text) view.handleInput(character);
 }
@@ -208,13 +207,14 @@ test("a late older preview read never overwrites the newer selection and leaves 
 
 /** A real frame at a narrow size: the whole ordinary terminal is 80x24, so its body gets 14 rows. */
 function narrowFrame(ops: StashOperations) {
-	return new NavigationFrame({
+	return new Frame({
 		theme,
 		target: { id: "session", label: "This session · work" },
-		destinations: () => [{ key: "stash", label: "Stashes", open: (host: ViewHost) => stashView(host, ops) }],
 		rows: () => 14,
 		requestRender: () => {},
 		close: () => {},
+		expandKey: "ctrl+o",
+		open: (host: ViewHost) => stashView(host, ops),
 	});
 }
 

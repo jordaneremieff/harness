@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { type ExtensionAPI, type ExtensionContext, initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import type { NavigationFrame } from "../../operator-ui/index.ts";
+import type { Frame } from "./frame.ts";
 import registerStash from "./index.ts";
 import { listStashes, readStash, transitionStash, writeStash } from "./store.ts";
 
@@ -82,7 +82,7 @@ interface Run {
 /** A TUI context whose custom UI hosts the frame and runs `script` against it; the script closes or leaves it open. */
 let sessions = 0;
 
-function context(script: (frame: NavigationFrame) => Promise<void>, patch: { idle?: boolean; session?: string } = {}) {
+function context(script: (frame: Frame) => Promise<void>, patch: { idle?: boolean; session?: string } = {}) {
 	const run = { frames: 0, notices: [] as string[] };
 	const ctx = {
 		mode: "tui",
@@ -96,7 +96,7 @@ function context(script: (frame: NavigationFrame) => Promise<void>, patch: { idl
 				new Promise<T>((resolve, reject) => {
 					assert.notEqual(options?.overlay, true, "the browser opens in the editor slot below the transcript");
 					run.frames++;
-					const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender() {} }, theme, { getKeys: () => [] }, resolve) as NavigationFrame;
+					const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender() {} }, theme, { getKeys: () => [] }, resolve) as Frame;
 					script(frame).then(
 						() => frame.close(),
 						(error: unknown) => {
@@ -111,10 +111,10 @@ function context(script: (frame: NavigationFrame) => Promise<void>, patch: { idl
 	return { ctx: ctx as unknown as ExtensionContext, run: run as Run };
 }
 
-const text = (frame: NavigationFrame) => frame.render(120).join("\n");
+const text = (frame: Frame) => frame.render(120).join("\n");
 
 /** Store reads are file I/O, so waits poll the rendered browser against a deadline instead of counting turns. */
-async function until(frame: NavigationFrame, pattern: RegExp): Promise<string> {
+async function until(frame: Frame, pattern: RegExp): Promise<string> {
 	const deadline = Date.now() + 5000;
 	while (Date.now() < deadline) {
 		const shown = text(frame);
@@ -124,26 +124,26 @@ async function until(frame: NavigationFrame, pattern: RegExp): Promise<string> {
 	throw new Error(`the browser never showed ${pattern}\n${text(frame)}`);
 }
 
-function action(frame: NavigationFrame, label: string) {
+function action(frame: Frame, label: string) {
 	const found = frame.viewActions.find((candidate) => candidate.label === label);
 	assert.ok(found, `no ${label}: ${frame.viewActions.map((candidate) => candidate.label).join(", ")}`);
 	return found;
 }
 
-function act(frame: NavigationFrame, label: string): void {
+function act(frame: Frame, label: string): void {
 	const found = action(frame, label);
 	assert.equal(found.disabled, undefined, `${label} is unavailable: ${found.disabled}`);
 	found.run();
 }
 
 /** The footer row as drawn, without colour codes. */
-function footer(frame: NavigationFrame, width = 200): string {
+function footer(frame: Frame, width = 200): string {
 	const lines = frame.render(width);
 	return stripVTControlCharacters(lines.at(-1) ?? "");
 }
 
 /** Click the footer control drawn as `label`, at the position the last render gave it. */
-function clickFooter(frame: NavigationFrame, label: string, width = 200): void {
+function clickFooter(frame: Frame, label: string, width = 200): void {
 	const lines = frame.render(width);
 	const row = stripVTControlCharacters(lines.at(-1) ?? "");
 	const at = row.indexOf(label);
@@ -159,7 +159,7 @@ async function settled(check: () => boolean): Promise<void> {
 }
 
 /** Focus the search field with `/`, type a title to filter to it, wait until that exact record was read, and return to the list. */
-async function choose(frame: NavigationFrame, record: { id: string; title: string }): Promise<void> {
+async function choose(frame: Frame, record: { id: string; title: string }): Promise<void> {
 	await until(frame, /stashes/);
 	frame.handleInput("/");
 	for (const key of record.title) frame.handleInput(key);
@@ -352,7 +352,7 @@ describe("ordinary stash browser", () => {
 		const title = `Note cancel ${Date.now()}`;
 		const { record } = await writeStash(dir, { title, summary: "NOTE_CANCEL" });
 		const { command, sent } = extension();
-		const cancelFrom = (open: (frame: NavigationFrame) => void) =>
+		const cancelFrom = (open: (frame: Frame) => void) =>
 			context(async (frame) => {
 				await choose(frame, record);
 				open(frame);

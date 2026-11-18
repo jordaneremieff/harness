@@ -46,7 +46,6 @@ import {
 } from "./guidance.ts";
 import { captureHint, creationRequest, independentLauncher } from "./launch.ts";
 import { emptyListText, ListOutputSchema, recentListResult } from "./list-result.ts";
-import { LoadingView, openOperatorFrame, publishOperatorViews, type OperatorView, type ViewHost } from "../../operator-ui/registration.ts";
 import { loadArchive, loadRecent, loadSelectedPreview } from "./browser-views.ts";
 import type { StashOperations, StashViewState } from "./operator-view.ts";
 import { CompleteParams, EditParams, ListParams, ReadParams, RotateParams, WriteParams } from "./params.ts";
@@ -101,8 +100,6 @@ type StashExtensionApi = Pick<
 >;
 
 const storeDir = () => resolveStoreDir(process.env, getAgentDir());
-/** This extension's entrypoint; the ordinary frame binds the published view to its /stash registration. */
-const OWNER = fileURLToPath(import.meta.url);
 
 async function checkpointDirectory(): Promise<string> {
 	const { dir: handovers, checkpointDir: directory } = readSettings({ agentDir: getAgentDir() }).values;
@@ -483,7 +480,10 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	pi.registerMessageRenderer(STASH_MESSAGES.budget, renderBudgetMessage);
 	pi.registerMessageRenderer(STASH_MESSAGES.budgetStatus, renderBudgetStatusMessage);
 	pi.registerMessageRenderer(STASH_MESSAGES.capacity, renderCapacityMessage);
+	/** The browser shown now, closed at shutdown. */
+	let browser: { close(): void } | undefined;
 	pi.on("session_shutdown", () => {
+		browser?.close();
 		gates.clear();
 		budgets.clear();
 		creationStatus.close();
@@ -761,26 +761,29 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	};
 	/** Browsing position per session, kept while the extension instance lives. */
 	const viewStates = new Map<string, StashViewState>();
-	/** The view module loads when the destination opens, not when this factory runs. */
-	const loadView = async (ctx: ExtensionContext, host: ViewHost): Promise<OperatorView> => {
-		const module = await import("./operator-view.ts");
-		const id = ctx.sessionManager.getSessionId();
-		let state = viewStates.get(id);
-		if (!state) {
-			state = module.createStashViewState();
-			viewStates.set(id, state);
-		}
-		return module.stashView(host, ordinaryOperations(pi, ctx, failFor(ctx), overrides?.copyText), state);
-	};
-	// Package contract: docs/conventions/operator-panels.md. Opening is a harmless read; pickup and lifecycle changes are labelled actions inside.
-	publishOperatorViews(pi, {
-		version: 2,
-		owner: OWNER,
-		views: [{ id: "stash", label: "Stashes", command: { name: "stash" }, order: 10, view: (ctx, host) => new LoadingView("Stashes", host, () => loadView(ctx, host)) }],
-	});
+	/** True while a browser opens or shows; another open request then changes nothing. */
+	let opening = false;
+	// Opening is a harmless read; pickup and lifecycle changes are labelled actions inside
+	// (docs/conventions/operator-panels.md).
 	async function openBrowser(ctx: ExtensionContext): Promise<void> {
-		if (ctx.mode === "tui") await openOperatorFrame(pi, ctx, { owner: OWNER, id: "stash" });
-		else await pickWithoutTerminal(pi, ctx, failFor(ctx));
+		if (ctx.mode !== "tui") return pickWithoutTerminal(pi, ctx, failFor(ctx));
+		if (opening) return;
+		opening = true;
+		try {
+			// The frame and the view load when the browser opens, not when this factory runs.
+			const [{ openFrame }, module] = await Promise.all([import("./frame.ts"), import("./operator-view.ts")]);
+			const view = (host: Parameters<typeof module.stashView>[0]) => {
+				const id = ctx.sessionManager.getSessionId();
+				const state = viewStates.get(id) ?? module.createStashViewState();
+				viewStates.set(id, state);
+				return module.stashView(host, ordinaryOperations(pi, ctx, failFor(ctx), overrides?.copyText), state);
+			};
+			await openFrame(ctx, view, (frame) => {
+				browser = frame;
+			});
+		} finally {
+			opening = false;
+		}
 	}
 
 	pi.registerCommand("stash", {

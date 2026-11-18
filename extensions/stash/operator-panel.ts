@@ -1,11 +1,12 @@
 /**
  * The stash browser for the attached Agent terminal. The client imports this module locally and
  * gives it a request route to the `stash` contribution command of the selected agent; the view is
- * the one ordinary Pi shows. Evaluating this module registers nothing and opens no store.
+ * the one ordinary Pi shows, in the owner view shape of docs/conventions/operator-panels.md.
+ * Evaluating this module registers nothing and opens no store.
  */
 
 import { copyToClipboard } from "@earendil-works/pi-coding-agent";
-import type { JsonValue, OperatorPanelModule, PanelHost } from "../../operator-ui/index.ts";
+import type { JsonValue, OperatorPanelModule, PanelHost } from "./frame.ts";
 import { createStashViewState, type StashOperations, type StashViewState, stashView } from "./operator-view.ts";
 import { readPanelAnswer, type StashPanelRequest } from "./panel-protocol.ts";
 

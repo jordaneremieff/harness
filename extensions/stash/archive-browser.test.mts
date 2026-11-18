@@ -7,7 +7,7 @@ import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext, initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
-import type { NavigationFrame } from "../../operator-ui/index.ts";
+import type { Frame } from "./frame.ts";
 import registerStash from "./index.ts";
 import { listStashes, writeStash } from "./store.ts";
 
@@ -69,7 +69,7 @@ function command() {
 }
 
 /** A TUI context whose custom UI hosts the frame and runs the script; the frame closes after it. */
-function drive(script: (frame: NavigationFrame) => Promise<void>) {
+function drive(script: (frame: Frame) => Promise<void>) {
 	return {
 		mode: "tui",
 		hasUI: true,
@@ -80,7 +80,7 @@ function drive(script: (frame: NavigationFrame) => Promise<void>) {
 			notify: () => {},
 			custom: <T,>(factory: (tui: unknown, theme: Theme, keys: unknown, done: (value: T) => void) => unknown) =>
 				new Promise<T>((resolve, reject) => {
-					const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, theme, { getKeys: () => [] }, resolve) as NavigationFrame;
+					const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, theme, { getKeys: () => [] }, resolve) as Frame;
 					script(frame).then(
 						() => frame.close(),
 						(error: unknown) => {
@@ -94,10 +94,10 @@ function drive(script: (frame: NavigationFrame) => Promise<void>) {
 	} as unknown as ExtensionContext;
 }
 
-const text = (frame: NavigationFrame) => frame.render(120).join("\n");
+const text = (frame: Frame) => frame.render(120).join("\n");
 
 /** Store reads are file I/O, so waits poll the rendered browser against a deadline instead of counting turns. */
-async function until(frame: NavigationFrame, pattern: RegExp): Promise<string> {
+async function until(frame: Frame, pattern: RegExp): Promise<string> {
 	const deadline = Date.now() + 5000;
 	while (Date.now() < deadline) {
 		const shown = text(frame);
@@ -107,21 +107,21 @@ async function until(frame: NavigationFrame, pattern: RegExp): Promise<string> {
 	throw new Error(`the browser never showed ${pattern}\n${text(frame)}`);
 }
 
-function action(frame: NavigationFrame, label: string) {
+function action(frame: Frame, label: string) {
 	const found = frame.viewActions.find((candidate) => candidate.label === label);
 	assert.ok(found, `no ${label}: ${frame.viewActions.map((candidate) => candidate.label).join(", ")}`);
 	return found;
 }
 
 /** Move from the list to the scope row and step right to Search archive. */
-function archiveScope(frame: NavigationFrame): void {
+function archiveScope(frame: Frame): void {
 	frame.handleInput("\u001b[Z");
 	frame.handleInput("\u001b[C");
 	frame.handleInput("\r");
 }
 
 /** Focus the search field with `/`, type a query, and press Enter, which runs the archive search. */
-function search(frame: NavigationFrame, query: string): void {
+function search(frame: Frame, query: string): void {
 	frame.handleInput("/");
 	for (const key of query) frame.handleInput(key);
 	frame.handleInput("\r");

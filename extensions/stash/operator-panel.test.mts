@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import type { JsonValue, OperatorView, PanelHost } from "../../operator-ui/index.ts";
+import type { JsonValue, PanelHost, View } from "./frame.ts";
 import type { BrowserView } from "./browser-views.ts";
 import { operatorPanel } from "./operator-panel.ts";
 import { readPanelRequest } from "./panel-protocol.ts";
@@ -29,7 +29,7 @@ function hostFixture(entries: StashEntry[], answers: Partial<Record<string, (req
 	const notices: string[] = [];
 	let closed = 0;
 	const view: BrowserView = { scope: "recent", query: "", cursor: undefined, nextCursor: null, entries, hasMore: false, coverage: undefined, stale: false };
-	const layers: Array<{ view: OperatorView; controller: AbortController }> = [];
+	const layers: Array<{ view: View; controller: AbortController }> = [];
 	const request = async (data: JsonValue) => {
 		const asked = data as Record<string, unknown>;
 		requests.push(asked);
