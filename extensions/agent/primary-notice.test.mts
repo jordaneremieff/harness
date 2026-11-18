@@ -297,6 +297,12 @@ it("refreshes preset descriptions and guidance through the peer-message prompt-s
 	t.diagnostic(`Coding-agent runtime dependency: ${dependency.version}`);
 	const path = join(f.sessionsRoot, "..", "agent", "harness.json");
 	const write = (key: string, model: string) => writeFileSync(path, JSON.stringify(machineConfig({ presets: { [key]: { model } }, preferences: { defaultPreset: key } })));
+	const assertPresetGuidance = (request: TranscriptContext, key: string) => {
+		const prompt = getCurrentSystemPrompt(request.messages);
+		assert.match(prompt, /Use preset to select execution settings/u);
+		assert.match(prompt, /Omit model and preset to use the machine defaultPreset on creation/u);
+		assert.ok(prompt.includes(`Default preset: ${key};`), "the provider sees the current default preset");
+	};
 	for (const [index, key, model] of [[1, "standard", "acme/model-x"], [2, "economy", "other/model-y"]] as const) {
 		write(key, model);
 		const starts = f.promptStarts();
@@ -306,9 +312,7 @@ it("refreshes preset descriptions and guidance through the peer-message prompt-s
 		const request = f.requests.at(-1);
 		assert.ok(request);
 		assert.equal(f.promptStarts(), starts + 1, "each custom peer run invokes before_agent_start");
-		const prompt = getCurrentSystemPrompt(request.messages);
-		assert.match(prompt, /Delegate with preset/u);
-		assert.match(prompt, /machine defaultPreset/u);
+		assertPresetGuidance(request, key);
 		for (const name of ["agent_spawn", "agent_place", "agent_configure"]) {
 			const declaration = f.session.getAllTools().find((tool) => tool.name === name);
 			assert.ok(declaration);
@@ -326,8 +330,7 @@ it("refreshes preset descriptions and guidance through the peer-message prompt-s
 			assert.equal(f.promptStarts(), starts + 2, "the subsequent ordinary prompt also invokes before_agent_start");
 			const normal = f.requests.at(-1);
 			assert.ok(normal);
-			assert.match(getCurrentSystemPrompt(normal.messages), /Delegate with preset/u);
-			assert.match(getCurrentSystemPrompt(normal.messages), /machine defaultPreset/u);
+			assertPresetGuidance(normal, key);
 		}
 	}
 	writeFileSync(path, "malformed");

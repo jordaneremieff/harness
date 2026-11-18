@@ -486,7 +486,10 @@ For every member in the following set, request and response are both `<member>/1
 close attach acknowledge abort release reset
  timer-list observe-close models
  collaboration-list
+ playbook-create playbook-configure playbook-read
 ```
+
+A client checks the playbook operation before it admits a creation or configuration that includes a playbook. If the host does not support the requested change, the client refuses it without changing the target or admitting its prompt. Existing `status`, `list`, `dashboard` and `inspect` wire shapes do not gain a playbook field. A client without a supported `playbook-read` reports the selection as unknown, not unset.
 
 `changes` uses `changes/2.0.0` for request and response. Its initial and later frames are `{revision,writerId,view?}`. `writerId` comes from the server's immutable current hello identity. `view` is the runtime's latest successful bounded catalogue publication, retained after `updateView` succeeds and before notification. A revision without a view proves no publication. The client consumes the initial subscription value and later frames only for the current link and binding. Loss, rebind, local close and successful owner close clear that evidence; obsolete callbacks cannot restore it. A changes-operation mismatch refuses without a fallback and remains visible as unavailable publication evidence. Sources: `extensions/agent/{host-changes,host-client,host-process,durable-runtime,version-contract}.ts`.
 

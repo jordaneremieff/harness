@@ -8,6 +8,7 @@ import type { AgentManager } from "./manager.ts";
 import { runtimeFixture } from "./durable-runtime-fixture.mts";
 import { eventLog } from "./host-fixture.mts";
 import { waitForHostRelease, type HostConnection } from "./host-client.ts";
+import { PlaybookStatusToolOutputSchema, StatusOutputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
 
 interface ObservedStatus {
 	conversation: { busy: boolean; live: { runFailure?: { reason: string } } | null };
@@ -37,6 +38,15 @@ async function observeStatus(host: HostConnection, sessionId: string, predicate:
 	try { capture(); await Promise.race([events.waitFor((rows) => rows.some(predicate), 20000), lost]); const value = events.find(predicate); assert.ok(value); return value; }
 	finally { stop(); }
 }
+async function assertSelectedNativeDetail(tools: ReturnType<typeof toolsFor>, sessionId: string, raw: unknown): Promise<void> {
+	const legacy = structuredObservation(StatusOutputSchema, raw) as object;
+	assert.equal(Object.hasOwn(legacy, "playbook"), false);
+	const enriched = structuredObservation(PlaybookStatusToolOutputSchema,
+		await tools.manager().status(sessionId, undefined, undefined, {}, { playbook: true }));
+	assert.deepEqual(enriched, { ...legacy, playbook: { name: null, origin: "unset" } });
+	assert.deepEqual((await tools.execute("agent_status", { sessionId, detail: true })).details, enriched);
+}
+
 async function liveShapes(t: TestContext): Promise<void> {
 	let tools: ReturnType<typeof toolsFor> | undefined;
 	t.after(async () => { await tools?.close(); });
@@ -53,7 +63,8 @@ async function liveShapes(t: TestContext): Promise<void> {
 	assert.equal(typeof delivery, "string"); assert.ok(delivery.length > 0);
 	const raw = await manager.status(sessionId);
 	assert.equal(delivery, (raw as { deliveryError: string }).deliveryError);
-	assert.deepEqual((await tools.execute("agent_status", { sessionId, detail: true })).details, raw);
+	assert.deepEqual((structuredObservation(PlaybookStatusToolOutputSchema, compact.details) as { playbook?: unknown }).playbook, { name: null, origin: "unset" });
+	await assertSelectedNativeDetail(tools, sessionId, raw);
 	const frame = { action: "create", sessionId, title: "Shared work", purpose: "Exercise retained read selectors", authority: "Test fixture", source: "Fixture source", restrictions: "Local fixture only", acceptance: "Valid read result" };
 	const created = await tools.execute("agent_collaborate", frame);
 	const threadId = /[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\/[a-f0-9]{32}/u.exec(JSON.stringify(created.details))?.[0]; assert.ok(threadId);
@@ -63,14 +74,16 @@ async function liveShapes(t: TestContext): Promise<void> {
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(20000) });
 	const cold = await tools.execute("agent_status", { sessionId });
 	assert.equal((cold.details as { conversation: { availability: string } }).conversation.availability, "retained");
-	assert.deepEqual((await tools.execute("agent_status", { sessionId, detail: true })).details, await manager.status(sessionId));
+	assert.deepEqual((structuredObservation(PlaybookStatusToolOutputSchema, cold.details) as { playbook?: unknown }).playbook, { name: null, origin: "unset" });
+	await assertSelectedNativeDetail(tools, sessionId, await manager.status(sessionId));
 	const ordinary = randomUUID(), abort = new AbortController();
 	t.after(() => abort.abort());
 	await manager.registerPrimary(ordinary, { signal: abort.signal, cwd: f.cwd, name: "Peer primary", thinkingLevel: "off", send() {} });
 	assert.equal(((await tools.execute("agent_status", { sessionId: ordinary })).details as { conversation: { identity: string } }).conversation.identity, ordinary);
 	// Each read of an ordinary primary is its own observation, so only the observation time can differ between the two.
 	const viaTool = (await tools.execute("agent_status", { sessionId: ordinary, detail: true })).details as { observedAt: string };
-	const direct = await manager.status(ordinary) as { observedAt: string };
+	const direct = structuredObservation(StatusToolOutputSchema, await manager.status(ordinary)) as { observedAt: string };
+	structuredObservation(PlaybookStatusToolOutputSchema, viaTool);
 	assert.ok(Date.parse(viaTool.observedAt) <= Date.parse(direct.observedAt));
 	assert.deepEqual({ ...viaTool, observedAt: direct.observedAt }, direct);
 	await tools.close(); tools = undefined;
@@ -91,7 +104,7 @@ async function interruptedShapes(t: TestContext): Promise<void> {
 	const conversation = (failed.structuredContent as { conversation: { runFailure: { reason: string } } }).conversation;
 	assert.equal(conversation.runFailure.reason, observed.conversation.live?.runFailure?.reason);
 	assert.equal(conversation.runFailure.reason, "aborted");
-	assert.deepEqual((await tools.execute("agent_status", { sessionId, detail: true })).details, await tools.manager().status(sessionId));
+	await assertSelectedNativeDetail(tools, sessionId, await tools.manager().status(sessionId));
 	await tools.close(); tools = undefined;
 }
 it("passes real live, cold, primary and run failure values through ordinary registrations", { timeout: 120000 }, async (t) => {
