@@ -97,7 +97,18 @@
 			resetMenu();
 			input.removeAttribute("aria-controls");
 			input.focus({ preventScroll: true });
-			askOverlay(0, true);
+			// The host clips the window as soon as it reads the request, so the request waits until a
+			// frame without the menu has been painted. A hidden page paints no frames; the timer covers it.
+			// A menu that opens meanwhile keeps its extension.
+			const revision = overlayRevision;
+			let asked = false;
+			const release = () => {
+				if (asked) return;
+				asked = true;
+				if (!mode && revision === overlayRevision) askOverlay(0, true);
+			};
+			requestAnimationFrame(() => requestAnimationFrame(release));
+			setTimeout(release, 100);
 		}
 		function openMenu(kind: string, title: string, anchor?: HTMLElement) {
 			if (kind !== mode && menu.matches(":popover-open")) {
