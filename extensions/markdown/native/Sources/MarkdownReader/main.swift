@@ -6,6 +6,10 @@ import AppKit
 // exit with a machine-readable result.
 let launch = NativeLaunch.parse(Array(CommandLine.arguments.dropFirst()))
 let mode = launch.mode
+if case .usage(let message) = mode {
+    FileHandle.standardError.write(Data("Markdown Reader: \(message)\n".utf8))
+    exit(2)
+}
 let application = NSApplication.shared
 let delegate = AppDelegate(mode: mode, livePath: launch.livePath)
 application.delegate = delegate

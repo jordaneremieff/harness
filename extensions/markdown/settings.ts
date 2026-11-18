@@ -17,6 +17,14 @@ export const settings = {
 			defaultText: "<agentDir>/markdown",
 			description: "Private directory for Markdown documents.",
 		},
+		composer: {
+			type: "enum",
+			env: "PI_MARKDOWN_COMPOSER",
+			choices: ["manual", "auto"],
+			default: "manual",
+			description:
+				"Composer mode. manual opens the native composer only through /compose; auto opens it automatically in an ordinary interactive Pi session in Rex with a capable macOS reader. No mode disables /compose.",
+		},
 	},
 } as const;
 
@@ -26,8 +34,9 @@ export const SETTINGS_REQUEST = "harness:settings:request";
 export type Environment = Readonly<Record<string, string | undefined>>;
 export type Origin = "env" | "file" | "default";
 export type ReadOptions = { agentDir: string; env?: Environment };
-type Key = "app" | "dir";
-type Values = { app: string; dir: string };
+type Key = keyof typeof settings.fields;
+type ComposerMode = (typeof settings.fields.composer.choices)[number];
+type Values = { app: string; dir: string; composer: ComposerMode };
 export type Diagnostic = {
 	field: string;
 	source: Origin;
@@ -43,7 +52,7 @@ export type Source = {
 export type SettingRecord = {
 	name: string;
 	key: string;
-	type: "path";
+	type: "path" | "enum";
 	description: string;
 	env: string;
 	secret: boolean;
@@ -145,12 +154,20 @@ function checked(value: unknown, agentDir: string): string {
 	if (path.length > 4096) throw new Error("Resolved path exceeds length bound");
 	return path;
 }
-function defaultPath(agentDir: string, key: Key): string {
+function defaultPath(agentDir: string, key: Exclude<Key, "composer">): string {
 	try {
 		return checked(resolve(agentDir, key === "dir" ? "markdown" : "markdown-reader/Markdown Reader.app"), agentDir);
 	} catch {
 		throw new Error(`Invalid default for markdown.${key}`);
 	}
+}
+function composerMode(value: unknown): ComposerMode {
+	if (
+		typeof value !== "string" ||
+		!(settings.fields.composer.choices as readonly string[]).includes(value)
+	)
+		throw new Error("Invalid composer mode");
+	return value as ComposerMode;
 }
 type Selection = { value: string; origin: Origin; invalid: boolean };
 function readSection(options: ReadOptions) {
@@ -188,7 +205,7 @@ function selectField(
 	if (origin === undefined) return { value: fallback, origin: "default", invalid };
 	try {
 		const input = origin === "env" ? env[field.env] : section[key];
-		const value = checked(input, options.agentDir);
+		const value = key === "composer" ? composerMode(input) : checked(input, options.agentDir);
 		return { value, origin, invalid };
 	} catch {
 		add(diagnostic(name, origin, "invalid"));
@@ -212,14 +229,19 @@ function settingRecord(key: Key, selected: Selection): SettingRecord {
 }
 export function readSettings(options: ReadOptions): Snapshot {
 	const { source, section, diagnostics, add } = readSection(options);
-	const values = Object.create(null) as Values;
+	const selectedValues = Object.create(null) as Record<Key, string>;
 	const records: SettingRecord[] = [];
 	for (const key of Object.keys(settings.fields) as Key[]) {
-		const fallback = defaultPath(options.agentDir, key);
+		const fallback = key === "composer" ? settings.fields.composer.default : defaultPath(options.agentDir, key);
 		const selected = selectField(key, fallback, section, options, add);
-		values[key] = selected.value;
+		selectedValues[key] = selected.value;
 		records.push(settingRecord(key, selected));
 	}
+	const values: Values = {
+		app: selectedValues.app,
+		dir: selectedValues.dir,
+		composer: composerMode(selectedValues.composer),
+	};
 	return { version: 1, slice: settings.slice, source, values, records, diagnostics };
 }
 export type SettingsBus = {

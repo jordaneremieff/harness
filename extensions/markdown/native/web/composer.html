@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Composer</title>
+<link rel="stylesheet" href="styles/tokens.css">
+<link rel="stylesheet" href="styles/composer.css">
+<script defer src="app/composer/logic.js"></script>
+<script defer src="app/composer/assistance.js"></script>
+<script defer src="app/composer/controls.js"></script>
+<script defer src="app/composer/page.js"></script>
+</head>
+<body>
+<main class="composer" id="composer" data-connection="connecting">
+ <section class="panel" id="panel" aria-label="Message composer">
+  <div class="writer">
+   <div id="queued" class="queued" hidden></div>
+   <label class="sr" for="input">Message to Pi</label>
+   <div class="edit-area"><div id="highlight" aria-hidden="true"></div><textarea id="input" rows="3" placeholder="Message Pi…" aria-describedby="hint" autocapitalize="off" autocorrect="off" spellcheck="true" enterkeyhint="send"></textarea></div>
+   <div id="images" class="images"></div>
+   <p class="sr" id="hint">Press Return to send, or Shift-Return for a new line.</p>
+   <div class="shelf">
+    <div class="tools">
+     <button class="tool add" id="add" type="button" aria-label="Add to message" aria-expanded="false">+</button>
+     <button class="tool" id="model" type="button" disabled aria-label="Model"><span>Model</span></button>
+     <button class="tool" id="thinking" type="button" disabled aria-label="Thinking level"><span>Thinking</span></button>
+    </div>
+    <div class="actions">
+     <div class="choices" id="choices" hidden>
+      <button class="choice" id="queue" type="button">Queue</button>
+     </div>
+     <button class="action" id="action" type="button" aria-label="Send message"><span id="action-label">Send</span></button>
+    </div>
+   </div>
+  </div>
+  <footer class="status">
+   <div class="status-info">
+    <span class="status-dot" aria-hidden="true"></span>
+    <span class="status-text" id="status-text" role="status">Connecting…</span>
+    <span class="status-state" id="status-state" hidden></span>
+    <button class="choice return" id="return" type="button" hidden>Go to terminal</button>
+    <button class="choice" id="recovery" type="button" hidden></button>
+    <span class="context" id="context" hidden><meter id="context-meter" min="0" max="100" aria-label="Context used"></meter><span id="context-percent"></span><span id="context-tokens"></span></span>
+    <span id="session-cost" hidden></span>
+    <span id="session-folder" hidden></span>
+   </div>
+   <div class="status-actions">
+    <button class="tool" id="sendkey" type="button" aria-label="Send key: Return"><span id="sendkey-label">⏎ send</span></button>
+    <span class="close-control">
+     <button class="icon" id="close" type="button" aria-label="Close composer"></button>
+     <span class="close-tip" aria-hidden="true">Close composer</span>
+    </span>
+   </div>
+  </footer>
+ </section>
+</main>
+<div class="notice" id="notice" role="status" aria-live="polite" hidden></div>
+<div class="composer-menu" id="menu" role="group" hidden></div>
+</body>
+</html>

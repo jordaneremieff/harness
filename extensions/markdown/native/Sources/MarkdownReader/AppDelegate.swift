@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var openedAtLaunch = false
     private let recentMenu = NSMenu(title: "Open Recent")
     private var paneHost: PaneHost?
+    private var composerHost: ComposerHost?
     private let livePath: String?
     private var liveConfiguration: CollaborationConfiguration?
     private var liveUnavailable: String?
@@ -43,6 +44,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        if case .composer = mode {
+            NSApp.mainMenu = ComposerHost.menu()
+            return
+        }
+        if case .exportComposer = mode { return }
         let state = ReadingStateStore(directory: mode.isCheck ? nil : Self.stateDirectory())
         var platform = mode.isCheck ? CheckRunner.platform() : MacPlatform.operations()
         if !mode.isCheck {
@@ -58,6 +64,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if case .composer(let path) = mode {
+            startComposer(path)
+            return
+        }
+        if case .exportComposer(let path) = mode {
+            Task { await ComposerCheck.run(directory: URL(fileURLWithPath: path)) }
+            return
+        }
         if let livePath {
             do { liveConfiguration = try CollaborationConfiguration.consume(livePath) }
             catch {
@@ -90,6 +104,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // A quit request to a pane reader, such as a scripted quit or a logout, ends it like its
         // close control: the position is saved and the terminal restored before the exit.
+        if let composerHost {
+            composerHost.close()
+            return .terminateCancel
+        }
         if mode.isPane, let paneHost {
             paneHost.end(status: 0)
             return .terminateCancel
@@ -219,6 +237,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     /// Pane mode: checks the store and the document before the terminal changes, so that a wrong
     /// argument ends with one error line and a nonzero status in the pane.
+    private func startComposer(_ path: String) {
+        do {
+            guard let terminal = PaneTerminal() else { throw CocoaError(.fileReadUnknown) }
+            let file = URL(fileURLWithPath: path)
+            let configuration = try ComposerConfiguration.consume(file)
+            let host = try ComposerHost(configuration: configuration, launchFile: file, stateDirectory: Self.stateDirectory(), terminal: terminal)
+            composerHost = host
+            host.start()
+        } catch {
+            FileHandle.standardError.write(Data("Markdown Reader: invalid composer launch or no terminal.\n".utf8))
+            exit(2)
+        }
+    }
+
     private func startPane(_ target: LaunchMode.PaneTarget) {
         guard let terminal = PaneTerminal() else {
             FileHandle.standardError.write(Data("Markdown Reader: --pane needs a terminal on standard input and output.\n".utf8))

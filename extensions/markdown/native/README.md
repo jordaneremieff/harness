@@ -220,6 +220,36 @@ pane selects the current revision in the same window. The placeholder names the 
 document, revision and build. A malformed request leaves the current document intact.
 Closing restores the terminal and retains the reading position within the shutdown deadline.
 
+## Pi composer
+
+A bundle with `"composer": 1` in its build manifest accepts `--composer <absolute launch file>`.
+The one-use launch file names the Pi process and an authenticated loopback connection. The composer
+shares the reader's pane placement and stacking but uses its own WebKit page and bridge handler.
+It claims keyboard focus after hello. When its pane is concealed it informs Pi, which owns the
+fallback terminal editor. Escape closes the open menu, stops active work, or returns keyboard focus
+to the terminal window. For a dialog in Pi, select the Pi pane in that window. Command-W closes
+the composer. In the composer's raw terminal, Ctrl-D closes and printable text enters the draft.
+
+Return sends, or steers active work. Option-Return queues a follow-up while Pi works. Shift-Return
+adds a line. The send-key preference changes the primary send key to Command-Return. Completion,
+model choice, thinking levels and the work queue come from Pi. History recall operates at the edge
+of an empty or recalled draft. The editor uses native spell check, selection and undo. Programmatic
+changes use the same undo history.
+
+Unsent drafts are private records under `Composer/` in application state. The composer retains an
+unconfirmed send. It stays editable during reconnect. After a connection gap it retries the
+same bridge while it watches for a replacement launch file. After an explicit detach it waits
+for the file. If Pi does not answer, the composer reports the outage and keeps retrying until
+you close it or Pi ends. If Pi returns a draft at handoff, it replaces the current text with
+that draft, even when Pi cleared it. An empty field offers the most recent abandoned draft. Close sends the current draft back to Pi when connected. File references
+are absolute paths at the caret. Supported pasted images are retained under `Composer/Images/`;
+image thumbnails are generated from local paths and removing a thumbnail removes its path from
+the draft. Shell-mode paths use single-quote escaping.
+
+`MarkdownReader --export-composer <absolute output directory>` captures the real composer page
+with fixture state at two pane sizes in both appearances. The check exercises page message
+handling and rendering, not Rex keyboard focus or Finder paste and drop.
+
 ## Licences
 
 `Licenses/swift-cmark-COPYING` contains the required notice for swiftlang/swift-cmark 0.9.0.

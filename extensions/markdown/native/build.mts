@@ -297,8 +297,8 @@ function webTestFile(name: string): boolean {
 }
 
 /** Rejects a web source without its entry page, before Swift compilation or any staging. */
-function assertWebSource(webSourceDir: string): void {
-	const indexPath = join(webSourceDir, "index.html");
+function assertWebSource(webSourceDir: string, entry = "index.html"): void {
+	const indexPath = join(webSourceDir, entry);
 	let stat: ReturnType<typeof lstatSync>;
 	try {
 		stat = lstatSync(indexPath);
@@ -557,6 +557,7 @@ function main(): void {
 	const { app: destination, dir: store } = settingValues();
 	const webSourceDir = join(packageDir, "web");
 	assertWebSource(webSourceDir);
+	assertWebSource(webSourceDir, "composer.html");
 	const parent = dirname(destination);
 	mkdirSync(parent, { recursive: true, mode: 0o700 });
 	const release = lockInstall(parent);
@@ -615,6 +616,7 @@ function install(destination: string, store: string, webSourceDir: string): void
 			paneOpenRequest: PANE_OPEN_REQUEST,
 			editorOpen: EDITOR_OPEN,
 			live: 2,
+			composer: 1,
 			sourceDigest: digest,
 			...(source ? { source } : {}),
 			builtAt: new Date().toISOString(),

@@ -23,6 +23,8 @@ struct NativeLaunch {
 enum LaunchMode {
     case application
     case editor(EditorLaunch)
+    case composer(String)
+    case exportComposer(String)
     /// Shows one stored document in a reader window over the terminal pane that runs the
     /// program, for as long as the pane and the reader stay open.
     case pane(PaneTarget)
@@ -60,7 +62,7 @@ enum LaunchMode {
 
     var isCheck: Bool {
         switch self {
-        case .application, .pane, .editor: false
+        case .application, .pane, .editor, .composer: false
         default: true
         }
     }
@@ -73,6 +75,12 @@ enum LaunchMode {
 
     static func parse(_ arguments: [String]) -> LaunchMode {
         guard let first = arguments.first, first.hasPrefix("--") else { return .application }
+        if first == "--composer" || first == "--export-composer" {
+            guard arguments.count == 2, arguments[1].hasPrefix("/"), arguments[1].count > 1 else {
+                return .usage("\(first) <absolute path>")
+            }
+            return first == "--composer" ? .composer(arguments[1]) : .exportComposer(arguments[1])
+        }
         if first == "--editor" {
             do { return .editor(try EditorLaunch.parse(Array(arguments.dropFirst()))) }
             catch { return .usage(String(describing: error)) }
