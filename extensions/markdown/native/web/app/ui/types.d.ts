@@ -33,7 +33,10 @@ declare global {
 		range?: ReaderRange;
 		draft: string;
 		messages: ReaderAskMessage[];
-		collapsed: boolean;
+	}
+	interface ReaderDiffPart {
+		kind: "same" | "removed" | "added";
+		text: string;
 	}
 	interface ReaderMenuTarget {
 		area: "document" | "input" | "other";
@@ -95,8 +98,8 @@ declare global {
 		currentHeading(rows: { start: number; top: number }[], threshold: number): number;
 		promptTransition(old: ReaderAskState, next: ReaderAskState): ReaderAskState;
 		promptLabel(state: ReaderAskState): string;
-		diffWords(oldText: string, newText: string): { kind: "same" | "removed" | "added"; text: string }[];
-		changeContext(source: string, span: ReaderRange, edit: ReaderRange & { oldText: string; newText: string }): { oldText: string; newText: string } | null;
+		diffWords(oldText: string, newText: string): ReaderDiffPart[] | null;
+		changeContext(source: string, span: ReaderRange, edit: ReaderRange & { oldText: string; newText: string }): { prefix: string; suffix: string } | null;
 	}
 	interface ReaderUIHelpers {
 		element<K extends keyof HTMLElementTagNameMap>(

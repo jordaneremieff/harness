@@ -118,8 +118,8 @@ test("inline change context preserves unchanged text around mapped UTF-16 ranges
 			newText: source.slice(start, end),
 		},
 	);
-	assert.equal(context?.oldText, "The agent works on this passage. Every change stays.");
-	assert.equal(context?.newText, "The agent makes this 👩‍💻 passage clearer. Every change stays.");
+	assert.equal(context?.prefix, "The agent ");
+	assert.equal(context?.suffix, " Every change stays.");
 	assert.equal(
 		logic.changeContext(
 			source,
@@ -155,8 +155,9 @@ test("inline change context spans paragraphs and preserves insertion and deletio
 		["A added Z", { start: 2, end: 8, oldText: "", newText: "added " }, "A Z"],
 	] as const) {
 		const context = logic.changeContext(source, { start: 0, end: source.length }, edit);
-		assert.equal(context?.oldText, old);
-		assert.equal(context?.newText, source);
+		assert.ok(context);
+		assert.equal(context.prefix + edit.oldText + context.suffix, old);
+		assert.equal(context.prefix + edit.newText + context.suffix, source);
 	}
 });
 
@@ -170,6 +171,7 @@ test("inline differences preserve exact original and replacement text", () => {
 		["A 👩‍💻 é", "B 👩‍💻 é"],
 	]) {
 		const parts = logic.diffWords(before, after);
+		assert.ok(parts);
 		assert.equal(
 			parts
 				.filter((p) => p.kind !== "added")
@@ -185,6 +187,22 @@ test("inline differences preserve exact original and replacement text", () => {
 			after,
 		);
 	}
+});
+
+test("separated edits leave shared words, emoji and punctuation unmarked", () => {
+	const parts = logic.diffWords("Meet Tuesday, 👩‍💻, at two.", "Meet Thursday, 👩‍💻, at four!");
+	assert.ok(parts);
+	assert.deepEqual(Array.from(parts.filter(p => p.kind === "same"), p => p.text), ["Meet ", ", 👩‍💻, at "]);
+	assert.deepEqual(Array.from(parts.filter(p => p.kind === "added"), p => p.text), ["Thursday", "four!"]);
+	const punctuation = logic.diffWords("Keep it.", "Keep it?");
+	assert.equal(punctuation?.[0].text, "Keep it");
+});
+
+test("an oversized word comparison yields plain versions, not guessed highlights", () => {
+	assert.equal(logic.diffWords("one ".repeat(1000), "two ".repeat(1000)), null);
+	assert.equal(logic.diffWords("x".repeat(100_000), "y"), null);
+	const prefix = "Shared ".repeat(1000);
+	assert.equal(logic.diffWords(`${prefix}one`, `${prefix}two`)?.[0].text, prefix);
 });
 
 test("the ask card floats beside its anchor inside the pane and never covers it", () => {

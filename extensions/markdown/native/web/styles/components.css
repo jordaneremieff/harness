@@ -410,7 +410,6 @@
   .ask-actions { display:flex; gap:16px; }
   .send-failure { margin:0;color:var(--err);font:12.5px/1.45 var(--font); }
   .follow-up textarea { min-height:2lh; }
-  .ask-card[data-collapsed] { width:min(340px,calc(100cqw - 24px));padding:9px 10px; }
   #b-ask { position:relative; }
   #b-ask .dot { position:absolute;right:4px;top:4px;width:5px;height:5px;border-radius:50%;background:var(--agent); }
   .change-count { font:600 10px/1 var(--font);color:var(--agent-text); }

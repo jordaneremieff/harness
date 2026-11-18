@@ -8,10 +8,12 @@
 		const threads: ReaderThread[] = [],
 			payloads = new Map<string, Record<string, unknown>>();
 		const off: (() => void)[] = [];
+		type ReviewEntry = { operation: ReaderAgentOperation; edit: ReaderAgentOperation["edits"][number] };
+		let mounted: { panel: HTMLElement; entry: ReviewEntry; target: DiffTarget; conflicted: boolean } | null = null;
 		let current: ReaderThread | null = null,
 			visible = false,
 			changeIndex = 0,
-			operationId: string | null = null;
+			review: ReviewEntry[] = [];
 		function operations(thread = current) {
 			return [...controller.agentOperations.values()].filter((op) => !thread || op.threadId === thread.threadId);
 		}
@@ -73,7 +75,7 @@
 			return result;
 		}
 		function cardAnchorRect() {
-			const anchor = current?.collapsed ? doc.querySelector(".inline-diff") : rangeFor(threadRange());
+			const anchor = rangeFor(threadRange());
 			return anchor?.getBoundingClientRect() ?? get("#b-ask").getBoundingClientRect();
 		}
 		// The card floats beside its passage at every width and follows it while the page scrolls;
@@ -91,16 +93,8 @@
 			);
 			card.style.maxHeight = `${place.maxHeight}px`;
 			card.style.left = `${place.left}px`;
-			const top = place.top;
-			card.style.top = `${top}px`;
+			card.style.top = `${place.top}px`;
 			card.dataset.side = place.side;
-			// The collapsed card never covers the change panel it summarises; where no free
-			// place exists it steps aside until the panel scrolls or closes.
-			card.style.visibility = current?.collapsed && overlapsPanel(top + box.top, card.offsetHeight) ? "hidden" : "";
-		}
-		function overlapsPanel(top: number, height: number) {
-			const panel = doc.querySelector(".inline-diff")?.getBoundingClientRect();
-			return !!panel && top < panel.bottom && top + height > panel.top;
 		}
 		function paintPassage() {
 			const range = visible ? rangeFor(threadRange()) : null;
@@ -113,6 +107,16 @@
 			const msg = activeMessage(thread);
 			return msg ? api.uiLogic.promptLabel(msg.state) : "New question";
 		}
+		function selectionAction() {
+			const selection = editor.selection(), documentAtOpen = controller.doc, generation = documentAtOpen?.generation;
+			const item = button("Ask about the selection", "quote", () => {
+				activity.hidePopover();
+				if (selection && documentAtOpen === controller.doc && generation === controller.doc?.generation) ask.open(selection);
+				else ctx.toast("Select text to ask about it.");
+			}, { className: "item" });
+			item.disabled = !selection;
+			return item;
+		}
 		function drawActivity() {
 			activity.replaceChildren(
 				button(
@@ -124,15 +128,7 @@
 					},
 					{ className: "item" },
 				),
-				button(
-					"Ask about the selection",
-					"quote",
-					() => {
-						activity.hidePopover();
-						ask.open(editor.selection());
-					},
-					{ className: "item" },
-				),
+				selectionAction(),
 				el("div", { class: "sep" }),
 			);
 			if (!threads.length) activity.append(el("div", { class: "sec" }, "Select a passage and choose Ask."));
@@ -141,11 +137,8 @@
 					"",
 					"spark",
 					() => {
-						current = thread;
-						visible = true;
-						thread.collapsed = false;
-						draw();
 						activity.hidePopover();
+						openThread(thread);
 					},
 					{ className: "thread" },
 				);
@@ -193,22 +186,13 @@
 			);
 		}
 		function drawHead(thread: ReaderThread) {
-			const head = el(
+			return el(
 				"div",
 				{ class: "ask-head" },
 				el("span", { class: "kind" }, icon("spark")),
-				el("span", { class: "who" }, thread.collapsed ? "Changes in this passage" : "Ask the agent"),
+				el("span", { class: "who" }, thread.quote ? "Ask about this passage" : "Ask about this document"),
 				button("Close question", "x", () => ask.close(), { iconOnly: true, key: "esc" }),
 			);
-			if (thread.collapsed)
-				head.insertBefore(
-					action("Question", () => {
-						thread.collapsed = false;
-						draw();
-					}),
-					head.lastChild,
-				);
-			return head;
 		}
 		function drawStatus(message: ReaderAskMessage, changeCount: number) {
 			const glyph = ({ failed: "info", answered: "check" } as Record<string, string>)[message.state] ?? "spark";
@@ -256,15 +240,15 @@
 			if (!message) return;
 			const ops = operations(thread),
 				changeCount = ops.reduce((n, op) => n + op.edits.length, 0),
-				id = ops.at(-1)?.operationId;
+				latest = ops.at(-1);
 			card.append(drawStatus(message, changeCount), drawMessages(thread));
-			if (changeCount)
+			if (latest)
 				card.append(
 					el(
 						"div",
 						{ class: "ask-actions" },
-						action("Show changes", () => ask.showChanges(id)),
-						action("Undo", () => undo(id)),
+						action("Show changes", () => ask.showChanges(ops[0].operationId)),
+						action(undoLabel(latest, ops.length > 1), () => undo(latest.operationId)),
 					),
 				);
 			deliveryMessage(message);
@@ -296,13 +280,8 @@
 				focused = focusedComposer();
 			card.replaceChildren();
 			card.dataset.state = activeMessage(thread)?.state ?? "draft";
-			card.toggleAttribute("data-collapsed", thread.collapsed);
 			card.setAttribute("data-open", "");
 			card.append(drawHead(thread));
-			if (thread.collapsed) {
-				position();
-				return;
-			}
 			card.append(
 				el(
 					"div",
@@ -384,9 +363,7 @@
 				return;
 			}
 			if (!["answered", "failed"].includes(state)) return;
-			current = thread;
-			visible = true;
-			thread.collapsed = false;
+			openThread(thread);
 			thread.draft = "I closed the passage I had open. Please make the change now.";
 			void sendMessage();
 		}
@@ -407,10 +384,15 @@
 				message.detail = String(error);
 			}
 		}
+		function undoLabel(op: ReaderAgentOperation, latest = false) {
+			if (op.edits.length === 1) return latest ? "Undo latest change" : "Undo";
+			return latest ? `Undo latest ${op.edits.length} changes` : `Undo ${op.edits.length} changes`;
+		}
 		function undo(id?: string) {
 			if (!id) return;
 			const operation = controller.agentOperations.get(id),
 				result = controller.undoAgent(id);
+			if (result?.status === "ok" && review[changeIndex]?.operation === operation) closeReview();
 			if (result?.status === "blocked" || result?.status === "refused") {
 				const old = operation?.edits.map((e) => e.oldText).join("\n\n") ?? "";
 				ctx.notice("A later edit overlaps this change. The document stays as it is.", "warn", [
@@ -424,47 +406,76 @@
 			}
 		}
 		function clearDiff() {
-			for (const diff of doc.querySelectorAll(".inline-diff")) diff.remove();
-			for (const block of doc.querySelectorAll(".has-diff,.diff-continuation"))
-				block.classList.remove("has-diff", "diff-continuation");
+			if (!mounted) return;
+			mounted.panel.remove();
+			for (const block of mounted.target.blocks) block.classList.remove("has-diff", "diff-continuation");
+			mounted = null;
 		}
-		function moveChange(delta: number, total: number) {
-			changeIndex = (changeIndex + delta + total) % total;
+		function closeReview() {
+			review = [];
+			clearDiff();
+		}
+		function openThread(thread: ReaderThread) {
+			closeReview();
+			current = thread;
+			visible = true;
+			draw();
+			card.querySelector("textarea")?.focus({ preventScroll: true });
+		}
+		function visitChange(index: number, focusLabel?: string) {
+			changeIndex = index;
+			const { operation } = review[index];
+			if (operation.unread) controller.markRead(operation.operationId);
+			get("#notices").querySelector(`[data-notice-id="${CSS.escape(`agent-${operation.operationId}`)}"]`)?.remove();
 			drawDiff();
-			const diff = doc.querySelector(".inline-diff");
-			if (diff) navigation.jumpElement(diff);
+			const panel = mounted?.panel;
+			if (!panel) return;
+			const rect = panel.getBoundingClientRect();
+			if (rect.top < get(".bar").getBoundingClientRect().bottom || rect.bottom > page.getBoundingClientRect().bottom)
+				navigation.jumpElement(panel);
+			const focus = focusLabel && panel.querySelector<HTMLButtonElement>(`button[aria-label="${focusLabel}"]`);
+			(focus || panel).focus({ preventScroll: true });
 		}
-		function diffBody(edit: { oldText: string; newText: string }) {
-			const body = el("div", { class: "diff-words" });
-			for (const part of api.uiLogic.diffWords(edit.oldText, edit.newText))
-				body.append(
-					el(
-						({ removed: "del", added: "ins", same: "span" } as Record<string, keyof HTMLElementTagNameMap>)[
-							part.kind
-						] ?? "span",
-						{},
-						part.text,
-					),
-				);
+		type DiffTarget = NonNullable<ReturnType<typeof diffTarget>>;
+		function appendVersion(words: HTMLElement, parts: ReaderDiffPart[], side: "removed" | "added") {
+			const tag = side === "added" ? "ins" : "del";
+			for (const part of parts) {
+				if (part.kind === "same") words.append(part.text);
+				else if (part.kind === side) words.append(el(tag, {}, part.text));
+			}
+		}
+		function diffRow(label: string, side: "removed" | "added", target: DiffTarget, parts: ReaderDiffPart[] | null) {
+			const exact = side === "added" ? target.edit.newText : target.edit.oldText;
+			const words = el("div", { class: "diff-words", dir: "auto" }, target.context?.prefix);
+			if (parts) appendVersion(words, parts, side);
+			else words.append(exact);
+			words.append(target.context?.suffix ?? "");
+			return el("div", { class: `diff-row ${side}` }, el("span", { class: "diff-label" }, label), words);
+		}
+		function diffBody(target: DiffTarget) {
+			const body = el("div", { class: "diff-body" }), { oldText, newText } = target.edit;
+			const parts = api.uiLogic.diffWords(oldText, newText);
+			const before = newText ? "Before" : "Removed", after = oldText ? "After" : "Added";
+			if (oldText) body.append(diffRow(before, "removed", target, parts));
+			if (newText) body.append(diffRow(after, "added", target, parts));
+			if (!parts) body.append(el("p", { class: "diff-note" }, "Long edit. Both versions are shown without word highlights."));
 			return body;
 		}
 		function changeBlocks(edit: ReaderRange) {
-			const blocks = [...doc.children] as HTMLElement[];
+			const blocks = Array.from(doc.querySelectorAll<HTMLElement>(":scope > [data-block]"));
 			const first = blockAt(edit.start) ?? blocks.find((node) => Number(node.dataset.start) >= edit.start) ?? blocks.at(-1);
 			if (!first) return [];
 			return [first, ...blocks.filter((node) => node !== first && Number(node.dataset.start) < edit.end && Number(node.dataset.end) > edit.start)];
 		}
-		function diffTarget(operation: ReaderAgentOperation) {
-			const edit = operation.edits[changeIndex];
-			if (!edit || !controller.doc) return null;
-			const blocks = changeBlocks(edit), block = blocks[0];
-			if (!block) return null;
-			const context = operation.conflicted ? null : api.uiLogic.changeContext(controller.doc.source, {
+		function diffTarget({ operation, edit }: ReviewEntry) {
+			if (!controller.doc) return null;
+			const blocks = changeBlocks(edit), block = blocks[0] ?? doc;
+			const context = !blocks.length || operation.conflicted ? null : api.uiLogic.changeContext(controller.doc.source, {
 				start: Number(block.dataset.start), end: Number(blocks.at(-1)?.dataset.end),
 			}, edit);
 			return { blocks, block, context, edit };
 		}
-		function mountDiff(diff: HTMLElement, target: NonNullable<ReturnType<typeof diffTarget>>) {
+		function mountDiff(diff: HTMLElement, target: DiffTarget) {
 			if (target.context) {
 				target.block.classList.add("has-diff");
 				for (const next of target.blocks.slice(1)) next.classList.add("diff-continuation");
@@ -473,56 +484,46 @@
 		}
 		// Redrawing replaces the panel's buttons; an unchanged panel stays in place, so a
 		// redraw between a press and its release never swallows the click.
-		function diffSignature(operation: ReaderAgentOperation, target: NonNullable<ReturnType<typeof diffTarget>>) {
-			return JSON.stringify([operation.operationId, changeIndex, operation.conflicted, target.block.dataset.block, target.context ?? target.edit]);
-		}
-		function diffMounted(operation: ReaderAgentOperation, target: ReturnType<typeof diffTarget>) {
-			const mounted = doc.querySelector<HTMLElement>(".inline-diff");
-			return !!target && !!mounted && mounted.dataset.signature === diffSignature(operation, target) && target.block.contains(mounted);
+		function diffMounted(entry: ReviewEntry, target: DiffTarget) {
+			if (!mounted || mounted.entry !== entry || mounted.panel.parentElement !== target.block) return false;
+			const previous = mounted.target;
+			return mounted.conflicted === entry.operation.conflicted && previous.context?.prefix === target.context?.prefix &&
+				previous.context?.suffix === target.context?.suffix && previous.blocks.length === target.blocks.length &&
+				target.blocks.every((block, i) => block === previous.blocks[i]);
 		}
 		function conflictWarning() {
-			return el("p", { class: "diff-warning" }, "Original agent change. Later edits overlap this passage.");
+			return el("p", { class: "diff-warning" }, "Original agent wording. Later edits overlap this change.");
 		}
-		function diffPanel(operation: ReaderAgentOperation, target: NonNullable<ReturnType<typeof diffTarget>>) {
-			const diff = el("section", { class: "inline-diff", "data-reader-control": "", "aria-label": "Agent change" });
-			const close = button(
-				"Close changes",
-				"x",
-				() => {
-					operationId = null;
-					clearDiff();
-				},
-				{ iconOnly: true },
-			);
-			diff.append(
-				el(
-					"div",
-					{ class: "diff-head" },
-					el("span", {}, `Change ${changeIndex + 1} of ${operation.edits.length}`),
-					action("Previous", () => moveChange(-1, operation.edits.length)),
-					action("Next", () => moveChange(1, operation.edits.length)),
-					action("Undo", () => undo(operation.operationId)),
-					close,
-				),
-				diffBody(target.context ?? target.edit),
-			);
-			diff.dataset.signature = diffSignature(operation, target);
+		function diffPanel(operation: ReaderAgentOperation, target: DiffTarget) {
+			const diff = el("section", { class: "inline-diff", "data-reader-control": "", "aria-label": "Agent change", tabindex: "-1" });
+			const head = el("div", { class: "diff-head" }, el("span", { class: "diff-title" }, icon("spark"), "Passage change"));
+			if (review.length > 1) {
+				const turn = (delta: number) => visitChange((changeIndex + delta + review.length) % review.length,
+					delta < 0 ? "Previous change" : "Next change");
+				head.append(button("Previous change", "back", () => turn(-1), { iconOnly: true }),
+					el("span", { class: "diff-count" }, `${changeIndex + 1} of ${review.length}`),
+					button("Next change", "forward", () => turn(1), { iconOnly: true }));
+			}
+			head.append(button("Close changes", "x", closeReview, { iconOnly: true, key: "esc" }));
+			const foot = el("div", { class: "diff-actions" });
+			const thread = operation.threadId && threads.find((t) => t.threadId === operation.threadId);
+			if (thread) foot.append(button("Back to question", "ask", () => openThread(thread), { className: "link agent" }));
+			foot.append(button(undoLabel(operation), "undo", () => undo(operation.operationId), { className: "link" }));
+			diff.append(head, diffBody(target), foot);
 			diff.addEventListener("click", (event) => event.stopPropagation());
 			if (operation.conflicted) diff.prepend(conflictWarning());
 			return diff;
 		}
 		function drawDiff() {
-			const operation = operationId ? controller.agentOperations.get(operationId) : undefined;
-			if (!operation) {
-				clearDiff();
-				return;
-			}
-			changeIndex = Math.min(changeIndex, operation.edits.length - 1);
-			const target = diffTarget(operation);
-			if (diffMounted(operation, target)) return;
+			const entry = review[changeIndex];
+			if (!entry) return;
+			const target = diffTarget(entry);
+			if (target && diffMounted(entry, target)) return;
 			clearDiff();
 			if (!target) return;
-			mountDiff(diffPanel(operation, target), target);
+			const panel = diffPanel(entry.operation, target);
+			mountDiff(panel, target);
+			mounted = { panel, target, entry, conflicted: entry.operation.conflicted };
 		}
 		function markers() {
 			for (const marker of doc.querySelectorAll(".change-marker")) marker.remove();
@@ -543,20 +544,21 @@
 			noteHeld,
 			letAgentChange,
 			open(selection) {
-				current = {
+				const thread: ReaderThread = {
 					threadId: "",
 					quote: selection?.text,
 					range: selection ? { start: selection.start, end: selection.end } : undefined,
 					draft: "",
 					messages: [],
-					collapsed: false,
 				};
-				threads.unshift(current);
-				visible = true;
-				draw();
-				card.querySelector("textarea")?.focus({ preventScroll: true });
+				threads.unshift(thread);
+				openThread(thread);
 			},
 			close() {
+				if (review.length) {
+					closeReview();
+					return true;
+				}
 				if (!visible) return false;
 				visible = false;
 				card.removeAttribute("data-open");
@@ -564,7 +566,7 @@
 				return true;
 			},
 			refresh() {
-				drawActivity();
+				if (activity.matches(":popover-open")) drawActivity();
 				const count = [...controller.agentOperations.values()]
 						.filter((op) => op.unread)
 						.reduce((n, op) => n + op.edits.length, 0),
@@ -579,19 +581,15 @@
 				markers();
 			},
 			showChanges(id) {
-				operationId = id ?? [...controller.agentOperations.keys()].at(-1) ?? null;
-				changeIndex = 0;
-				if (!operationId) return;
-				const operation = controller.agentOperations.get(operationId);
-				if (!operation) return;
+				const all = [...controller.agentOperations.values()];
+				const selected = id ? controller.agentOperations.get(id) : all.at(-1);
+				if (!selected) return;
+				const group = selected.threadId ? all.filter((op) => op.threadId === selected.threadId) : [selected];
 				editor.close();
-				controller.markRead(operationId);
-				get("#notices").querySelector(`[data-notice-id="${CSS.escape(`agent-${operationId}`)}"]`)?.remove();
-				if (current && visible) current.collapsed = true;
-				drawDiff();
-				const diff = doc.querySelector(".inline-diff");
-				if (diff) navigation.jumpElement(diff);
+				visible = false;
 				draw();
+				review = group.flatMap((operation) => operation.edits.map((edit) => ({ operation, edit })));
+				visitChange(review.findIndex((entry) => entry.operation === selected));
 			},
 			dispose() {
 				for (const fn of off) fn();
@@ -628,10 +626,12 @@
 				threads.length = 0;
 				payloads.clear();
 				current = null;
-				operationId = null;
-				clearDiff();
+				closeReview();
 			}),
 		);
+		const onToggle = (event: ToggleEvent) => { if (event.newState === "open") drawActivity(); };
+		activity.addEventListener("beforetoggle", onToggle);
+		off.push(() => activity.removeEventListener("beforetoggle", onToggle));
 		const scroll = () => position();
 		page.addEventListener("scroll", scroll, { passive: true });
 		off.push(() => page.removeEventListener("scroll", scroll));

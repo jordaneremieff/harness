@@ -55,35 +55,73 @@
 		const order: ReaderAskState[] = ["draft", "sending", "sent", "admitted", "working", "answered"];
 		return order.indexOf(next) >= order.indexOf(old) ? next : old;
 	}
-	function diffWords(a: string, b: string) {
-		const old = a.match(/\s+|[^\s]+/gu) ?? [],
-			next = b.match(/\s+|[^\s]+/gu) ?? [];
-		let start = 0,
-			end = 0;
-		while (start < old.length && start < next.length && old[start] === next[start]) start++;
-		while (
-			end < old.length - start &&
-			end < next.length - start &&
-			old[old.length - 1 - end] === next[next.length - 1 - end]
-		)
-			end++;
-		const parts: { kind: "same" | "removed" | "added"; text: string }[] = [];
-		const add = (kind: "same" | "removed" | "added", words: string[]) => {
-			if (words.length) parts.push({ kind, text: words.join("") });
+	const segmenter = new Intl.Segmenter(undefined, { granularity: "word" });
+	function sharedEdges(a: string[], b: string[]) {
+		const limit = Math.min(a.length, b.length);
+		let head = 0, tail = 0;
+		while (head < limit && a[head] === b[head]) head++;
+		while (tail < limit - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+		return { head, tail };
+	}
+	// Each cell counts the longest common subsequence of the two remaining word lists.
+	function suffixLengths(a: string[], b: string[], stride: number) {
+		const lengths = new Uint16Array((a.length + 1) * stride);
+		for (let i = a.length - 1; i >= 0; i--)
+			for (let j = b.length - 1; j >= 0; j--) {
+				const k = i * stride + j;
+				lengths[k] = a[i] === b[j] ? 1 + lengths[k + stride + 1] : Math.max(lengths[k + stride], lengths[k + 1]);
+			}
+		return lengths;
+	}
+	// If alignment would stall the reader, show both exact versions without guessing highlights.
+	function wordAlignment(a: string[], b: string[]) {
+		const stride = b.length + 1;
+		if ((a.length + 1) * stride > 160_000) return null;
+		const lengths = suffixLengths(a, b, stride), pairs: [number, number][] = [];
+		let i = 0, j = 0;
+		while (i < a.length && j < b.length) {
+			const k = i * stride + j;
+			if (a[i] === b[j]) pairs.push([i++, j++]);
+			else if (lengths[k + stride] >= lengths[k + 1]) i++;
+			else j++;
+		}
+		return pairs;
+	}
+	function diffWords(before: string, after: string): ReaderDiffPart[] | null {
+		if (before === after) return [{ kind: "same", text: before }];
+		if (!before) return [{ kind: "added", text: after }];
+		if (!after) return [{ kind: "removed", text: before }];
+		if (Math.max(before.length, after.length) > 32_768) return null;
+		const words = (text: string) => Array.from(segmenter.segment(text), (part) => part.segment);
+		const old = words(before), next = words(after), { head, tail } = sharedEdges(old, next);
+		const a = old.slice(head, old.length - tail), b = next.slice(head, next.length - tail);
+		const pairs = wordAlignment(a, b);
+		if (!pairs) return null;
+		const parts: ReaderDiffPart[] = [];
+		const add = (kind: ReaderDiffPart["kind"], text: string) => {
+			if (!text) return;
+			const last = parts.at(-1);
+			if (last?.kind === kind) last.text += text;
+			else parts.push({ kind, text });
 		};
-		add("same", old.slice(0, start));
-		add("removed", old.slice(start, old.length - end));
-		add("added", next.slice(start, next.length - end));
-		add("same", old.slice(old.length - end));
+		add("same", old.slice(0, head).join(""));
+		let i = 0, j = 0;
+		for (const [x, y] of pairs) {
+			add("removed", a.slice(i, x).join(""));
+			add("added", b.slice(j, y).join(""));
+			add("same", a[x]);
+			i = x + 1;
+			j = y + 1;
+		}
+		add("removed", a.slice(i).join(""));
+		add("added", b.slice(j).join(""));
+		add("same", old.slice(old.length - tail).join(""));
 		return parts;
 	}
 	function changeContext(source: string, span: ReaderRange, edit: ReaderRange & { oldText: string; newText: string }) {
 		if (edit.start < span.start || edit.end > span.end || source.slice(edit.start, edit.end) !== edit.newText)
 			return null;
-		return {
-			oldText: source.slice(span.start, edit.start) + edit.oldText + source.slice(edit.end, span.end),
-			newText: source.slice(span.start, span.end),
-		};
+		return { prefix: source.slice(span.start, edit.start), suffix: source.slice(edit.end, span.end) };
 	}
 	function zoomStep(current: number, steps: readonly number[], direction: number | null) {
 		if (direction === null) return 1;

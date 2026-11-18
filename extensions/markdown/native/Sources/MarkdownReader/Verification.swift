@@ -546,7 +546,9 @@ struct Context {
         let name = "agent-hold-change-panel-find-and-code"
         do {
             let filler = (1...60).map { "Filler paragraph \($0) keeps the target below the view." }.joined(separator: "\n\n")
-            let source = "# Panels\n\nHuman passage stays.\n\nAgent passage changes.\n\n```swift\nlet value = 1\n```\n\n" + filler + "\n\nDistant needle here.\n"
+            let original = "Send the draft on Tuesday and the final copy at noon."
+            let replacement = "Send the draft on Thursday and the final copy at five."
+            let source = "# Panels\n\nHuman passage stays.\n\n\(original)\n\n```swift\nlet value = 1\n```\n\n" + filler + "\n\nDistant needle here.\n"
             let state = ReadingStateStore(directory: nil)
             let file = workspace.appendingPathComponent("panels.md")
             try Data(source.utf8).write(to: file)
@@ -585,7 +587,7 @@ struct Context {
             await new Promise(r => setTimeout(r, 30));
             return document.querySelector('[data-role="ask-card"]').hasAttribute('data-open');
             """) as? Bool == true
-            let applied = await apply("Agent passage changes.", "Agent passage changed by the agent.")
+            let applied = await apply(original, replacement)
             let afterAgent = document.text.source
             let panel = await js(model, """
             const notice = [...document.querySelectorAll('[data-role="notice"]')].find(n => n.textContent.includes('The agent changed'));
@@ -594,7 +596,13 @@ struct Context {
             show.click();
             await new Promise(r => setTimeout(r, 50));
             const diff = document.querySelector('.inline-diff');
-            const undo = diff && [...diff.querySelectorAll('button')].find(b => b.textContent.trim() === 'Undo');
+            if (!diff) return 'no change panel';
+            const versions = [...diff.querySelectorAll('.diff-words')].map(n => n.textContent);
+            if (versions.length !== 2 || versions[0] !== original || versions[1] !== replacement) return 'incorrect versions';
+            if ([...diff.querySelectorAll('del')].map(n => n.textContent).join('|') !== 'Tuesday|noon' ||
+                [...diff.querySelectorAll('ins')].map(n => n.textContent).join('|') !== 'Thursday|five') return 'incorrect highlights';
+            if (diff.querySelector('[aria-label="Next change"], [aria-label="Back to question"]')) return 'unrelated navigation';
+            const undo = [...diff.querySelectorAll('button')].find(b => b.textContent.trim() === 'Undo');
             if (!undo) return 'no undo';
             await new Promise(r => setTimeout(r, 100));
             const r = undo.getBoundingClientRect();
@@ -609,7 +617,7 @@ struct Context {
             target.dispatchEvent(new MouseEvent('mouseup', point));
             target.dispatchEvent(new MouseEvent('click', point));
             return 'clicked';
-            """) as? String ?? "unavailable"
+            """, ["original": original, "replacement": replacement]) as? String ?? "unavailable"
             let undone = await wait(seconds: 5) { document.text.source == source }
             _ = await js(model, "document.getElementById('page').scrollTop = 0; return true;")
             await model.sendCommand("find")
