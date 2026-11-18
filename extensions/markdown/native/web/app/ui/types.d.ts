@@ -20,7 +20,7 @@ declare global {
 		name: string;
 		args?: Record<string, unknown>;
 	}
-	type ReaderAskState = "draft" | "sending" | "sent" | "admitted" | "working" | "answered" | "failed" | "unknown";
+	type ReaderAskState = "draft" | "sending" | "sent" | "admitted" | "working" | "answered" | "unanswered" | "failed" | "unknown";
 	interface ReaderAskMessage {
 		requestId: string;
 		text: string;

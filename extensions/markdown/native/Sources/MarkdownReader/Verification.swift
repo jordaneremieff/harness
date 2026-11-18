@@ -688,7 +688,7 @@ struct Context {
             await new Promise(r => setTimeout(r, 30));
             return document.querySelector('[data-role="ask-card"]').hasAttribute('data-open');
             """) as? Bool == true
-            let long = (1...8).map { "Sentence \($0) of a long first answer that fills several lines in the card." }.joined(separator: " ")
+            let long = (1...200).map { "Sentence \($0) of a long first answer that fills several lines in the card." }.joined(separator: "\n") + "\nEnd of the long answer."
             let first = await send("Summarise the document.")
             _ = await wait(seconds: 3) { prompts.count == 1 }
             if prompts.count == 1 { try await answer(0, long) }
@@ -699,6 +699,7 @@ struct Context {
             await new Promise(r => setTimeout(r, 50));
             const card = document.querySelector('[data-role="ask-card"]');
             const replies = [...card.querySelectorAll('.reply')];
+            if (!replies[0]?.textContent.endsWith('End of the long answer.')) return 'first answer missing or incomplete';
             const latest = replies.at(-1);
             if (!latest || !latest.textContent.includes('Follow-up answer')) return 'latest answer missing: ' + replies.map(r => r.textContent.slice(0, 20)).join(' | ');
             const r = latest.getBoundingClientRect();

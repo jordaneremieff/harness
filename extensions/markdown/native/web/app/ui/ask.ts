@@ -195,7 +195,7 @@
 			);
 		}
 		function drawStatus(message: ReaderAskMessage, changeCount: number) {
-			const glyph = ({ failed: "info", answered: "check" } as Record<string, string>)[message.state] ?? "spark";
+			const glyph = ({ failed: "info", unanswered: "info", answered: "check" } as Record<string, string>)[message.state] ?? "spark";
 			let label = api.uiLogic.promptLabel(message.state);
 			if (changeCount) label = `Changed ${changeCount} ${changeCount === 1 ? "passage" : "passages"}`;
 			return el(
@@ -210,9 +210,8 @@
 			for (const m of thread.messages) {
 				log.append(el("div", { class: "ask-question" }, el("span", { class: "from" }, "You"), m.text));
 				if (m.state === "answered" && m.detail)
-					log.append(
-						el("div", { class: "reply" }, el("span", { class: "from" }, "Agent · in the conversation"), m.detail),
-					);
+					log.append(el("div", { class: "reply" }, el("span", { class: "from" }, "Agent"), m.detail));
+				if (m.state === "unanswered" && m.detail) log.append(el("p", { class: "send-failure" }, m.detail));
 			}
 			return log;
 		}
@@ -308,7 +307,7 @@
 			const message = thread?.messages.find((m) => m.requestId === msg.requestId);
 			if (!thread || !message) return;
 			message.state = api.uiLogic.promptTransition(message.state, msg.state);
-			if (msg.detail) message.detail = msg.detail;
+			if (message.state === msg.state) message.detail = msg.detail;
 			ask.refresh();
 		}
 		function promptPayload(thread: ReaderThread, message: ReaderAskMessage) {
@@ -377,11 +376,11 @@
 					message.state = api.uiLogic.promptTransition(message.state, "sent");
 				} else {
 					message.state = api.uiLogic.promptTransition(message.state, "failed");
-					message.detail = receipt.detail;
+					if (message.state === "failed") message.detail = receipt.detail;
 				}
 			} catch (error) {
 				message.state = api.uiLogic.promptTransition(message.state, "unknown");
-				message.detail = String(error);
+				if (message.state === "unknown") message.detail = String(error);
 			}
 		}
 		function undoLabel(op: ReaderAgentOperation, latest = false) {

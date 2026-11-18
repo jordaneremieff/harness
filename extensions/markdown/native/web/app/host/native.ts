@@ -291,8 +291,8 @@
 			ensure(
 				string(m.requestId, 200) &&
 					string(m.threadId, 200) &&
-					one(m.state, ["sending", "sent", "admitted", "working", "answered", "failed", "unknown"]) &&
-					optional(m.detail, (v) => string(v, 8192, true)),
+					one(m.state, ["sending", "sent", "admitted", "working", "answered", "unanswered", "failed", "unknown"]) &&
+					optional(m.detail, (v) => string(v, META, true)),
 			);
 		},
 		saveState(m) {

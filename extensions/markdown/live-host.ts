@@ -1,7 +1,8 @@
 import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
+import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
-import { LiveBridges, type LiveRoute } from "./live-bridge.ts";
+import { LiveBridges, type LivePublisher, type LiveRoute } from "./live-bridge.ts";
 import type { LiveConfig, LiveState } from "./live-protocol.ts";
 import type { MarkdownCommandCall, MarkdownHost } from "./durable.ts";
 
@@ -20,7 +21,56 @@ async function settledAnswer(conversation: Durable.Conversation, settled: Durabl
 	const answer = page.items[0]?.model?.[0];
 	return answer?.role === "assistant" ? { status: messageStatus(answer.stopReason), text: assistantText(answer) } : { status: "error", text: "The request's exact answer is unavailable." };
 }
-const conversationActivity = (text: string): string => text ? `Live conversation activity (not a document-specific receipt):\n\n${text}` : "";
+const noReply = "The agent stopped without a text reply. You can ask a follow-up here.";
+const sharedTurn = "Pi took this question with another message. The shared reply belongs in chat, not under either question.";
+function submittedText(content: UserMessage["content"]): string {
+	if (typeof content === "string") return content;
+	return content.length === 1 && content[0].type === "text" ? content[0].text : "";
+}
+function ordinaryReplies(pi: ExtensionAPI, active: () => boolean, pending: Map<string, string>, publish: LivePublisher) {
+	let hasInput = false, request: string | undefined;
+	const reset = () => { hasInput = false; request = undefined; };
+	function takeInput(content: UserMessage["content"]) {
+		const text = submittedText(content), delivered = pending.get(text);
+		pending.delete(text);
+		if (hasInput) {
+			for (const id of [request, delivered]) if (id) publish("error", sharedTurn, id);
+			request = undefined;
+			return;
+		}
+		hasInput = true;
+		request = delivered;
+		if (request) publish("working", "", request);
+	}
+	function finish(message: AssistantMessage) {
+		// Pi can retry an error or take another turn after tools without a new user message.
+		if (["toolUse", "error", "aborted"].includes(message.stopReason) || message.content.some((part) => part.type === "toolCall")) return;
+		if (request) {
+			const text = assistantText(message);
+			if (text.trim()) publish("answer", text, request);
+			else publish("error", noReply, request);
+		}
+		reset();
+	}
+	const off = [
+		pi.on("message_start", ({ message }) => { if (active() && message.role === "user") takeInput(message.content); }),
+		pi.on("message_end", ({ message }) => { if (active() && message.role === "assistant") finish(message); }),
+		pi.on("agent_settled", () => { if (active() && request) publish("error", noReply, request); reset(); }),
+	];
+	return () => { for (const remove of off) remove(); pending.clear(); };
+}
+function ordinaryRoute(pi: ExtensionAPI, check: () => void, active: () => boolean): LiveRoute {
+	const pending = new Map<string, string>();
+	return {
+		submit: async (text, operationId) => {
+			check();
+			pending.set(text, operationId);
+			pi.sendUserMessage(text, { deliverAs: "followUp", expandPromptTemplates: false });
+			return { status: "requested" };
+		},
+		observe: async (publish) => ordinaryReplies(pi, active, pending, publish),
+	};
+}
 export function ordinaryLive(pi: ExtensionAPI, lifecycle: () => AbortSignal) {
 	let bridges = new LiveBridges();
 	const invalidate = () => { bridges.close(); bridges = new LiveBridges(); };
@@ -36,18 +86,7 @@ export function ordinaryLive(pi: ExtensionAPI, lifecycle: () => AbortSignal) {
 			const signal = lifecycle();
 			const check = () => { signal.throwIfAborted(); if (source.getSessionId() !== id) throw new Error("The invoking Markdown conversation changed."); };
 			check();
-			const bridge = await bridges.get(id, (): LiveRoute => ({
-				submit: async (text) => { check(); pi.sendUserMessage(text, { deliverAs: "followUp", expandPromptTemplates: false }); return { status: "requested" }; },
-				observe: async (publish) => {
-					const active = () => !signal.aborted && source.getSessionId() === id;
-					const off = [
-						pi.on("agent_start", () => { if (active()) publish("working", ""); }),
-						pi.on("message_update", (event) => { if (active() && event.message.role === "assistant") publish("working", conversationActivity(assistantText(event.message))); }),
-						pi.on("message_end", (event) => { if (active() && event.message.role === "assistant") publish(messageStatus(event.message.stopReason), conversationActivity(assistantText(event.message))); }),
-					];
-					return () => { for (const remove of off) remove(); };
-				},
-			}));
+			const bridge = await bridges.get(id, () => ordinaryRoute(pi, check, () => !signal.aborted && source.getSessionId() === id));
 			check();
 			return bridge.start();
 		},
@@ -75,7 +114,7 @@ export async function nativeConversationConnection(host: MarkdownHost, conversat
 	const context = withAbortSignal(signal, BACKGROUND_CONTEXT);
 	const bridge = await bridges.get(String(conversation.id), () => {
 		const inputs = new Map<Durable.SubmissionId, string>();
-		let publish: (status: LiveState["status"], text: string, operationId?: string) => void = () => {};
+		let publish: LivePublisher = () => {};
 		let latest: Durable.ConversationView | undefined;
 		const show = (value: Durable.ConversationView) => {
 			latest = value;

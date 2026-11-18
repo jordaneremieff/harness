@@ -110,7 +110,7 @@ uncertain outcomes remain distinct.
 Comments retain the existing request identity and retry rules. A retry uses the original
 request, text and quote. Unknown ordinary admission never causes an automatic resubmission.
 Each thread keeps its first request identity, while follow-ups receive new request identities.
-Native emits `promptState` with the thread identity and route-reported answer text. An agent edit
+Native emits `promptState` with the question and thread identities and the route-reported answer text. A late send receipt cannot hide an answer already in the card. If a running host cannot identify the question, the card does not quote unscoped chat activity as an answer. An agent edit
 names a thread only when one document thread is admitted or active. The page draws the comment
 interface and timeline. The quote is context, not an edit range or instruction.
 

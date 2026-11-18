@@ -3,11 +3,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { isRecord, LIVE_LIFETIME, LIVE_PROMPT_BYTES, LIVE_WIRE_BYTES, liveHandle, liveId, readLiveAction, readLiveBinding, readLiveResult, type LiveAction, type LiveBinding, type LiveCommand, type LiveConfig, type LivePromptReceipt, type LiveResult, type LiveState } from "./live-protocol.ts";
 import { validUnicode } from "./responses.ts";
 
+export type LivePublisher = (status: LiveState["status"], text: string, operationId: string) => void;
 export interface LiveRoute {
 	submit(text: string, operationId: string): Promise<LivePromptReceipt>;
 	/** Only a route with idempotent admission may repeat a failed submission. */
 	retryFailedSubmission?: boolean;
-	observe?(publish: (status: LiveState["status"], text: string, operationId?: string) => void): Promise<() => void>;
+	observe?(publish: LivePublisher): Promise<() => void>;
 }
 interface Pending {
 	command: LiveCommand;
@@ -19,11 +20,11 @@ interface Pending {
 }
 const failure = (status: "closed" | "uncertain", message: string): LiveResult => ({ status, message });
 function boundedText(text: string): { text: string; truncated: boolean } {
-	if (Buffer.byteLength(text) <= 65536) return { text, truncated: false };
 	let end = Math.min(text.length, 65536);
-	while (Buffer.byteLength(text.slice(0, end)) > 65536) end = Math.floor(end * .9);
+	// The page envelope also has a byte limit after JSON escaping.
+	while (Buffer.byteLength(JSON.stringify(text.slice(0, end))) - 2 > 65536) end = Math.floor(end * .9);
 	if (/[\uD800-\uDBFF]/u.test(text[end - 1] ?? "")) end--;
-	return { text: text.slice(0, end), truncated: true };
+	return { text: text.slice(0, end), truncated: end !== text.length };
 }
 /** One capability binds one host lifetime and one conversation; document names never select a conversation. */
 export class LiveBridge {
@@ -41,8 +42,7 @@ export class LiveBridge {
 	private readonly edits = new Map<string, { fingerprint: string; pending: Pending }>();
 	private readonly prompts = new Map<string, { handle: string; fingerprint: string; promise: Promise<LivePromptReceipt>; result?: LivePromptReceipt }>();
 	private readonly wakes = new Map<string, () => void>();
-	private readonly states = new Map<string, LiveState>();
-	private focused?: string;
+	private readonly states = new Map<string, Map<string, LiveState>>();
 	private sequence = 0;
 	private readonly route: LiveRoute;
 	private readonly commandTimeoutMs: number;
@@ -69,14 +69,26 @@ export class LiveBridge {
 		catch { this.close(); throw new Error("The conversation progress connection failed."); }
 		return this.config;
 	}
-	publish(status: LiveState["status"], text: string, operationId?: string): void {
+	publish(status: LiveState["status"], text: string, operationId: string): void {
 		if (this.closed) return;
-		const handle = operationId ? this.prompts.get(operationId)?.handle : this.focused;
+		const handle = this.prompts.get(operationId)?.handle;
 		if (!handle || this.retired.has(handle)) return;
-		this.states.set(handle, { sequence: ++this.sequence, status, ...boundedText(text), ...(operationId ? { operationId } : {}) });
+		const states = this.states.get(handle) ?? new Map<string, LiveState>();
+		if (states.get(operationId)?.status === "answer") return;
+		// Coalesce progress for one question, never replace a different question's answer.
+		states.delete(operationId);
+		states.set(operationId, { sequence: ++this.sequence, status, ...boundedText(text), operationId });
+		this.states.set(handle, states);
 		this.wakes.get(handle)?.();
 	}
-	private stateFor(handle: string): LiveState { return this.states.get(handle) ?? { sequence: 0, status: "idle", text: "", truncated: false }; }
+	private stateAfter(handle: string, after: number): LiveState {
+		let latest: LiveState = { sequence: 0, status: "idle", text: "", truncated: false };
+		for (const state of this.states.get(handle)?.values() ?? []) {
+			latest = state;
+			if (state.sequence > after) break;
+		}
+		return latest;
+	}
 	list(): { handle: string; workspace: string; document: string; live: 1 | 2 }[] {
 		return [...this.bindings.values()].map((binding) => ({ handle: liveHandle(binding), ...binding, live: this.versions.get(liveHandle(binding)) ?? 1 }));
 	}
@@ -209,7 +221,7 @@ export class LiveBridge {
 		const handle = liveHandle(binding);
 		if (!Number.isSafeInteger(after) || Number(after) < 0 || this.wakes.has(handle)) throw new Error("Invalid or duplicate live poll.");
 		const available = () => [...this.pending.values()].find((item) => !item.cancelled && liveHandle(item.command) === handle);
-		if (!available() && after === this.stateFor(handle).sequence) await new Promise<void>((resolve) => {
+		if (!available() && after === this.stateAfter(handle, Number(after)).sequence) await new Promise<void>((resolve) => {
 			const finish = () => { clearTimeout(timer); this.wakes.delete(handle); response.off("close", finish); resolve(); };
 			const timer = setTimeout(finish, this.pollTimeoutMs);
 			this.wakes.set(handle, finish); response.once("close", finish);
@@ -217,7 +229,7 @@ export class LiveBridge {
 		this.binding(binding);
 		const pending = available();
 		if (pending) pending.delivered = true;
-		return { ok: true, command: pending?.command ?? null, state: this.stateFor(handle) };
+		return { ok: true, command: pending?.command ?? null, state: this.stateAfter(handle, Number(after)) };
 	}
 	private result(binding: LiveBinding, body: Record<string, unknown>): object {
 		if (!liveId(body.requestId)) throw new Error("Invalid native result identity.");
@@ -237,20 +249,16 @@ export class LiveBridge {
 		if (prior && prior.fingerprint !== fingerprint) return rejected("The prompt ID already names a different request; the changed request was not submitted.");
 		if (!prior || (prior.result?.status === "uncertain" && prior.result.retryable)) {
 			if (!prior && this.prompts.size >= 128) return rejected("The live prompt receipt limit is reached; this request was not submitted.");
-			const text = `This request comes from the live Markdown pane ${handle}. Use markdown_live to read this exact unsaved native buffer before edits. Apply changes through markdown_live with the same handle, base generation/digest and a stable operationId. Do not substitute markdown_read, markdown_publish, file writes or a new pane for live edits.\n\n${body.text}`;
-			this.focused = handle;
-			this.publish("queued", "The pane sent your request to this conversation.");
 			const operationId = body.operationId;
+			const text = `This question (${operationId}) comes from the live Markdown pane ${handle}. Answer the person directly in your final message; the Ask card shows that text. Do not open another pane or send the person to chat for this answer. Use markdown_live for any document context you need. Read this exact unsaved buffer before edits. Apply changes through markdown_live with the same handle, base generation/digest and a stable operationId. Do not substitute markdown_read, markdown_publish, file writes or a new pane for live edits.\n\n${body.text}`;
 			const promise = Promise.resolve().then(() => this.route.submit(text, operationId)).catch((): LivePromptReceipt => ({
 				status: "uncertain", retryable: this.route.retryFailedSubmission === true,
 				message: this.route.retryFailedSubmission ? "Admission is unconfirmed. Retry the same request ID to reconcile it." : "Admission is unconfirmed and this route cannot safely resubmit. Check the conversation before another request.",
 			}));
 			const entry: NonNullable<typeof prior> = { handle, fingerprint, promise };
 			prior = entry; this.prompts.set(operationId, entry);
-			void promise.then((result) => {
-				entry.result = result;
-				if (result.status === "rejected" || result.status === "uncertain") this.publish("error", result.message, operationId);
-			});
+			this.publish("queued", "", operationId);
+			void promise.then((result) => { entry.result = result; });
 		}
 		return { ok: true, ...await prior.promise };
 	}

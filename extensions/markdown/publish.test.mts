@@ -229,6 +229,7 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 	assert.ok(tool.outputSchema);
 	assert.match(tool.promptGuidelines?.join("\n") ?? "", /^Before you send a reply with headings, a table, three or more explained points, or more than about ten lines, publish it with markdown_publish and run its show command in a floating pane/u, "the reply decision itself carries the publication rule");
 	for (const guidance of [tool.description, NATIVE_PUBLISH_GUIDANCE, tool.promptGuidelines?.join("\n") ?? ""]) {
+		assert.match(guidance, /Ask card, give the substantive answer in your final message/u);
 		assert.match(guidance, /floating pane that stays (?:where it is|in place)/u);
 		assert.match(guidance, /no target/u, "the pane opens on the tab where the work belongs, not wherever the operator looks");
 		assert.doesNotMatch(guidance, /operator's (?:focus|tab)/u);

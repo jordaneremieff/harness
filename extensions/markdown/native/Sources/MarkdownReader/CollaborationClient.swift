@@ -84,13 +84,12 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     private var threads: [String: PromptThread] = [:]
     private var requestThreads: [String: String] = [:]
     private var activePromptID: String?
-    private var promptStateKeys: [String: String] = [:]
+    private var promptStates: [String: (state: String, detail: String?)] = [:]
     private var bridgePromptInputs: [String: String] = [:]
     private var bridgePromptResults: [String: Bool] = [:]
 
     func currentAdmittedThreadId(for document: UUID) -> String? {
-        // An ordinary conversation reports a request without admission ("sent") and its activity
-        // without a request identity; that request still owns the activity until it is answered.
+        // Live edits name a thread only when exactly one question in this document is active.
         let active = threads.values.filter { $0.document == document && ["sent", "admitted", "working"].contains($0.state) }
         return active.count == 1 ? active.first?.id : nil
     }
@@ -103,9 +102,12 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         guard let request = request ?? activePromptID else { return }
         let requestKey = threadKey(request)
         guard let thread = requestThreads[requestKey] else { return }
-        let key = state + ":" + (detail ?? "")
-        guard promptStateKeys[requestKey] != key else { return }
-        promptStateKeys[requestKey] = key
+        if let prior = promptStates[requestKey] {
+            if ["answered", "unanswered"].contains(prior.state) { return }
+            if prior.state == "working", ["sent", "admitted"].contains(state) { return }
+            if prior.state == state, prior.detail == detail { return }
+        }
+        promptStates[requestKey] = (state, detail)
         let selected = threadKey(thread)
         if threads[selected]?.lastRequest == request { threads[selected]?.state = state }
         onPromptState?(request, thread, state, detail)
@@ -147,26 +149,29 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     }
 
     private func receiveActivity(_ state: AgentState, document: UUID) {
-        let request: String?
-        if let operation = state.operationId {
-            request = requestThreads[threadKey(operation, document: document)] == nil ? nil : operation
-        } else if let thread = currentAdmittedThreadId(for: document) {
-            request = threads[threadKey(thread, document: document)]?.lastRequest
-        } else { request = nil }
-        guard let request else { return }
-        let text = Self.agentWords(state.text)
-        switch state.status {
-        case "working": emitPromptState("working", detail: text.isEmpty ? nil : text, request: request)
-        case "answer": emitPromptState("answered", detail: text, request: request)
-        case "error": emitPromptState("failed", detail: text, request: request)
-        default: break
+        guard let request = state.operationId else {
+            // An already running host can still send conversation-wide activity. Never quote it as this answer.
+            if state.status == "answer", let thread = currentAdmittedThreadId(for: document),
+               let request = threads[threadKey(thread, document: document)]?.lastRequest {
+                emitPromptState("unanswered", detail: "This Pi session did not link its reply to a question. Reload Pi and reopen the pane for replies here.", request: request)
+            }
+            return
         }
+        guard requestThreads[threadKey(request, document: document)] != nil else { return }
+        if state.status == "working" { emitPromptState("working", request: request); return }
+        guard ["answer", "error"].contains(state.status) else { return }
+        if let pending = pendingPrompt, pending.operation == request { confirm(pending) }
+        var text = state.text
+        if state.truncated { text += "\n\n[Reply shortened. The full reply is in chat.]" }
+        answer = text
+        if state.status == "answer", !text.isEmpty { emitPromptState("answered", detail: text, request: request) }
+        else { emitPromptState("unanswered", detail: text.isEmpty ? "The agent stopped without a text reply." : text, request: request) }
     }
-    /// The ordinary conversation route labels its activity for model-facing readers; the page shows
-    /// the agent's words only.
-    static let conversationActivityLabel = "Live conversation activity (not a document-specific receipt):\n\n"
-    static func agentWords(_ text: String) -> String {
-        text.hasPrefix(conversationActivityLabel) ? String(text.dropFirst(conversationActivityLabel.count)) : text
+
+    private func confirm(_ pending: PendingPrompt) {
+        pendingPrompt = nil
+        if prompt.utf8.elementsEqual(pending.comment.utf8), annotationQuote == pending.quote { prompt = "" }
+        bridgePromptResults[threadKey(pending.operation)] = true
     }
 
     private struct CommentDraft {
@@ -298,9 +303,6 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
                     if self.pendingPrompt == nil {
                         self.status = poll.state.status == "working" ? "Agent at work" : poll.state.status == "error" ? "Agent error" : "Agent connected"
                     }
-                    if self.requestedActivity {
-                        if !poll.state.text.isEmpty { self.answer = poll.state.text + (poll.state.truncated ? "\n…" : "") }
-                    }
                     self.receiveActivity(poll.state, document: selected)
                     if let command = poll.command {
                         let result = await self.handle(command)
@@ -345,14 +347,12 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         do {
             var body = identity(selected); body["operationId"] = pending.operation; body["text"] = pending.text
             let receipt: PromptReceipt = try await post("prompt", body: body)
-            guard token == epoch, !closed else { return }
+            guard token == epoch, !closed, bridgePromptResults[threadKey(pending.operation)] != true else { return }
             guard receipt.ok else { throw Failure.response }
             switch receipt.status {
             case "admitted", "requested":
-                pendingPrompt = nil
-                if prompt.utf8.elementsEqual(pending.comment.utf8), annotationQuote == pending.quote { prompt = "" }
+                confirm(pending)
                 status = receipt.status == "admitted" ? "Agent request admitted" : "Agent request sent (admission not confirmed)"
-                bridgePromptResults[selected.uuidString + ":" + pending.operation] = true
                 emitPromptState(receipt.status == "admitted" ? "admitted" : "sent")
             case "rejected":
                 pendingPrompt = nil
@@ -368,7 +368,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
             default: throw Failure.response
             }
         } catch {
-            guard token == epoch, !closed else { return }
+            guard token == epoch, !closed, bridgePromptResults[threadKey(pending.operation)] != true else { return }
             status = "Request unconfirmed. Send again to retry the same request."
             pendingPrompt?.status = status
             emitPromptState("unknown", detail: status)

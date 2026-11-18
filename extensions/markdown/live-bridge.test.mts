@@ -248,13 +248,30 @@ test("a live poll wakes on progress and cancelled commands do not dispatch", { t
 		readController.abort();
 		assert.equal((await read).status, "uncertain");
 		assert.equal((await post(config, "/poll", { ...pane, after: 1 })).data.state.text, "");
-		await post(config, "/prompt", { ...pane, operationId: randomUUID(), text: "Ask about this buffer." });
+		const operationId = randomUUID();
+		await post(config, "/prompt", { ...pane, operationId, text: "Ask about this buffer." });
 		const polling = post(config, "/poll", { ...pane, after: 1 });
-		bridge.publish("answer", "Current answer");
+		bridge.publish("answer", "Current answer", operationId);
 		const result = await polling;
 		assert.equal(result.data.command, null);
 		assert.equal(result.data.state.text, "Current answer");
-		assert.equal(result.data.state.operationId, undefined);
+		assert.equal(result.data.state.operationId, operationId);
+	} finally { bridge.close(); }
+});
+test("a slow reader receives each question's answer even if another question finishes between polls", async () => {
+	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) });
+	const config = await bridge.start(), pane = binding();
+	const first = randomUUID(), second = randomUUID();
+	try {
+		await post(config, "/connect", pane);
+		for (const operationId of [first, second]) await post(config, "/prompt", { ...pane, operationId, text: "Explain." });
+		bridge.publish("working", "Earlier progress", first);
+		bridge.publish("answer", "First answer", first);
+		bridge.publish("answer", "Second answer", second);
+		const a = (await post(config, "/poll", { ...pane, after: 0 })).data.state;
+		assert.deepEqual([a.operationId, a.text], [first, "First answer"]);
+		const b = (await post(config, "/poll", { ...pane, after: a.sequence })).data.state;
+		assert.deepEqual([b.operationId, b.text], [second, "Second answer"]);
 	} finally { bridge.close(); }
 });
 test("an explicit identical edit retry restores delivery after an aborted lost-poll wait", { timeout: 10000 }, async () => {

@@ -49,8 +49,8 @@
 		return editingKey(signature, context.writing);
 	}
 	function promptTransition(old: ReaderAskState, next: ReaderAskState): ReaderAskState {
-		if (old === "answered") return old;
-		if (next === "failed" || next === "unknown" || next === "answered") return next;
+		if (old === "answered" || old === "unanswered") return old;
+		if (next === "failed" || next === "unknown" || next === "answered" || next === "unanswered") return next;
 		if (old === "failed" || old === "unknown") return next === "sending" ? next : old;
 		const order: ReaderAskState[] = ["draft", "sending", "sent", "admitted", "working", "answered"];
 		return order.indexOf(next) >= order.indexOf(old) ? next : old;
@@ -315,9 +315,10 @@
 				draft: "Ask about this passage",
 				sending: "Sending",
 				sent: "Sent",
-				admitted: "Reading",
-				working: "Editing",
+				admitted: "Received",
+				working: "Working",
 				answered: "Answered",
+				unanswered: "No separate reply",
 				failed: "Not sent",
 				unknown: "Delivery not confirmed",
 			})[state],

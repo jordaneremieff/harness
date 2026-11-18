@@ -288,7 +288,7 @@
   }
   .working { background: linear-gradient(90deg, var(--ink) 0 40%, var(--agent) 50%, var(--ink) 60% 100%) 0 0 / 300% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: shimmer 1.6s linear infinite; }
   @keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
-  .reply { font-size: 13.5px; line-height: 1.5; color: var(--ink); background: var(--agent-soft); border-radius: 9px; padding: 8px 10px; }
+  .reply { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.5; color: var(--ink); background: var(--agent-soft); border-radius: 9px; padding: 8px 10px; }
   .reply .from { display: block; font: 600 12px/1.4 var(--font); color: var(--agent-text); margin-bottom: 2px; }
   .link { color: var(--accent-text); font: 550 13px/1.2 var(--font); }
   .link:hover { text-decoration: underline; }

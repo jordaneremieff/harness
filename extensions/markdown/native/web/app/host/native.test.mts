@@ -50,6 +50,15 @@ test("ready and format use the current command vocabulary", () => {
 		api.bridge.native({ v: 1, type: "command", name: "format", args: { command: "heading", level: 7 } }),
 	);
 });
+test("a long Ask reply reaches its thread with its final paragraph intact", () => {
+	const api = bridge(), host = api.createNativeHost(() => undefined);
+	const detail = `${"A paragraph for this document.\n\n".repeat(1000)}Last paragraph.`;
+	let received: unknown;
+	host.on("promptState", (message) => { received = (message as { detail: string }).detail; });
+	assert.equal(api.receive({ v: 1, type: "promptState", requestId: "question", threadId: "thread", state: "answered", detail }), true);
+	assert.equal(received, detail);
+	host.dispose();
+});
 test("ordinary messages enforce their exact byte bound", () => {
 	const api = bridge(),
 		base = { v: 1, type: "command", name: "copy", args: { text: "" } };

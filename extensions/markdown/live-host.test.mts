@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { createEventBus, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, createEventBus, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
@@ -41,18 +42,89 @@ test("ordinary pane prompts use the captured session and session changes revoke 
 	const binding = pane();
 	try {
 		const handle = (await post(config, "/connect", binding)).handle;
-		await post(config, "/prompt", { ...binding, operationId: randomUUID(), text: "Correct the current buffer." });
+		const operationId = randomUUID();
+		await post(config, "/prompt", { ...binding, operationId, text: "Correct the current buffer." });
 		assert.equal(sent.length, 1);
 		assert.match(String(sent[0][0]), new RegExp(handle));
 		assert.deepEqual(sent[0][1], { deliverAs: "followUp", expandPromptTemplates: false });
-		for (const handler of handlers.get("message_end") ?? []) handler({ message: fauxAssistantMessage("Pane answer") });
-		assert.match((await post(config, "/poll", { ...binding, after: 0 })).state.text, /Live conversation activity.*Pane answer/su);
+		const emit = (name: string, message: unknown) => { for (const handler of handlers.get(name) ?? []) handler({ message }); };
+		emit("message_end", fauxAssistantMessage("Chat answer before delivery"));
+		assert.equal((await post(config, "/poll", { ...binding, after: 0 })).state.status, "queued");
+		emit("message_start", { role: "user", content: [{ type: "text", text: sent[0][0] }] });
+		emit("message_end", fauxAssistantMessage(fauxToolCall("markdown_live", {}), { stopReason: "toolUse" }));
+		emit("message_end", fauxAssistantMessage("Pane answer"));
+		emit("message_start", { role: "user", content: "A chat question" });
+		emit("message_end", fauxAssistantMessage("A later chat answer"));
+		const { state } = await post(config, "/poll", { ...binding, after: 0 });
+		assert.equal(state.operationId, operationId);
+		assert.equal(state.text, "Pane answer");
 		for (const handler of [...handlers.get("session_before_switch") ?? []]) handler();
 		id = "ordinary-two";
 		assert.equal(await live.find(ctx), undefined);
 		await assert.rejects(post(config, "/prompt", { ...binding, operationId: randomUUID(), text: "Stale request" }));
 		assert.equal(sent.length, 1);
 	} finally { for (const handler of [...handlers.get("session_shutdown") ?? []]) handler(); }
+});
+function assertPaneReply(state: LiveState, operationId: string, mode: string, index: number) {
+	assert.equal(state.operationId, operationId);
+	if (mode === "all") {
+		assert.equal(state.status, "error");
+		assert.match(state.text, /another message/u);
+		assert.doesNotMatch(state.text, /Shared chat reply/u);
+	} else {
+		assert.equal(state.status, "answer");
+		assert.equal(state.text, index === 0 ? "First document reply." : "Second document reply.");
+	}
+}
+test("ordinary Pi delivers queued questions to their own panes and does not guess a shared answer", { timeout: 15000 }, async () => {
+	const root = await mkdtemp(join(tmpdir(), "markdown-ask-"));
+	const faux = fauxProvider({ tokensPerSecond: 0 });
+	const settings = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } });
+	const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsStore: new InMemoryModelsStore(), modelsPath: null, refreshOnCreate: false });
+	runtime.registerNativeProvider(faux.provider);
+	let config!: LiveConfig, close: (() => void) | undefined;
+	const loader = new DefaultResourceLoader({ cwd: root, agentDir: root, settingsManager: settings, noContextFiles: true, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+		extensionFactories: [(pi) => {
+			const live = ordinaryLive(pi, ordinaryLifecycle(pi));
+			pi.on("session_start", async (_event, ctx) => {
+				config = await live.connection(ctx);
+				const bridge = await live.find(ctx);
+				close = () => bridge?.close();
+			});
+		}],
+	});
+	let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+	try {
+		await loader.reload();
+		({ session } = await createAgentSession({ cwd: root, agentDir: root, modelRuntime: runtime, model: faux.getModel(), sessionManager: SessionManager.inMemory(root), settingsManager: settings, resourceLoader: loader, tools: [] }));
+		await session.bindExtensions({ mode: "tui" });
+		for (const mode of ["one-at-a-time", "all"] as const) {
+			session.setFollowUpMode(mode);
+			const panes = [pane(), pane()];
+			const ids = [randomUUID(), randomUUID()];
+			for (const binding of panes) await post(config, "/connect", binding);
+			let entered!: () => void, release!: () => void;
+			const started = new Promise<void>((resolve) => { entered = resolve; });
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			faux.setResponses([async () => { entered(); await gate; return fauxAssistantMessage("Only in chat."); },
+				...((mode === "all" ? ["Shared chat reply."] : ["First document reply.", "Second document reply."]).map((s) => fauxAssistantMessage(s)))]);
+			const run = session.prompt("An unrelated chat question.");
+			try {
+				await started;
+				for (const [i, binding] of panes.entries()) {
+					const receipt = await post(config, "/prompt", { ...binding, operationId: ids[i], text: "Explain the document." });
+					assert.equal(receipt.status, "requested");
+				}
+			} finally { release(); }
+			await run;
+			await session.waitForIdle();
+			for (const [i, binding] of panes.entries()) {
+				const { state } = await post(config, "/poll", { ...binding, after: 0 });
+				assertPaneReply(state, ids[i], mode, i);
+			}
+			assert.equal(session.getLastAssistantText(), mode === "all" ? "Shared chat reply." : "Second document reply.");
+		}
+	} finally { close?.(); session?.dispose(); await rm(root, { recursive: true, force: true }); }
 });
 test("the real Durable contribution reconciles lost admission and edits only its exact live native buffer", { timeout: 15000 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "markdown-live-native-"));

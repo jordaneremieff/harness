@@ -40,6 +40,9 @@ import ReaderFeature
           if (mode === 'lost-receipt' && request.url === '/prompt' && prompts.length === 1) {
             await gate;
             response.writeHead(200); response.end('{');
+          } else if (mode === 'unscoped' && request.url === '/poll') {
+            const poll = JSON.parse(text); delete poll.state.operationId;
+            response.writeHead(upstream.status); response.end(JSON.stringify(poll));
           } else { response.writeHead(upstream.status); response.end(text); }
         });
         await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
@@ -141,9 +144,7 @@ import ReaderFeature
         #expect(state["submissions"] as? Int == 1)
     }
 
-    /// The ordinary conversation route confirms only that it requested the turn and publishes
-    /// activity without a request identity; the sent thread still follows it to its answer.
-    @Test func ordinaryConversationActivityReachesTheSentThreadAndAllowsAFollowUp() async throws {
+    @Test func ordinaryReplyReachesItsQuestionAndAllowsAFollowUp() async throws {
         let server = try LiveTestBridge(mode: "ordinary"); defer { server.stop() }
         let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }
         defer { client.stop() }
@@ -154,20 +155,40 @@ import ReaderFeature
         let thread = UUID().uuidString
         #expect(await client.submitPrompt(requestId: thread, threadId: thread, text: "Shorten this", quote: "Long passage"))
         #expect(states.last?.state == "sent")
-        _ = try await server.request(["op": "publish", "status": "working", "text": ""])
+        _ = try await server.request(["op": "publish", "status": "working", "text": "", "operationId": thread])
         try await eventually { states.last?.state == "working" }
-        _ = try await server.request(["op": "publish", "status": "answer", "text": "Live conversation activity (not a document-specific receipt):\n\nShortened."])
+        _ = try await server.request(["op": "publish", "status": "answer", "text": "Shortened.", "operationId": thread])
         try await eventually { states.last?.state == "answered" }
         #expect(states.last?.request == thread && states.last?.thread == thread)
-        #expect(states.last?.detail == "Shortened.")
-        _ = try await server.request(["op": "publish", "status": "answer", "text": "Unrelated later activity"])
-        try await Task.sleep(for: .milliseconds(300))
         #expect(states.last?.detail == "Shortened.")
         let followUp = UUID().uuidString
         #expect(await client.submitPrompt(requestId: followUp, threadId: thread, text: "Shorter again"))
         #expect(states.last?.request == followUp && states.last?.state == "sent")
-        _ = try await server.request(["op": "publish", "status": "answer", "text": "Shorter."])
+        let long = String(repeating: "Text.\n", count: 14000)
+        _ = try await server.request(["op": "publish", "status": "answer", "text": long, "operationId": followUp])
         try await eventually { states.last?.request == followUp && states.last?.state == "answered" }
+        #expect(states.last?.detail?.hasPrefix("Text.\n") == true)
+        #expect(states.last?.detail?.hasSuffix("[Reply shortened. The full reply is in chat.]") == true)
+    }
+
+    @Test func anAnswerBeforeALostReceiptConfirmsTheQuestionWithoutResubmission() async throws {
+        let server = try LiveTestBridge(mode: "lost-receipt"); defer { server.stop() }
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }
+        defer { client.stop() }
+        var states: [String] = []
+        client.onPromptState = { _, _, state, _ in states.append(state) }
+        client.start()
+        try await eventually { client.status == "Agent connected" }
+        let id = UUID().uuidString
+        let send = Task { await client.submitPrompt(requestId: id, threadId: id, text: "Explain.") }
+        try await eventually { try await server.request(["op": "state"])["submissions"] as? Int == 1 }
+        _ = try await server.request(["op": "publish", "status": "answer", "operationId": id, "text": "Here is why."])
+        try await eventually { states.last == "answered" }
+        _ = try await server.request(["op": "release"])
+        #expect(await send.value)
+        #expect(states.last == "answered" && !client.hasPendingPrompt)
+        #expect(await client.submitPrompt(requestId: id, threadId: id, text: "Explain."))
+        #expect(try await server.request(["op": "state"])["submissions"] as? Int == 1)
     }
 
     @Test func rejectedCommentUnlocksDraftAndUncertainAdmissionDoesNotResubmit() async throws {
@@ -676,7 +697,7 @@ import ReaderFeature
     }
 
     @Test func untiedActivityDoesNotGuessBetweenAdmittedThreads() async throws {
-        let server = try LiveTestBridge(); defer { server.stop() }
+        let server = try LiveTestBridge(mode: "unscoped"); defer { server.stop() }
         let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }
         defer { client.stop() }
         var answered = 0
@@ -686,8 +707,10 @@ import ReaderFeature
         let first = UUID().uuidString, second = UUID().uuidString
         #expect(await client.submitPrompt(requestId: first, threadId: first, text: "First"))
         #expect(await client.submitPrompt(requestId: second, threadId: second, text: "Second"))
-        _ = try await server.request(["op": "publish", "status": "answer", "text": "Untied activity"])
-        try await eventually { client.answer == "Untied activity" }
-        #expect(answered == 0)
+        _ = try await server.request(["op": "publish", "status": "answer", "text": "Untied activity", "operationId": first])
+        // A completed command reaches the client after the answer has become available to its poll.
+        _ = try await server.request(["op": "read"])
+        _ = try await server.request(["op": "read"])
+        #expect(answered == 0 && client.answer.isEmpty)
     }
 }

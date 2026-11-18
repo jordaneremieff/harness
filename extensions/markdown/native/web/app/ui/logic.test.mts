@@ -97,6 +97,7 @@ test("outline current row follows measured heading positions without a delay", (
 test("prompt progress cannot regress or resubmit an unknown admission", () => {
 	assert.equal(logic.promptTransition("working", "sent"), "working");
 	assert.equal(logic.promptTransition("answered", "failed"), "answered");
+	assert.equal(logic.promptTransition("unanswered", "sent"), "unanswered");
 	assert.equal(logic.promptTransition("unknown", "sent"), "unknown");
 	assert.equal(logic.promptTransition("unknown", "answered"), "answered");
 	assert.equal(logic.promptTransition("failed", "sending"), "sending");
