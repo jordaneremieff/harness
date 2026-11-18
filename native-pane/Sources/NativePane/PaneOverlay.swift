@@ -94,6 +94,14 @@ public final class PaneOverlay: NSObject, NSWindowDelegate {
         return (appliedGrowth, min(menu, available - appliedGrowth))
     }
 
+    /// AppKit places windows on whole points and expands a fractional frame outward. The terminal
+    /// reports pane edges that move by a fraction of a point when its split layout changes, so an
+    /// expanded frame would move the whole pane by a point. Each edge goes to its nearest point.
+    static func snapped(_ rect: CGRect) -> CGRect {
+        let minX = rect.minX.rounded(), minY = rect.minY.rounded()
+        return CGRect(x: minX, y: minY, width: rect.maxX.rounded() - minX, height: rect.maxY.rounded() - minY)
+    }
+
     static func extendedFrame(_ pane: CGRect, content: CGRect?, above: CGFloat) -> CGRect {
         guard let content, above.isFinite, above > 0 else { return pane }
         let height = min(above, max(0, content.maxY - pane.maxY))
@@ -109,20 +117,21 @@ public final class PaneOverlay: NSObject, NSWindowDelegate {
             if let prediction, prediction.from != shown.frame || !shown.covers.isEmpty || shown.coveredBy != nil {
                 self.prediction = nil
             }
-            let pane = prediction?.to ?? shown.frame
+            let pane = Self.snapped(prediction?.to ?? shown.frame)
+            let split = shown.contentFrame.map(Self.snapped)
             paneHeight = pane.height
             // The current pane can differ slightly from the AX split bounds.
-            viewportLimit = CGSize(width: pane.width, height: max(shown.frame.height, (shown.contentFrame?.maxY ?? pane.maxY) - pane.minY))
-            let offsets = Self.extensions(pane, content: shown.contentFrame, growthHeight: growthHeight, menu: requestedAbove)
+            viewportLimit = CGSize(width: pane.width, height: max(Self.snapped(shown.frame).height, (split?.maxY ?? pane.maxY) - pane.minY))
+            let offsets = Self.extensions(pane, content: split, growthHeight: growthHeight, menu: requestedAbove)
             appliedGrowth = offsets.growth
             appliedAbove = offsets.menu
-            let frame = Self.extendedFrame(pane, content: shown.contentFrame, above: offsets.growth + offsets.menu)
+            let frame = Self.extendedFrame(pane, content: split, above: offsets.growth + offsets.menu)
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             content.prepareBase(width: frame.width, paneHeight: pane.height)
             if window.frame != frame { window.setFrame(frame, display: true) }
             CATransaction.commit()
-            let holes = shown.covers.map { $0.offsetBy(dx: -shown.frame.minX, dy: -shown.frame.minY) }
+            let holes = shown.covers.map { $0.offsetBy(dx: -pane.minX, dy: -pane.minY) }
             if holes != content.holes {
                 paneLog.notice("holes \(holes.count, privacy: .public): \(holes.map { "\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" }.joined(separator: "; "), privacy: .public)")
                 content.holes = holes

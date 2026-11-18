@@ -54,6 +54,21 @@ struct PaneOverlayTests {
         #expect(overlay.window.frame == settled.frame)
     }
 
+    @Test func keepsTheBottomFixedWhenTheSplitMovesByAFractionOfAPoint() {
+        let (overlay, _) = fixture()
+        func placed(y: CGFloat, height: CGFloat) -> TerminalAnchor.Placement {
+            TerminalAnchor.Placement(frame: CGRect(x: 987.5, y: y, width: 803.5, height: height), host: 0, window: nil,
+                                     contentFrame: CGRect(x: 987.5, y: y, width: 803.5, height: 900 - y), coveredBy: nil, covers: [])
+        }
+        overlay.apply(.placed(placed(y: 88.812, height: 185.5)))
+        #expect(overlay.window.frame == CGRect(x: 988, y: 89, width: 803, height: 185))
+        #expect(overlay.paneHeight == 185)
+        overlay.apply(.placed(placed(y: 89.112, height: 160.5)))
+        #expect(overlay.window.frame == CGRect(x: 988, y: 89, width: 803, height: 161))
+        #expect(overlay.paneHeight == 161)
+        #expect(overlay.viewportLimit == CGSize(width: 803, height: 811))
+    }
+
     @Test func extendsUpOnlyAndStopsAtContentTop() {
         let pane = CGRect(x: 40, y: 70, width: 700, height: 146)
         let content = CGRect(x: 40, y: 70, width: 700, height: 300)
