@@ -1,4 +1,5 @@
 (() => {
+	type Delivery = "steer" | "queue";
 	type SendKey = "return" | "command";
 	type Behavior = "send" | "steer" | "queue";
 	type EditKind = "replace" | "insert";
@@ -40,6 +41,7 @@
 			},
 			context: {
 				sendKey: SendKey;
+				delivery?: Delivery;
 				state?: string;
 				connection?: string;
 				submitting?: boolean;
@@ -48,10 +50,9 @@
 			},
 		): KeyDecision;
 		actionFor(state: string | undefined, options?: ActionOptions): Action;
-		showChoices(state: string | undefined, options?: ActionOptions): boolean;
+		submitBehavior(state?: string, delivery?: Delivery): Behavior;
 		showReturn(state?: string): boolean;
 		editCommand(text: string): "insertText" | "delete";
-		sendKeyLabel(sendKey: SendKey): string;
 		sendKeyNext(sendKey: SendKey): SendKey;
 		draftIsSubmittable(text: string): boolean;
 	}
@@ -95,7 +96,7 @@
 	const root = globalThis as typeof globalThis & {
 		composer?: ComposerRoot;
 		webkit?: { messageHandlers?: { composer?: Transport } };
-		mountComposerControls?: (host: { input: HTMLTextAreaElement; request: typeof request; edit: typeof edit; notice: (message: string) => void }) => Controls;
+		mountComposerControls?: (host: { input: HTMLTextAreaElement; request: typeof request; edit: typeof edit; notice: (message: string) => void; icon: typeof icon; preferences: typeof preferences }) => Controls;
 	};
 	root.composer ??= {};
 	const api = root.composer;
@@ -110,8 +111,13 @@
 		close: "M6 6l12 12 M18 6 6 18",
 		terminal: "M3 5h18v14H3z M7 9l4 3-4 3 M13 15h4",
 		model: "M5 5h14v14H5z M9 9h6v6H9z M9 2v3 M15 2v3 M9 19v3 M15 19v3 M2 9h3 M2 15h3 M19 9h3 M19 15h3",
-		thinking: "M12 3c.6 5 2 6.4 7 7-5 .6-6.4 2-7 7-.6-5-2-6.4-7-7 5-.6 6.4-2 7-7 M19 16v5 M16.5 18.5h5",
-		steer: "M4 12h12 M12 6l6 6-6 6 M20 5v14",
+		plus: "M5 12h14 M12 5v14",
+		chevron: "M6 9l6 6 6-6",
+		thinking: "M4 7h16 M4 12h16 M4 17h16 M8 5v4 M15 10v4 M11 15v4",
+		larger: "M3 18l5-12 5 12 M5 14h6 M16 10h6 M19 7v6",
+		smaller: "M3 18l5-12 5 12 M5 14h6 M16 10h6",
+		reset: "M4 11a8 8 0 1 1 2 7 M4 5v6h6",
+		steer: "M5 19v-8a5 5 0 0 1 5-5h9 M15 2l4 4-4 4",
 		queue: "M4 6h12 M4 12h12 M4 18h8 M18 14v6 M15 17h6",
 	};
 
@@ -162,17 +168,16 @@
 	const closeButton = get<HTMLButtonElement>("close");
 	const input = get<HTMLTextAreaElement>("input");
 	const hint = get<HTMLElement>("hint");
-	const sendKeyButton = get<HTMLButtonElement>("sendkey");
-	const sendKeyLabel = get<HTMLElement>("sendkey-label");
-	const choices = get<HTMLElement>("choices");
-	const queueButton = get<HTMLButtonElement>("queue");
+	const modeButton = get<HTMLButtonElement>("mode");
+	const elapsed = get("elapsed"), runKeys = get("run-keys"), writer = get("writer");
 	const returnButton = get<HTMLButtonElement>("return");
 	const actionButton = get<HTMLButtonElement>("action");
-	const actionLabel = get<HTMLElement>("action-label");
 	const notice = get<HTMLElement>("notice");
 
 	let status: ComposerStatus = { connection: "connecting" };
 	let sendKey: SendKey = "return";
+	let delivery: Delivery = "steer";
+	let textAdjust = 0, baseSize = 16, phaseSince: number | undefined;
 	let submitting = false;
 	let handshake = false;
 	let applying = false;
@@ -386,43 +391,96 @@
 		}, 6000);
 	}
 
-	function paintAction(kind: "send" | "stop"): void {
+	function paintAction(kind: string): void {
 		if (actionIcon === kind) return;
 		actionIcon = kind;
-		actionButton.replaceChildren(icon(kind === "stop" ? "stop" : "send"), actionLabel);
+		actionButton.replaceChildren(icon(kind));
 	}
 	function renderSendKey(): void {
-		sendKeyLabel.textContent = logic.sendKeyLabel(sendKey);
-		sendKeyButton.setAttribute(
-			"aria-label",
-			sendKey === "command" ? "Send key: Command-Return. Activate to use Return." : "Send key: Return. Activate to use Command-Return.",
-		);
-		hint.textContent =
-			sendKey === "command"
-				? "Press Command-Return to send, or Return for a new line."
-				: "Press Return to send, or Shift-Return for a new line.";
+		get("run-send-key").textContent = sendKey === "command" ? "⌘⏎" : "⏎";
+		hint.textContent = sendKey === "command" ? "Press Command-Return to send, or Return for a new line." : "Press Return to send, or Shift-Return for a new line.";
 	}
+	function preferences() {
+		return {
+			sendKey, size: baseSize + textAdjust,
+			toggleSendKey() {
+				sendKey = logic.sendKeyNext(sendKey);
+				renderSendKey();
+				render();
+				send("sendKey", { value: sendKey });
+			},
+			resize: changeTextSize,
+		};
+	}
+	function applySize(delta: number) {
+		textAdjust = Math.max(-4, Math.min(8, delta));
+		for (const element of [panel, get("menu")]) {
+			element.style.setProperty("--base-size", `${baseSize}px`);
+			element.style.setProperty("--text-adjust", `${textAdjust}px`);
+		}
+		fitShortEditor();
+	}
+	function applyMetrics(value: Record<string, unknown>) {
+		if (typeof value.baseSize === "number" && Number.isFinite(value.baseSize)) baseSize = Math.max(11, Math.min(26, value.baseSize));
+		if (typeof value.cellWidth === "number" && Number.isFinite(value.cellWidth)) {
+			panel.style.setProperty("--cell-width", `${Math.max(5, Math.min(20, value.cellWidth))}px`);
+		}
+		applySize(textAdjust);
+	}
+	function changeTextSize(step: number) {
+		const previous = textAdjust;
+		applySize(step === 0 ? 0 : textAdjust + step);
+		if (previous !== textAdjust) send("textSize", { value: textAdjust });
+	}
+	function fitShortEditor() {
+		if (panel.clientHeight >= 160) return;
+		const holder = input.parentElement;
+		if (!holder) return;
+		const scroll = input.scrollTop, left = input.scrollLeft;
+		input.style.height = "0px";
+		holder.style.setProperty("--editor-height", `${input.scrollHeight}px`);
+		input.style.height = "";
+		input.scrollTop = scroll;
+		input.scrollLeft = left;
+		get("highlight").scrollTop = input.scrollTop;
+		get("highlight").scrollLeft = input.scrollLeft;
+	}
+	function renderDelivery(running: boolean) {
+		const next = delivery === "steer" ? "queue" : "steer";
+		modeButton.hidden = !running;
+		modeButton.dataset.tip = next === "queue" ? "Switch to queue" : "Switch to steer";
+		modeButton.setAttribute("aria-label", modeButton.dataset.tip);
+		if (modeButton.dataset.mode !== delivery) {
+			modeButton.dataset.mode = delivery;
+			modeButton.replaceChildren(icon(delivery));
+		}
+		get("run-send-mode").textContent = delivery;
+		get("run-alt-mode").textContent = next;
+		input.placeholder = !running ? "Message Pi…" : delivery === "steer" ? "Steer Pi…" : "Queue a follow-up…";
+	}
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep related surface states in a single render.
 	function render(): void {
 		const view = logic.statusView(status);
-		const draft = hasDraft();
+		const running = status.connection === "connected" && view.working;
 		panel.dataset.connection = status.connection;
-		if (status.state) panel.dataset.state = status.state;
-		else delete panel.dataset.state;
+		panel.dataset.running = String(running);
 		statusText.textContent = status.notice ?? view.connectionLabel;
 		statusState.textContent = view.stateLabel;
 		statusState.hidden = !view.stateLabel;
-		returnButton.hidden = !logic.showReturn(status.state);
-		choices.hidden = !logic.showChoices(status.state, {
-			submitting,
-			hasDraft: draft,
-			connection: status.connection,
-		});
-		const action = logic.actionFor(status.state, { submitting, hasDraft: draft, connection: status.connection });
+		elapsed.hidden = !running || phaseSince === undefined;
+		runKeys.hidden = !running;
+		returnButton.hidden = status.connection !== "connected" || !logic.showReturn(status.state);
+		renderDelivery(running);
+		const action = logic.actionFor(status.state, { submitting, hasDraft: hasDraft(), connection: status.connection });
+		const kind = action.kind === "stop" ? "stop" : running ? delivery : "send";
 		actionButton.dataset.kind = action.kind;
 		actionButton.disabled = action.disabled;
-		actionButton.setAttribute("aria-label", action.kind === "stop" ? "Stop Pi" : "Send message");
-		actionLabel.textContent = action.label;
-		paintAction(action.kind);
+		const key = sendKey === "command" ? "⌘⏎" : "⏎";
+		actionButton.dataset.tip = kind === "stop" ? "Stop · esc" : (kind === "queue" ? "Queue " : kind === "steer" ? "Steer " : "Send ") + key;
+		const labels = { stop: "Stop Pi", queue: "Queue follow-up", steer: "Send steer", send: "Send message" };
+		actionButton.setAttribute("aria-label", labels[kind]);
+		paintAction(kind === "stop" ? "stop" : "send");
+		fitShortEditor();
 	}
 
 	const tokenFormat = new Intl.NumberFormat("en-AU", { notation: "compact", maximumFractionDigits: 1 });
@@ -469,17 +527,22 @@
 			case "init": {
 				const key = value.sendKey;
 				if (typeof value.text !== "string" || (key !== "return" && key !== "command")) return false;
+				if (typeof value.textAdjust === "number" && Number.isFinite(value.textAdjust)) textAdjust = value.textAdjust;
+				applyMetrics(value);
 				takeInit(value.text, key);
 				return true;
 			}
+			case "metrics":
+				applyMetrics(value);
+				return true;
 			case "status": {
 				const connection = value.connection;
 				if (typeof connection !== "string" || !connections.has(connection)) return false;
-				takeStatus({ connection, state: phaseOf(value.state), notice: typeof value.notice === "string" ? value.notice : undefined });
 				const state = isRecord(value.state) ? value.state : {};
+				phaseSince = typeof state.since === "number" ? state.since : undefined;
+				takeStatus({ connection, state: phaseOf(value.state), notice: typeof value.notice === "string" ? value.notice : undefined });
 				controls?.sync(state, connection);
 				paintMetrics(connection === "connected" ? state : {});
-				phaseSince = typeof state.since === "number" ? state.since : undefined;
 				paintElapsed();
 				return true;
 			}
@@ -496,7 +559,7 @@
 				return true;
 			}
 			case "escape": {
-				handleEscape();
+				if (!controls?.key(new KeyboardEvent("keydown", { key: "Escape" }))) handleEscape();
 				return true;
 			}
 			case "history": {
@@ -558,6 +621,7 @@
 			},
 			{
 				sendKey,
+				delivery,
 				state: status.state,
 				connection: status.connection,
 				submitting,
@@ -584,9 +648,13 @@
 			send("abort");
 			return;
 		}
-		submit("send");
+		submit(logic.submitBehavior(status.state, delivery));
 	});
-	queueButton.addEventListener("click", () => submit("queue"));
+	modeButton.addEventListener("click", () => {
+		delivery = delivery === "steer" ? "queue" : "steer";
+		render();
+		focusInput();
+	});
 	closeButton.addEventListener("click", () => {
 		send("close");
 		input.blur();
@@ -595,34 +663,91 @@
 		send("release");
 		input.blur();
 	});
-	sendKeyButton.addEventListener("click", () => {
-		sendKey = logic.sendKeyNext(sendKey);
-		renderSendKey();
-		send("sendKey", { value: sendKey });
-	});
 	for (const button of document.querySelectorAll("button"))
 		button.addEventListener("pointerdown", captureSelection, true);
-
 	closeButton.append(icon("close"));
-	queueButton.prepend(icon("queue"));
 	returnButton.prepend(icon("terminal"));
-	// Stage 2 owns model and thinking selection, history and completion menus; these controls stay
-	// fixed, labelled placeholders until that surface exists.
-	get<HTMLButtonElement>("model").prepend(icon("model"));
-	get<HTMLButtonElement>("thinking").prepend(icon("thinking"));
-	actionButton.replaceChildren(icon("send"), actionLabel);
-	actionIcon = "send";
+	get("add").append(icon("plus"));
+	const glyph = icon("model");
+	glyph.classList.add("model-glyph");
+	const chevron = icon("chevron");
+	chevron.classList.add("chevron");
+	get("model").dataset.tip = "Choose model";
+	get("model").prepend(glyph);
+	get("model").append(chevron);
+	const thinkingGlyph = icon("thinking");
+	thinkingGlyph.classList.add("thinking-glyph");
+	get("thinking").dataset.tip = "Choose thinking level";
+	get("thinking").prepend(thinkingGlyph);
 
-	let phaseSince: number | undefined;
+	window.addEventListener("resize", fitShortEditor);
+	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Distinguish Mac resize chords and the ordered Escape actions.
+	document.addEventListener("keydown", (event) => {
+		if (event.defaultPrevented || event.isComposing || composing) return;
+		if (event.metaKey && !event.altKey && !event.ctrlKey && ["+", "=", "-", "0"].includes(event.key)) {
+			event.preventDefault();
+			changeTextSize(event.key === "0" ? 0 : event.key === "-" ? -1 : 1);
+		} else if (event.key === "Escape") {
+			event.preventDefault();
+			if (!controls?.key(event)) handleEscape();
+		}
+	});
+
+	writer.addEventListener("pointerdown", (event) => {
+		if (event.button !== 0 || !(event.target instanceof Element) || event.target.closest("button, textarea")) return;
+		event.preventDefault();
+		const highlight = get("highlight"), rect = input.getBoundingClientRect();
+		const x = Math.max(rect.left + .5, Math.min(rect.right - .5, event.clientX));
+		const y = Math.max(rect.top + .5, Math.min(rect.bottom - .5, event.clientY));
+		input.style.pointerEvents = "none";
+		highlight.style.pointerEvents = "auto";
+		const hit = document.caretRangeFromPoint(x, y);
+		highlight.style.pointerEvents = "";
+		input.style.pointerEvents = "";
+		let offset = event.clientY < rect.top ? 0 : input.value.length;
+		if (hit && highlight.contains(hit.startContainer)) {
+			const prefix = document.createRange();
+			prefix.selectNodeContents(highlight);
+			prefix.setEnd(hit.startContainer, hit.startOffset);
+			offset = Math.min(input.value.length, prefix.toString().length);
+		}
+		focusInput();
+		input.setSelectionRange(offset, offset);
+		captureSelection();
+	});
+
+	const tip = get("tooltip");
+	let tipTimer: ReturnType<typeof setTimeout> | undefined;
+	function hideTip() { clearTimeout(tipTimer); tip.hidden = true; }
+	function queueTip(event: Event) {
+		const button = event.target instanceof HTMLButtonElement ? event.target : null;
+		if (button?.id === "model" && !glyph.getClientRects().length) return;
+		if (button?.id === "thinking" && !thinkingGlyph.getClientRects().length) return;
+		if (!button?.dataset.tip || (event instanceof FocusEvent && !button.matches(":focus-visible"))) return;
+		hideTip();
+		tipTimer = setTimeout(() => {
+			if (!button.isConnected || !button.getClientRects().length) return;
+			tip.textContent = button.dataset.tip ?? "";
+			tip.hidden = !tip.textContent;
+			const rect = button.getBoundingClientRect();
+			const top = rect.top - tip.offsetHeight - 5;
+			tip.style.top = `${top >= 4 ? top : Math.min(innerHeight - tip.offsetHeight - 4, rect.bottom + 5)}px`;
+			tip.style.left = `${Math.max(4, Math.min(innerWidth - tip.offsetWidth - 4, rect.left + (rect.width - tip.offsetWidth) / 2))}px`;
+		}, 600);
+	}
+	document.addEventListener("pointerenter", queueTip, true);
+	document.addEventListener("focusin", queueTip);
+	document.addEventListener("pointerleave", (event) => { if (event.target instanceof HTMLButtonElement) hideTip(); }, true);
+	for (const type of ["focusout", "pointerdown", "keydown", "scroll"]) document.addEventListener(type, hideTip, true);
+
 	function paintElapsed() {
-		const label = logic.statusView(status).stateLabel;
-		if (phaseSince === undefined || !["working", "compacting"].includes(status.state ?? "") || !label) return;
+		if (phaseSince === undefined || elapsed.hidden) return;
 		const seconds = Math.max(0, Math.floor((Date.now() - phaseSince) / 1000));
-		const elapsed = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-		statusState.textContent = `${label} · ${elapsed}`;
+		const time = seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+		elapsed.textContent = time;
 	}
 	setInterval(paintElapsed, 1000);
-	const controls = root.mountComposerControls?.({ input, request, edit, notice: (message) => showNotice(message, "warn") });
+	const controls = root.mountComposerControls?.({ input, request, edit, icon, preferences, notice: (message) => showNotice(message, "warn") });
 	api.receive = receive;
 	renderSendKey();
 	render();

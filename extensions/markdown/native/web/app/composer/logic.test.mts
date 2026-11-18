@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 
 interface Key { key: string; metaKey?: boolean; shiftKey?: boolean; altKey?: boolean; isComposing?: boolean }
-interface Context { sendKey: string; connection: string; state?: string; hasDraft: boolean }
+interface Context { sendKey: string; connection: string; state?: string; hasDraft: boolean; delivery?: "steer" | "queue" }
 const scope = {} as { composer: { logic: {
     keyDecision(key: Key, context: Context): { kind: string; behavior?: string };
     actionFor(state: string, options: Partial<Context>): { kind: string; label: string; disabled: boolean };
@@ -20,6 +20,13 @@ test("Return sends; Shift-Return and the alternate send preference preserve newl
     assert.equal(choose({ shiftKey: true }).kind, "none");
     assert.equal(choose({}, { sendKey: "command" }).kind, "none");
     assert.equal(choose({ metaKey: true }, { sendKey: "command" }).behavior, "send");
+});
+
+test("queue mode swaps the two working send actions without changing idle send", () => {
+    assert.equal(choose({}, { state: "working", delivery: "queue" }).behavior, "queue");
+    assert.equal(choose({ altKey: true }, { state: "working", delivery: "queue" }).behavior, "steer");
+    assert.equal(choose({ metaKey: true }, { state: "working", sendKey: "command", delivery: "queue" }).behavior, "queue");
+    assert.equal(choose({}, { state: "idle", delivery: "queue" }).behavior, "send");
 });
 
 test("working Return steers and Option-Return queues; composing text cannot send", () => {

@@ -230,11 +230,14 @@ fallback terminal editor. Escape closes the open menu, stops active work, or ret
 to the terminal window. For a dialog in Pi, select the Pi pane in that window. Command-W closes
 the composer. In the composer's raw terminal, Ctrl-D closes and printable text enters the draft.
 
-Return sends, or steers active work. Option-Return queues a follow-up while Pi works. Shift-Return
-adds a line. The send-key preference changes the primary send key to Command-Return. Completion,
-model choice, thinking levels and the work queue come from Pi. History recall operates at the edge
-of an empty or recalled draft. The editor uses native spell check, selection and undo. Programmatic
-changes use the same undo history.
+Return sends. While Pi works, the icon beside Send switches between steer and queue. Option-Return
+uses the other mode. Shift-Return adds a line. Use the Add menu to switch the primary send key to
+Command-Return. The model name opens a filterable model list. The adjacent level opens its own
+menu. In short panes, Edit queued shows the count in place of the queue tray. Use it to bring all
+waiting messages back to the draft. The PTY grid sets the default text
+size. Command-Plus, Command-Minus and Command-Zero change or reset the saved adjustment. The Add
+menu offers the same controls. History recall operates at the edge of an empty or recalled draft.
+The editor uses native spell check, selection and undo. Programmatic changes use the same undo history.
 
 Unsent drafts are private records under `Composer/` in application state. The composer retains an
 unconfirmed send. It stays editable during reconnect. After a connection gap it retries the
@@ -247,7 +250,7 @@ image thumbnails are generated from local paths and removing a thumbnail removes
 the draft. Shell-mode paths use single-quote escaping.
 
 `MarkdownReader --export-composer <absolute output directory>` captures the real composer page
-with fixture state at two pane sizes in both appearances. The check exercises page message
+at full, split, narrow and short pane sizes in both appearances. The check exercises page message
 handling and rendering, not Rex keyboard focus or Finder paste and drop.
 
 ## Licences

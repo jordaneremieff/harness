@@ -27,6 +27,7 @@
 	}
 	interface KeyContext {
 		sendKey: SendKey;
+		delivery?: "steer" | "queue";
 		state?: string;
 		connection?: string;
 		submitting?: boolean;
@@ -46,12 +47,10 @@
 	interface ComposerLogic {
 		statusView(status?: ComposerStatus): StatusView;
 		keyDecision(event: ComposerKey, context: KeyContext): KeyDecision;
-		submitBehavior(state?: string): Behavior;
+		submitBehavior(state?: string, delivery?: "steer" | "queue"): Behavior;
 		actionFor(state: string | undefined, options?: ActionOptions): Action;
-		showChoices(state: string | undefined, options?: ActionOptions): boolean;
 		showReturn(state?: string): boolean;
 		editCommand(text: string): "insertText" | "delete";
-		sendKeyLabel(sendKey: SendKey): string;
 		sendKeyNext(sendKey: SendKey): SendKey;
 		draftIsSubmittable(text: string): boolean;
 	}
@@ -71,14 +70,11 @@
       working: isWorking(status?.state),
     };
   }
-  function submitBehavior(state?: string): Behavior { return isWorking(state) ? "steer" : "send"; }
+  function submitBehavior(state?: string, delivery: "steer" | "queue" = "steer"): Behavior { return isWorking(state) ? delivery : "send"; }
   function actionFor(state: string | undefined, options: ActionOptions = {}): Action {
     const disabled = options.connection !== "connected" || options.submitting === true || state === "waiting";
     if (isWorking(state) && !options.hasDraft) return { kind: "stop", label: "Stop", disabled };
     return { kind: "send", label: isWorking(state) ? "Steer" : "Send", disabled: disabled || !options.hasDraft };
-  }
-  function showChoices(state: string | undefined, options: ActionOptions = {}): boolean {
-    return isWorking(state) && options.hasDraft === true && options.submitting !== true && options.connection === "connected";
   }
   function showReturn(state?: string): boolean { return state === "waiting"; }
   function isSendKey(event: ComposerKey, key: SendKey) {
@@ -87,18 +83,20 @@
   function unavailable(context: KeyContext) {
     return context.submitting || context.readonly || !context.hasDraft || context.connection !== "connected" || context.state === "waiting";
   }
+  function chosenDelivery(event: ComposerKey, context: KeyContext): "steer" | "queue" {
+    const mode = context.delivery ?? "steer";
+    if (!event.altKey) return mode;
+    return mode === "queue" ? "steer" : "queue";
+  }
   function keyDecision(event: ComposerKey, context: KeyContext): KeyDecision {
     if (event.isComposing) return { kind: "none" };
     if (event.key === "Escape") return { kind: context.connection === "connected" && isWorking(context.state) ? "abort" : "release" };
     if (!isSendKey(event, context.sendKey)) return { kind: "none" };
     if (unavailable(context)) return { kind: "consume" };
-    return { kind: "submit", behavior: event.altKey && isWorking(context.state) ? "queue" : submitBehavior(context.state) };
+    return { kind: "submit", behavior: submitBehavior(context.state, chosenDelivery(event, context)) };
   }
 	function editCommand(text: string): "insertText" | "delete" {
 		return text.length > 0 ? "insertText" : "delete";
-	}
-	function sendKeyLabel(sendKey: SendKey): string {
-		return sendKey === "command" ? "⌘⏎ send" : "⏎ send";
 	}
 	function sendKeyNext(sendKey: SendKey): SendKey {
 		return sendKey === "command" ? "return" : "command";
@@ -115,10 +113,8 @@
 		keyDecision,
 		submitBehavior,
 		actionFor,
-		showChoices,
 		showReturn,
 		editCommand,
-		sendKeyLabel,
 		sendKeyNext,
 		draftIsSubmittable,
 	};

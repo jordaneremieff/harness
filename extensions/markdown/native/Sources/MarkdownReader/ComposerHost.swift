@@ -33,6 +33,7 @@ final class ComposerHost {
     private var peerMonitor: Task<Void, Never>?
     private var input = ComposerTerminalInput()
     private var buffered: [(String, [String: Any])] = []
+    private var lastMetrics: CGSize?
 
     init(configuration: ComposerConfiguration, launchFile: URL, stateDirectory: URL, terminal: PaneTerminal) throws {
         self.configuration = configuration
@@ -61,7 +62,10 @@ final class ComposerHost {
         }
         page.onFailure = { [weak self] in self?.ready = false }
         terminal.onBytes = { [weak self] bytes in self?.terminalInput(bytes) }
-        terminal.onResize = { [weak self] in self?.overlay.anchor.refresh() }
+        terminal.onResize = { [weak self] in
+            self?.overlay.anchor.refresh()
+            self?.publishMetrics()
+        }
         terminal.onHangUp = { [weak self] in self?.close(terminalGone: true) }
         terminal.onTerminate = { [weak self] in self?.close() }
         terminal.enter()
@@ -92,7 +96,26 @@ final class ComposerHost {
         if ready, reveal, !closing { overlay.ready = true }
     }
 
+    private var terminalMetrics: CGSize? {
+        guard case .placed(let pane) = overlay.anchor.status else { return nil }
+        let (columns, rows) = terminal.size()
+        // The PTY describes the character grid, not its font. Estimate the em
+        // from both axes: a terminal cell is roughly 0.6 em wide and 1.25 em tall.
+        let cell = pane.frame.width / CGFloat(columns)
+        let row = pane.frame.height / CGFloat(rows)
+        guard cell >= 4, cell <= 24, row >= 8, row <= 44 else { return nil }
+        let base = (cell / 0.60 + row / 1.25) / 2
+        return CGSize(width: (cell * 4).rounded() / 4, height: (base * 4).rounded() / 4)
+    }
+
+    private func publishMetrics() {
+        guard ready, let metrics = terminalMetrics, lastMetrics != metrics else { return }
+        lastMetrics = metrics
+        post("metrics", ["baseSize": metrics.height, "cellWidth": metrics.width])
+    }
+
     private func placed() {
+        publishMetrics()
         terminal.drawMarker(overlay.anchor.marker)
         syncVisibility()
         if wantsFocus, ready, overlay.window.isVisible, !closing {
@@ -334,7 +357,12 @@ final class ComposerHost {
         guard !closing else { throw composerRefusal("The composer is closing.") }
         switch type {
         case "ready":
-            ready = await page.send("init", ["text": text, "sendKey": UserDefaults.standard.string(forKey: "ComposerSendKey") ?? "return"])
+            let defaults = UserDefaults.standard
+            let metrics = terminalMetrics ?? CGSize(width: 9, height: 16)
+            lastMetrics = metrics
+            ready = await page.send("init", ["text": text, "sendKey": defaults.string(forKey: "ComposerSendKey") ?? "return",
+                                             "textAdjust": defaults.integer(forKey: "ComposerTextAdjust"),
+                                             "baseSize": metrics.height, "cellWidth": metrics.width])
             guard ready else { throw composerRefusal("The composer page did not initialise.") }
             await publishStatus()
             await page.send("history", ["entries": history])
@@ -363,6 +391,11 @@ final class ComposerHost {
                 throw composerRefusal("The send key is invalid.")
             }
             UserDefaults.standard.set(value, forKey: "ComposerSendKey")
+        case "textSize":
+            guard let value = fields["value"] as? Int, (-4...8).contains(value) else {
+                throw composerRefusal("The text size is invalid.")
+            }
+            UserDefaults.standard.set(value, forKey: "ComposerTextAdjust")
         default: return try await assist(type, fields)
         }
         return [:]
