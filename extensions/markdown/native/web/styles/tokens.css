@@ -94,7 +94,10 @@
 
     --bar-h: 46px;
     --outline-w: 252px;
-    --measure: 44rem;
+    /* Prose keeps a reading measure. A code block or table that needs more room takes the free width
+       beside it, up to the wide measure: about 120 columns of code. */
+    --measure: 40rem;
+    --measure-wide: 64rem;
     --copy-space: 0px;
     --ease: cubic-bezier(.2, .7, .2, 1);
   }

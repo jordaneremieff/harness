@@ -39,6 +39,7 @@
     scroll-padding-top: calc(var(--bar-h) + 12px);
     overscroll-behavior: contain;
     overflow-anchor: none;
+    container: page / inline-size;
   }
 
   .outline {
@@ -64,9 +65,10 @@
   #app[data-outline="closed"] .grip { display: none; }
   #app[data-resizing], #app[data-resizing] * { user-select: none; cursor: col-resize !important; }
 
-  /* Below this width a docked outline would squeeze the reading column, so the outline becomes a
-     sheet over the page. Navigation reads the sheet's position to choose between the two. */
-  @container app (width < 860px) {
+  /* Below this width a docked outline would squeeze the reading column and leave wide code and
+     tables too little room, so the outline becomes a sheet over the page. Navigation reads the
+     sheet's position to choose between the two. */
+  @container app (width < 1100px) {
     .shell, #app[data-outline="closed"] .shell { grid-template-columns: 0 minmax(0, 1fr); }
     .outline {
       position: absolute; z-index: 8; top: var(--bar-h); bottom: 0; left: 0; margin-top: 0; padding-top: 6px;

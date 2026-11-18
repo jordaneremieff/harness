@@ -298,6 +298,7 @@
 		function setBody(el: HTMLElement, body: string) {
 			if (html.get(el) === body) return;
 			api.setRenderedHTML(el, body);
+			el.style.removeProperty("--need");
 			if (el.dataset.type === "table") frameTable(el);
 			if (el.querySelector("figure.code")) api.highlightCode?.(el);
 			html.set(el, body);
@@ -349,6 +350,23 @@
 				next = el;
 			}
 		}
+		// The stylesheet widens a code block or table beyond the prose measure when its unwrapped width
+		// needs it. Each rendered body is measured once, all blocks in one layout, and the width is kept
+		// in root font units, so a text size change keeps it valid. The open editor keeps the width that
+		// its block had, so the text does not move while a person writes.
+		function measureWideBlocks() {
+			const pending = [
+				...root.querySelectorAll<HTMLElement>(':scope > [data-type="code"], :scope > [data-type="table"]'),
+			].filter((el) => el !== active?.el && !el.style.getPropertyValue("--need"));
+			if (!pending.length) return;
+			root.setAttribute("data-measuring", "");
+			const widths = pending.map((el) => el.getBoundingClientRect().width);
+			root.removeAttribute("data-measuring");
+			const rem = Number.parseFloat(win.getComputedStyle(owner.documentElement).fontSize) || 16;
+			pending.forEach((el, i) => {
+				if (widths[i] > 0) el.style.setProperty("--need", `${(widths[i] / rem).toFixed(3)}rem`);
+			});
+		}
 		function patch() {
 			if (disposed) return;
 			if (composing) {
@@ -357,6 +375,7 @@
 			}
 			holdStart();
 			placeBlocks(scope());
+			measureWideBlocks();
 			refreshActive();
 			holdEnd();
 			restoreRenderedSelection();

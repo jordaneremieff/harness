@@ -24,7 +24,7 @@ struct Verification {
     }
 
     static let pageCheckNames = [
-        "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry", "layout-fits-every-pane-size",
+        "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry", "wide-code-and-tables", "layout-fits-every-pane-size",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
         "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
@@ -67,6 +67,7 @@ struct Verification {
                 await run("find-across-inline-formatting") { await context.inlineFind(keep: &keep) }
                 await run("code-copy-crlf") { await context.codeLineEndings(keep: &keep) }
                 await run("table-column-geometry") { await context.tableColumnWidths(keep: &keep) }
+                await run("wide-code-and-tables") { await context.wideBlocks(keep: &keep) }
                 await run("layout-fits-every-pane-size") { await context.layoutAcrossPaneSizes(keep: &keep) }
                 await run("document-script-inert-under-csp") { await context.contentScript(keep: &keep) }
                 await run("reading-lock-blocks-edit") { await context.readingLock(keep: &keep) }
@@ -2004,6 +2005,127 @@ struct Context {
             }
             return .init(name: "table-column-geometry", pass: pass, detail: details.joined(separator: "; "))
         } catch { return .init(name: "table-column-geometry", pass: false, detail: String(describing: error)) }
+    }
+
+    /// A code block or table wider than the prose measure takes the free width beside the prose. In a
+    /// wide pane the long code block and the table reach past the paragraph by the same amount on both
+    /// sides and stay inside the page, and the short code block keeps the paragraph's width. A narrow
+    /// pane keeps every block at the paragraph's width. In both, the first character of a code line
+    /// starts at the code's edge. Writing in the wide block keeps its width, and closing the editor
+    /// leaves no editor style on the block.
+    func wideBlocks(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "wide-code-and-tables"
+        do {
+            let source = """
+            # Wide blocks
+
+            A paragraph of ordinary prose, long enough to fill the reading measure at every pane size in this check.
+
+            ```ts
+            export function select(paths: readonly string[], options: { range?: string; consumers: boolean }): string[] { return []; }
+            ```
+
+            ```json
+            { "short": true }
+            ```
+
+            | Setting | Effect |
+            |---|---|
+            | `wrap` | Several ordinary words describe what this setting does to every code block on the page when it is on, in one long sentence. |
+
+            """
+            let geometry = """
+            await Promise.race([new Promise(r => requestAnimationFrame(r)), new Promise(r => setTimeout(r, 60))]);
+            const blocks = [...document.querySelectorAll('[data-role="document"] > [data-block]')];
+            const edges = (b) => { const r = b.getBoundingClientRect(); return [Math.round(r.left * 10) / 10, Math.round(r.right * 10) / 10]; };
+            const code = blocks.filter(b => b.dataset.type === 'code');
+            const pre = code[1].querySelector('pre'), text = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT).nextNode();
+            const first = document.createRange(); first.setStart(text, 0); first.setEnd(text, 1);
+            const page = document.getElementById('page');
+            return {
+              paragraph: edges(blocks.find(b => b.dataset.type === 'paragraph')), long: edges(code[0]), short: edges(code[1]),
+              table: edges(blocks.find(b => b.dataset.type === 'table')), page: edges(page),
+              hang: Math.round((pre.getBoundingClientRect().left + parseFloat(getComputedStyle(pre).paddingLeft) - first.getBoundingClientRect().left) * 10) / 10,
+              sideways: page.scrollWidth > page.clientWidth + 1,
+            };
+            """
+            func near(_ a: [Double], _ b: [Double]) -> Bool { a.count == 2 && b.count == 2 && abs(a[0] - b[0]) <= 0.5 && abs(a[1] - b[1]) <= 0.5 }
+            func reaches(_ block: [Double], past p: [Double], inside page: [Double]) -> Bool {
+                block.count == 2 && p.count == 2 && page.count == 2 && p[0] - block[0] >= 40 && abs((p[0] - block[0]) - (block[1] - p[1])) <= 1
+                    && block[0] >= page[0] && block[1] <= page[1]
+            }
+            var pass = true
+            var details: [String] = []
+            for (index, width) in [600.0, 1280.0].enumerated() {
+                let file = workspace.appendingPathComponent("wide-blocks-\(index).md")
+                try Data(source.utf8).write(to: file)
+                let state = ReadingStateStore(directory: nil)
+                let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: state)
+                let editor = EditorWorkspace(directory: workspace.appendingPathComponent("wide-blocks-\(index)-drafts"), store: nil)
+                editor.add(DraftRecord(source: source))
+                let owner = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
+                defer { withExtendedLifetime(owner) {} }
+                keep.append(CheckRunner.offscreenWindow(page: model.page, width: width, height: 800))
+                await model.open(origin: nil)
+                try await CheckRunner.preparePageForCheck(model)
+                let shape = await js(model, geometry) as? [String: Any] ?? [:]
+                let p = shape["paragraph"] as? [Double] ?? [], long = shape["long"] as? [Double] ?? [], short = shape["short"] as? [Double] ?? []
+                let table = shape["table"] as? [Double] ?? [], page = shape["page"] as? [Double] ?? []
+                let edgesHold = width < 1000
+                    ? near(long, p) && near(short, p) && near(table, p)
+                    : reaches(long, past: p, inside: page) && near(table, long) && near(short, p)
+                let codeEdge = (shape["hang"] as? Double).map { $0 <= 0.5 } ?? false
+                let contained = shape["sideways"] as? Bool == false
+                var writing = "not exercised"
+                var writingHolds = true
+                if width >= 1000 {
+                    await model.sendCommand("toggleLock", args: ["lock": "writing"])
+                    let opened = await js(model, """
+                    const block = [...document.querySelectorAll('[data-role="document"] > [data-block]')].filter(b => b.dataset.type === 'code')[0];
+                    const before = block.getBoundingClientRect().width;
+                    const rect = block.getBoundingClientRect();
+                    const point = { bubbles: true, cancelable: true, button: 0, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+                    block.dispatchEvent(new PointerEvent('pointerdown', { ...point, buttons: 1, pointerType: 'mouse', isPrimary: true }));
+                    block.dispatchEvent(new PointerEvent('pointerup', { ...point, pointerType: 'mouse', isPrimary: true }));
+                    block.dispatchEvent(new MouseEvent('click', point));
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                    const editor = document.querySelector('[data-role="block-editor"]');
+                    if (!editor) return { opened: false };
+                    const opened = editor.getBoundingClientRect().width;
+                    editor.focus();
+                    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+                    let node = walker.nextNode();
+                    while (node && !node.data.includes('boolean')) node = walker.nextNode();
+                    if (!node) return { opened: false };
+                    const range = document.createRange(); range.setStart(node, node.data.indexOf('boolean') + 7); range.collapse(true);
+                    getSelection().removeAllRanges(); getSelection().addRange(range);
+                    document.execCommand('insertText', false, 's');
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                    return { opened: true, before, during: opened, typed: editor.getBoundingClientRect().width };
+                    """) as? [String: Any] ?? [:]
+                    let edited = source.replacingOccurrences(of: "consumers: boolean", with: "consumers: booleans")
+                    let mirrored = await wait(seconds: 3) { Data(model.source.utf8) == Data(edited.utf8) }
+                    _ = await js(model, "document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); return true;")
+                    let closed = await wait(seconds: 3) {
+                        await js(model, "return !document.querySelector('[data-role=\"block-editor\"]');") as? Bool == true
+                    }
+                    let after = await js(model, """
+                    const block = [...document.querySelectorAll('[data-role="document"] > [data-block]')].filter(b => b.dataset.type === 'code')[0];
+                    return { style: block.getAttribute('style') ?? '', whiteSpace: getComputedStyle(block).whiteSpace, width: block.getBoundingClientRect().width };
+                    """) as? [String: Any] ?? [:]
+                    let before = opened["before"] as? Double ?? -1
+                    let kept = [opened["during"], opened["typed"]].allSatisfy { abs(($0 as? Double ?? 0) - before) <= 0.5 }
+                    let style = after["style"] as? String ?? "unavailable"
+                    let cleared = style.range(of: #"^--need: [0-9.]+rem;?$"#, options: .regularExpression) != nil && after["whiteSpace"] as? String == "normal"
+                    writingHolds = opened["opened"] as? Bool == true && kept && mirrored && closed && cleared
+                    writing = "opened \(opened["opened"] as? Bool == true), width before \(before) during \(opened["during"] ?? "none") typed \(opened["typed"] ?? "none"), mirrored \(mirrored), closed \(closed), style after '\(style)' white-space \(after["whiteSpace"] ?? "none") width \(after["width"] ?? "none")"
+                }
+                await model.close()
+                pass = pass && edgesHold && codeEdge && contained && writingHolds
+                details.append("\(Int(width)): paragraph \(p) long \(long) short \(short) table \(table) page \(page) hang \(shape["hang"] ?? "none") contained \(contained); writing: \(writing)")
+            }
+            return .init(name: name, pass: pass, detail: details.joined(separator: "; "))
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
     /// Pane sizes from a small floating pane to a wide split. At each size, in Reading, Writing,

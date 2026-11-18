@@ -40,6 +40,10 @@ strings with their escapes and interpolated code, numbers, comments, types, func
 members, builtins, operators and delimiters. An unlabelled block that parses as JSON or reads as a
 shell transcript is coloured as one. `web/app/ui/highlight.ts` wraps the existing text in spans, so
 the visible text and its source offsets stay unchanged; other blocks stay plain.
+Prose keeps a reading measure. A code block or table whose unwrapped width exceeds that measure
+takes the whole width beside the prose, up to about 120 columns of code, so its lines scroll or
+wrap only where the page runs out. In a window narrower than 1100 points the outline opens as a
+sheet over the page instead of a docked column.
 The first mouse click reaches the page without activating the application.
 A standalone window uses the same page with transparent title-bar chrome.
 
