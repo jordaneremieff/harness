@@ -121,8 +121,8 @@ skip, or a stated limit, and every lead is attached to the facet it affects.
 ## 3. Choose the arrangement and split into facets
 
 After cheap orientation and before broad or deep reading, use the
-Agent delegation guide (`extensions/agent/delegation.md` under the package root) to divide work
-under the task's instructions and selected playbook. With no playbook, choose by
+delegate skill (`skills/delegate/SKILL.md` under the package root) to divide work
+under the task's instructions and the session's delegation mode. With neither, choose by
 the question. Consider evidence coverage, caller-only access, independence of
 checks, cost and whether the inquiries depend on each other. Counts of facets
 and source sizes inform cost; they do not set the arrangement. Reassess if

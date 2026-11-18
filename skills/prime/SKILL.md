@@ -85,8 +85,8 @@ Consider these evidence roles where they answer a real facet of the topic:
 
 After orientation, survey each source at the depth the topic needs. The survey
 prepares this session for a later task, so keep raw payloads out of its context.
-Use the Agent delegation guide (`extensions/agent/delegation.md` under the package root) to divide
-work under the task's instructions and selected playbook. With no playbook,
+Use the delegate skill (`skills/delegate/SKILL.md` under the package root) to divide
+work under the task's instructions and the session's delegation mode. With neither,
 choose by the topic. Use bounded direct reads or assign non-overlapping facets
 when delegation helps. Integrate bounded returns without repeating broad reads.
 
@@ -142,7 +142,7 @@ Finish the bounded survey with those gaps explicit. Distinguish completion of
 the preparation pass from completeness of source coverage; do not expand the
 survey merely to eliminate every gap.
 
-When you delegate, follow “Supervise without polling” in the Agent delegation guide.
+When you delegate, follow “Supervise without polling” in the delegate skill.
 Synthesize available evidence while work continues. Inspect an exact result only
 to resolve a named gap, not to collect full transcripts. Resolve owned live work
 before the final survey, and preserve failed or interrupted coverage.

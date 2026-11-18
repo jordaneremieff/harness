@@ -33,10 +33,10 @@ test("the delivery workflow routes detailed mechanisms to reachable owners", () 
 		if (anchor) assert.ok(headingAnchors(target).has(anchor), `${path}#${anchor} resolves`);
 	}
 	assertContracts(deliveryWorkflow, [
-		["delegation method owner", /\[Agent delegation guide\]\(\.\.\/extensions\/agent\/delegation\.md\) for briefs, collaboration and supervision/],
+		["delegation method owner", /\[delegate skill\]\(\.\.\/skills\/delegate\/SKILL\.md\) for delegation modes, briefs, collaboration and supervision/],
 		["declared work owner", /A native agent uses \[declared background work\]\(\.\.\/extensions\/agent\/README\.md#declared-background-work\)/],
 		["result owner", /\[result contract\]\(\.\.\/extensions\/agent\/README\.md#read-peer-results\)/],
-		["supervision owner", /\[supervision guidance\]\(\.\.\/extensions\/agent\/delegation\.md#supervise-without-polling\)/],
+		["supervision owner", /\[supervision guidance\]\(\.\.\/skills\/delegate\/SKILL\.md#supervise-without-polling\)/],
 		["native work declaration", /when its routed task remains incomplete after the current run.*state note is not the result; only completion of the declared work sends the final report/],
 		["ordinary event delivery", /An ordinary session has no \x60agent_work\x60.*\[ordinary yield\]\(\.\.\/extensions\/agent\/README\.md#state-note-of-an-ordinary-session\).*when only work it sent to agents remains open. Results arrive as events; do not poll/],
 		["recovery owner", /\[Agent recovery and delivery\]\(\.\.\/extensions\/agent\/README\.md#recovery-and-delivery\)/],

@@ -35,7 +35,7 @@ surface and authority rules for any resulting change.
 
 ## Choose the work method
 
-Use the Agent delegation guide (`extensions/agent/delegation.md` under the package root) for the
+Use the delegate skill (`skills/delegate/SKILL.md` under the package root) for the
 work split, briefs, collaboration and result handling. For harness changes,
 keep ownership of concurrent edits disjoint and give each split task a clear
 integration destination. The shared-acts workflow (`docs/agent-delivery.md`, “Coordinate with related efforts”)

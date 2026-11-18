@@ -500,7 +500,7 @@ test("the required workflow develops operator use before selection rather than a
 
 test("history orientation uses retained expertise without making history a mandatory phase", () => {
 	assertContracts(deliveryWorkflow, [
-		["conditional expert", /choose a bounded direct read or specialist help under the task's instructions and the selected playbook. If the work calls for a specialist, use the standing/],
+		["conditional expert", /choose a bounded direct read or specialist help under the task's instructions and the session's delegation mode. If the work calls for a specialist, use the standing/],
 		["corpus contract reference", /\[session-history expert\]\(session-history\.md\)/],
 		["owner directs tasking", /Follow that reference to resolve, check and task it/],
 		["short task", /current question, source window, and restrictions instead of another corpus brief/],
@@ -553,7 +553,7 @@ test("collaboration preserves the use path and accepts observed task improvement
 		],
 		[
 			"arrangement remains a judgment",
-			/Follow the task's instructions for dividing work first, then the selected playbook's defaults. With no playbook, choose the arrangement by the task. The invoking session can investigate, implement, and verify substantive work itself, collaborate, delegate, or use a dedicated coordinator/,
+			/Follow the task's instructions for dividing work first, then the session's delegation mode. With neither, choose the arrangement by the task. The invoking session can investigate, implement, and verify substantive work itself, collaborate, delegate, or use a dedicated coordinator/,
 		],
 		[
 			"full implementation sessions",

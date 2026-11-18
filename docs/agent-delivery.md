@@ -26,8 +26,8 @@ active, provisional, and merely proposed capabilities; a source file or resource
 listing does not establish usable behavior.
 
 When earlier sessions can answer an orientation question, choose a bounded
-direct read or specialist help under the task's instructions and the selected
-playbook. If the work calls for a specialist, use the standing
+direct read or specialist help under the task's instructions and the session's
+delegation mode. If the work calls for a specialist, use the standing
 [session-history expert](session-history.md). Follow that reference to resolve,
 check and task it. Supply the current question, source window, and restrictions
 instead of another corpus brief. History is a source for the current purpose,
@@ -219,11 +219,11 @@ content and operation outcomes, correction delivery, and native context/session
 control. Check active availability, not just configured presence; use no frozen
 tool list or private lifecycle vocabulary.
 
-Follow the task's instructions for dividing work first, then the selected
-playbook's defaults. With no playbook, choose the arrangement by the task.
+Follow the task's instructions for dividing work first, then the session's
+delegation mode. With neither, choose the arrangement by the task.
 The invoking session can investigate, implement, and verify substantive work
 itself, collaborate, delegate, or use a dedicated coordinator. Use the
-[Agent delegation guide](../extensions/agent/delegation.md) for briefs,
+[delegate skill](../skills/delegate/SKILL.md) for delegation modes, briefs,
 collaboration and supervision.
 
 When other agents implement, use full Pi sessions with the selected workspace's
@@ -264,7 +264,7 @@ not the result; only completion of the declared work sends the final report.
 An ordinary session has no `agent_work`. It uses
 [ordinary yield](../extensions/agent/README.md#state-note-of-an-ordinary-session)
 when only work it sent to agents remains open. Results arrive as events; do not
-poll. Follow the [supervision guidance](../extensions/agent/delegation.md#supervise-without-polling)
+poll. Follow the [supervision guidance](../skills/delegate/SKILL.md#supervise-without-polling)
 for the native and ordinary paths.
 
 Read the Agent [result contract](../extensions/agent/README.md#read-peer-results)

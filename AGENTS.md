@@ -33,8 +33,8 @@
 
   Use formatting that clarifies the content. Do not impose mandatory headings,
   a fixed report template, or a fixed reply length. As an exception, status
-  reports on delegated work follow the Agent guide's
-  [Operator status reports](extensions/agent/delegation.md#operator-status-reports).
+  reports on delegated work follow the delegate skill's
+  [Operator status reports](skills/delegate/references/reports.md).
   Expand when clarity needs explanation. Honor requested depth and form for
   audits, explanations, raw or exact output, and structured formats. Preserve the skill-deliverable exception
   above. Keep interim notices brief: state a genuine wait or blocker and the
