@@ -218,7 +218,8 @@ export class ListBrowser<T> implements View {
 		const hints: KeyHint[] = [SELECT, { keys: ["pageUp", "pageDown"], label: this.split ? "read" : "page" }];
 		if (this.selected !== undefined) {
 			const enterTaken = this.actions().some((action) => action.key === "enter");
-			hints.push({ keys: [enterTaken ? "right" : "enter"], label: this.split ? "detail" : "open" });
+			// Below the split width the detail is reachable only through this key, so it stays on a short row.
+			hints.push({ keys: [enterTaken ? "right" : "enter"], label: this.split ? "detail" : "open", ...(this.split ? {} : { priority: 1 }) });
 		}
 		hints.push(FOCUS);
 		return hints;
