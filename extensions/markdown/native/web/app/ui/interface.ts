@@ -53,20 +53,7 @@
 			className: "btn-i agent",
 		});
 		askButton.id = "b-ask";
-		const closeButton = button("Close", "x", () => void hostCommand("close"), { iconOnly: true });
-		closeButton.id = "b-close";
-		bar.append(
-			outline,
-			title,
-			el("span", { class: "spacer" }),
-			status,
-			history,
-			lock,
-			find,
-			appearance,
-			askButton,
-			closeButton,
-		);
+		bar.append(outline, title, el("span", { class: "spacer" }), status, history, lock, find, appearance, askButton);
 		function listen(
 			target: EventTarget,
 			type: string,
