@@ -99,6 +99,13 @@ test("contrast frames count distinct sentences, ordinary negations pass", () => 
 	assert.deepEqual(rules("The roof is not damp. We did not need a probe. Leave it shut rather than open it."), []);
 });
 
+test("bold lead-ins that end with a period count as label lines", () => {
+	const source = ["# Title", "", "- **Months.** The data covers six months.", "- **Cost.** It cost little.", "", "**This whole line is emphasis.**", ""].join("\n");
+	const findings = checkWriting(source, { rules: { labelLines: { limit: 1 } } });
+	const labels = findings.find((finding) => finding.rule === "labelLines");
+	assert.equal(labels?.count, 2);
+});
+
 test("the machine document supplies bounded configuration, with environment precedence and named errors", async () => {
 	const root = await mkdtemp(join(tmpdir(), "writing-config-"));
 	try {
@@ -110,8 +117,9 @@ test("the machine document supplies bounded configuration, with environment prec
 		assert.deepEqual(await loadLexicon(options), new Set(["some-term", "rare-term"]));
 		assert.equal(await loadReader(options), undefined);
 		const summary = describeRules(options.mode, options.overrides).join("\n");
-		assert.match(summary, /In prose of 200 words or more, use at most 9 spans per 100 words/u);
-		assert.doesNotMatch(summary, /announcing the document/u);
+		assert.match(summary, /^Publication reports where a document breaks these writing rules/u);
+		assert.match(summary, /inline code only for text the reader must type/u);
+		assert.doesNotMatch(summary, /description of the document/u);
 		const bad = readSettings({ agentDir: root, env: { PI_MARKDOWN_CHECKS_RULES: '{"rules":{"processNarration":{"share":2}}}' } });
 		assert.equal(bad.checksIssue, "PI_MARKDOWN_CHECKS_RULES: markdown.checksRules.rules.processNarration.share");
 		assert.equal(bad.records.find((record) => record.key === "checksRules")?.status, "invalid");

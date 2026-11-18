@@ -84,20 +84,18 @@ export function effectiveRules(config: CheckOverrides = {}) {
 export function describeRules(mode: "off" | "warn" | "block", config: CheckOverrides = {}): string[] {
 	if (mode === "off") return ["Publication checks are off."];
 	const rules = effectiveRules(config);
-	const { codeSpans } = rules;
-	const cap = (limit: number, words: string) => limit === 0 ? `Use no ${words}.` : `Use at most ${limit} ${words}.`;
 	const descriptions: Record<Rule, string> = {
-		dashes: `Join clauses with words or split them into sentences. ${cap(rules.dashes.limit, "dashes or spaced hyphens between clauses")} Do not swap dashes for semicolons, colons or parentheses. Date and number ranges with an en dash are fine.`,
-		escapedBreaks: `Send real line breaks and tabs.${rules.escapedBreaks.limit ? ` ${cap(rules.escapedBreaks.limit, "literal line break or tab escapes")}` : ""}`,
-		phrases: `State the point in your own words. ${cap(rules.phrases.limit, "phrases from the stock phrase list")}`,
-		labelLines: `State each point directly. ${cap(rules.labelLines.limit, "lines that open with a label and a colon")}`,
-		coinages: `Use ordinary words. ${cap(rules.coinages.limit, "different unfamiliar hyphenated terms")}`,
-		identifiers: `Keep paths and identifiers only when the reader needs them. ${cap(rules.identifiers.limit, "paths or identifiers outside inline code")}`,
-		codeSpans: `Use inline code only when the exact text matters. In prose of ${codeSpans.minWords} words or more, use at most ${codeSpans.limit} spans per 100 words.`,
-		processNarration: "Say what you found and why it matters. Include a step or check only if the reader needs it.",
-		opening: "Start with the answer, result or decision, without announcing the document or listing what you did.",
-		negations: `Say what the thing is. ${cap(rules.negations.limit, "contrasts that start with what it is not")}`,
+		dashes: "Join clauses with ordinary words such as because, so or but, or split them into sentences. Do not use dashes, and do not swap them for semicolons, colons, parentheses or spaced hyphens. Date and number ranges are fine.",
+		escapedBreaks: "Send real line breaks and tabs.",
+		phrases: "State each point in your own words, without stock phrases or labels that announce candour.",
+		labelLines: "Write each point as a sentence instead of opening lines with a label.",
+		coinages: "Name things in ordinary words instead of hyphenated terms made up for the occasion.",
+		identifiers: "Keep a path, hash or identifier only when the reader needs it to act, and say what it is.",
+		codeSpans: "Use inline code only for text the reader must type or match exactly.",
+		processNarration: "Say what you found and why it matters. Mention a step or a check only when the reader needs it to trust the result.",
+		opening: "Open with the answer, the result or the decision, not with a description of the document or of your work.",
+		negations: "Say what a thing is instead of defining it by what it is not.",
 	};
-	const intro = mode === "block" ? "Fix these problems before you publish." : "Publication reports these problems but still saves the document.";
+	const intro = mode === "block" ? "Publication refuses a document that breaks these writing rules." : "Publication reports where a document breaks these writing rules, and still saves it.";
 	return [intro, ...RULE_IDS.filter((rule) => rules[rule].enabled).map((rule) => descriptions[rule])];
 }

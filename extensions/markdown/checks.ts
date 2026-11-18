@@ -12,7 +12,7 @@ const compound = /(?<![\p{L}\p{N}_-])\p{L}+(?:-\p{L}+)+(?![\p{L}\p{N}_-])/gu;
 const dashes = /[—–]|(?<=[\p{L}\p{N}])[\t ]+-[\t ]+(?=[\p{L}\p{N}])|(?<=[\p{L}\p{N}])--(?=[\p{L}\p{N}])/gu;
 const id = /(?<![\p{L}\p{N}_/])(?:[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}|(?:~\/|\/)[\p{L}\p{N}_.-][\p{L}\p{N}_.@%~+/-]*|(?=[a-f\d]{0,39}\d)(?=[a-f\d]{0,39}[a-f])[a-f\d]{7,40})(?![\p{L}\p{N}_/])/giu;
 const pathOrUrl = /(?<![a-z\d+.-])(?:[a-z][a-z\d+.-]{0,31}:\/\/|www\.)[^\s<>]+/giu;
-const label = /^(?:\*{1,2}[^*:\n]{1,80}(?::\*{1,2}|\*{1,2}:)|[\p{L}\p{N}][\p{L}\p{N}'’/-]*(?:[ \t]+[\p{L}\p{N}][\p{L}\p{N}'’/-]*){0,3}:)(?=\s|$)/u;
+const label = /^(?:\*{1,2}[^*:\n]{1,80}(?::\*{1,2}|\*{1,2}:)|\*{1,2}[^*\n]{1,60}\.\*{1,2}(?=[ \t]+\S)|[\p{L}\p{N}][\p{L}\p{N}'’/-]*(?:[ \t]+[\p{L}\p{N}][\p{L}\p{N}'’/-]*){0,3}:)(?=\s|$)/u;
 const codeLabel = /^\s*(?:[-+*]|\d{1,9}[.)])?\s*(`+)([^`\n]{1,80})\1[ \t]*:(?=\s|$)/u;
 const workVerbs = "checked|ran|re-ran|verified|read|searched|inspected|confirmed|tested|reviewed|looked|compared|traced|scanned|measured|probed|opened|loaded|grepped|audited";
 const work = new RegExp(`^(?:I|we)\\s+(?:${workVerbs})\\b`, "iu");

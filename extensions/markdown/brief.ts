@@ -4,7 +4,7 @@ export type BriefMessage = { role: "user" | "assistant" | "toolResult"; text: st
 export type WritingBrief = { title?: string; reader: string; requests?: string[]; skipped?: number; opening: string; terms?: string[]; checks: string[]; limited?: boolean };
 
 export const BRIEF_SCAN_BYTES = 2 * 1024 * 1024;
-const DEFAULT_READER = "The person who asked reads the latest reply on its own. They did not see your tool calls, files or other agents' reports. They do not know names coined during the work.";
+const DEFAULT_READER = "The person who asked reads this document on its own, often after time away. They did not see your tool calls, files or other agents' reports, and they do not know names that the work created.";
 const OPENING = "Start with the answer, result or decision. Explain what it means for the reader. If they need to act, tell them what to do. Give only the detail they need to trust or use the result.";
 const INJECTED = /^(?:[<#]|Read[ \t]+(?:["'`])?(?:\.{1,2}\/|~\/|\/|[\p{L}\w-]+\/)|\/skill:)/iu;
 const TOKEN = /(?:~\/|\/)[^\s`"'<>]+|[\p{L}\d_][\p{L}\d_./'’:-]*/gu;
@@ -97,15 +97,16 @@ export function buildBrief(options: { title?: string; reader?: string; messages?
 }
 
 export function formatBrief(brief: WritingBrief): string {
-	const lines = [brief.title ? `Writing brief for ${JSON.stringify(clean(brief.title))}` : "Writing brief", "", `Reader: ${brief.reader}`, ""];
+	const lines = [brief.title ? `Writing brief for ${JSON.stringify(clean(brief.title))}` : "Writing brief", "", brief.reader, ""];
 	if (brief.requests === undefined) lines.push("I could not read the conversation for recent requests or names.");
+	else if (!brief.requests.length) lines.push("I found no typed request in the part of the conversation I read.");
 	else {
-		lines.push(`Recent requests, oldest first. Use these excerpts as context. Skipped ${brief.skipped ?? 0} blank messages or messages that looked like supplied background.`);
+		const skipped = brief.skipped ?? 0;
+		lines.push(`These are the latest requests in this conversation, oldest first.${skipped ? ` I left out ${skipped} blank or pasted ${skipped === 1 ? "message" : "messages"}.` : ""}`);
 		for (const request of brief.requests) lines.push(`- ${JSON.stringify(clean(request))}`);
-		if (!brief.requests.length) lines.push("I found no typed request in the part of the conversation I read.");
 	}
 	lines.push("", brief.opening);
-	if (brief.terms?.length) lines.push("", `Names you used: ${brief.terms.map((term) => JSON.stringify(term)).join(", ")}. Explain the names you keep or leave them out.`);
+	if (brief.terms?.length) lines.push("", `The reader does not use these names from your work: ${brief.terms.map((term) => JSON.stringify(term)).join(", ")}. Explain each one you keep in plain words, or leave it out.`);
 	if (brief.limited) lines.push("I reached the limit for reading earlier replies.");
 	return [...lines, "", ...brief.checks].join("\n");
 }

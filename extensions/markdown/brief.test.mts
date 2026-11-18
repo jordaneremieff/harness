@@ -17,7 +17,7 @@ test("three typed requests use the current branch order and skip likely injected
 	assert.equal(brief.skipped, 5);
 	const text = formatBrief(brief);
 	assert.match(text, /Writing brief for "Roof"/u);
-	assert.match(text, /Use these excerpts as context/u);
+	assert.match(text, /latest requests in this conversation, oldest first/u);
 	assert.match(text, /Check text\.$/u);
 });
 
@@ -25,7 +25,7 @@ test("the default reader does not have the work history and the brief reports un
 	const brief = buildBrief({ checks: [] });
 	assert.equal(brief.requests, undefined);
 	assert.equal(brief.terms, undefined);
-	assert.match(brief.reader, /latest reply on its own.*did not see your tool calls/u);
+	assert.match(brief.reader, /reads this document on its own.*did not see your tool calls/u);
 	assert.match(formatBrief(brief), /could not read the conversation/u);
 	assert.equal(buildBrief({ reader: "  A station manager.  ", checks: [] }).reader, "A station manager.");
 });
