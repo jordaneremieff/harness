@@ -23,7 +23,7 @@
   .doc a:hover { color:var(--link-hover);text-decoration-color:currentColor; }
   .doc a[href^="#"] { text-decoration:none; }.doc a[href^="#"]:hover { text-decoration:underline; }
   .doc strong,.doc b { font-weight:650;color:var(--heading); }
-  .doc code { font:.86em/1 var(--mono);color:var(--code-ink);background:var(--sunk);box-shadow:inset 0 0 0 1px var(--line);padding:.14em .36em;border-radius:.38em;overflow-wrap:anywhere; }
+  .doc code { font:500 .86em/1 var(--mono);color:var(--code-ink);background:var(--code-chip);box-shadow:inset 0 0 0 1px var(--code-chip-line);padding:.14em .36em;border-radius:.38em;overflow-wrap:anywhere; }
   .doc del { color:var(--ink-3); }
   .doc ul,.doc ol { margin:0;padding-left:1.45em; }.doc li { margin:.28em 0; }
   .doc li::marker { color:var(--list-marker); }.doc ol > li::marker { font-variant-numeric:tabular-nums;font-weight:600; }

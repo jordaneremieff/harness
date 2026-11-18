@@ -27,11 +27,11 @@ final class ReaderSurface: NSView {
     private var draftReferenceKeys: [String: String] = [:]
     private var draftCursor: (token: String, query: String, offset: Int)?
 
-    /// The page's paper behind the web view: Catppuccin Macchiato base in dark, Latte base in light.
+    /// The page's paper behind the web view: Catppuccin Frappé base in dark, Latte base in light.
     static var paperColour: NSColor {
         NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                ? NSColor(srgbRed: 36 / 255, green: 39 / 255, blue: 58 / 255, alpha: 1)
+                ? NSColor(srgbRed: 48 / 255, green: 52 / 255, blue: 70 / 255, alpha: 1)
                 : NSColor(srgbRed: 239 / 255, green: 241 / 255, blue: 245 / 255, alpha: 1)
         }
     }
