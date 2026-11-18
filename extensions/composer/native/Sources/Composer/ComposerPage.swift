@@ -19,11 +19,33 @@ final class ComposerPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler
         config.setURLSchemeHandler(ComposerAppSchemeHandler(resources: ComposerAppResources(root: root)), forURLScheme: "composer-app")
         view = ComposerWebView(frame: frame, configuration: config)
         view.setValue(false, forKey: "drawsBackground")
-        view.autoresizingMask = [.width, .height]
+        view.autoresizingMask = [.maxYMargin]
         super.init()
         config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "composer")
         view.navigationDelegate = self
         (view as? ComposerWebView)?.onDroppedFiles = { [weak self] in self?.onDroppedFiles?($0) }
+    }
+
+    struct Viewport: Equatable {
+        let pane: CGFloat
+        var growth: CGFloat = 0
+        var menu: CGFloat = 0
+    }
+
+    func mount(in content: NSView) {
+        content.wantsLayer = true
+        content.layer?.masksToBounds = true
+        content.addSubview(view)
+    }
+
+    /// The window clips the page; changes to the clip must not reflow the page.
+    func setViewportLimit(_ size: CGSize) {
+        guard view.frame.size != size else { return }
+        view.frame = CGRect(origin: .zero, size: size)
+    }
+
+    func sendViewport(_ viewport: Viewport) async -> Bool {
+        await send("viewport", ["pane": viewport.pane, "growth": viewport.growth, "menu": viewport.menu])
     }
 
     func load() { view.load(URLRequest(url: Self.address)) }

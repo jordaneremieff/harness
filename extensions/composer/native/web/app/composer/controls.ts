@@ -54,7 +54,7 @@
 		let queueKey = "";
 		let menuAnchor: HTMLElement | undefined, contextPoint: Point | undefined;
 		let wantedAbove = 0, appliedAbove = 0, overlayRevision = 0;
-		let waiting = false, replyPending = false, messageAbove: number | undefined;
+		let pendingAbove: number | undefined;
 		let placement: { bottom: number; left: number; height: number; base: number } | undefined;
 		let modelCache: Model[] | undefined, fetching: Promise<void> | undefined, prefetched = false;
 		let cachedHeight = menuMaxHeight;
@@ -66,26 +66,17 @@
 		const whole = (text: string) => edit({ start: 0, end: input.value.length, text });
 
 		function askOverlay(above: number, force = false) {
-			if (!force && above === wantedAbove) { if (!waiting) revealMenu(); return; }
-			// WebKit can receive the larger viewport before the bridge acknowledgement.
-			// Keep the paper pinned to the bottom at its previous pixel height in that interval.
-			if (!pane.style.height) pane.style.height = `${innerHeight - appliedAbove}px`;
+			if (!force && above === wantedAbove) return;
 			wantedAbove = above;
-			waiting = true;
-			replyPending = true;
-			messageAbove = undefined;
+			pendingAbove = above;
 			const revision = ++overlayRevision;
 			void request("overlay", { above }).then(reply => {
 				if (revision !== overlayRevision) return;
-				replyPending = false;
-				const amount = reply.above;
-				if (typeof amount === "number" && Number.isFinite(amount) && amount >= 0) overlay(amount);
-				else if (messageAbove !== undefined) overlay(messageAbove);
+				pendingAbove = undefined;
+				if (typeof reply.above === "number" && Number.isFinite(reply.above) && reply.above >= 0) viewport(reply.above);
 			}, error => {
 				if (revision !== overlayRevision) return;
-				replyPending = false;
-				waiting = false;
-				pane.style.height = "";
+				pendingAbove = undefined;
 				if (mode) { closeMenu(); fail(error); }
 			});
 		}
@@ -101,7 +92,6 @@
 			if (!mode) return;
 			mode = "";
 			placement = undefined;
-			delete menu.dataset.staged;
 			menu.hidePopover();
 			menu.hidden = true;
 			resetMenu();
@@ -131,11 +121,12 @@
 		}
 		function showMenu() {
 			const opening = menu.hidden || !menu.matches(":popover-open");
-			if (opening) menu.dataset.staged = "";
 			menu.hidden = false;
+			if (opening) menu.showPopover();
 			menu.style.maxHeight = `${menuMaxHeight}px`;
 			if (mode === "completion") menu.style.setProperty("--editor-width", `${input.clientWidth}px`);
 			positionMenu(opening);
+			if (opening && mode === "model") menu.querySelector("input")?.focus({ preventScroll: true });
 		}
 		function caretLine() {
 			// The highlight mirror shares the textarea's font, wrapping, size and scroll offset.
@@ -154,6 +145,14 @@
 			if (rect.height === 0) return;
 			const lineHeight = Number.parseFloat(getComputedStyle(input).lineHeight);
 			return new DOMRect(rect.x, rect.y + (rect.height - lineHeight) / 2, 0, lineHeight);
+		}
+		function revealCaret() {
+			if (document.activeElement !== input) return;
+			backdrop.scrollTop = input.scrollTop;
+			const line = caretLine(), box = input.getBoundingClientRect();
+			if (!line) return;
+			if (line.bottom > box.bottom) input.scrollTop += Math.ceil(line.bottom - box.bottom);
+			else if (line.top < box.top) input.scrollTop -= Math.ceil(box.top - line.top);
 		}
 		function protectCaret(scroll: boolean) {
 			const area = backdrop.parentElement;
@@ -189,43 +188,31 @@
 			return Math.min(menuMaxHeight, menu.scrollHeight + menu.offsetHeight - menu.clientHeight + listOverflow);
 		}
 		function positionMenu(opening = false) {
-			if (!mode || menu.hidden || (waiting && !opening)) return;
+			if (!mode || menu.hidden) return;
 			const point = anchorPoint();
 			if (!point) { closeMenu(); return; }
 			const height = menu.style.height ? parseFloat(menu.style.height) : menuHeight();
-			const bottom = innerHeight - point.top + menuGap;
+			const paper = pane.getBoundingClientRect();
+			const bottom = paper.bottom - point.top + menuGap;
 			const left = Math.max(menuInset, Math.min(point.left, innerWidth - menu.offsetWidth - menuInset));
-			const base = innerHeight - appliedAbove;
+			const base = paper.height;
 			placement = { bottom, left, height, base };
 			const above = Math.max(0, Math.ceil(height + bottom + menuInset - base));
-			if (above > appliedAbove) menu.dataset.staged = "";
 			askOverlay(above, opening);
+			paintMenu(pendingAbove ?? appliedAbove);
 		}
-		function revealMenu() {
+		function paintMenu(above: number) {
 			if (!mode || !placement) return;
 			const { bottom, left, height, base } = placement;
-			// The bridge acknowledgement and WebKit's viewport resize can arrive separately.
-			if (innerHeight + 1 < base + appliedAbove && menu.hasAttribute("data-staged")) return;
-			const available = Math.floor(innerHeight - bottom - menuInset);
+			const available = Math.floor(base + above - bottom - menuInset);
 			menu.style.maxHeight = `${Math.max(0, Math.min(height, available))}px`;
 			menu.style.bottom = `${bottom}px`;
 			menu.style.left = `${left}px`;
 			menu.toggleAttribute("data-no-space", available < 12);
-			delete menu.dataset.staged;
-			if (!menu.matches(":popover-open")) {
-				menu.showPopover();
-				if (mode === "model") menu.querySelector("input")?.focus({ preventScroll: true });
-			}
 		}
-		function overlay(above: number) {
-			if (replyPending) { messageAbove = above; return; }
-			waiting = false;
-			if (appliedAbove !== above) {
-				appliedAbove = above;
-				document.documentElement.style.setProperty("--above", `${above}px`);
-			}
-			pane.style.height = "";
-			revealMenu();
+		function viewport(above: number) {
+			appliedAbove = above;
+			positionMenu();
 		}
 		function iconButton(glyph: string, label: string, action: () => unknown) {
 			const node = button("", action, label);
@@ -655,13 +642,10 @@
 		input.addEventListener("selectionchange", () => protectCaret(true));
 		input.addEventListener("scroll", () => { backdrop.scrollLeft = input.scrollLeft; backdrop.scrollTop = input.scrollTop; protectCaret(false); if (mode === "completion") positionMenu(); });
 		input.addEventListener("select", () => { if (mode === "completion") positionMenu(); });
-		new ResizeObserver(() => { protectCaret(true); if (!menu.hasAttribute("data-staged")) positionMenu(); }).observe(input);
+		new ResizeObserver(() => { protectCaret(true); positionMenu(); }).observe(input);
 		document.addEventListener("dragover", (event) => { if (event.dataTransfer?.types.includes("Files")) event.preventDefault(); });
 		document.addEventListener("drop", drop);
-		window.addEventListener("resize", () => {
-			if (!waiting && menu.hasAttribute("data-staged")) revealMenu();
-			else positionMenu();
-		});
+		window.addEventListener("resize", () => positionMenu());
 		input.addEventListener("paste", (event) => {
 			if (event.clipboardData?.types.includes("Files") || !event.clipboardData?.getData("text/plain")) {
 				event.preventDefault();
@@ -671,7 +655,7 @@
 		add.addEventListener("click", () => { if (mode === "add") closeMenu(); else openAdd(); });
 		model.addEventListener("click", () => { if (mode === "model") closeMenu(); else void openModels(); });
 		return {
-			key, sync, updated, overlay, prefetch, paste: (paths: unknown) => addPaths(paths),
+			key, sync, updated, viewport, revealCaret, prefetch, paste: (paths: unknown) => addPaths(paths),
 			history(next: string[]) { entries = next; recalled = null; },
 			recovery(label: string) { recoveryLabel = label; if (mode === "add") openAdd(); },
 			models: openModels,

@@ -9,7 +9,7 @@ const source = stripTypeScriptTypes(readFileSync(new URL("./layout.ts", import.m
 function load(globals: Record<string, unknown> = {}) {
 	const scope = globals as { composerLayout: {
 		stack(parts: typeof empty, viewport: number): { height: number; visibleRows: number; tight: boolean };
-		mount(input: { value: string }, report: (height: number) => Promise<Record<string, unknown>>): { (): void; growth(above: number): void };
+		mount(input: { value: string }, report: (height: number) => Promise<Record<string, unknown>>): { (): void; viewport(pane: number, growth: number): void };
 	} };
 	runInNewContext(source, scope);
 	return scope.composerLayout;
@@ -96,9 +96,11 @@ function page(reply: (height: number) => Promise<Record<string, unknown>> = () =
 	const heights: number[] = [];
 	const sync = mount(input, height => { heights.push(height); return reply(height); });
 	return {
-		geometry, heights, sync() { sync(); resized(); }, input, flags, events, scroll() { events.get("scroll")?.(); }, resize() { resized(); },
-		type(value: string) { input.value = value; sync(); resized(); },
+		geometry, heights, sync() { sync(); sync.viewport(geometry.viewport, 0); resized(); }, input, flags, events, scroll() { events.get("scroll")?.(); }, resize() { sync.viewport(geometry.viewport, 0); resized(); },
+		type(value: string) { input.value = value; sync(); sync.viewport(geometry.viewport, 0); resized(); },
 		get tight() { return tight; },
+		get paper() { return properties.get("--paper-height"); },
+		viewport: sync.viewport,
 		get rows() { return Number(properties.get("--visible-rows")); },
 		observed, nodes,
 	};
@@ -182,21 +184,29 @@ test("the editor fades only edges that hide more draft text", () => {
 });
 
 
-test("growth holds the first line until its layout reply, then reveals one more row", async () => {
+test("the page paints the requested row before the host reveals it", async () => {
 	let resolve!: (reply: Record<string, unknown>) => void;
 	const gate = new Promise<Record<string, unknown>>(done => { resolve = done; });
 	const view = page(() => gate);
 	view.sync();
-	view.events.get("beforeinput")?.();
-	view.input.scrollTop = 24;
 	view.type("first\nsecond");
-	assert.equal(view.input.scrollTop, 0);
-	assert.equal(view.rows, 1);
-	view.input.scrollTop = 24;
-	view.scroll();
-	assert.equal(view.input.scrollTop, 0);
+	assert.equal(view.rows, 2);
+	assert.equal(view.paper, "160px");
+	view.viewport(136, 24);
 	resolve({ above: 24 });
 	await gate;
 	assert.equal(view.rows, 2);
-	assert.equal(view.input.scrollTop, 0);
+	assert.equal(view.paper, "160px");
+	view.viewport(160, 0);
+	assert.equal(view.paper, "160px");
+});
+
+test("a refused growth request restores the pane height without another request", async () => {
+	const view = page(async () => ({ above: 0 }));
+	view.type("first\nsecond");
+	assert.equal(view.paper, "160px");
+	await Promise.resolve();
+	assert.equal(view.rows, 1);
+	assert.equal(view.paper, "136px");
+	assert.deepEqual(view.heights, [160]);
 });

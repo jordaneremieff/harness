@@ -84,7 +84,7 @@ svg.i {
 	--meta-size: max(10px, calc(var(--draft-size) - 4px));
 	--mark: var(--accent-text);
 	--inset: 12px;
-	height: max(0px, calc(100% - var(--above, 0px)));
+	height: var(--paper-height, 0px);
 	background: var(--paper);
 	display: flex;
 	flex-direction: column;
@@ -251,7 +251,7 @@ svg.i {
 .tooltip, .composer-menu { position: fixed; z-index: 3; border-radius: 9px; box-shadow: var(--shadow-l); }
 .tooltip { background: var(--toolbar-bg); color: var(--toolbar-ink); padding: 5px 9px; }
 .tooltip { z-index: 4; white-space: nowrap; pointer-events: none; font-size: 12px; }
-.composer-menu { --menu-width: min(320px, calc(100vw - 12px)); width: var(--menu-width); margin: 0; inset: auto; left: clamp(6px, anchor(left), calc(100vw - var(--menu-width) - 6px)); text-wrap: pretty; max-height: calc(100vh - 12px); overflow: auto; overscroll-behavior: contain; padding: 4px; background: var(--paper); color: var(--ink); border: 1px solid var(--pressed); font-size: max(11px, calc(var(--base-size, 16px) + var(--text-adjust, 0px) - 2px)); }
+.composer-menu { --menu-width: min(320px, calc(100vw - 12px)); width: var(--menu-width); margin: 0; inset: auto; left: clamp(6px, anchor(left), calc(100vw - var(--menu-width) - 6px)); text-wrap: pretty; overflow: auto; overscroll-behavior: contain; padding: 4px; background: var(--paper); color: var(--ink); border: 1px solid var(--pressed); font-size: max(11px, calc(var(--base-size, 16px) + var(--text-adjust, 0px) - 2px)); }
 .composer-menu[data-kind="model"] { display: flex; flex-direction: column; overflow: hidden; }
 .composer-menu[data-kind="model"] input { flex: none; }
 .thinking-choices { border-top: 1px solid var(--line); }

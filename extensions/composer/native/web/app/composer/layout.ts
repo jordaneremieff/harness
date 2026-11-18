@@ -23,7 +23,7 @@
 		if (!node) throw Error(`Missing composer element: ${selector}`);
 		return node;
 	}
-	function mount(input: HTMLTextAreaElement, report: (height: number) => Promise<Record<string, unknown>>) {
+	function mount(input: HTMLTextAreaElement, report: (height: number) => Promise<Record<string, unknown>>, revealCaret?: () => void) {
 		const panel = element<HTMLElement>(".composer");
 		const area = element<HTMLElement>(".edit-area");
 		const measure = element<HTMLTextAreaElement>("#measure");
@@ -44,69 +44,53 @@
 			const chrome = edges(writerStyle) + edges(insetStyle) + px(insetStyle.rowGap) + block(footer) + block(shelf) + gap;
 			return { draft: block(measure), chrome, gap, editorPadding: padding(style), line: px(style.lineHeight), queue: block(queue), images: block(images) };
 		}
-		let visibleRows = 1, growthAbove = 0, revision = 0;
-		let predicted = 0, before: number | undefined;
-		let hold: { top: number; caret: number; timer: ReturnType<typeof setTimeout> } | undefined;
+		let pane = 0, growth = 0, predicted = 0, revision = 0;
 		function updateFades() {
 			const top = input.scrollTop, bottom = input.scrollHeight - input.clientHeight - top;
 			area.toggleAttribute("data-clipped-top", top > 1);
 			area.toggleAttribute("data-clipped-bottom", bottom > 1);
 		}
-		function anchorScroll() {
-			if (!hold) return;
-			const top = input.scrollTop;
-			if (top !== hold.top) { hold.caret = top; input.scrollTop = hold.top; }
-		}
-		function release(fallback: boolean) {
-			if (!hold) return;
-			clearTimeout(hold.timer);
-			const top = fallback ? hold.caret : hold.top;
-			hold = undefined;
-			input.scrollTop = top;
-		}
-		function growth(above: number) {
-			growthAbove = above;
-			predicted = 0;
-			release(above === 0);
+		input.addEventListener("scroll", updateFades, { passive: true });
+		function viewport(nextPane: number, nextGrowth: number) {
+			if (pane === nextPane && growth === nextGrowth) return;
+			pane = nextPane;
+			growth = nextGrowth;
 			measureLayout();
 		}
-		function reportFit(natural: number, viewport: number, text: string) {
-			const height = text ? Math.max(last ?? 0, natural) : natural;
-			if (last === height) return;
-			const id = ++revision, base = viewport - growthAbove;
-			last = height;
-			if (!text) release(false);
-			else if (height > viewport && !hold && before !== undefined) {
-				const top = before;
-				hold = { top, caret: input.scrollTop, timer: setTimeout(() => { release(true); measureLayout(); }, 300) };
-				anchorScroll();
-			}
-			void report(height).then(reply => {
-				if (id !== revision || typeof reply.above !== "number" || !Number.isFinite(reply.above) || reply.above < 0) return;
-				growthAbove = reply.above;
-				predicted = reply.above ? base + reply.above : 0;
-				release(reply.above === 0);
-				measureLayout();
-			}, () => { /* Keep the native scroll fallback deadline. */ });
+		function settle(id: number, above: unknown) {
+			if (id !== revision) return;
+			const requested = predicted;
+			predicted = 0;
+			if (typeof above === "number" && Number.isFinite(above) && above >= 0) growth = above;
+			measureLayout();
+			if (requested > pane + growth) revealCaret?.();
 		}
-		input.addEventListener("beforeinput", () => { before = hold?.top ?? input.scrollTop; });
-		input.addEventListener("scroll", () => { anchorScroll(); updateFades(); }, { passive: true });
-		function measureLayout() {
-			const text = input.value;
-			// Measurement runs after layout on box size changes, not in the input listener.
-			panel.removeAttribute("data-tight");
-			const parts = extents(), actual = block(panel);
-			if (!parts.draft) return;
-			if (actual >= predicted) predicted = 0;
-			const viewport = Math.max(actual, predicted), normal = stack(parts, viewport);
-			const natural = text ? normal.height : stack({ ...parts, images: 0 }, viewport).height;
-			reportFit(natural, actual, text);
-			before = undefined;
+		function paintPaper(parts: Extents) {
+			const paper = Math.max(pane + growth, predicted);
+			panel.style.setProperty("--paper-height", `${paper}px`);
+			const normal = stack(parts, paper);
 			panel.toggleAttribute("data-tight", normal.tight);
-			const visible = normal.tight ? stack(extents(), viewport) : normal;
-			if (!hold) visibleRows = visible.visibleRows;
-			panel.style.setProperty("--visible-rows", String(visibleRows));
+			const visible = normal.tight ? stack(extents(), paper) : normal;
+			panel.style.setProperty("--visible-rows", String(visible.visibleRows));
 			updateFades();
+		}
+		function requestedHeight(text: string, parts: Extents, confirmed: number) {
+			const natural = stack(text ? parts : { ...parts, images: 0 }, confirmed).height;
+			return text ? Math.max(last ?? 0, natural) : natural;
+		}
+		function measureLayout() {
+			if (!pane) return;
+			const text = input.value;
+			panel.removeAttribute("data-tight");
+			const parts = extents(), confirmed = pane + growth;
+			const height = requestedHeight(text, parts, confirmed);
+			const changed = height !== last;
+			if (changed) predicted = text && height > confirmed ? height : 0;
+			paintPaper(parts);
+			if (!changed) return;
+			last = height;
+			const id = ++revision;
+			void report(height).then(reply => settle(id, reply.above), () => settle(id, growth));
 		}
 		const observer = new ResizeObserver(measureLayout);
 		for (const el of [panel, queue, images, measure, footer, shelf, input]) observer.observe(el);
@@ -115,7 +99,7 @@
 			// Clearing a short draft can leave the measuring field at the same size.
 			if (!input.value && last !== undefined) measureLayout();
 		}
-		return Object.assign(sync, { growth });
+		return Object.assign(sync, { viewport });
 	}
 	Object.assign(globalThis, { composerLayout: { mount, stack } });
 })();

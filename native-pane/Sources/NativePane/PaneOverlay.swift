@@ -9,6 +9,9 @@ public final class PaneOverlay: NSObject, NSWindowDelegate {
     private var prediction: (from: CGRect, to: CGRect)?
     public private(set) var appliedAbove: CGFloat = 0
     public private(set) var appliedGrowth: CGFloat = 0
+    /// The largest visible rectangle, from the pane bottom to the extension clamp.
+    public private(set) var viewportLimit: CGSize?
+    public private(set) var paneHeight: CGFloat = 0
     public let window: PaneWindow
     public let content: PaneContentView
     private var placement: TerminalAnchor.Placement?
@@ -107,6 +110,9 @@ public final class PaneOverlay: NSObject, NSWindowDelegate {
                 self.prediction = nil
             }
             let pane = prediction?.to ?? shown.frame
+            paneHeight = pane.height
+            // The current pane can differ slightly from the AX split bounds.
+            viewportLimit = CGSize(width: pane.width, height: max(shown.frame.height, (shown.contentFrame?.maxY ?? pane.maxY) - pane.minY))
             let offsets = Self.extensions(pane, content: shown.contentFrame, growthHeight: growthHeight, menu: requestedAbove)
             appliedGrowth = offsets.growth
             appliedAbove = offsets.menu
@@ -126,6 +132,8 @@ public final class PaneOverlay: NSObject, NSWindowDelegate {
         case .placed, .concealed, .searching, .untrusted:
             placement = nil
             prediction = nil
+            viewportLimit = nil
+            paneHeight = 0
             appliedAbove = 0
             appliedGrowth = 0
             if window.isVisible { window.orderOut(nil) }

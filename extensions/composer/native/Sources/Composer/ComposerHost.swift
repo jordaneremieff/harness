@@ -51,9 +51,9 @@ final class ComposerHost {
     private var retentionProblem: String?
     private var fit: ComposerFit
     private var fitStartup: ComposerFit.Startup?
-    private var lastGrowthAbove: CGFloat = 0
+    private var lastViewport: ComposerPage.Viewport?
+    private var viewportDelivery: Task<Bool, Never>?
     private var shrinkFrom: (frame: CGRect, rows: Int)?
-    private var lastOverlayAbove = 0.0
     private var resizeJob: Task<Void, Never>?
 
     init(configuration: ComposerConfiguration, launchFile: URL, stateDirectory: URL, terminal: PaneTerminal) throws {
@@ -74,7 +74,7 @@ final class ComposerHost {
         overlay.window.onClose = { [weak self] in self?.close() }
         overlay.window.onCancel = { [weak self] in self?.post("escape") }
         overlay.onChange = { [weak self] in self?.placed() }
-        overlay.content.addSubview(page.view)
+        page.mount(in: overlay.content)
         page.receive = { [weak self] type, fields in
             guard let self else { throw composerRefusal("The composer is closed.") }
             return try await self.handle(type, fields)
@@ -87,10 +87,9 @@ final class ComposerHost {
         page.onFailure = { [weak self] in
             guard let self else { return }
             ready = false
-            lastOverlayAbove = 0
+            lastViewport = nil
             overlay.extendAbove(0)
             overlay.grow(to: nil)
-            lastGrowthAbove = 0
         }
         terminal.onBytes = { [weak self] bytes in self?.terminalInput(bytes) }
         terminal.onResize = { [weak self] in
@@ -105,7 +104,7 @@ final class ComposerHost {
             overlay.anchor.refresh()
             publishMetrics()
             resizeToFit()
-            publishExtensions()
+            publishViewport()
         }
         terminal.onHangUp = { [weak self] in self?.close(terminalGone: true) }
         terminal.onTerminate = { [weak self] in self?.close() }
@@ -122,7 +121,7 @@ final class ComposerHost {
                 guard ComposerDraftStore.alive(configuration.pid) else { piEnded(); return }
                 if fitStartup != nil || fit.awaitsFrame {
                     resizeToFit()
-                    publishExtensions()
+                    publishViewport()
                 }
                 try? await Task.sleep(for: .milliseconds(200))
             }
@@ -161,7 +160,7 @@ final class ComposerHost {
         terminal.drawMarker(overlay.anchor.marker)
         syncVisibility()
         resizeToFit()
-        publishExtensions()
+        publishViewport()
         if wantsFocus, ready, overlay.window.isVisible, !closing {
             wantsFocus = false
             overlay.window.makeKeyAndOrderFront(nil)
@@ -170,14 +169,31 @@ final class ComposerHost {
         }
     }
 
-    private func publishExtensions() {
-        if lastOverlayAbove != overlay.appliedAbove {
-            lastOverlayAbove = overlay.appliedAbove
-            post("overlay", ["above": lastOverlayAbove])
+    @discardableResult
+    private func publishViewport(force: Bool = false) -> Task<Bool, Never>? {
+        let viewport: ComposerPage.Viewport
+        if let limit = overlay.viewportLimit {
+            page.setViewportLimit(limit)
+            viewport = ComposerPage.Viewport(pane: overlay.paneHeight, growth: overlay.appliedGrowth, menu: overlay.appliedAbove)
+        } else {
+            viewport = lastViewport ?? ComposerPage.Viewport(pane: min(page.view.bounds.height, overlay.window.frame.height))
         }
-        if lastGrowthAbove != overlay.appliedGrowth {
-            lastGrowthAbove = overlay.appliedGrowth
-            post("growth", ["above": lastGrowthAbove])
+        guard ready || force else { return nil }
+        if !force, viewport == lastViewport { return viewportDelivery }
+        lastViewport = viewport
+        let previous = viewportDelivery
+        let delivery = Task { [page] in
+            // Preserve geometry order even if an AX change arrives during a bridge request.
+            _ = await previous?.value
+            return await page.sendViewport(viewport)
+        }
+        viewportDelivery = delivery
+        return delivery
+    }
+
+    private func deliverViewport() async throws {
+        guard await publishViewport(force: true)?.value == true else {
+            throw composerRefusal("The composer page did not accept its viewport.")
         }
     }
 
@@ -440,6 +456,7 @@ final class ComposerHost {
         guard !closing else { throw composerRefusal("The composer is closing.") }
         switch type {
         case "ready":
+            try await deliverViewport()
             let metrics = terminalMetrics ?? CGSize(width: 9, height: 16)
             lastMetrics = metrics
             ready = await page.send("init", ["text": text, "sendKey": preferences.sendKey,
@@ -464,11 +481,11 @@ final class ComposerHost {
                   above.doubleValue.isFinite, (0...8192).contains(above.doubleValue) else {
                 throw composerRefusal("Invalid overlay height.")
             }
-            overlay.extendAbove(above.doubleValue)
-            lastOverlayAbove = overlay.appliedAbove
-            Self.perf.debug("menu.extended above=\(self.lastOverlayAbove)")
+            let applied = overlay.extendAbove(above.doubleValue)
+            Self.perf.debug("menu.extended above=\(applied)")
+            try await deliverViewport()
             Self.perf.debug("menu.reply")
-            return ["above": lastOverlayAbove]
+            return ["above": applied]
         case "pasteText":
             return ["text": NSPasteboard.general.string(forType: .string) ?? ""]
         case "layout":
@@ -479,9 +496,9 @@ final class ComposerHost {
             }
             resizeToFit(reportedLayout: true)
             if fit.growsPane, let needed = fit.needed { overlay.grow(to: needed) }
-            lastGrowthAbove = overlay.appliedGrowth
-            publishExtensions()
-            return ["above": lastGrowthAbove]
+            let applied = overlay.appliedGrowth
+            try await deliverViewport()
+            return ["above": applied]
         case "draft":
             guard let value = fields["text"] as? String else { throw composerRefusal("The draft is invalid.") }
             setDraft(value)
@@ -525,7 +542,7 @@ final class ComposerHost {
                 catch { return }
                 reportedVisibility = shown
                 resizeToFit()
-                publishExtensions()
+                publishViewport()
             }
         }
     }
@@ -585,7 +602,7 @@ final class ComposerHost {
             Self.fitLog.debug("reply applied=\(applied) share=\(request) received=\(reply != nil)")
             resizeJob = nil
             resizeToFit()
-            publishExtensions()
+            publishViewport()
         }
     }
 

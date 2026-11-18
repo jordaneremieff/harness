@@ -6,6 +6,7 @@ enum ComposerCheck {
     static func run(directory: URL) async {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try await ComposerViewportCheck.run()
             for theme in ["light", "dark"] {
                 for (width, height) in [(812, 170), (804, 150), (804, 260), (900, 300), (520, 200), (1800, 150), (360, 200)] {
                     do { try await render(directory, theme: theme, width: width, height: height) }
@@ -19,32 +20,48 @@ enum ComposerCheck {
         }
     }
 
+    private static let backingHeight = 1024
     private static let settleFrame = "await Promise.race([new Promise(r => requestAnimationFrame(r)), new Promise(r => setTimeout(r, 60))]); return true;"
 
     private final class KeyPanel: NSPanel {
         override var canBecomeKey: Bool { true }
+        var pane = 0
+        var growth = 0
+        var menuExtension = 0
+        var paperHeight: Int { pane + growth }
+        var visibleHeight: Int { paperHeight + menuExtension }
         var overlayRevision = 0
         var checkedRevision = 0
         var acknowledgedAbove: Int?
+        var pendingOverlay: Int?
+        var holdOverlay = false
         var modelRequests = 0
         var holdModels = false
         var holdGrowth = false
-        var growthRequested = false
+        var acceptGrowth = false
+        var pendingGrowth: Int?
+    }
+
+    private static func publishViewport(_ page: ComposerPage, _ window: KeyPanel) async throws {
+        guard window.visibleHeight <= backingHeight,
+              await page.send("viewport", ["pane": window.pane, "growth": window.growth, "menu": window.menuExtension]) else {
+            throw composerRefusal("The fixture could not publish the viewport.")
+        }
     }
 
     private final class LoadFlag { var value = false }
 
     private static func render(_ directory: URL, theme: String, width: Int, height: Int) async throws {
-        let bounds = NSRect(x: 0, y: 0, width: width, height: height)
+        let bounds = NSRect(x: 0, y: 0, width: width, height: backingHeight)
         let page = try ComposerPage(frame: bounds)
         let window = Self.KeyPanel(contentRect: bounds.offsetBy(dx: -20000, dy: -20000), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        window.pane = height
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
         window.appearance = NSAppearance(named: theme == "dark" ? .darkAqua : .aqua)
         window.contentView = page.view
         window.orderFrontRegardless()
         defer { page.receive = nil; window.close() }
-        let baseFrame = window.frame
         window.holdModels = theme == "dark" && width == 812
         let loaded = LoadFlag()
         var currentDraft = ""
@@ -56,43 +73,42 @@ enum ComposerCheck {
         let clipboard = "pasted from fixture"
         page.receive = { [weak page] type, fields in
             switch type {
-            case "ready": loaded.value = true
+            case "ready":
+                guard let page else { throw composerRefusal("No fixture page.") }
+                try await publishViewport(page, window)
+                loaded.value = true
             case "layout":
-                if let height = fields["height"] as? Int { heights.append(height) }
-                if window.holdGrowth {
-                    window.growthRequested = true
-                    try await wait { !window.holdGrowth }
-                    var frame = baseFrame
-                    frame.size.height += 24
-                    window.setFrame(frame, display: true, animate: false)
-                    return ["above": 24]
+                guard let page, let requested = fields["height"] as? Int, requested > 0 else {
+                    throw composerRefusal("Invalid fixture layout height.")
                 }
-                return ["above": 0]
+                heights.append(requested)
+                let needed = max(0, requested - window.pane)
+                if window.holdGrowth {
+                    window.pendingGrowth = needed
+                    try await wait { !window.holdGrowth }
+                    window.growth = window.acceptGrowth ? needed : 0
+                } else {
+                    window.growth = min(window.growth, needed)
+                }
+                try await publishViewport(page, window)
+                window.pendingGrowth = nil
+                return ["above": window.growth]
             case "overlay":
                 guard let page, let above = fields["above"] as? Int, above >= 0 else {
                     throw composerRefusal("Invalid fixture overlay height.")
                 }
-                if above > 0 && window.acknowledgedAbove == 0 {
-                    try await evaluate(page, "return !document.querySelector('#menu').matches(':popover-open') || getComputedStyle(document.querySelector('#menu')).visibility === 'hidden';")
-                }
                 window.overlayRevision += 1
                 let revision = window.overlayRevision
                 window.acknowledgedAbove = nil
-                var frame = baseFrame
-                frame.size.height += CGFloat(above)
-                if window.frame != frame { window.setFrame(frame, display: true, animate: false) }
-                guard window.frame == frame else {
-                    throw composerRefusal("The fixture could not apply \(above) px above the composer.")
+                if window.holdOverlay {
+                    window.pendingOverlay = above
+                    try await wait { !window.holdOverlay }
                 }
-                if above > 0 {
-                    try await wait { (try? await javascript(page, "return innerHeight === \(height + above);")) == true }
-                    try await evaluate(page, "return document.querySelector('#composer').getBoundingClientRect().top === \(above);")
-                }
-                if theme == "light" {
-                    guard await page.send("overlay", ["above": above]) else { throw composerRefusal("No overlay receiver.") }
-                }
+                window.menuExtension = above
+                try await publishViewport(page, window)
+                window.pendingOverlay = nil
                 if revision == window.overlayRevision { window.acknowledgedAbove = above }
-                return theme == "dark" ? ["above": above] : [:]
+                return ["above": above]
             case "pasteText":
                 pasteRequests += 1
                 return ["text": clipboard]
@@ -172,23 +188,47 @@ enum ComposerCheck {
         if theme == "light" && width == 812 && height == 170 {
             let rows = try await page.view.callAsyncJavaScript("return Number(document.querySelector('.composer').style.getPropertyValue('--visible-rows'));", arguments: [:], in: nil, contentWorld: .page) as? Int ?? 0
             guard rows > 0, rows < 12 else { throw composerRefusal("Invalid fixture row count.") }
-            await page.send("replace", ["text": Array(repeating: "Line", count: rows).joined(separator: "\n")])
-            try await expectHeight(emptyHeight + (rows - 1) * lineHeight, after: "Filled editor")
-            window.holdGrowth = true
-            try await evaluate(page, """
-                const field = document.querySelector('#input');
-                field.focus(); field.setSelectionRange(field.value.length, field.value.length);
-                field.dispatchEvent(new InputEvent('beforeinput', {inputType:'insertLineBreak', bubbles:true}));
-                return document.execCommand('insertText', false, '\\nNext');
-                """)
-            try await wait { window.growthRequested }
-            try await evaluate(page, "return document.querySelector('#input').scrollTop === 0 && Number(document.querySelector('.composer').style.getPropertyValue('--visible-rows')) === \(rows);")
-            window.holdGrowth = false
-            try await wait { (try? await javascript(page, "return document.querySelector('#input').scrollTop === 0 && Number(document.querySelector('.composer').style.getPropertyValue('--visible-rows')) === \(rows + 1);")) == true }
-            guard await page.send("growth", ["above": 0]) else { throw composerRefusal("No growth receiver.") }
-            await page.send("replace", ["text": ""])
-            window.setFrame(baseFrame, display: true, animate: false)
-            try await expectHeight(emptyHeight, after: "Cleared expanded editor")
+            for accept in [false, true] {
+                await page.send("replace", ["text": Array(repeating: "Line", count: rows).joined(separator: "\n")])
+                try await expectHeight(emptyHeight + (rows - 1) * lineHeight, after: "Filled editor")
+                try await evaluate(page, Self.settleFrame)
+                window.holdGrowth = true
+                window.acceptGrowth = accept
+                try await evaluate(page, """
+                    const field = document.querySelector('#input');
+                    field.focus(); field.setSelectionRange(field.value.length, field.value.length);
+                    field.dispatchEvent(new InputEvent('beforeinput', {inputType:'insertLineBreak', bubbles:true}));
+                    return document.execCommand('insertText', false, '\\nNext');
+                    """)
+                try await wait { window.pendingGrowth != nil }
+                guard let needed = window.pendingGrowth, (1...lineHeight).contains(needed), window.growth == 0 else {
+                    throw composerRefusal("Expected one pending growth step.")
+                }
+                let prepaint = try await paintGeometry(page)
+                guard prepaint["paperTop"] == Double(backingHeight - height - needed),
+                      prepaint["rows"] == Double(rows + 1), prepaint["scroll"] == 0 else {
+                    throw composerRefusal("Growth did not prepaint at the requested height: \(prepaint).")
+                }
+                window.holdGrowth = false
+                try await wait { window.pendingGrowth == nil }
+                if accept {
+                    try await evaluate(page, Self.settleFrame)
+                    let applied = try await paintGeometry(page)
+                    guard window.growth == needed, applied == prepaint else {
+                        throw composerRefusal("Applied growth moved the composer: \(prepaint) -> \(applied).")
+                    }
+                } else {
+                    try await wait { (try? await javascript(page, """
+                        const field = document.querySelector('#input'), paper = document.querySelector('#composer');
+                        return innerHeight === \(backingHeight) && paper.getBoundingClientRect().height === \(height)
+                            && Number(paper.style.getPropertyValue('--visible-rows')) === \(rows)
+                            && field.value.endsWith('\\nNext') && field.selectionEnd === field.value.length && field.scrollTop > 0;
+                        """)) == true }
+                }
+                await page.send("replace", ["text": ""])
+                try await expectHeight(emptyHeight, after: "Cleared expanded editor")
+                try await evaluate(page, Self.settleFrame)
+            }
         }
         var working = base
         working["phase"] = "working"
@@ -337,20 +377,25 @@ enum ComposerCheck {
 
     private static func waitForOverlay(_ page: ComposerPage, baseHeight: Int, kind: String?, mustGrow: Bool = false) async throws {
         guard let window = page.view.window as? KeyPanel else { throw composerRefusal("No fixture panel.") }
-        let menuState = kind.map { "document.querySelector('#menu[data-kind=\"\($0)\"]:popover-open') !== null" }
-            ?? "document.querySelector('#menu').hidden && !document.querySelector('#menu').matches(':popover-open')"
+        let menuState = kind.map { "menu.dataset.kind === '\($0)' && menu.matches(':popover-open') && menu.getBoundingClientRect().top >= visibleTop" }
+            ?? "menu.hidden && !menu.matches(':popover-open')"
         do {
             try await wait {
                 let revision = window.overlayRevision
                 guard revision > window.checkedRevision, let above = window.acknowledgedAbove,
-                      kind != nil || above == 0, !mustGrow || above > 0,
-                      (try? await javascript(page, "return innerHeight === \(baseHeight + above) && (\(menuState));")) == true,
+                      above == window.menuExtension, kind != nil || above == 0, !mustGrow || above > 0,
+                      (try? await javascript(page, """
+                          const menu = document.querySelector('#menu');
+                          const visibleTop = innerHeight - \(window.visibleHeight);
+                          return innerHeight === \(backingHeight) && (\(menuState))
+                              && document.querySelector('#composer').getBoundingClientRect().height === \(baseHeight + window.growth);
+                          """)) == true,
                       window.overlayRevision == revision else { return false }
                 window.checkedRevision = revision
                 return true
             }
         } catch {
-            throw composerRefusal("Expected overlay \(kind ?? "closed"), acknowledged above: \(window.acknowledgedAbove.map { String($0) } ?? "none"), view height: \(page.view.bounds.height).")
+            throw composerRefusal("Expected overlay \(kind ?? "closed"), acknowledged above: \(window.acknowledgedAbove.map { String($0) } ?? "none"), visible height: \(window.visibleHeight).")
         }
     }
 
@@ -419,14 +464,29 @@ enum ComposerCheck {
             throw composerRefusal("Expected one model list request before the first click.")
         }
         let start = window.overlayRevision, cold = window.holdModels
+        let beforeOpen = try await paintGeometry(page)
+        window.holdOverlay = true
         try await evaluate(page, """
             document.querySelector('#model').click();
             const menu = document.querySelector('#menu');
-            return !menu.matches(':popover-open') && getComputedStyle(menu).visibility === 'hidden'
-                && menu.querySelectorAll('.model-results button').length === \(cold ? 0 : 14);
+            return menu.matches(':popover-open') && getComputedStyle(menu).visibility === 'visible'
+                && menu.offsetHeight === 360 && menu.querySelectorAll('.model-results button').length === \(cold ? 0 : 14);
             """)
-        try await waitForOverlay(page, baseHeight: height, kind: "model")
-        try await evaluate(page, "return document.querySelector('#menu').offsetHeight === 360;")
+        try await wait { window.pendingOverlay != nil }
+        guard let above = window.pendingOverlay, above > 0, window.menuExtension == 0 else {
+            throw composerRefusal("Expected a pending model overlay extension.")
+        }
+        let prepaint = try await paintGeometry(page, menu: true)
+        guard prepaint["menuTop", default: -.infinity] >= Double(backingHeight - window.paperHeight - above),
+              prepaint.filter({ beforeOpen[$0.key] != nil }) == beforeOpen else {
+            throw composerRefusal("The model prepaint did not fit or moved the composer: \(beforeOpen) -> \(prepaint).")
+        }
+        window.holdOverlay = false
+        try await waitForOverlay(page, baseHeight: height, kind: "model", mustGrow: true)
+        let applied = try await paintGeometry(page, menu: true)
+        guard applied == prepaint else {
+            throw composerRefusal("The applied model overlay moved the composer or menu: \(prepaint) -> \(applied).")
+        }
         window.holdModels = false
         try await wait { (try? await javascript(page, "return document.querySelectorAll('.menu-group').length === 2;")) == true }
         try await evaluate(page, """
@@ -438,12 +498,15 @@ enum ComposerCheck {
                 return b.top >= visible.top && b.bottom <= visible.bottom;
             }).length;
             return document.activeElement === filter && filter.getBoundingClientRect().bottom <= visible.top
-                && rows.some(row => row.textContent.includes('✓ Current')) && (innerHeight < 240 || count >= 4);
+                && rows.some(row => row.textContent.includes('✓ Current')) && (\(window.visibleHeight) < 240 || count >= 4);
             """)
         guard window.overlayRevision == start + 1, window.modelRequests == (cold ? 1 : 2) else {
             throw composerRefusal("Expected one overlay size for the model list.")
         }
-        try await evaluate(page, "return document.querySelector('#menu').offsetHeight === 360;")
+        let populated = try await paintGeometry(page, menu: true)
+        guard populated == prepaint else {
+            throw composerRefusal("The populated model menu moved the composer or menu: \(prepaint) -> \(populated).")
+        }
         try await snapshot(page, directory, "models", theme, width, height)
         try await evaluate(page, """
             const list = document.querySelector('.model-list'), footer = document.querySelector('.thinking-choices');
@@ -482,10 +545,10 @@ enum ComposerCheck {
         try await wait { (try? await javascript(page, "return document.querySelector('textarea').value === 'Draft returned from Pi';")) == true }
     }
 
-    private static func wait(_ test: () async -> Bool) async throws {
+    private static func wait(line: UInt = #line, _ test: () async -> Bool) async throws {
         let deadline = ContinuousClock.now + .seconds(3)
         while !(await test()) {
-            guard ContinuousClock.now < deadline else { throw composerRefusal("The composer fixture did not reach its expected state.") }
+            guard ContinuousClock.now < deadline else { throw composerRefusal("The composer fixture did not reach its expected state at line \(line).") }
             try await Task.sleep(for: .milliseconds(30))
         }
     }
@@ -498,27 +561,60 @@ enum ComposerCheck {
         guard try await javascript(page, body) else { throw composerRefusal("Composer assertion failed: \(body)") }
     }
 
+    private static func paintGeometry(_ page: ComposerPage, menu: Bool = false) async throws -> [String: Double] {
+        let value = try await page.view.callAsyncJavaScript("""
+            const rect = selector => document.querySelector(selector).getBoundingClientRect();
+            const field = document.querySelector('#input'), paper = document.querySelector('#composer');
+            const walker = document.createTreeWalker(document.querySelector('#highlight'), NodeFilter.SHOW_TEXT);
+            const node = walker.nextNode(), range = document.createRange();
+            if (innerHeight !== \(backingHeight) || !node?.length) return null;
+            range.setStart(node, 0);
+            range.setEnd(node, 1);
+            const geometry = {
+                paperTop: rect('#composer').top, boxTop: rect('.writer').top, boxBottom: rect('.writer').bottom,
+                inputTop: rect('#input').top, inputBottom: rect('#input').bottom, textTop: range.getBoundingClientRect().top,
+                toolbarTop: rect('.shelf').top, actionTop: rect('#action').top,
+                rows: Number(paper.style.getPropertyValue('--visible-rows')), scroll: field.scrollTop,
+            };
+            if (\(menu)) {
+                const box = rect('#menu');
+                geometry.menuTop = box.top;
+                geometry.menuBottom = box.bottom;
+                geometry.menuLeft = box.left;
+                geometry.menuRight = box.right;
+            }
+            return geometry;
+            """, arguments: [:], in: nil, contentWorld: .page)
+        guard let geometry = value as? [String: Double] else {
+            throw composerRefusal("The fixture could not measure the composer paint.")
+        }
+        return geometry
+    }
+
     private static func snapshot(_ page: ComposerPage, _ directory: URL, _ name: String, _ theme: String, _ width: Int, _ height: Int) async throws {
+        guard let window = page.view.window as? KeyPanel else { throw composerRefusal("No fixture panel.") }
         try await evaluate(page, Self.settleFrame)
         try await evaluate(page, "for (const animation of document.querySelector('#menu').getAnimations()) animation.finish(); return true;")
         do {
             try await evaluate(page, """
                 const rect = selector => document.querySelector(selector).getBoundingClientRect();
-                const inside = b => b.left >= 0 && b.top >= 0 && b.right <= innerWidth && b.bottom <= innerHeight;
+                const paperTop = innerHeight - \(window.paperHeight), visibleTop = innerHeight - \(window.visibleHeight);
+                const inside = (b, top) => b.left >= 0 && b.top >= top && b.right <= innerWidth && b.bottom <= innerHeight;
                 const menu = document.querySelector('#menu');
                 const inputStyle = getComputedStyle(document.querySelector('#input'));
                 const rowCount = (rect('#input').height - parseFloat(inputStyle.paddingBlockStart) - parseFloat(inputStyle.paddingBlockEnd)) / parseFloat(inputStyle.lineHeight);
-                return ['.writer', '.edit-area', '#add', '#model', '#action', '.status'].every(selector => inside(rect(selector)))
+                return innerHeight === \(backingHeight)
+                    && ['.writer', '.edit-area', '#add', '#model', '#action', '.status'].every(selector => inside(rect(selector), paperTop))
                     && rect('.writer').left === 12 && rect('.writer').right === innerWidth - 12 && rect('#input').left === 25
                     && rowCount >= 1 && Math.abs(rowCount - Math.round(rowCount)) < 0.01
                     && ['#add', '#model', '#action'].every(selector => rect('#input').bottom <= rect(selector).top && rect(selector).height === 32)
                     && rect('#add').width === 32 && rect('#action').width === 32 && rect('#action').bottom <= rect('.writer').bottom
-                    && rect('.composer').top === innerHeight - \(height)
+                    && rect('.composer').top === paperTop && rect('.composer').bottom === innerHeight
                     && Math.abs(rect('.writer').bottom - rect('.shelf').bottom - 13) < 0.1
                     && (document.documentElement.dataset.theme !== 'dark' || getComputedStyle(document.querySelector('.writer')).backgroundColor === getComputedStyle(document.querySelector('.composer')).backgroundColor)
                     && rect('.writer').bottom <= rect('.status').top && rect('.status').bottom >= innerHeight - 8
                     && (document.querySelector('#context').hidden || rect('#context-percent').height > 0)
-                    && (menu.hidden || inside(rect('#menu')));
+                    && (menu.hidden || inside(rect('#menu'), visibleTop));
                 """)
         } catch {
             let geometry = try? await page.view.callAsyncJavaScript("""
@@ -527,9 +623,13 @@ enum ComposerCheck {
             throw composerRefusal("\(name) did not fit: \(geometry ?? error.localizedDescription)")
         }
         let options = WKSnapshotConfiguration()
-        options.rect = page.view.bounds
-        options.snapshotWidth = NSNumber(value: Double(page.view.bounds.width))
+        let bounds = page.view.bounds
+        let visible = CGFloat(window.visibleHeight)
+        let y = page.view.isFlipped ? bounds.maxY - visible : bounds.minY
+        options.rect = CGRect(x: bounds.minX, y: y, width: bounds.width, height: visible)
+        options.snapshotWidth = NSNumber(value: Double(bounds.width))
         let image = try await page.view.takeSnapshot(configuration: options)
+        guard image.size == options.rect.size else { throw composerRefusal("\(name) has an unexpected snapshot size: \(image.size).") }
         guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
               let png = bitmap.representation(using: .png, properties: [:]) else { throw composerRefusal("The composer snapshot was not a PNG.") }
         try png.write(to: directory.appendingPathComponent("\(name)-\(theme)-\(width)x\(height).png"))

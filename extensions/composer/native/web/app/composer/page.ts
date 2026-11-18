@@ -58,7 +58,8 @@
 	}
 	interface Change { start: number; end: number; text: string; cursor?: number }
 	interface Controls {
-		overlay(above: number): void;
+		viewport(menu: number): void;
+		revealCaret(): void;
 		prefetch(): void;
 		key(event: KeyboardEvent): boolean;
 		sync(state: Record<string, unknown>, connection: string): void;
@@ -97,7 +98,7 @@
 
 	const root = globalThis as typeof globalThis & {
 		composer?: ComposerRoot;
-		composerLayout: { mount(input: HTMLTextAreaElement, report: (height: number) => Promise<Record<string, unknown>>): { (): void; growth(above: number): void } };
+		composerLayout: { mount(input: HTMLTextAreaElement, report: (height: number) => Promise<Record<string, unknown>>, revealCaret: () => void): { (): void; viewport(pane: number, growth: number): void } };
 		webkit?: { messageHandlers?: { composer?: Transport } };
 		mountComposerControls?: (host: { input: HTMLTextAreaElement; request: typeof request; edit: typeof edit; notice: (message: string) => void; icon: typeof icon; preferences: typeof preferences }) => Controls;
 	};
@@ -176,7 +177,7 @@
 	const returnButton = get<HTMLButtonElement>("return");
 	const actionButton = get<HTMLButtonElement>("action");
 	const notice = get<HTMLElement>("notice"), statusIcon = get("status-icon");
-	const fitEditor = root.composerLayout.mount(input, (height) => request("layout", { height }));
+	const fitEditor = root.composerLayout.mount(input, (height) => request("layout", { height }), () => controls?.revealCaret());
 
 	let status: ComposerStatus = { connection: "connecting" };
 	let sendKey: SendKey = "return";
@@ -191,6 +192,11 @@
 	let savedStart = 0;
 	let savedEnd = 0;
 	let actionIcon = "";
+	let geometry = { pane: 0, growth: 0, menu: 0 }, initialised = false;
+	function applyViewport() {
+		fitEditor.viewport(geometry.pane, geometry.growth);
+		controls?.viewport(geometry.menu);
+	}
 	let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 	let ticket: Ticket | null = null;
 	const queued: QueuedEdit[] = [];
@@ -561,17 +567,16 @@
 				if (typeof value.textAdjust === "number" && Number.isFinite(value.textAdjust)) textAdjust = value.textAdjust;
 				applySize(textAdjust);
 				takeInit(value.text, key);
+				initialised = true;
+				applyViewport();
 				controls?.prefetch();
 				return true;
 			}
-			case "overlay": {
-				if (typeof value.above !== "number" || !Number.isFinite(value.above) || value.above < 0) return false;
-				controls?.overlay(value.above);
-				return true;
-			}
-			case "growth": {
-				if (typeof value.above !== "number" || !Number.isFinite(value.above) || value.above < 0) return false;
-				fitEditor.growth(value.above);
+			case "viewport": {
+				const pane = number(value.pane), growth = number(value.growth), menu = number(value.menu);
+				if (pane === undefined || growth === undefined || menu === undefined) return false;
+				geometry = { pane, growth, menu };
+				if (initialised) applyViewport();
 				return true;
 			}
 			case "metrics":
@@ -764,7 +769,8 @@
 			tip.hidden = !tip.textContent;
 			const rect = button.getBoundingClientRect();
 			const top = rect.top - tip.offsetHeight - 5;
-			tip.style.top = `${top >= 4 ? top : Math.min(innerHeight - tip.offsetHeight - 4, rect.bottom + 5)}px`;
+			const paper = panel.getBoundingClientRect();
+			tip.style.top = `${top >= paper.top - geometry.menu + 4 ? top : Math.min(paper.bottom - tip.offsetHeight - 4, rect.bottom + 5)}px`;
 			tip.style.left = `${Math.max(4, Math.min(innerWidth - tip.offsetWidth - 4, rect.left + (rect.width - tip.offsetWidth) / 2))}px`;
 		}, 600);
 	}
