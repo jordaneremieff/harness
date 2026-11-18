@@ -35,42 +35,13 @@ surface and authority rules for any resulting change.
 
 ## Choose the work method
 
-Select the method for the actual dependencies and uncertainty. Complete a
-self-contained repair locally when coordination adds no value. Use parallel
-work for independent source checks or owned changes. Use shared exploration or
-staged exchanges when one result changes another task's question. Honor an
-explicit request for independent verification.
-
-Give each split task an integration destination and acceptance criteria. Keep
-file ownership disjoint during concurrent edits. Within one effort, give that
-effort's shared mutations, such as integrating its branches, a dependency
-refresh, landing, activation, and publication, to one session; a worker's local
-commit does not establish integration or release. That assignment is local to
-the effort and gates no other effort. Assign composition and verification to the session best placed to do
-them; the session that owes the operator the outcome remains accountable for
-delivery. Revisit the split when evidence changes the problem. A list of completed worker tasks
-is not an outcome if their combined result misses the request.
-
-## Delegate with enough context
-
-Use the available tools' current definitions for dispatch fields, lifecycle,
-steering, result delivery, and limits. Do not reproduce those runtime contracts
-in a second workflow. Keep ordinary-session capabilities available unless an
-explicit boundary requires restriction; a narrow task does not imply a reduced
-tool or resource environment. Report a capability failure as a defect, not as
-permission to silently substitute a less capable worker.
-
-Each task states its objective, required output, starting sources, and
-boundaries. Preserve the governing context needed to judge and combine its
-result. Use a shared snapshot when the tool provides one and the tasks share
-that context. Supply source pointers with qualifications; distinguish operator
-directions from interpretations that workers are free to challenge.
-
-Ask workers to return decisive evidence and limitations in a self-contained
-result. Use interim exchanges for discoveries that change ongoing work, not
-periodic status. If a correction affects active work, verify its application
-before accepting the dependent result. A send acknowledgement alone does not
-establish that the correction changed the work.
+Use the Agent delegation guide (`extensions/agent/delegation.md` under the package root) for the
+work split, briefs, collaboration and result handling. For harness changes,
+keep ownership of concurrent edits disjoint and give each split task a clear
+integration destination. The shared-acts workflow (`docs/agent-delivery.md`, “Coordinate with related efforts”)
+owns coordination for integration, activation and publication. A worker's
+local commit does not establish integration or release. A narrow harness task
+does not imply a reduced tool or resource environment.
 
 Apply the Pillars consultation procedure to the actual judgment:
 
@@ -97,8 +68,7 @@ Report the actual effect and any discovery that changes the operator's next
 choice. Keep blocked actions separate from completed work. A useful candidate
 that remains unactivated is a candidate, not a change to the active harness.
 
-For operator status reports from a session that directs agents, follow the rule
-in `skills/delegate/SKILL.md`, "Operator status reports".
+For delegated status reports, follow the repository reporting rule in `AGENTS.md`.
 
 When the operator requests review of several outcomes, reconcile current source
 and final dispositions before delivery. Lead with what changed and what remains

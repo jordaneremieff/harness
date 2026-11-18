@@ -13,7 +13,7 @@ description: >
   Reclassifying an addition does not supply authority. Do not use for invoking
   or installing an unchanged resource, ordinary application code, unrelated
   uses of "tool", "skill", or "extension", or Pi core development.
-compatibility: Pi-specific workflow. The bundled skill validator uses dependency-free TypeScript and requires Node.js 22.19 or newer for direct execution; verify Pi-sensitive behavior against the active Pi installation. Uses the sibling repository instructions at `../../AGENTS.md` for the owning repository's binding rules and `../../extensions/` for extension telemetry source contracts. References `../delegate/SKILL.md` for operator status reports.
+compatibility: Pi-specific workflow. The bundled skill validator uses dependency-free TypeScript and requires Node.js 22.19 or newer for direct execution; verify Pi-sensitive behavior against the active Pi installation. Uses the sibling repository instructions at `../../AGENTS.md` for the owning repository's binding rules and `../../extensions/` for extension telemetry source contracts.
 ---
 
 # Harness
@@ -23,7 +23,7 @@ Select, design, change, and verify Pi harness surfaces through one entry point. 
 ## Core contract
 
 - Preserve the operator's fixed outcome, artifact, destination, and explicit architecture. Research only genuinely open choices.
-- Read [collaborative-work.md](references/collaborative-work.md) when the request opens inspection or improvement without naming the change, or when work spans workers or sessions. Use it to select the source scope and work method, not to require delegation.
+- Read [collaborative-work.md](references/collaborative-work.md) when the request opens inspection or improvement without naming the change, or when work spans workers or sessions. Use it to select the source scope and preserve harness-specific boundaries.
 - Classify the capability before drafting when the implementation surface is open. A user word such as “tool,” “command,” or “plugin” does not settle the Pi building block.
 - Use the lowest sufficient surface, but build a coherent end-to-end capability rather than minimizing line count.
 - Treat current Pi documentation, declarations, installed source, and shipped examples as the authority for version-sensitive claims.
@@ -167,7 +167,7 @@ No warrant is needed for a fixed repair, an operator-selected outcome or archite
 
 Use the selected lane's procedure. Change only owned files. Keep temporary probes and evaluation artifacts outside tracked repository paths. Preserve supported public contracts and make lifecycle, cancellation, state, absence, failure, and delivery behavior explicit where they apply.
 
-Choose local work or collaboration according to the task's dependencies and uncertainty. Use [collaborative-work.md](references/collaborative-work.md) for work across workers or sessions. Assign integration and acceptance explicitly when work is split; a fixed worker topology is not a prerequisite for delivery.
+Use the Agent delegation guide (`extensions/agent/delegation.md` under the package root) to divide work under the task's instructions and any selected playbook. When work crosses sessions, use [collaborative-work.md](references/collaborative-work.md) for harness-specific source and delivery boundaries.
 
 **Complete when:** one reviewable capability reaches the requested outcome without unrelated governance layers or compatibility machinery.
 

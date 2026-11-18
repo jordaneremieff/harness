@@ -7,7 +7,7 @@ description: >
   with source coverage, then wait. Do not use for a single lookup, a question
   already answered in the session, or a request to start implementation,
   diagnosis, review, or research for an answer.
-compatibility: Requires Pi with read-only source-discovery surfaces and Pi Durable agent hosts with automatic task-result delivery. Uses the available read-only source tools, the operator's current presets and delegation preferences, and the live model registry; no fixed provider, model, or worker roster.
+compatibility: Requires Pi with read-only source-discovery tools. If work is delegated, use the Agent extension's current delegation controls and automatic result delivery.
 ---
 
 # Prime
@@ -59,7 +59,7 @@ or access, and do not infer access from a resource name. A role the environment
 does not expose is an explicit limit, not a reason to open private stores.
 Avoid whole-machine inventories and scans of private tool stores.
 
-## 2. Choose relevant sources and dispatch
+## 2. Choose relevant sources and divide the survey
 
 Build a small source map for this topic, not a compulsory checklist of every
 source on the machine. Start from the facts the later task needs: for each
@@ -84,26 +84,16 @@ Consider these evidence roles where they answer a real facet of the topic:
 | Pillars | Consult the live corpus when judgment needs doctrine. Doctrine guides judgment; it is not runtime evidence. |
 
 After orientation, survey each source at the depth the topic needs. The survey
-prepares this session for a later task, so keep raw payloads out of its
-context. Read small and bounded sources inline. Give remote or heavy sources to
-workers when their payloads would crowd that context, as one parallel wave
-grouped by facet without duplicate assignments. Integrate their bounded returns
-without repeating their broad reads.
+prepares this session for a later task, so keep raw payloads out of its context.
+Use the Agent delegation guide (`extensions/agent/delegation.md` under the package root) to divide
+work under the task's instructions and selected playbook. With no playbook,
+choose by the topic. Use bounded direct reads or assign non-overlapping facets
+when delegation helps. Integrate bounded returns without repeating broad reads.
 
-Select each worker by preset from the operator's current delegation
-preferences; omit the preset to use the configured default. Name an exact
-model or thinking level only when the request or the operator requires it,
-resolved against the live model registry. Read the relevant preference sources
-before selection; do not freeze model identities in the workflow or silently
-inherit the parent's model. Registry availability is not proof of remote model
-health. If a selected model fails or hits a quota wall, preserve the observed
-error. For that failed lane only, substitute deliberately by the next permitted
-preset in the configured substitution order that fits the invoking budget.
-Report the substitution; keep the same source assignment and bounds rather than
-start a new survey wave. If no authorized, budget-fitting alternative is
-available, or dispatch or automatic result delivery is unavailable, mark the
-affected coverage errored and retain the useful bounded local result. Do not
-replace the missing worker with an unbounded parent read or a new runner.
+If a facet fails, retain the error, its source scope and any useful partial
+evidence. Follow the guide for any permitted substitution. Keep the original
+bounds and mark coverage still affected by the failure as errored. Do not
+replace a missing worker with an unbounded read or a new runner.
 
 Give every worker a self-contained contract with these four parts:
 
@@ -152,13 +142,10 @@ Finish the bounded survey with those gaps explicit. Distinguish completion of
 the preparation pass from completeness of source coverage; do not expand the
 survey merely to eliminate every gap.
 
-Receive worker terminal results through the host's automatic result delivery.
-Do not poll status, inspect repeatedly as a wait loop, or use timed delays.
-While workers run, synthesize the evidence already available. Use exact result
-inspection to resolve a named evidence gap, not to collect their full raw
-transcripts. Before the final survey, resolve live workers through their current
-public lifecycle controls: accept useful terminal results, redirect changed work
-within scope, or stop superseded work. Preserve failed or interrupted coverage.
+When you delegate, follow “Supervise without polling” in the Agent delegation guide.
+Synthesize available evidence while work continues. Inspect an exact result only
+to resolve a named gap, not to collect full transcripts. Resolve owned live work
+before the final survey, and preserve failed or interrupted coverage.
 
 ## 4. Synthesize, cite, and wait
 

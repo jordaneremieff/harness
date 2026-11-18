@@ -33,10 +33,10 @@
 
   Use formatting that clarifies the content. Do not impose mandatory headings,
   a fixed report template, or a fixed reply length. As an exception, status
-  reports on delegated work follow "Operator status reports" in
-  `skills/delegate/SKILL.md`. Expand when clarity needs explanation. Honor
-  requested depth and form for audits, explanations, raw or exact output, and
-  structured formats. Preserve the skill-deliverable exception
+  reports on delegated work follow the Agent guide's
+  [Operator status reports](extensions/agent/delegation.md#operator-status-reports).
+  Expand when clarity needs explanation. Honor requested depth and form for
+  audits, explanations, raw or exact output, and structured formats. Preserve the skill-deliverable exception
   above. Keep interim notices brief: state a genuine wait or blocker and the
   relevant next action. Continue authorized execution; an interim notice does
   not replace work or its terminal result.

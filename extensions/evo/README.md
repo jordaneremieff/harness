@@ -243,12 +243,12 @@ The command itself never writes the marker.
 
 ## Session-history expertise
 
-When orientation needs earlier operator directions or session evidence, the
-kickoff directs the coordinator to task `@session-history` as the
-[corpus reference](../../docs/session-history.md) directs, under the
-[delivery workflow](../../docs/agent-delivery.md#orient-to-the-operators-work).
-The coordinator supplies the current question and restrictions instead of
-repeating the corpus brief. Relevant expertise supports reuse; unrelated work,
+When earlier operator directions or session evidence matter, use the
+[delivery workflow](../../docs/agent-delivery.md#orient-to-the-operators-work)
+to choose a bounded direct read or specialist help under the task's instructions
+and the selected playbook. When the work calls for `@session-history`, follow the
+[corpus reference](../../docs/session-history.md) to resolve and brief it. Supply
+the current question and restrictions instead of repeating the corpus brief. Relevant expertise supports reuse; unrelated work,
 independent judgment, or conflicting ownership can require a fresh session.
 
 The [corpus reference](../../docs/session-history.md) owns the expert's charter,

@@ -1,8 +1,7 @@
 /**
  * control-guidance tests: the shared model-facing delegation guidance.
  *
- * The map must cover the current controls, keep the operator-approved baseline
- * wording, and change only the delivery semantics that differ in Pi Durable.
+ * Coverage, delivery semantics, and deduplication for selected controls.
  */
 import assert from "node:assert/strict";
 import { it } from "node:test";
@@ -67,7 +66,7 @@ const CURRENT_TOOLS = [
 it("limits preset advice to supported controls and distinguishes target retention from inheritance", () => {
 	for (const name of ["agent_spawn", "agent_place", "agent_configure"] as const) {
 		const text = AGENT_CONTROL_GUIDANCE[name].guidelines?.join("\n") ?? "";
-		assert.match(text, /Delegate with preset/u);
+		assert.match(text, /Use preset to select execution settings/u);
 		assert.match(text, /For an explicit model override, use an exact provider\/model identity/u);
 		assert.match(text, /resolver owns preset and default identity selection/u);
 		assert.match(text, /route, budget, and role preferences before choosing the override/u);
@@ -109,7 +108,7 @@ it("keeps the approved snippets", () => {
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_place.snippet, "Work in the session bound to an area");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_reset.snippet, "Reset an agent's active context with an optional handoff");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_attach.snippet, "Attach to a stored agent session");
-	assert.equal(AGENT_CONTROL_GUIDANCE.agent_configure.snippet, "Configure an idle session without starting work");
+	assert.equal(AGENT_CONTROL_GUIDANCE.agent_configure.snippet, "Configure a session without starting work");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_list.snippet, "Find retained agent sessions");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_intent.snippet, "Publish or clear your integration intent");
 });
@@ -189,6 +188,30 @@ it("renders only the selected controls in control order", () => {
 	assert.match(text, /- agent_status: Show agent session status/u);
 	assert.doesNotMatch(text, /- agent_place:/u);
 	assert.ok(text.indexOf("agent_spawn") < text.indexOf("agent_status"), "order follows the control list");
+});
+
+it("renders shared rules once without depending on an unselected control", () => {
+	const selected = agentControlGuidanceLines(["agent_spawn", "agent_send", "agent_configure", "agent_place"]).join("\n");
+	for (const rule of [/For an explicit model override/gu, /Use preset to select execution settings/gu, /When no useful work remains for you and results are still due/gu, /Set checkInMinutes only when a task needs a watchdog/gu]) {
+		assert.equal([...selected.matchAll(rule)].length, 1);
+	}
+	for (const name of ["agent_spawn", "agent_send"]) {
+		const text = agentControlGuidanceLines([name]).join("\n");
+		assert.match(text, /agent_work continue \(the request and its exact result references\)/u);
+		assert.match(text, /Set checkInMinutes only when a task needs a watchdog/u);
+	}
+	for (const name of ["agent_spawn", "agent_configure", "agent_place"]) {
+		assert.match(agentControlGuidanceLines([name]).join("\n"), /Use preset to select execution settings/u);
+	}
+});
+
+it("scopes handle reuse and thread discovery to choices made for the task", () => {
+	const spawn = agentControlGuidanceLines(["agent_spawn"]).join("\n");
+	assert.match(spawn, /If you choose to delegate a recurring concern/u);
+	assert.match(spawn, /never reapplies creation defaults on reuse/u);
+	const thread = agentControlGuidanceLines(["agent_collaborate"]).join("\n");
+	assert.match(thread, /If a shared thread would help the task/u);
+	assert.match(thread, /Name notify recipients only when their attention matters/u);
 });
 
 it("keeps the no-polling guidance when only status is selected", () => {

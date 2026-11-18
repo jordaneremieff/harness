@@ -55,13 +55,14 @@ Notes:
 - `sessionId` on `create` places the thread in the new agent's storage. A
   native Durable session omits it to create the thread in its own storage.
 - The agent joins the thread itself as the first act of its task.
-- A long or reused frame can live in a file filled from `assets/frame.md`;
-  `node scripts/contract.mts frame <file>` prints its fields as JSON.
-- Choose `preset` and `checkInMinutes` per `SKILL.md` sections 2 and 4.
+- A long or reused frame can live in a file filled from [the frame template](templates/frame.md);
+  `node extensions/agent/delegation-contract.mts frame <file>` prints its fields as JSON.
+- Choose the preset and check-in interval using current delegation preferences
+  and the public tool definition. The values in the examples are illustrative.
 
 ## Parallel dispatch
 
-Send independent tasks together and keep only the result references.
+When you choose to delegate independent tasks together, keep their exact result references.
 
 ```js
 const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
@@ -81,12 +82,9 @@ return sent.map((s) => (s.ref ? { name: s.name, ref: s.ref } : { name: s.name, f
 ```
 
 A task message that already lives in a scratch file can come from
-`await tools.read({ path })`. No call waits for the results: each one arrives
-as an event. Do the work that remains for you. When none remains, a native
-agent declares the stored references that are still open with `agent_work`
-`continue` (at most 16 for one request), then ends the run with a short state
-note. An ordinary session follows
-[ordinary event handling](../SKILL.md#6-supervise-without-polling).
+`await tools.read({ path })`. A receipt does not settle the task. Follow
+[event-driven supervision](../delegation.md#supervise-without-polling) for
+results and open work.
 
 ## Fleet sweep
 

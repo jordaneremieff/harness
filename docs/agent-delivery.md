@@ -25,12 +25,14 @@ capabilities where they answer a selection question. Distinguish shipped,
 active, provisional, and merely proposed capabilities; a source file or resource
 listing does not establish usable behavior.
 
-When a bounded history question informs orientation, use the standing
-[session-history expert](session-history.md) and follow that reference to
-resolve, check, and task it. Supply the current question, source window, and
-restrictions instead of another corpus brief. History is a source for the
-current purpose, not a mandatory phase of every run. The coordinator retains
-judgment and integration ownership.
+When earlier sessions can answer an orientation question, choose a bounded
+direct read or specialist help under the task's instructions and the selected
+playbook. If the work calls for a specialist, use the standing
+[session-history expert](session-history.md). Follow that reference to resolve,
+check and task it. Supply the current question, source window, and restrictions
+instead of another corpus brief. History is a source for the current purpose,
+not a mandatory phase of every run. The coordinator retains judgment and
+integration ownership.
 
 Read only enough to form a useful purpose and identify the uncertainty that
 decides the next act. Broaden a read for a named gap, not an exhaustive inventory.
@@ -217,76 +219,36 @@ content and operation outcomes, correction delivery, and native context/session
 control. Check active availability, not just configured presence; use no frozen
 tool list or private lifecycle vocabulary.
 
-Choose the arrangement by the task and revise it as the work develops. The
-invoking session can investigate, implement, and verify substantive work
-itself, collaborate, delegate, or use a dedicated coordinator. When other
-agents implement, use full Pi sessions with the selected workspace's
+Follow the task's instructions for dividing work first, then the selected
+playbook's defaults. With no playbook, choose the arrangement by the task.
+The invoking session can investigate, implement, and verify substantive work
+itself, collaborate, delegate, or use a dedicated coordinator. Use the
+[Agent delegation guide](../extensions/agent/delegation.md) for briefs,
+collaboration and supervision.
+
+When other agents implement, use full Pi sessions with the selected workspace's
 resources, instructions, tools, extensions, trust decisions, and model
 configuration. A headless host is not a TUI-parity claim. A missing capability,
 failed bootstrap, or rejected trust decision is explicit. Do not silently
 substitute a reduced worker loop or separate implementation backend for a full
 session and call it full-session delivery.
 
-Where collaboration helps, invite a full-session collaborator to develop or
-challenge the use path or its decisive uncertainty while the approach remains
-open, not only review a prescribed patch. Share discoveries that change
-selection or another task's question while they still affect the work. The
-coordinator owns the integrated outcome; peers revise their own arrangement
-against the shared purpose without a message relay through the coordinator.
-No mandatory council, fork, roster, or candidate count applies. Parallelize
-independent investigation and review where useful. Auxiliary helpers remain
-distinct from full-session implementation.
+Where collaboration helps the use path, invite a full-session collaborator to
+develop or challenge the use path or its decisive uncertainty while the
+approach remains open, not only review a prescribed patch. Share discoveries
+that change selection or another task's question while they still affect the
+work. The coordinator owns the integrated outcome; peers revise their own
+arrangement against the shared purpose. Auxiliary helpers remain distinct from
+full-session implementation.
 
-Use a [peer thread](../extensions/agent/README.md#peer-threads) when evolving
-shared facts, decisions, or coordination need one retained place; it keeps
-purpose, authority source, restrictions, acceptance, and integration attached to
-the exchange. Otherwise, reuse sufficient context or direct messages. List
-existing threads to discover related work. Participants choose and
-revise their contributions. A frame remains an attributed claim; challenge it
-against the original source rather than treat peer agreement as verification.
-A revised frame or carried decision preserves the operator's restrictions.
-
-Joining opts into passive notices at existing conversation boundaries. Request
-a peer's attention explicitly when the task needs a timely response; do not
-mistake a retained post or delivery acknowledgment for understanding. End a
-contribution with a useful finding or clear boundary instead of polling for
-replies. Leave or close an arrangement that no longer serves the work. The
-operator observes the exchange through the dashboard and retains the ordinary
-primary as the main conversation.
-
-Give each assignment what its owner needs to judge and deliver it, drawn from:
-
-- the purpose, selected use path, expected benefit, known facts, uncertainties,
-  and alternatives needed to judge the approach;
-- source pointers, relevant instructions, permitted edits and acts, explicit
-  exclusions, and inherited-work attribution;
-- acceptance evidence, required checks, and the terminal end condition; and
-- integration ownership, dependencies on other units, and the result consumer.
-
-A direct task message is sufficient; no contract file or template is required.
-Reuse context the owner already has instead of repeating it. Separate binding
-operator decisions from revisable agent-authored recipes. Execution owners
-retain room to develop the approach within scope, raise discoveries, propose a
-changed division of work, and exchange findings directly with relevant peers. A
-normal self-contained terminal response is a valid full-session result; do not
-impose an auxiliary worker's submission protocol. Keep concurrent edits
-disjoint. An owner's area follows the work, such as one behaviour with its
-implementation, tests, and documentation, not a file count. Within one effort,
-one session integrates its workers' branches and performs the effort's landing,
-activation, and publication; that session can also do substantive work. The
-role is local to the effort and gates no other effort. Worker branches merge
-through plain Git under the [development workflow](conventions/worktrees.md); no
-sibling source synchronization or promotion command exists.
-
-Reuse a session when its retained expertise, context, and ownership serve the
-current task. Check its current operation and preserve the current requester and
-reply route before admission. For recurring concerns such as session history,
-resolve an existing expert before creating another. Use a fresh session for
-unrelated work, necessary independent judgment, conflicting ownership, or context
-that no longer serves the task. Explain the session choice only when it affects
-authority, independence, concurrent ownership, or a decision the operator needs.
-Keep corrections, review repairs, and native compaction
-in that session while its task is open.
+Keep concurrent edits disjoint. An owner's area follows the work, such as one
+behaviour with its implementation, tests, and documentation, not a file count.
+Within one effort, one session integrates its workers' branches and performs
+the effort's landing, activation, and publication; that session can also do
+substantive work. The role is local to the effort and gates no other effort.
+Worker branches merge through plain Git under the
+[development workflow](conventions/worktrees.md); no sibling source
+synchronization or promotion command exists.
 
 ## Accept the outcome, not just the changes
 
@@ -297,50 +259,19 @@ do not identify native results. Without declared work, a final answer settles
 the original request once; put the substantive result or exact blocker there.
 
 A native agent uses [declared background work](../extensions/agent/README.md#declared-background-work)
-when its routed task remains incomplete after the current run. After useful
-independent work, it calls `agent_work` with `action: "continue"`, the request,
-exact dependencies and a note, then ends with a state note that explicitly says
-it is not the result. Pi settles that input normally; the separate work item
-stays open. A blocked or deferred task with no producer uses `results: []`.
-That item has no dependency event to wake it and remains open.
-
-Normal result delivery starts later runs. The agent completes the declared
-item with `agent_work`, `action: "complete"`, its original request, `status`
-(`done` or `failed`) and the full final report in `message`. This closes the
-item and retains one final report for the original reply recipient. If that
-recipient is the declaring conversation, the report remains readable there
-but never enters it as a new input. Results,
-state notes, input settlement and check-ins do not complete the item. Repeated
-completion returns the close while that close remains retained; it does not
-create another final report. The work document keeps the newest 16 closed items.
-Use this retained declaration, not an informal promise of a later manual report.
-
-An ordinary session has no `agent_work`. Its `agent_yield` ends a turn without
-a chat line while work that the session sent to agents is still open, and an
-agent result, a message or the operator's input starts its next turn. When
-that work is open and no other work of the session is ready, it calls
-`agent_yield` with a short note for the operator in `note` in its last tool
-batch, alone or with other calls that also end the turn, and writes no chat
-text: the note shows as the card of that call in the transcript and the turn
-ends there. The note and the card cover only the agents' work: when other
-open work of the session has its own tool that ends the turn, the session
-calls that tool in the same batch, so that each kind of open work has its own
-card. The note says in plain words what still runs and what happens
-next. It carries no session, submission or request identifier: the
-receipts of the session's spawn and send calls keep the result references,
-and after a compaction its continuity note lists the requests that have no
-delivered result.
-Results arrive as events
-at its next tool boundary or start its next turn; it never polls. Follow the
-[supervision guidance](../skills/delegate/SKILL.md#6-supervise-without-polling)
-for the native and ordinary control paths.
+when its routed task remains incomplete after the current run. Its state note is
+not the result; only completion of the declared work sends the final report.
+An ordinary session has no `agent_work`. It uses
+[ordinary yield](../extensions/agent/README.md#state-note-of-an-ordinary-session)
+when only work it sent to agents remains open. Results arrive as events; do not
+poll. Follow the [supervision guidance](../extensions/agent/delegation.md#supervise-without-polling)
+for the native and ordinary paths.
 
 Read the Agent [result contract](../extensions/agent/README.md#read-peer-results)
 for immediate result reads, answer continuations and receipt-reference pages.
-Result inspection neither withdraws nor acknowledges normal delivery. Active
-inputs enter the native recipient's context after its current tool round; all
-calls in the round must end first. A report, a result and a new request retain
-their own meaning and routes when they join the same run.
+Result inspection neither withdraws nor acknowledges normal delivery. A report,
+a result and a new request retain their own meaning and routes when they join
+the same run.
 
 Prompt admission, idle state, provider completion, and task acceptance are
 different facts. After an execution unit settles, inspect its real changes and
@@ -409,8 +340,8 @@ Inspect the registered continuity contract. The self-compaction path accepts a
 bounded agent-authored summary, applies it at the completed tool boundary, and
 continues the same native run. Preserve the governing frame; compaction neither
 reconstructs omitted decisions nor certifies completion. Do not type a slash
-command into the operator's editor. Other owner-wait controls still refuse
-self-targets; do not retry a refused self-control through another name.
+command into the operator's editor. Follow the public control's target guards;
+do not retry a refused self-control through another name.
 Compaction through another session's controller uses native summarization at
 the next native boundary; active work and queued input continue.
 

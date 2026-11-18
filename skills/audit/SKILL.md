@@ -61,9 +61,10 @@ The normal audit path is read-only:
   makes any change under its own grant, without asking the operator to relay
   the findings. A plain audit request ends with findings and at most one
   bounded next action.
-- Use direct work by default. Add proportionate collaboration only when it
-  improves the selected audit. Honor no-worker, named participant, and model
-  restrictions. Do not require a worker fleet.
+- Follow the task's instructions for dividing work, then the selected playbook's
+  defaults. With no playbook, choose by the audit's evidence needs and cost.
+  Keep collaboration proportionate. Honor no-worker, named participant, and
+  model restrictions. Do not require a worker fleet.
 - Report unavailable choices; never substitute silently.
 - Do not add a store, index, dependency, compatibility reader, or recurring
   mechanism to fill an evidence gap.

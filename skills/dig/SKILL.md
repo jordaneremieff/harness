@@ -12,7 +12,7 @@ description: >
   and synthesizes. Do not use for preparation-only orientation (prime), audits
   of Pi session or harness activity (audit), a single lookup or a question
   already answered, code review, or ordinary implementation with a known cause.
-compatibility: Requires Pi with agent delegation controls and automatic task-result delivery when other agents investigate facets, plus the discovery surfaces the environment exposes for tools, deferred tools, namespaces, resources, memory, handovers, session history, and agents. Uses the operator's current presets and delegation preferences; no fixed provider, model, tool, or worker roster. Points to the sibling source skills/delegate/SKILL.md for arrangement and preset rules.
+compatibility: Requires Pi with agent delegation controls and automatic task-result delivery when other agents investigate facets, plus the discovery surfaces the environment exposes for tools, deferred tools, namespaces, resources, memory, handovers, session history, and agents.
 ---
 
 # Dig
@@ -120,23 +120,13 @@ skip, or a stated limit, and every lead is attached to the facet it affects.
 
 ## 3. Choose the arrangement and split into facets
 
-Decide who investigates during framing, after cheap orientation and before
-broad or deep reading. Delegation serves the answer: favour dispatching an
-independent facet when another agent's contribution materially improves
-investigation time, evidence coverage, context isolation, expertise, or a
-consequential check. Dispatch as soon as the frame and the leads from section
-2 support a useful brief, and continue your own discovery and synthesis while
-the contributor works. Two substantial bounded inquiries can be enough to
-dispatch one of them. Counts of facets and the size of sources inform cost;
-they do not decide the arrangement by themselves.
-
-Work directly when the task is genuinely short or cheap, when the steps depend
-tightly on each other, when only this session holds the access a facet needs,
-when the operator constrained the arrangement, or when briefing and
-integration would outweigh the contribution. Reassess when the investigation
-exposes useful independent work later. No fixed worker count, manager, or
-one worker per source or file applies, and no dispatch happens to satisfy a
-quota.
+After cheap orientation and before broad or deep reading, use the
+Agent delegation guide (`extensions/agent/delegation.md` under the package root) to divide work
+under the task's instructions and selected playbook. With no playbook, choose by
+the question. Consider evidence coverage, caller-only access, independence of
+checks, cost and whether the inquiries depend on each other. Counts of facets
+and source sizes inform cost; they do not set the arrangement. Reassess if
+new evidence changes the dependencies.
 
 Split the question into up to five facets that can proceed without waiting on
 each other. Pick the split that fits the question:
@@ -150,20 +140,11 @@ each other. Pick the split that fits the question:
 - **Mixed or small:** fewer facets. One line of inquiry is correct when the
   question has one.
 
-When another agent takes a facet, select it by preset from the operator's
-current delegation preferences; omit the preset to use the configured default.
-Name an exact model or thinking level only when the operator or the task
-requires it, resolved against the live model registry. Do not freeze model
-names in this method and do not silently inherit your own model. At a model
-failure or quota wall, keep the observed error, substitute deliberately for
-that lane only in the configured substitution order, and report the
-substitution. Read `skills/delegate/SKILL.md` for controls, handles,
-placement, and supervision when the arrangement needs more than a few briefed
-facets. If delegation is unavailable, investigate directly where you can, and
-name a facet that needed an independent or parallel agent as a gap, with the
-missing control. Do not substitute a reduced backend for a full agent session.
+If delegation is unavailable, investigate directly within the task's limits.
+For a facet that requires independent evidence or unavailable access, name the
+gap. Do not substitute a reduced backend for a full agent session.
 
-Give each contributor a self-contained brief:
+Use the guide for briefing and add these investigation details for each assigned facet:
 
 1. **Objective and boundaries:** the bounded facet question, starting sources
    and the leads from section 2 that bear on it with their qualifications,
@@ -187,31 +168,18 @@ Give each contributor a self-contained brief:
    results with scope, errors and authorization blocks, and unfinished work.
    Large output goes to a file in the scratch directory and is cited by path.
 
-Inspect the current tool definitions for dispatch fields, result delivery, and
-waiting; this skill does not restate them. Dispatch independent facets in one
-step and retain each task's exact result reference. A creation receipt,
-report, or thread post is not a result reference.
-
-A session kind that offers a native wait on exact result references can use
-it. A session without one stays responsive, receives each answer through
-automatic delivery, and continues its own facet or synthesizes answers as they
-arrive. Neither case requires a separate agent to compose the answer.
+When you delegate, retain each admitted result reference and use the guide's
+“Supervise without polling” section.
 
 **Complete when:** each facet has an owner, each delegated facet has a brief
 and a result reference, and no facet duplicates another.
 
 ## 4. Receive results and check evidence
 
-Receive delegated results through the host's result delivery. Where the host
-offers a native wait on exact result references and your answer needs them,
-use it; if input releases the wait early, apply the input and wait again on
-the unresolved references. A check-in notice is not an answer. Do not poll
-status, use timed delays, or repeat inspections as a wait loop. Do not stop a
-live contributor and present its unfinished facet as answered; a facet stopped
-without a terminal result is a gap until someone investigates it. While
-contributors run, continue your own facet, synthesize what has arrived, and
-prepare the checks below. Fold a contributor's evidence into the answer; a
-record that a contributor ran is not evidence.
+While contributors run, continue ready work and synthesize the evidence that
+has arrived. A stopped or incomplete facet remains a gap until someone
+investigates it. Fold the underlying evidence into the answer; a record that
+a contributor ran is not evidence for the facet.
 
 For each claim that the answer will rely on:
 

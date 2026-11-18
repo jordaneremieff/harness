@@ -85,7 +85,7 @@ function find(code: string, message: string) {
 }
 
 function usage() {
-	return `Usage: node skills/delegate/scripts/contract.mts <command> [options]
+	return `Usage: node extensions/agent/delegation-contract.mts <command> [options]
 
 Print, check, or convert optional assignment templates and thread frames.
 Dependency-free Node.
@@ -215,7 +215,7 @@ function parseArgs(argv: string[]): ParseOptions {
 }
 
 function assetPath(kind: ContractKind): string {
-	return fileURLToPath(new URL(`../assets/${kind}.md`, import.meta.url));
+	return fileURLToPath(new URL(`./delegation/templates/${kind}.md`, import.meta.url));
 }
 
 function normalizeName(name: string): string {

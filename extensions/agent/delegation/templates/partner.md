@@ -22,7 +22,7 @@ An explicit invitation to challenge the framing, propose alternatives, and propo
 The exact session identity or thread that receives the partner's judgment.
 
 ## Skills to load
-The skills the partner reads before work, with the reason; name delegate when the partner will coordinate other agents.
+The skills or guides the partner needs, with the reason for each.
 
 ## Thread ID
 A thread where the partnership works when one serves it; otherwise omit this slot. Keep the participation text of a create or join within 256 characters and a post message within 8,000 characters; write longer content to a file and post its path.

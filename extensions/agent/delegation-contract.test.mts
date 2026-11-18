@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 
 test("thread-hosting recipe creates the thread in the new agent's storage and keeps its result reference", async () => {
-	const recipes = readFileSync(new URL("../references/codemode.md", import.meta.url), "utf8");
+	const recipes = readFileSync(new URL("./delegation/codemode.md", import.meta.url), "utf8");
 	const source = recipes.match(/## Thread hosted by a new agent\n[\s\S]*?```js\n([\s\S]*?)\n```/)?.[1];
 	assert.ok(source);
 	for (const identified of [true, false]) {
@@ -65,8 +65,8 @@ type RunResult = SpawnSyncReturns<string> & { report: Report };
 
 const KINDS = ["task", "lead", "partner", "review", "frame", "handoff"] as const;
 
-const script = fileURLToPath(new URL("./contract.mts", import.meta.url));
-const root = mkdtempSync(join(tmpdir(), "delegate-contract-test-"));
+const script = fileURLToPath(new URL("./delegation-contract.mts", import.meta.url));
+const root = mkdtempSync(join(tmpdir(), "delegation-contract-test-"));
 let sequence = 0;
 
 after(() => rmSync(root, { recursive: true, force: true }));
@@ -102,7 +102,7 @@ function runJson(args: string[], input?: string): RunResult {
 }
 
 function template(kind: string): string {
-	return readFileSync(fileURLToPath(new URL(`../assets/${kind}.md`, import.meta.url)), "utf8");
+	return readFileSync(fileURLToPath(new URL(`./delegation/templates/${kind}.md`, import.meta.url)), "utf8");
 }
 
 function writeContract(content: string): string {

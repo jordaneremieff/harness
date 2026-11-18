@@ -1,7 +1,8 @@
 # Session-history expertise
 
-Use this reference when a coordinator needs evidence from earlier sessions or
-when a session-history expert starts or resumes that work. The
+Use this reference when the task calls for a session-history expert or when
+that expert starts or resumes work. Use a bounded direct read for a question it
+can settle under the task's instructions and selected playbook. The
 [delivery workflow](agent-delivery.md#orient-to-the-operators-work) owns when to
 consult an expert. The [agent extension](../extensions/agent/README.md) owns
 identity, profiles, discovery, controls, and request delivery. This reference

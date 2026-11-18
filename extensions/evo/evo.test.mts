@@ -21,6 +21,7 @@ interface SentMessage {
 
 const deliveryWorkflow = readFileSync(new URL("../../docs/agent-delivery.md", import.meta.url), "utf8");
 const sessionHistory = readFileSync(new URL("../../docs/session-history.md", import.meta.url), "utf8");
+const delegationGuide = readFileSync(new URL("../agent/delegation.md", import.meta.url), "utf8");
 
 function assertContracts(text: string, contracts: ReadonlyArray<readonly [string, RegExp]>): void {
 	const normalized = text.replace(/\s+/g, " ");
@@ -501,9 +502,9 @@ test("the required workflow develops operator use before selection rather than a
 
 test("history orientation uses retained expertise without making history a mandatory phase", () => {
 	assertContracts(deliveryWorkflow, [
-		["conditional expert", /When a bounded history question informs orientation, use the standing/],
+		["conditional expert", /choose a bounded direct read or specialist help under the task's instructions and the selected playbook. If the work calls for a specialist, use the standing/],
 		["corpus contract reference", /\[session-history expert\]\(session-history\.md\)/],
-		["owner directs tasking", /follow that reference to resolve, check, and task it/],
+		["owner directs tasking", /Follow that reference to resolve, check and task it/],
 		["short task", /current question, source window, and restrictions instead of another corpus brief/],
 		["no mandatory history phase", /not a mandatory phase of every run/],
 		["coordinator judgment", /coordinator retains judgment and integration ownership/],
@@ -555,9 +556,9 @@ test("the delivery workflow routes detailed mechanisms to reachable owners", () 
 	assertContracts(deliveryWorkflow, [
 		["declared work owner", /A native agent uses \[declared background work\]\(\.\.\/extensions\/agent\/README\.md#declared-background-work\)/],
 		["result owner", /\[result contract\]\(\.\.\/extensions\/agent\/README\.md#read-peer-results\)/],
-		["supervision owner", /\[supervision guidance\]\(\.\.\/skills\/delegate\/SKILL\.md#6-supervise-without-polling\)/],
-		["native work declaration", /calls `agent_work` with `action: "continue"`.*ends with a state note/],
-		["ordinary event delivery", /An ordinary session has no `agent_work`. Its `agent_yield` ends a turn without a chat line while work that the session sent to agents is still open.*calls `agent_yield` with a short note for the operator in `note` in its last tool batch, alone or with other calls that also end the turn, and writes no chat text.*It carries no session, submission or request identifier.*Results arrive as events at its next tool boundary or start its next turn; it never polls/],
+		["supervision owner", /\[supervision guidance\]\(\.\.\/extensions\/agent\/delegation\.md#supervise-without-polling\)/],
+		["native work declaration", /when its routed task remains incomplete after the current run.*state note is not the result; only completion of the declared work sends the final report/],
+		["ordinary event delivery", /An ordinary session has no \x60agent_work\x60.*\[ordinary yield\]\(\.\.\/extensions\/agent\/README\.md#state-note-of-an-ordinary-session\).*when only work it sent to agents remains open. Results arrive as events; do not poll/],
 		["recovery owner", /\[Agent recovery and delivery\]\(\.\.\/extensions\/agent\/README\.md#recovery-and-delivery\)/],
 		["host refresh owner", /\[storage host retirement\]\(pi-durable-harness\.md#storage-host-retirement\)/],
 		["current owner contract", /Read the Agent \[result contract\].*for immediate result reads, answer continuations and receipt-reference pages/],
@@ -652,7 +653,7 @@ test("collaboration preserves the use path and accepts observed task improvement
 		],
 		[
 			"arrangement remains a judgment",
-			/Choose the arrangement by the task and revise it as the work develops. The invoking session can investigate, implement, and verify substantive work itself, collaborate, delegate, or use a dedicated coordinator/,
+			/Follow the task's instructions for dividing work first, then the selected playbook's defaults. With no playbook, choose the arrangement by the task. The invoking session can investigate, implement, and verify substantive work itself, collaborate, delegate, or use a dedicated coordinator/,
 		],
 		[
 			"full implementation sessions",
@@ -664,36 +665,7 @@ test("collaboration preserves the use path and accepts observed task improvement
 		],
 		["selection-changing discoveries", /Share discoveries that change selection or another task's question/],
 		["integration and peer judgment", /coordinator owns the integrated outcome; peers revise their own arrangement against the shared purpose/],
-		[
-			"conditional threads",
-			/Use a \[peer thread\]\([^)]*\) when evolving shared facts, decisions, or coordination need one retained place.*Otherwise, reuse sufficient context or direct messages/,
-		],
-		["shared context and source", /purpose, authority source, restrictions, acceptance, and integration attached to the exchange/],
-		["admission is not understanding", /do not mistake a retained post or delivery acknowledgment for understanding/],
-		["flexible collaboration", /No mandatory council, fork, roster, or candidate count/],
-		[
-			"task frame",
-			/Give each assignment what its owner needs to judge and deliver it, drawn from:.*purpose, selected use path.*source pointers.*explicit exclusions.*acceptance evidence.*end condition.*integration ownership.*dependencies.*result consumer/,
-		],
-		["inline assignment", /A direct task message is sufficient; no contract file or template is required/],
-		[
-			"contributor discretion",
-			/raise discoveries, propose a changed division of work, and exchange findings directly with relevant peers/,
-		],
-		[
-			"relevant reuse",
-			/Reuse a session when its retained expertise, context, and ownership serve the current task/,
-		],
-		["request-local routing", /preserve the current requester and reply route before admission/],
-		["resolve before creation", /For recurring concerns.*resolve an existing expert before creating another/],
-		[
-			"fresh session reasons",
-			/Use a fresh session for unrelated work, necessary independent judgment, conflicting ownership, or context that no longer serves the task/,
-		],
-		[
-			"same-owner corrections",
-			/Keep corrections, review repairs, and native compaction in that session while its task is open/,
-		],
+		["delegation method owner", /\[Agent delegation guide\]\(\.\.\/extensions\/agent\/delegation\.md\) for briefs, collaboration and supervision/],
 		["disjoint edits", /Keep concurrent edits disjoint/],
 		["coherent ownership", /owner's area follows the work, such as one behaviour with its implementation, tests, and documentation, not a file count/],
 		[
@@ -745,6 +717,23 @@ test("collaboration preserves the use path and accepts observed task improvement
 		["native continuity", /Use native compaction and session controls/],
 		["live ownership resolved", /Before coordinator exit, resolve every live worker/],
 		["handover is not process transfer", /saved handover does not transfer process ownership/],
+	]);
+});
+
+test("the Agent guide keeps briefs, collaboration and supervision conditional", () => {
+	assertContracts(delegationGuide, [
+		["task wins over selected defaults", /Follow explicit instructions for the task first. Otherwise use the selected playbook's defaults. With no playbook, choose by the task/],
+		["flexible collaboration", /Do not require a manager, thread, roster or worker count/],
+		["task frame", /coherent outcome.*Purpose, source pointers.*Granted authority and its source, restrictions.*Acceptance evidence, required checks, dependencies, end condition and result recipient/],
+		["inline assignment", /A direct task message is sufficient; no contract file or template is required/],
+		["relevant reuse and reply route", /Use a session whose expertise and ownership fit; preserve the current requester and reply route/],
+		["resolve known experts", /Resolve a known expert before creating another/],
+		["fresh session reasons", /Use a fresh session for unrelated work, independent judgment, conflicting ownership or unsuitable retained context/],
+		["same-owner corrections", /Keep corrections and repairs with the current owner when that still serves the task/],
+		["conditional threads", /Use a \[peer thread\]\([^)]*\) when changing shared facts, decisions or dependencies need a retained place. Otherwise, direct exchange is enough/],
+		["shared context and source", /Preserve the shared purpose, authority and source, restrictions, acceptance and who integrates/],
+		["peer discretion and admission", /Let contributors challenge the proposed method and exchange evidence directly.*admission receipt is not an agreement or proof of understanding/],
+		["no polling", /Do not keep a run open for their output or imitate a wait with status reads or sleeps/],
 	]);
 });
 

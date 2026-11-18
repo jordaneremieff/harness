@@ -36,6 +36,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 		return launchReceipt(input);
 	};
 	const tools = new RequiredMap<string, ReturnType<typeof captureTool>>();
+	const guidelines = new Map<string, readonly string[]>();
 	const commands = new RequiredMap<string, ReturnType<typeof captureCommand>>();
 	const shortcuts = new RequiredMap<string, ReturnType<typeof captureShortcut>>();
 	const renderers = new Map<string, unknown>();
@@ -49,6 +50,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 		getSettings: () => ({ compaction: { enabled: false } }),
 		registerTool: (tool) => {
 			tools.set(tool.name, captureTool(tool));
+			guidelines.set(tool.name, tool.promptGuidelines ?? []);
 		},
 		registerCommand: (name, command) => {
 			commands.set(name, captureCommand(command));
@@ -91,7 +93,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 		},
 	};
 	registerStash(pi, overrides);
-	return { tools, commands, shortcuts, renderers, sent, safety, events, pi, launches };
+	return { tools, guidelines, commands, shortcuts, renderers, sent, safety, events, pi, launches };
 }
 
 it("exposes safe reports for write, checkpoint, edit, and completion tools", async () => {
@@ -196,7 +198,13 @@ describe("stash entrypoint", () => {
 		assert.equal(shortcuts.get("ctrl+alt+s").description, "Open the stash browser");
 	});
 
-
+	it("distinguishes a handover or material context checkpoint from an ordinary turn ending", () => {
+		const { guidelines } = registry();
+		const guidance = guidelines.get("stash_write")?.join("\n") ?? "";
+		assert.match(guidance, /operator asks to stash or when you hand work to a fresh session/u);
+		assert.match(guidance, /checkpoint: true to preserve working context before material loss/u);
+		assert.match(guidance, /not merely because a turn ends while results are still due/u);
+	});
 
 	it("ignores the shortcut outside TUI without a UI or store access", async () => {
 		const { shortcuts, sent } = registry();

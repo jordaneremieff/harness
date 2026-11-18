@@ -14,9 +14,9 @@ type Digest = {
 	events: { seq: number; kind: string; text: string; source?: string; cut?: { shown: number; of: number; read: Record<string, unknown> } }[];
 };
 
-/** The thread digest recipe of the delegate skill, run against a forward-read double of `agent_collaborate`. */
+/** The thread digest recipe of the Agent extension, run against a forward-read double of `agent_collaborate`. */
 function digestFixture(events: ThreadEvent[]) {
-	const content = readFileSync(join(root, "skills/delegate/references/codemode.md"), "utf8");
+	const content = readFileSync(join(root, "extensions/agent/delegation/codemode.md"), "utf8");
 	const recipe = /```js\n([\s\S]*?)\n```/.exec(content.slice(content.indexOf("\n## Thread digest")))?.[1];
 	assert.ok(recipe, "thread digest recipe");
 	const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (...parameters: string[]) => (...values: unknown[]) => Promise<Digest>;
@@ -113,7 +113,7 @@ test("the thread digest returns a changed frame and stores nothing when a read f
 });
 
 test("maintained codemode recipes parse their options before their source", () => {
-	for (const path of ["docs/codemode.md", "skills/delegate/references/codemode.md"]) {
+	for (const path of ["docs/codemode.md", "extensions/agent/delegation/codemode.md"]) {
 		const content = readFileSync(join(root, path), "utf8");
 		const recipes = [...content.matchAll(/```(?:javascript|js)\n([\s\S]*?)\n```/g)];
 		assert.ok(recipes.length > 0, path);
