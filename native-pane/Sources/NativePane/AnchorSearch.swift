@@ -581,7 +581,8 @@ public enum CoverRegion {
 
 /// The accessibility interface of the running applications. Each request waits at most for the
 /// messaging timeout that `TerminalAnchor.start` sets.
-struct LiveTree: AccessibilityTree {
+final class LiveTree: AccessibilityTree {
+    private(set) var calls = 0
     func windows(_ application: pid_t) -> Reply<[AXUIElement]> {
         array(AXUIElementCreateApplication(application), kAXWindowsAttribute)
     }
@@ -613,6 +614,7 @@ struct LiveTree: AccessibilityTree {
         var bounded = CFRange(location: range.location, length: min(range.length, limit))
         guard bounded.length > 0, let parameter = AXValueCreate(.cfRange, &bounded) else { return .missing }
         var result: CFTypeRef?
+        calls += 1
         switch AXUIElementCopyParameterizedAttributeValue(node, kAXStringForRangeParameterizedAttribute as CFString, parameter, &result) {
         case .success: return (result as? String).map(Reply.value) ?? .missing
         case .cannotComplete: return .busy
@@ -622,6 +624,7 @@ struct LiveTree: AccessibilityTree {
 
     func element(at point: CGPoint, in application: pid_t) -> Reply<AXUIElement> {
         var result: AXUIElement?
+        calls += 1
         let error = AXUIElementCopyElementAtPosition(AXUIElementCreateApplication(application), Float(point.x), Float(point.y), &result)
         switch error {
         case .success: return result.map(Reply.value) ?? .missing
@@ -636,6 +639,7 @@ struct LiveTree: AccessibilityTree {
 
     func read(_ node: AXUIElement, _ name: String) -> Reply<CFTypeRef> {
         var result: CFTypeRef?
+        calls += 1
         return Self.reply(AXUIElementCopyAttributeValue(node, name as CFString, &result), result)
     }
 

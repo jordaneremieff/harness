@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import OSLog
 
 /// Finds the on-screen element that shows this process's terminal and follows its place.
 ///
@@ -75,10 +76,12 @@ public final class TerminalAnchor {
     private var timer: Timer?
     private var interval: TimeInterval = 0
     private var stepRunning = false
+    private let perf: Logger?
     private var fastUntil = Date.distantPast
 
     /// Starts the stacking command that the pane's environment offers, if any.
-    public init(tracksWindowContent: Bool = false) {
+    public init(tracksWindowContent: Bool = false, perf: Logger? = nil) {
+        self.perf = perf
         feed = StackingFeed.start()
         worker = AnchorWorker(feed: feed, tracksWindowContent: tracksWindowContent)
         feed?.onReport = { [weak self] in
@@ -128,8 +131,14 @@ public final class TerminalAnchor {
         stepRunning = true
         let worker = worker
         let marker = marker
+        let period = interval
+        let perf = perf
         queue.async { [weak self] in
+            let start = DispatchTime.now().uptimeNanoseconds
+            let before = worker.axCalls
             let result = worker.step(marker: marker)
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
+            perf?.debug("anchor.step ms=\(elapsed) calls=\(worker.axCalls - before) poll_ms=\(period * 1000)")
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.finish(result) }
             }
@@ -162,6 +171,10 @@ public final class TerminalAnchor {
             fastUntil = Date().addingTimeInterval(1)
         }
         if next != status {
+            if case .placed(let shown) = next {
+                if case .placed(let before) = status, shown.frame == before.frame {}
+                else { perf?.debug("anchor.frame x=\(shown.frame.minX) y=\(shown.frame.minY) w=\(shown.frame.width) h=\(shown.frame.height)") }
+            }
             status = next
             onChange?(next)
         }
@@ -268,6 +281,7 @@ final class AnchorWorker: @unchecked Sendable {
     static let wideRoundEvery = 8
 
     private let tree = LiveTree()
+    var axCalls: Int { tree.calls }
     private var search = AnchorSearch<LiveTree>()
     private var element: AXUIElement?
     private var windowElement: AXUIElement?

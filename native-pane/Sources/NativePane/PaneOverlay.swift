@@ -33,8 +33,8 @@ public final class PaneOverlay: NSObject, NSWindowDelegate {
 
     private let paneLog: Logger
 
-    public init(background: @escaping () -> NSColor, logger: Logger, tracksWindowContent: Bool = false) {
-        anchor = TerminalAnchor(tracksWindowContent: tracksWindowContent)
+    public init(background: @escaping () -> NSColor, logger: Logger, tracksWindowContent: Bool = false, perf: Logger? = nil) {
+        anchor = TerminalAnchor(tracksWindowContent: tracksWindowContent, perf: perf)
         paneLog = logger
         let bounds = NSRect(x: 0, y: 0, width: 640, height: 480)
         content = PaneContentView(frame: bounds, background: background)
@@ -50,6 +50,7 @@ public final class PaneOverlay: NSObject, NSWindowDelegate {
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .ignoresCycle]
         super.init()
         window.delegate = self
+        window.perf = perf
     }
 
     public func extendAbove(_ points: CGFloat) {
@@ -190,6 +191,7 @@ public final class PaneContentView: NSView {
 
 /// A non-activating panel whose first click reaches the page.
 public final class PaneWindow: NSPanel {
+    public var perf: Logger?
     public var onCancel: (() -> Void)?
     public var onClose: (() -> Void)?
 
@@ -197,8 +199,17 @@ public final class PaneWindow: NSPanel {
     public override var canBecomeMain: Bool { true }
 
     public override func sendEvent(_ event: NSEvent) {
-        if event.type == .leftMouseDown, !isKeyWindow { makeKey() }
+        if event.type == .leftMouseDown {
+            perf?.debug("click.mouseDown key=\(self.isKeyWindow)")
+            if !isKeyWindow { makeKey() }
+            perf?.debug("click.key key=\(self.isKeyWindow)")
+        }
         super.sendEvent(event)
+    }
+
+    public override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        super.setFrame(frameRect, display: flag)
+        perf?.debug("window.setFrame h=\(self.frame.height) bottom=\(self.frame.minY)")
     }
 
     public override func cancelOperation(_ sender: Any?) {

@@ -7,8 +7,9 @@ import WebKit
 
 @MainActor
 final class ComposerHost {
+    static let perf = Logger(subsystem: "local.harness.composer", category: "perf")
     private static let fitLog = Logger(subsystem: "local.harness.composer", category: "fit")
-    private let overlay = PaneOverlay(background: { ComposerHost.paperColour }, logger: Logger(subsystem: "local.harness.composer", category: "pane"), tracksWindowContent: true)
+    private let overlay = PaneOverlay(background: { ComposerHost.paperColour }, logger: Logger(subsystem: "local.harness.composer", category: "pane"), tracksWindowContent: true, perf: ComposerHost.perf)
     private static var paperColour: NSColor {
         NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
@@ -90,6 +91,7 @@ final class ComposerHost {
         terminal.onBytes = { [weak self] bytes in self?.terminalInput(bytes) }
         terminal.onResize = { [weak self] in
             guard let self else { return }
+            Self.perf.debug("resize.pty rows=\(self.terminal.size().rows)")
             fitStartup?.terminalResized()
             overlay.anchor.refresh()
             publishMetrics()
@@ -433,17 +435,23 @@ final class ComposerHost {
             offerRecovery()
             showWhenReady()
             placed()
+        case "focusTrace":
+            Self.perf.debug("click.page focused_editor=\(fields["editor"] as? Bool == true)")
         case "overlay":
+            Self.perf.debug("menu.request")
             guard let above = fields["above"] as? NSNumber, CFGetTypeID(above) != CFBooleanGetTypeID(),
                   above.doubleValue.isFinite, (0...8192).contains(above.doubleValue) else {
                 throw composerRefusal("Invalid overlay height.")
             }
             overlay.extendAbove(above.doubleValue)
             lastOverlayAbove = overlay.appliedAbove
+            Self.perf.debug("menu.extended above=\(self.lastOverlayAbove)")
             if ready { await page.send("overlay", ["above": lastOverlayAbove]) }
+            Self.perf.debug("menu.reply")
         case "pasteText":
             return ["text": NSPasteboard.general.string(forType: .string) ?? ""]
         case "layout":
+            Self.perf.debug("resize.layout height=\(fields["height"] as? Double ?? 0)")
             guard let height = fields["height"] as? NSNumber, CFGetTypeID(height) != CFBooleanGetTypeID(), fit.layout(height.doubleValue) else {
                 Self.fitLog.debug("decision=invalid-layout")
                 throw composerRefusal("Invalid layout height.")
@@ -527,7 +535,11 @@ final class ComposerHost {
         guard let request, let link else { return }
         resizeJob = Task { [weak self] in
             guard let self else { return }
+            let sent = DispatchTime.now().uptimeNanoseconds
+            Self.perf.debug("resize.sent share=\(request)")
             let reply = try? await link.request("/resize", ["share": request])
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds - sent) / 1e6
+            Self.perf.debug("resize.reply share=\(request) ms=\(elapsed)")
             let applied = reply?["applied"] as? Bool == true
             fit.finish(applied: applied)
             Self.fitLog.debug("reply applied=\(applied) share=\(request) received=\(reply != nil)")

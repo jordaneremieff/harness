@@ -755,6 +755,9 @@
 	}
 	document.addEventListener("pointerenter", queueTip, true);
 	document.addEventListener("focusin", queueTip);
+	document.addEventListener("pointerdown", () => {
+		requestAnimationFrame(() => { void request("focusTrace", { editor: document.activeElement === input }).catch(() => {}); });
+	}, { capture: true });
 	document.addEventListener("pointerleave", (event) => { if (event.target instanceof HTMLButtonElement) hideTip(); }, true);
 	for (const type of ["focusout", "pointerdown", "keydown", "scroll"]) document.addEventListener(type, hideTip, true);
 
