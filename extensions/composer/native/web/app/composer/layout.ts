@@ -45,6 +45,14 @@
 			return { draft: block(measure), chrome, gap, editorPadding: padding(style), line: px(style.lineHeight), queue: block(queue), images: block(images) };
 		}
 		let pane = 0, growth = 0, predicted = 0, revision = 0;
+		// A draft that shrinks a pane it sized draws the smaller box at once. The paper keeps that
+		// height until the pane follows, or until the deadline if the pane keeps its height.
+		let collapse: { height: number; from: number; timer: ReturnType<typeof setTimeout> } | undefined;
+		function endCollapse() {
+			if (!collapse) return;
+			clearTimeout(collapse.timer);
+			collapse = undefined;
+		}
 		function updateFades() {
 			const top = input.scrollTop, bottom = input.scrollHeight - input.clientHeight - top;
 			area.toggleAttribute("data-clipped-top", top > 1);
@@ -53,6 +61,7 @@
 		input.addEventListener("scroll", updateFades, { passive: true });
 		function viewport(nextPane: number, nextGrowth: number) {
 			if (pane === nextPane && growth === nextGrowth) return;
+			if (collapse && nextPane + nextGrowth < collapse.from) endCollapse();
 			pane = nextPane;
 			growth = nextGrowth;
 			measureLayout();
@@ -66,7 +75,7 @@
 			if (requested > pane + growth) revealCaret?.();
 		}
 		function paintPaper(parts: Extents) {
-			const paper = Math.max(pane + growth, predicted);
+			const paper = collapse ? collapse.height : Math.max(pane + growth, predicted);
 			panel.style.setProperty("--paper-height", `${paper}px`);
 			const normal = stack(parts, paper);
 			panel.toggleAttribute("data-tight", normal.tight);
@@ -78,6 +87,16 @@
 			const natural = stack(text ? parts : { ...parts, images: 0 }, confirmed).height;
 			return text ? Math.max(last ?? 0, natural) : natural;
 		}
+		function plan(height: number, confirmed: number, text: string) {
+			predicted = text && height > confirmed ? height : 0;
+			const sized = last !== undefined && Math.abs(confirmed - last) <= 1;
+			endCollapse();
+			if (sized && height < confirmed) collapse = { height, from: confirmed, timer: setTimeout(expireCollapse, 1000) };
+		}
+		function expireCollapse() {
+			collapse = undefined;
+			measureLayout();
+		}
 		function measureLayout() {
 			if (!pane) return;
 			const text = input.value;
@@ -85,7 +104,7 @@
 			const parts = extents(), confirmed = pane + growth;
 			const height = requestedHeight(text, parts, confirmed);
 			const changed = height !== last;
-			if (changed) predicted = text && height > confirmed ? height : 0;
+			if (changed) plan(height, confirmed, text);
 			paintPaper(parts);
 			if (!changed) return;
 			last = height;

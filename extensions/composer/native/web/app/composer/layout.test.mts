@@ -210,3 +210,31 @@ test("a refused growth request restores the pane height without another request"
 	assert.equal(view.paper, "136px");
 	assert.deepEqual(view.heights, [160]);
 });
+
+test("a cleared draft collapses its box at once and keeps it until the pane follows", async () => {
+	let pane = 136;
+	const view = page(async height => ({ above: Math.max(0, height - pane) }));
+	view.type("one\ntwo\nthree");
+	await Promise.resolve();
+	pane = view.geometry.viewport = 184;
+	view.viewport(184, 0);
+	assert.equal(view.paper, "184px");
+	view.type("");
+	assert.deepEqual(view.heights, [184, 136]);
+	assert.equal(view.paper, "136px");
+	await Promise.resolve();
+	assert.equal(view.paper, "136px");
+	pane = view.geometry.viewport = 136;
+	view.viewport(136, 0);
+	assert.equal(view.paper, "136px");
+});
+
+test("a pane that the draft did not size keeps the paper at its height when the draft clears", async () => {
+	const view = page(async () => ({ above: 0 }));
+	view.type("one\ntwo\nthree");
+	await Promise.resolve();
+	view.geometry.viewport = 400;
+	view.viewport(400, 0);
+	view.type("");
+	assert.equal(view.paper, "400px");
+});
