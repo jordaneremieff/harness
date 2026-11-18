@@ -77,15 +77,19 @@ public final class TerminalAnchor {
     private var interval: TimeInterval = 0
     private var stepRunning = false
     private let perf: Logger?
+    private let eventDriven: Bool
+    private var subscription: AnchorWorker.Subscription?
+    private var wakePending = false
     private var fastUntil = Date.distantPast
 
     /// Starts the stacking command that the pane's environment offers, if any.
-    public init(tracksWindowContent: Bool = false, perf: Logger? = nil) {
+    public init(tracksWindowContent: Bool = false, perf: Logger? = nil, eventDriven: Bool = false) {
         self.perf = perf
+        self.eventDriven = eventDriven
         feed = StackingFeed.start()
-        worker = AnchorWorker(feed: feed, tracksWindowContent: tracksWindowContent)
+        worker = AnchorWorker(feed: feed, tracksWindowContent: tracksWindowContent, eventDriven: eventDriven)
         feed?.onReport = { [weak self] in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.refresh() } }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.wake() } }
         }
     }
 
@@ -103,14 +107,37 @@ public final class TerminalAnchor {
     public func stop() {
         timer?.invalidate()
         timer = nil
+        install(nil)
+        wakePending = false
         feed?.stop()
     }
 
     /// Reads the element again soon and follows it closely for a short time, for a change that
     /// the caller saw first, such as a new terminal size.
     public func refresh() {
-        fastUntil = Date().addingTimeInterval(1.5)
-        step()
+        fastUntil = Date().addingTimeInterval(eventDriven ? 0.4 : 1.5)
+        wake()
+    }
+
+    private func wake() {
+        guard timer != nil else { return }
+        if stepRunning { wakePending = true } else { step() }
+    }
+
+    private func install(_ next: AnchorWorker.Subscription?) {
+        guard subscription !== next else { return }
+        if let subscription {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(subscription.observer), .commonModes)
+            subscription.wake = nil
+        }
+        subscription = next
+        if let next {
+            next.wake = { [weak self] in
+                self?.perf?.debug("anchor.notification")
+                self?.wake()
+            }
+            CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(next.observer), .commonModes)
+        }
     }
 
     private func schedule(interval: TimeInterval) {
@@ -148,6 +175,7 @@ public final class TerminalAnchor {
     private func finish(_ result: AnchorWorker.Result) {
         stepRunning = false
         guard timer != nil else { return }
+        install(result.subscription)
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         let next: Status
         switch result.state {
@@ -167,7 +195,7 @@ public final class TerminalAnchor {
             fastUntil = Date().addingTimeInterval(1)
             onMarker?()
         }
-        if case .placed(let shown) = next, case .placed(let before) = status, shown != before {
+        if case .placed(let shown) = next, case .placed(let before) = status, shown != before, !eventDriven {
             fastUntil = Date().addingTimeInterval(1)
         }
         if next != status {
@@ -178,7 +206,9 @@ public final class TerminalAnchor {
             status = next
             onChange?(next)
         }
-        schedule(interval: result.slow ? 1 : Date() < fastUntil ? 1.0 / 60 : 0.1)
+        let idle = eventDriven && subscription?.paneGeometry == true ? 0.5 : 0.1
+        schedule(interval: result.slow ? 1 : Date() < fastUntil ? (eventDriven ? 1.0 / 30 : 1.0 / 60) : idle)
+        if wakePending { wakePending = false; step() }
     }
 
     // MARK: - Pure helpers
@@ -257,6 +287,7 @@ final class AnchorWorker: @unchecked Sendable {
         var state: State
         /// Ask for the next step in a second, for a locked screen or missing access.
         var slow = false
+        var subscription: Subscription?
     }
 
     /// Longest wait for one answer of an application.
@@ -303,11 +334,46 @@ final class AnchorWorker: @unchecked Sendable {
     private var coversAt = Date.distantPast
     private let feed: StackingFeed?
 
-    private let tracksWindowContent: Bool
+    final class Subscription: @unchecked Sendable {
+        let observer: AXObserver
+        private(set) var paneGeometry = false
+        // Only the main run loop reads or writes wake. The worker registers before attachment.
+        var wake: (@MainActor () -> Void)?
 
-    init(feed: StackingFeed?, tracksWindowContent: Bool = false) {
+        init?(host: pid_t, element: AXUIElement, window: AXUIElement) {
+            var raw: AXObserver?
+            guard AXObserverCreate(host, { _, _, _, ref in
+                guard let ref else { return }
+                let subscription = Unmanaged<Subscription>.fromOpaque(ref).takeUnretainedValue()
+                MainActor.assumeIsolated { subscription.wake?() }
+            }, &raw) == .success, let raw else { return nil }
+            observer = raw
+            let context = Unmanaged.passUnretained(self).toOpaque()
+            let app = AXUIElementCreateApplication(host)
+            _ = AXObserverAddNotification(raw, app, kAXFocusedWindowChangedNotification as CFString, context)
+            for target in [window, element] {
+                _ = AXObserverAddNotification(raw, target, kAXUIElementDestroyedNotification as CFString, context)
+                for name in [kAXMovedNotification, kAXResizedNotification] {
+                    if AXObserverAddNotification(raw, target, name as CFString, context) == .success, CFEqual(target, element) {
+                        paneGeometry = true
+                    }
+                }
+            }
+            for name in [kAXWindowMovedNotification, kAXWindowResizedNotification] {
+                _ = AXObserverAddNotification(raw, window, name as CFString, context)
+            }
+        }
+    }
+
+    private let tracksWindowContent: Bool
+    private let eventDriven: Bool
+    private var subscription: Subscription?
+    private var observedPair: (AXUIElement, AXUIElement)?
+
+    init(feed: StackingFeed?, tracksWindowContent: Bool = false, eventDriven: Bool = false) {
         self.feed = feed
         self.tracksWindowContent = tracksWindowContent
+        self.eventDriven = eventDriven
     }
 
     static func splitFrames<Tree: AccessibilityTree>(_ tree: Tree, around pane: Tree.Node, frame: CGRect,
@@ -341,6 +407,21 @@ final class AnchorWorker: @unchecked Sendable {
     }
 
     func step(marker: String) -> Result {
+        var result = readPlacement(marker: marker)
+        if eventDriven, let element, let windowElement, let host {
+            if observedPair.map({ !CFEqual($0.0, element) || !CFEqual($0.1, windowElement) }) ?? true {
+                observedPair = (element, windowElement)
+                subscription = Subscription(host: host, element: element, window: windowElement)
+            }
+        } else {
+            observedPair = nil
+            subscription = nil
+        }
+        result.subscription = subscription
+        return result
+    }
+
+    private func readPlacement(marker: String) -> Result {
         let deadline = DispatchTime.now() + Self.stepAllowance
         guard AXIsProcessTrusted() else { return Result(state: .untrusted, slow: true) }
         // Nothing is visible behind a locked screen, and applications answer few accessibility

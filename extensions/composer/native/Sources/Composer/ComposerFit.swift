@@ -70,6 +70,18 @@ struct ComposerFit {
     var pending: Double? { inFlight?.to ?? awaiting?.attempt.to }
     var awaitsFrame: Bool { awaiting != nil }
 
+    func shrinkHeight(beforeRows: Int, afterRows: Int) -> Double? {
+        guard afterRows > 0, afterRows < beforeRows else { return nil }
+        return predictedShrinkHeight
+    }
+
+    var predictedShrinkHeight: Double? {
+        guard let attempt = inFlight ?? awaiting?.attempt, attempt.to < attempt.from,
+              !attempt.startedClamped, attempt.predictedHeight > 0,
+              attempt.predictedHeight < attempt.before.height else { return nil }
+        return attempt.predictedHeight
+    }
+
     init(offset: Double = 0, now: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now }) {
         self.offset = Self.storableOffsets.contains(offset) ? offset : 0
         self.now = now

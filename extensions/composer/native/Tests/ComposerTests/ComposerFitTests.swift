@@ -39,6 +39,22 @@ struct ComposerFitTests {
         #expect(shrink == 0.184)
     }
 
+    @Test func predictsShrinkOnlyWhenRowsFallDuringAShrinkRequest() {
+        var fit = ComposerFit(offset: -38)
+        fit.observe(geometry(230, span: 996))
+        _ = fit.layout(136)
+        #expect(fit.shrinkHeight(beforeRows: 9, afterRows: 5) == nil)
+        let share = fit.request()
+        #expect(share == 0.175)
+        #expect(fit.shrinkHeight(beforeRows: 9, afterRows: 9) == nil)
+        #expect(fit.shrinkHeight(beforeRows: 9, afterRows: 10) == nil)
+        #expect(abs((fit.shrinkHeight(beforeRows: 9, afterRows: 5) ?? 0) - 136.3) < 0.001)
+        fit.finish(applied: true)
+        #expect(abs((fit.shrinkHeight(beforeRows: 9, afterRows: 5) ?? 0) - 136.3) < 0.001)
+        fit.observe(geometry(137, span: 996))
+        #expect(fit.shrinkHeight(beforeRows: 9, afterRows: 5) == nil)
+    }
+
     @Test func windowHeightChangeRecalibratesAtTheSameShare() {
         var fit = ComposerFit()
         fit.observe(geometry(211, span: 844))

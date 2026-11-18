@@ -52,21 +52,23 @@ enum ComposerCheck {
         page.receive = { [weak page] type, fields in
             switch type {
             case "ready": loaded.value = true
-            case "layout": if let height = fields["height"] as? Int { heights.append(height) }
+            case "layout":
+                if let height = fields["height"] as? Int { heights.append(height) }
+                return ["above": 0]
             case "overlay":
-                guard let page, let above = fields["above"] as? Int, above >= 0 else {
+                guard let above = fields["above"] as? Int, above >= 0 else {
                     throw composerRefusal("Invalid fixture overlay height.")
                 }
                 window.overlayRevision += 1
-                let revision = window.overlayRevision
                 window.acknowledgedAbove = nil
                 var frame = baseFrame
                 frame.size.height += CGFloat(above)
                 if window.frame != frame { window.setFrame(frame, display: true, animate: false) }
-                guard window.frame == frame, await page.send("overlay", ["above": above]) else {
+                guard window.frame == frame else {
                     throw composerRefusal("The fixture could not apply \(above) px above the composer.")
                 }
-                if revision == window.overlayRevision { window.acknowledgedAbove = above }
+                window.acknowledgedAbove = above
+                return ["above": above]
             case "pasteText":
                 pasteRequests += 1
                 return ["text": clipboard]

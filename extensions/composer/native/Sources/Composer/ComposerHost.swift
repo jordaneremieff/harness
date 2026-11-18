@@ -9,7 +9,7 @@ import WebKit
 final class ComposerHost {
     static let perf = Logger(subsystem: "local.harness.composer", category: "perf")
     private static let fitLog = Logger(subsystem: "local.harness.composer", category: "fit")
-    private let overlay = PaneOverlay(background: { ComposerHost.paperColour }, logger: Logger(subsystem: "local.harness.composer", category: "pane"), tracksWindowContent: true, perf: ComposerHost.perf)
+    private let overlay = PaneOverlay(background: { ComposerHost.paperColour }, logger: Logger(subsystem: "local.harness.composer", category: "pane"), tracksWindowContent: true, perf: ComposerHost.perf, eventDriven: true)
     private static var paperColour: NSColor {
         NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
@@ -51,6 +51,8 @@ final class ComposerHost {
     private var retentionProblem: String?
     private var fit: ComposerFit
     private var fitStartup: ComposerFit.Startup?
+    private var lastGrowthAbove: CGFloat = 0
+    private var shrinkFrom: (frame: CGRect, rows: Int)?
     private var lastOverlayAbove = 0.0
     private var resizeJob: Task<Void, Never>?
 
@@ -87,11 +89,18 @@ final class ComposerHost {
             ready = false
             lastOverlayAbove = 0
             overlay.extendAbove(0)
+            overlay.grow(to: nil)
+            lastGrowthAbove = 0
         }
         terminal.onBytes = { [weak self] bytes in self?.terminalInput(bytes) }
         terminal.onResize = { [weak self] in
             guard let self else { return }
-            Self.perf.debug("resize.pty rows=\(self.terminal.size().rows)")
+            let rows = terminal.size().rows
+            Self.perf.debug("resize.pty rows=\(rows)")
+            if let from = shrinkFrom, let height = fit.shrinkHeight(beforeRows: from.rows, afterRows: rows) {
+                overlay.predictShrink(to: height, from: from.frame)
+                shrinkFrom = nil
+            }
             fitStartup?.terminalResized()
             overlay.anchor.refresh()
             publishMetrics()
@@ -147,16 +156,24 @@ final class ComposerHost {
         publishMetrics()
         terminal.drawMarker(overlay.anchor.marker)
         syncVisibility()
-        if lastOverlayAbove != overlay.appliedAbove {
-            lastOverlayAbove = overlay.appliedAbove
-            post("overlay", ["above": lastOverlayAbove])
-        }
         resizeToFit()
+        publishExtensions()
         if wantsFocus, ready, overlay.window.isVisible, !closing {
             wantsFocus = false
             overlay.window.makeKeyAndOrderFront(nil)
             overlay.window.makeFirstResponder(page.view)
             post("focus")
+        }
+    }
+
+    private func publishExtensions() {
+        if lastOverlayAbove != overlay.appliedAbove {
+            lastOverlayAbove = overlay.appliedAbove
+            post("overlay", ["above": lastOverlayAbove])
+        }
+        if lastGrowthAbove != overlay.appliedGrowth {
+            lastGrowthAbove = overlay.appliedGrowth
+            post("growth", ["above": lastGrowthAbove])
         }
     }
 
@@ -446,8 +463,8 @@ final class ComposerHost {
             overlay.extendAbove(above.doubleValue)
             lastOverlayAbove = overlay.appliedAbove
             Self.perf.debug("menu.extended above=\(self.lastOverlayAbove)")
-            if ready { await page.send("overlay", ["above": lastOverlayAbove]) }
             Self.perf.debug("menu.reply")
+            return ["above": lastOverlayAbove]
         case "pasteText":
             return ["text": NSPasteboard.general.string(forType: .string) ?? ""]
         case "layout":
@@ -457,6 +474,9 @@ final class ComposerHost {
                 throw composerRefusal("Invalid layout height.")
             }
             resizeToFit(reportedLayout: true)
+            lastGrowthAbove = overlay.appliedGrowth
+            publishExtensions()
+            return ["above": lastGrowthAbove]
         case "draft":
             guard let value = fields["text"] as? String else { throw composerRefusal("The draft is invalid.") }
             setDraft(value)
@@ -532,7 +552,21 @@ final class ComposerHost {
         if reportedLayout || request != nil || (awaited && !fit.awaitsFrame) {
             Self.fitLog.debug("needed=\(self.fit.needed ?? 0) frame=\(frame) rows=\(rows) share=\(share) slope=\(self.fit.slope ?? 0) offset=\(self.fit.offset) goal=\(self.fit.goal ?? 0) request=\(request ?? 0) manual=\(self.fit.manual) pending=\(pending) floor=\(self.fit.floor ?? 0) attempts=\(self.fit.attempts)")
         }
-        guard let request, let link else { return }
+        guard let request, let link else {
+            if fit.pending == nil {
+                shrinkFrom = nil
+                overlay.clearPrediction()
+                overlay.grow(to: nil)
+            }
+            return
+        }
+        overlay.clearPrediction()
+        if placement != nil, let needed = fit.needed, needed > frame, fit.predictedShrinkHeight == nil {
+            overlay.grow(to: needed)
+        } else if let pane = placement, fit.predictedShrinkHeight != nil {
+            overlay.grow(to: nil)
+            shrinkFrom = (pane.frame, rows)
+        }
         resizeJob = Task { [weak self] in
             guard let self else { return }
             let sent = DispatchTime.now().uptimeNanoseconds
@@ -545,6 +579,7 @@ final class ComposerHost {
             Self.fitLog.debug("reply applied=\(applied) share=\(request) received=\(reply != nil)")
             resizeJob = nil
             resizeToFit()
+            publishExtensions()
         }
     }
 
