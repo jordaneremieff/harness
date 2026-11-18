@@ -1,4 +1,4 @@
-import type { JsonValue, OperatorPanelModule, PanelHost } from "../../operator-ui/index.ts";
+import type { JsonValue, OperatorPanelModule, PanelHost } from "./frame.ts";
 import { markdownView, type MarkdownOperations, type MarkdownRow } from "./operator-view.ts";
 import { acquireResponse, readPanelAnswer, type MarkdownAnswer, type MarkdownRequest } from "./panel-protocol.ts";
 
@@ -24,7 +24,9 @@ export function panelOperations(host: PanelHost): MarkdownOperations {
 			signal.throwIfAborted();
 			const live = await connection(signal);
 			signal.throwIfAborted();
-			return editing ? reveal.openEditorResponse(response, signal, { live }) : reveal.openResponse(response, signal, true, "pane", live);
+			return editing
+				? reveal.openEditorResponse(response, signal, { live })
+				: reveal.openResponse(response, signal, true, "pane", live);
 		}
 		const { id, revision, digest } = row.document;
 		const { root, storeId } = row;
@@ -33,19 +35,37 @@ export function panelOperations(host: PanelHost): MarkdownOperations {
 		signal.throwIfAborted();
 		const live = await connection(signal);
 		signal.throwIfAborted();
-		return editing ? reveal.openEditorStored(root, id, copy ? "copy" : "edit", signal, { storeId, pin: { revision, digest }, live }) : reveal.openStored(root, id, signal, { gui: true, storeId, pin: { revision, digest }, live });
+		return editing
+			? reveal.openEditorStored(root, id, copy ? "copy" : "edit", signal, { storeId, pin: { revision, digest }, live })
+			: reveal.openStored(root, id, signal, { gui: true, storeId, pin: { revision, digest }, live });
 	};
-	const publishedCoverage = (answer: { rows: unknown[]; limited: boolean; unreadable: number }) => [`${answer.rows.length} published document${answer.rows.length === 1 ? "" : "s"}`, ...(answer.limited ? ["store scan limit reached"] : []), ...(answer.unreadable ? [`${answer.unreadable} unreadable, not listed`] : [])].join(" · ");
+	const publishedCoverage = (answer: { rows: unknown[]; limited: boolean; unreadable: number }) =>
+		[
+			`${answer.rows.length} published document${answer.rows.length === 1 ? "" : "s"}`,
+			...(answer.limited ? ["store scan limit reached"] : []),
+			...(answer.unreadable ? [`${answer.unreadable} unreadable, not listed`] : []),
+		].join(" · ");
 	return {
 		load: async (scope, signal) => {
 			if (scope === "recent") {
 				const answer = await ask({ op: "recent" }, signal);
 				if (answer.op !== "recent") throw new Error("Unexpected recent answer.");
-				return { rows: answer.rows.map((response) => ({ kind: "response", response })), coverage: `${answer.rows.length} response${answer.rows.length === 1 ? "" : "s"} · ${answer.visited} entries visited · stop: ${answer.stop} · previews only` };
+				return {
+					rows: answer.rows.map((response) => ({ kind: "response", response })),
+					coverage: `${answer.rows.length} response${answer.rows.length === 1 ? "" : "s"} · ${answer.visited} entries visited · stop: ${answer.stop} · previews only`,
+				};
 			}
 			const answer = await ask({ op: "published" }, signal);
 			if (answer.op !== "published") throw new Error("Unexpected published answer.");
-			return { rows: answer.rows.map((document) => ({ kind: "document", document, root: answer.root, storeId: answer.storeId })), coverage: publishedCoverage(answer) };
+			return {
+				rows: answer.rows.map((document) => ({
+					kind: "document",
+					document,
+					root: answer.root,
+					storeId: answer.storeId,
+				})),
+				coverage: publishedCoverage(answer),
+			};
 		},
 		read,
 		edit: (row, signal, copy = false) => read(row, signal, true, copy),

@@ -143,7 +143,7 @@ Limits: source 2 MiB UTF-8; title 200 Unicode code points on one line (joined em
 - `/markdown help` describes every form. `/markdown help new`, `recent`, `published`, `edit`, `copy`, `file`, `id`, `window` or `update` shows that form's usage and individual notes.
 - Any other argument answers with the complete command usage.
 
-The Markdown destination uses the shared operator frame. Browsing does not create a reader pane. Enter or the Read control opens the selected item beside this conversation; `l` reads the latest response, `n` selects Recent responses, and `p` selects Published. `/` filters the list. `w` starts New, `e` edits the selected published document or opens a response with Edit a Copy, and `c` opens a published document as a separate copy. The footer and More menu use the same actions as the keys. Read stays the default action. Selection and preview never reveal an app.
+`/markdown recent` and `/markdown published` open the Markdown view below the transcript, following the [operator panel convention](../../docs/conventions/operator-panels.md). Browsing does not create a reader pane. Enter or the Read control opens the selected item beside this conversation; `l` reads the latest response, `n` selects Recent responses, and `p` selects Published. `/` filters the list. `w` starts New, `e` edits the selected published document or opens a response with Edit a Copy, and `c` opens a published document as a separate copy. The key row and More menu use the same actions as the keys. Tab moves among regions, and PageUp and PageDown read the detail. Read stays the default action. Selection and preview never reveal an app.
 
 Stored snapshots remain openable by ID after the producer exits; the reader app owns snapshot browsing through its library and recents. Argument completion uses Pi's description field for each option. File and ID forms show usage without inserting a fabricated path or document ID; help topics complete individually. The shortcut appears in Pi's shortcut inventory. Print, JSON and RPC read calls save but never launch the GUI. Editor actions require the local interactive surface and refuse in those headless modes. The outcome uses the host's notification channel when the host has one. The command writes no session message or stdout output.
 
@@ -174,7 +174,7 @@ The update keeps its files beside the app: `update.log` holds the output of the 
 
 Open **Owner views** with `o`, then select **Markdown**: click its tab, or press Tab until the row of owner views has the focus, choose with Left or Right and press Enter. The same owner view is available from the `/agent` dashboard. It binds to the selected conversation and supplies Read latest, Recent responses and Published documents. Enter reads the selected item; `l`, `n` and `p` match the footer actions. New, Edit and Edit a Copy use the same explicit local actions and keys as ordinary Pi. They do not submit conversation text. The attached terminal does not interpret an ordinary `/markdown` slash command: use the owner view instead of sending that text to a conversation.
 
-The native contribution advertises `operator-panel.ts` and the `markdown` owner command under the [operator views contract](../../docs/conventions/operator-panels.md). Its finite request union is:
+The native contribution advertises `operator-panel.ts` and the `markdown` owner command under the [attached panel convention](../../docs/conventions/operator-panels.md#attached-panels). Its finite request union is:
 
 ```ts
 { op: "recent" }
