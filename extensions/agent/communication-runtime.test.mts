@@ -874,7 +874,7 @@ it("names a passive thread notice in the status tail by what happened in the thr
 		const notice: Communication = { format: "agent.communication/1", kind: "notice", sender: { identity: sender, name: "Peer" }, body: { text: "The parser now\nrejects empty frames.", complete: false, redacted: false }, recordedAt: 0, metadata: { threadId: "thread-a", title: "Parser contract", event: 4, frameRevision: 1, eventKind: "contribution", passive: true } };
 		await host.request("passive-submit", { requestId: "status-notice", message: modelText, communication: notice });
 		const { conversation: status } = await host.request("status", { conversationId: ROOT }) as { conversation: { lastText: string | null; lastTextRole?: string } };
-		assert.equal(status.lastText, "Peer posted in thread “Parser contract” (#4): The parser now rejects empty frames.");
+		assert.equal(status.lastText, "Thread post #4 in “Parser contract” from Peer: The parser now rejects empty frames.");
 		assert.equal(status.lastTextRole, "user");
 		const native = await (await host.harness.conversation(ROOT, BACKGROUND_CONTEXT))?.entries({}, 1, undefined, BACKGROUND_CONTEXT);
 		assert.equal(native?.items[0]?.model?.[0]?.content, modelText, "the model text of the notice stays unchanged");

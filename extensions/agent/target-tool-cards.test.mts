@@ -9,7 +9,7 @@ import type { AgentToolResult, Theme } from "@earendil-works/pi-coding-agent";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import type { Communication } from "./communication.ts";
-import { createAgentToolCards, compactCommunicationRenderer, operatorNoticeBody, renderCommunicationCard, renderPeerNoticeCard, type AgentCardContext } from "./tool-cards.ts";
+import { createAgentToolCards, compactCommunicationRenderer, operatorNoticeBody, renderCommunicationCard, renderPeerNoticeCard, type AgentCardContext, type AgentCardLookup } from "./tool-cards.ts";
 import { projectSelectedStatus, projectStorageStatus } from "./status-overview.ts";
 import { controlText, readableControlText, projectReportReceipt } from "./control-result.ts";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
@@ -270,48 +270,52 @@ describe("thread notice cards", () => {
 		format: "agent.communication/1", kind: "notice", sender: { identity: sender }, recordedAt: 1, body: { text, complete: false, redacted: false },
 		metadata: { threadId: "storage/thread-a", title: "Parser contract", event: 27, frameRevision: 2, eventKind: "close", passive: true, ...metadata },
 	});
-	const compact = (value: Communication, expanded: boolean) => {
-		const component = compactCommunicationRenderer(Object.assign((): AgentConversationSummary[] => [], { nameFor: (identity: string) => identity === sender ? "Reviewer" : undefined }))({ role: "custom", customType: "agent.communication", content: value.body.text, details: value, timestamp: 1, display: true }, { expanded, outputPad: 0, ...cardKeys }, theme);
+	const reviewer = { id: sender, name: "Reviewer", model: { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "high" } } as unknown as AgentConversationSummary;
+	const lookup = Object.assign((): AgentConversationSummary[] => [reviewer], { nameFor: (identity: string) => identity === sender ? "Reviewer" : undefined });
+	const compact = (value: Communication, expanded: boolean, rows: AgentCardLookup = lookup) => {
+		const component = compactCommunicationRenderer(rows)({ role: "custom", customType: "agent.communication", content: value.body.text, details: value, timestamp: 1, display: true }, { expanded, outputPad: 0, ...cardKeys }, theme);
 		assert.ok(component);
 		return screen(component);
 	};
 
-	it("says who did what in which thread and shows what was said", () => {
-		const closed = compact(notice({}, "Landed the four repairs on main."), false);
-		assert.match(closed, /^▸ Reviewer closed Parser contract · #27 · /u);
-		assert.match(closed, /Landed the four repairs on main\./u);
+	it("puts what happened and the thread above the sender and its agent details", () => {
+		const [first, second, ...preview] = compact(notice({}, "Landed the four repairs on main."), false).split("\n");
+		assert.equal(first, "▸ Thread closed · Parser contract");
+		assert.match(second ?? "", /^ {2}from Reviewer · openai-codex\/gpt-6\.1-sol · high · #27 · /u);
+		assert.deepEqual(preview, ["  Landed the four repairs on main."]);
 		const posted = compact(notice({ eventKind: "contribution", passive: false }, "Please check the frame bound."), false);
-		assert.match(posted, /^▸ Reviewer posted in Parser contract · #27 · notified this agent · /u);
-		assert.match(compact(notice({ eventKind: undefined }, ""), false), /^▸ Reviewer in Parser contract · #27/u, "an unknown event kind keeps the plain thread line");
+		assert.match(posted, /^▸ Thread post · Parser contract\n {2}from Reviewer · openai-codex\/gpt-6\.1-sol · high · #27 · notified this agent · /u);
+		assert.match(compact(notice({ eventKind: undefined }, ""), false), /^▸ Thread notice · Parser contract\n/u, "an unknown event kind keeps the plain notice title");
+		const session = Object.assign((): AgentConversationSummary[] => [], { modelFor: (identity: string) => identity === sender ? { provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "max" } : undefined });
+		assert.match(compact(notice({}, ""), false, session), /\n {2}from Session 7f7f7f7f · anthropic\/claude-opus-5-5 · max · #27 · /u, "a main session's model comes from the view");
 	});
 
 	it("shows no placeholder for an event without text and names the facts in plain labels", () => {
 		const collapsed = compact(notice({}, ""), false);
 		assert.doesNotMatch(collapsed, /no text/u);
-		assert.equal(collapsed.split("\n").length, 1);
+		assert.equal(collapsed.split("\n").length, 2);
 		const expanded = compact(notice({}, ""), true);
 		for (const line of ["Thread: Parser contract", "Thread ID: storage/thread-a", "Event: #27 · close · frame revision 2", "Delivery: passive, no wake requested", `Sender identity: ${sender}`]) assert.ok(expanded.includes(line), line);
 		assert.doesNotMatch(expanded, /frameRevision:|eventKind:|passive: true|threadId:/u);
 		const card = screen(renderCommunicationCard(notice({ eventKind: "join" }, ""), theme, { expanded: false, ...cardKeys }));
-		assert.match(card, new RegExp(`\\[agent\\] ${sender} joined Parser contract`, "u"));
+		assert.match(card, /\[agent\] Member joined · Parser contract\n/u);
+		assert.match(card, new RegExp(`from ${sender} · #27 · `, "u"));
 		assert.doesNotMatch(card, /no text/u);
 	});
 
-	it("gives an ordinary peer notice the same sentence, event number and text", () => {
-		const details = { kind: "report", senderIdentity: sender, label: "Reviewer", threadId: "storage/thread-a", threadTitle: "Parser contract", threadEvent: 12, threadEventKind: "contribution", passive: false, operatorMessage: "Please check the frame bound." };
+	it("gives an ordinary peer notice the same two tiers, with the sender's model", () => {
+		const details = { kind: "report", senderIdentity: sender, label: "Reviewer", provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "high", threadId: "storage/thread-a", threadTitle: "Parser contract", threadEvent: 12, threadEventKind: "contribution", passive: false, operatorMessage: "Please check the frame bound." };
 		const card = renderPeerNoticeCard({ content: "Thread notice from the model text", details, timestamp: 1 }, theme, false, cardKeys);
 		assert.ok(card);
 		const output = screen(card);
-		assert.match(output, /\[agent\] Reviewer posted in Parser contract/u);
-		assert.match(output, /#12 · notified this session/u);
+		assert.match(output, /\[agent\] thread post · Parser contract\nfrom Reviewer · openai-codex\/gpt-6\.1-sol · high · #12 · notified this session\n/u);
 		assert.match(output, /Please check the frame bound\./u);
 		assert.doesNotMatch(output, /model text/u);
-		const passive = { ...details, passive: true, threadEvent: undefined, threadEventKind: undefined, operatorMessage: "", communicationPassive: { value: { metadata: { event: 13, eventKind: "join" } } } };
+		const passive = { kind: "report", senderIdentity: sender, label: "Reviewer", threadId: "storage/thread-a", threadTitle: "Parser contract", passive: true, operatorMessage: "", communicationPassive: { value: { metadata: { event: 13, eventKind: "join" } } } };
 		const joined = renderPeerNoticeCard({ content: "Thread notice from the model text", details: passive, timestamp: 1 }, theme, false, cardKeys);
 		assert.ok(joined);
 		const joinedOutput = screen(joined);
-		assert.match(joinedOutput, /\[agent\] Reviewer joined Parser contract/u);
-		assert.match(joinedOutput, /#13/u);
+		assert.match(joinedOutput, /\[agent\] member joined · Parser contract\nfrom Reviewer · #13\n/u);
 		assert.doesNotMatch(joinedOutput, /no text|notified this session/u);
 	});
 });

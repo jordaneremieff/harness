@@ -11,20 +11,20 @@ export const THREAD_NOTICE_DISPLAY_UNITS = 280;
 
 type NoticeCommunication = Extract<Communication, { kind: "notice" }>;
 
-/** What one thread event did, as a verb phrase whose object is the thread. */
-const EVENT_PHRASES: Readonly<Record<string, string>> = {
-	contribution: "posted in",
-	"carried-authority": "relayed operator direction in",
-	join: "joined",
-	leave: "left",
-	close: "closed",
-	revise: "revised the frame of",
-	create: "created",
+/** What one thread event is, in lower case, as the title of a card about it. */
+const EVENT_TITLES: Readonly<Record<string, string>> = {
+	contribution: "thread post",
+	"carried-authority": "operator direction",
+	join: "member joined",
+	leave: "member left",
+	close: "thread closed",
+	revise: "frame revised",
+	create: "thread created",
 };
 
-/** The verb phrase of a known event kind; an absent or unknown kind has none. */
-export function threadEventPhrase(kind: string | undefined): string | undefined {
-	return kind === undefined ? undefined : EVENT_PHRASES[kind];
+/** The card title of an event kind; an absent or unknown kind is a plain thread notice. */
+export function threadEventTitle(kind: string | undefined): string {
+	return (kind === undefined ? undefined : EVENT_TITLES[kind]) ?? "thread notice";
 }
 
 /** Frame fields of a create or revise event, with the labels of the Threads view's details. */
@@ -71,16 +71,16 @@ export function threadNoticeDisplayText(event: Pick<CollaborationEvent, "kind" |
 }
 
 /**
- * One line that says what happened in a thread: who, what, which thread and event, and the start of the
- * text. It names the sender by retained name or exact identity, because no roster is in reach here.
+ * One line that leads with what happened: the event, its number and thread, then the start of the text.
+ * A retained sender name joins it; a bare identity stays out, because it tells a reader nothing that the
+ * thread does not show.
  */
 export function threadNoticeSummary(value: NoticeCommunication): string {
-	const sender = value.sender.name?.trim() || value.sender.identity;
-	const title = value.metadata.title?.trim();
-	const thread = title ? `thread “${title}”` : `thread ${value.metadata.threadId}`;
-	const event = value.metadata.event === undefined ? "" : ` (#${value.metadata.event})`;
-	const phrase = threadEventPhrase(value.metadata.eventKind);
-	const lead = phrase ? `${sender} ${phrase} ${thread}${event}` : `Thread notice from ${sender} in ${thread}${event}`;
+	const title = threadEventTitle(value.metadata.eventKind);
+	const event = value.metadata.event === undefined ? "" : ` #${value.metadata.event}`;
+	const thread = value.metadata.title?.trim() ? `“${value.metadata.title.trim()}”` : value.metadata.threadId;
+	const sender = value.sender.name?.trim() ? ` from ${value.sender.name.trim()}` : "";
+	const lead = `${title.charAt(0).toUpperCase()}${title.slice(1)}${event} in ${thread}${sender}`;
 	const text = value.body.text.replace(/\s+/gu, " ").trim();
 	return text ? `${lead}: ${text}` : lead;
 }

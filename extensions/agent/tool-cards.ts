@@ -17,7 +17,7 @@ import { dashboardClock, dashboardTime } from "./dashboard-time.ts";
 import type { Communication } from "./communication.ts";
 import { receiptContinuationLine, resultContinuationLines } from "./control-result.ts";
 import { planningBudgetSelfFacts } from "./continuity-budget.ts";
-import { threadEventPhrase } from "./thread-notice-display.ts";
+import { threadEventTitle } from "./thread-notice-display.ts";
 
 /**
  * Observed display facts for cards: the roster rows, and in the dashboard also known thread titles and
@@ -26,6 +26,8 @@ import { threadEventPhrase } from "./thread-notice-display.ts";
 export type AgentCardLookup = (() => readonly AgentConversationSummary[]) & {
 	readonly threadTitle?: (id: string) => string | undefined;
 	readonly nameFor?: (identity: string) => string | undefined;
+	/** The model of an agent or main session the view has observed, for identities beyond the roster rows. */
+	readonly modelFor?: (identity: string) => AgentConversationSummary["model"] | undefined;
 };
 
 /** Bytes/units bounds for one expanded display block. */
@@ -1424,23 +1426,23 @@ function checkInElapsed(value: unknown): string {
 }
 
 /** The event of an ordinary thread notice: its own fields, then the retained passive communication. */
-function peerThreadEvent(details: Record<string, unknown>): { phrase?: string; number?: number; notified: boolean } {
+function peerThreadEvent(details: Record<string, unknown>): { title: string; number?: number; notified: boolean } {
 	const metadata = record(record(record(details.communicationPassive).value).metadata);
-	const phrase = threadEventPhrase(text(details.threadEventKind) || text(metadata.eventKind) || undefined);
 	const number = count(details.threadEvent) ?? count(metadata.event);
-	return { ...(phrase === undefined ? {} : { phrase }), ...(number === undefined ? {} : { number }), notified: details.passive === false };
+	return { title: threadEventTitle(text(details.threadEventKind) || text(metadata.eventKind) || undefined), ...(number === undefined ? {} : { number }), notified: details.passive === false };
 }
 
-/** The card heading; a thread notice with a known event and sender says who did what in which thread. */
-function peerHeading(details: Record<string, unknown>, title: string): { title: string; label?: string; metadata: string[] } {
+/**
+ * The two-tier heading: what happened and its thread on the first line; the sender, its model and the
+ * event facts on the muted second line.
+ */
+function peerHeading(details: Record<string, unknown>, title: string): { title: string; label: string; metadata: string[] } {
 	if (details.threadId === undefined) return { title, label: peerLabel(details), metadata: peerMetadata(details) };
-	const thread = text(details.threadTitle) || text(details.threadId);
 	const event = peerThreadEvent(details);
-	const sender = peerLabel(details);
-	if (event.phrase === undefined || !sender) return { title, label: thread, metadata: peerMetadata(details) };
 	return {
-		title: `${sender} ${event.phrase} ${thread}`,
-		metadata: [event.number === undefined ? "" : `#${event.number}`, event.notified ? "notified this session" : "", resolvedModelLine(text(details.provider), text(details.modelId), text(details.thinkingLevel))],
+		title: event.title,
+		label: text(details.threadTitle) || text(details.threadId),
+		metadata: [...peerMetadata(details), event.number === undefined ? "" : `#${event.number}`, event.notified ? "notified this session" : ""],
 	};
 }
 
@@ -1514,10 +1516,21 @@ export const renderAgentPlanningBudgetMessage: MessageRenderer = (message, optio
 	}, theme, { expanded: options.expanded, peerPadding: options.outputPad, keys: options, message });
 };
 
-/** Retained communication kinds in operator words. */
+/** Upper-case first letter for a card title that leads its line. */
+function capitalized(value: string): string {
+	return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+}
+
+/** The model of a sender as tool cards show their target's: observed facts only, never a placeholder. */
+function senderConfiguration(identity: string, lookup?: AgentCardLookup): string {
+	const model = lookup?.modelFor?.(identity) ?? findTarget(identity, lookup?.() ?? [])?.model;
+	return displayText(modelCaption(model));
+}
+
+/** Retained communication kinds in operator words; a thread notice names its event. */
 function communicationKind(value: Communication): string {
 	switch (value.kind) {
-		case "notice": return value.metadata.passive ? "Thread notice" : "Thread notice · attention";
+		case "notice": return capitalized(threadEventTitle(value.metadata.eventKind));
 		case "report": return "Report";
 		case "result": return value.metadata.status === "done" ? "Result" : "Result unanswered";
 		case "check-in": return "Check-in";
@@ -1533,7 +1546,7 @@ function communicationResultSubject(value: Extract<Communication, { kind: "resul
 /** Which thread or work the communication belongs to, in one bounded line. */
 function communicationSubject(value: Communication): string {
 	switch (value.kind) {
-		case "notice": return `${value.metadata.title || value.metadata.threadId}${value.metadata.event === undefined ? "" : ` · event #${value.metadata.event}`}`;
+		case "notice": return value.metadata.title || value.metadata.threadId;
 		case "report": return `request ${displayPreview(value.metadata.requestId, 48)}`;
 		case "result": return communicationResultSubject(value);
 		case "check-in": return `${checkInElapsed(value.metadata.elapsedMs) || "elapsed unknown"} · ${value.metadata.origin} origin`;
@@ -1585,10 +1598,9 @@ function noticeSourceLines(value: Extract<Communication, { kind: "notice" }>): s
 	];
 }
 
-/** The sentence heading of a notice whose event kind is known: sender, what happened, and the thread. */
-function noticeHeading(value: Extract<Communication, { kind: "notice" }>, sender: string): string | undefined {
-	const phrase = threadEventPhrase(value.metadata.eventKind);
-	return phrase === undefined ? undefined : `${sender} ${phrase} ${value.metadata.title?.trim() || value.metadata.threadId}`;
+/** The event facts of a notice for its muted line: the event number and whether it notified this agent. */
+function noticeFacts(value: Extract<Communication, { kind: "notice" }>): string[] {
+	return [value.metadata.event === undefined ? "" : `#${value.metadata.event}`, value.metadata.passive ? "" : "notified this agent"];
 }
 
 function communicationDetailLines(value: Communication, theme: Theme): (string | Component)[] {
@@ -1606,12 +1618,9 @@ export function renderCommunicationCard(value: Communication, theme: Theme, opti
 	if (value.kind === "result" && value.metadata.reason) body.push(theme.fg("text", displayPreview(value.metadata.reason, 240)));
 	if (value.kind !== "notice" || value.body.text.trim() !== "") body.push(noticeBody(value.body.text, theme));
 	const sender = value.sender.name ? displayPreview(value.sender.name, 80) : displayIdentity(value.sender.identity);
-	const sentence = value.kind === "notice" ? noticeHeading(value, sender) : undefined;
-	const heading = value.kind === "notice" && sentence !== undefined
-		? { title: sentence, metadata: [value.metadata.event === undefined ? "" : `#${value.metadata.event}`, value.metadata.passive ? "" : "notified this agent", dashboardTime(value.recordedAt, true)] }
-		: { title: communicationKind(value), label: communicationSubject(value), metadata: [`from ${sender}`, dashboardTime(value.recordedAt, true)] };
+	const facts = value.kind === "notice" ? noticeFacts(value) : [];
 	return cardLayout(
-		{ tag: "[agent]", ...heading, body, details: communicationDetails(value, theme), previewLines: NOTICE_PREVIEW_LINES },
+		{ tag: "[agent]", title: communicationKind(value), label: communicationSubject(value), metadata: [`from ${sender}`, ...facts, dashboardTime(value.recordedAt, true)], body, details: communicationDetails(value, theme), previewLines: NOTICE_PREVIEW_LINES },
 		theme,
 		{ expanded: options.expanded, peerPadding: options.outputPad ?? 0, keys: options, message: options.message },
 	);
@@ -1636,15 +1645,31 @@ export function communicationSender(value: Communication, lookup?: AgentCardLook
 	return `${value.sender.kind === "agent" ? "Agent" : "Session"} ${value.sender.identity.slice(0, 8)}`;
 }
 
-/** Who sent what, where: the bold sender inside one plain sentence, then short muted facts. */
-function compactHeadline(value: Communication, sender: string, theme: Theme, lookup?: AgentCardLookup): { lead: string; facts: string[] } {
+/**
+ * The two header rows of a thread notice, laid out as an agent tool card: what happened and the thread,
+ * then the bold sender with its model and the event facts in muted text. A narrow pane clips each row
+ * at its end, so the event and the sender stay.
+ */
+function noticeHeaderRows(value: Extract<Communication, { kind: "notice" }>, sender: string, mark: string, theme: Theme, width: number, lookup?: AgentCardLookup): string[] {
+	const thread = value.metadata.title?.trim() || lookup?.threadTitle?.(value.metadata.threadId)?.trim() || value.metadata.threadId;
+	const first = `${mark}${theme.bold(theme.fg("text", communicationKind(value)))}${theme.fg("text", ` · ${displayPreview(thread, 160)}`)}`;
+	const facts = [senderConfiguration(value.sender.identity, lookup), ...noticeFacts(value), dashboardClock(value.recordedAt)].filter(Boolean);
+	const second = `  ${theme.fg("muted", "from ")}${theme.bold(theme.fg("text", sender))}${theme.fg("muted", facts.map((fact) => ` · ${fact}`).join(""))}`;
+	return [clipCardLine(first, width), clipCardLine(second, width)];
+}
+
+/** The one header row of a report, result or check-in: the bold sender inside a plain phrase, then muted facts. */
+function compactHeaderRow(value: Exclude<Communication, { kind: "notice" }>, sender: string, mark: string, theme: Theme, width: number): string {
+	const { lead, facts } = compactHeadline(value, sender, theme);
+	const tail = theme.fg("muted", ` · ${[...facts.filter(Boolean), dashboardClock(value.recordedAt)].join(" · ")}`);
+	const room = Math.max(1, width - 2 - visibleWidth(tail));
+	return clipCardLine(`${mark}${visibleWidth(lead) > room ? clipCardLine(lead, room) : lead}${tail}`, width);
+}
+
+/** Who sent what: the bold sender inside one plain phrase, then short muted facts. */
+function compactHeadline(value: Exclude<Communication, { kind: "notice" }>, sender: string, theme: Theme): { lead: string; facts: string[] } {
 	const name = theme.bold(theme.fg("text", sender));
 	switch (value.kind) {
-		case "notice": {
-			const title = value.metadata.title?.trim() || lookup?.threadTitle?.(value.metadata.threadId)?.trim() || "a thread";
-			const phrase = threadEventPhrase(value.metadata.eventKind) ?? "in";
-			return { lead: `${name}${theme.fg("text", ` ${phrase} ${displayPreview(title, 120)}`)}`, facts: [value.metadata.event === undefined ? "" : `#${value.metadata.event}`, value.metadata.passive ? "" : "notified this agent"] };
-		}
 		case "report": return { lead: `${theme.fg("text", "Report from ")}${name}`, facts: [] };
 		case "result": return { lead: `${theme.fg("text", "Result from ")}${name}`, facts: [value.metadata.status === "done" ? "" : "unanswered", record(value.metadata).receiptContinuation === undefined ? "" : "more receipt references"] };
 		case "check-in": return { lead: `${theme.fg("text", "Check-in from ")}${name}`, facts: [checkInElapsed(value.metadata.elapsedMs)] };
@@ -1664,9 +1689,10 @@ function compactNotes(value: Communication): string[] {
 }
 
 /**
- * A retained communication as the dashboard shows it: one header row (disclosure mark, sender, thread
- * or kind, time), then a short body preview. A click on the header or on the preview's last row opens
- * the complete retained body, the copy notes and the exact identities. No background or repeated hint.
+ * A retained communication as the dashboard shows it: a header row (disclosure mark, sender, kind, time),
+ * two for a thread notice, then a short body preview. A click on a header row or on the preview's last
+ * row opens the complete retained body, the copy notes and the exact identities. No background or
+ * repeated hint.
  */
 class CompactCommunication implements Component {
 	private expanded: boolean;
@@ -1692,18 +1718,15 @@ class CompactCommunication implements Component {
 		const theme = this.theme;
 		const value = this.value;
 		const sender = communicationSender(value, this.lookup);
-		const { lead, facts } = compactHeadline(value, sender, theme, this.lookup);
-		const tail = theme.fg("muted", ` · ${[...facts.filter(Boolean), dashboardClock(value.recordedAt)].join(" · ")}`);
 		const mark = theme.fg("accent", this.expanded ? "▾ " : "▸ ");
-		// A narrow pane shortens the thread title first; the sender, post number and time stay.
-		const room = Math.max(1, width - 2 - visibleWidth(tail));
-		const header = clipCardLine(`${mark}${visibleWidth(lead) > room ? clipCardLine(lead, room) : lead}${tail}`, width);
+		const header = value.kind === "notice" ? noticeHeaderRows(value, sender, mark, theme, width, this.lookup) : [compactHeaderRow(value, sender, mark, theme, width)];
+		const toggles = header.map((_, index) => index);
 		const body = this.body.render(Math.max(1, width - 2)).map((line) => `  ${line}`);
 		if (this.expanded) {
 			// The open card keeps every retained identifier and metadata field, such as a result's references.
 			const notes = [...compactNotes(value), "", ...communicationSourceLines(value)].flatMap((note) => (note ? new Text(theme.fg("muted", note), 2, 0).render(width) : [""]));
-			this.layout = { width, toggles: [0] };
-			return [header, ...body, "", ...notes];
+			this.layout = { width, toggles };
+			return [...header, ...body, "", ...notes];
 		}
 		// The preview skips blank rows, so a one-line first paragraph still shows two rows of text; the count covers text rows left.
 		const text = (line: string) => stripVTControlCharacters(line).trim() !== "";
@@ -1718,8 +1741,8 @@ class CompactCommunication implements Component {
 			const row = (preview[last] ?? "").replace(/[ \t]+((?:\x1b\[[0-9;]*m)*)$/u, "$1");
 			preview[last] = `${clipCardLine(row, Math.max(1, width - visibleWidth(more)))}${more}`;
 		}
-		this.layout = { width, toggles: hidden ? [0, preview.length] : [0] };
-		return [header, ...preview];
+		this.layout = { width, toggles: hidden ? [...toggles, header.length + preview.length - 1] : toggles };
+		return [...header, ...preview];
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const layout = this.layout;

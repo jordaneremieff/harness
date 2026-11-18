@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { Communication } from "./communication.ts";
-import { THREAD_NOTICE_DISPLAY_UNITS, threadEventDisplayText, threadEventPhrase, threadNoticeDisplayText, threadNoticeSummary } from "./thread-notice-display.ts";
+import { THREAD_NOTICE_DISPLAY_UNITS, threadEventDisplayText, threadEventTitle, threadNoticeDisplayText, threadNoticeSummary } from "./thread-notice-display.ts";
 
 const event = (kind: string, message: string, source = "") => ({ kind, message, source });
 const notice = (overrides: Partial<Extract<Communication, { kind: "notice" }>["metadata"]> = {}, text = "", name?: string): Extract<Communication, { kind: "notice" }> => ({
@@ -13,16 +13,16 @@ const notice = (overrides: Partial<Extract<Communication, { kind: "notice" }>["m
 	metadata: { threadId: "thread-a", title: "Parser contract", event: 4, frameRevision: 1, eventKind: "contribution", passive: true, ...overrides },
 });
 
-it("names each thread event kind with a verb phrase whose object is the thread", () => {
-	assert.equal(threadEventPhrase("contribution"), "posted in");
-	assert.equal(threadEventPhrase("carried-authority"), "relayed operator direction in");
-	assert.equal(threadEventPhrase("join"), "joined");
-	assert.equal(threadEventPhrase("leave"), "left");
-	assert.equal(threadEventPhrase("close"), "closed");
-	assert.equal(threadEventPhrase("revise"), "revised the frame of");
-	assert.equal(threadEventPhrase("create"), "created");
-	assert.equal(threadEventPhrase("unknown"), undefined);
-	assert.equal(threadEventPhrase(undefined), undefined);
+it("names each thread event kind as a card title", () => {
+	assert.equal(threadEventTitle("contribution"), "thread post");
+	assert.equal(threadEventTitle("carried-authority"), "operator direction");
+	assert.equal(threadEventTitle("join"), "member joined");
+	assert.equal(threadEventTitle("leave"), "member left");
+	assert.equal(threadEventTitle("close"), "thread closed");
+	assert.equal(threadEventTitle("revise"), "frame revised");
+	assert.equal(threadEventTitle("create"), "thread created");
+	assert.equal(threadEventTitle("unknown"), "thread notice");
+	assert.equal(threadEventTitle(undefined), "thread notice");
 });
 
 it("shows what an event says instead of its stored form", () => {
@@ -48,8 +48,8 @@ it("keeps the whole text for a notified recipient and an excerpt cut at a word f
 	assert.equal(threadNoticeDisplayText(event("contribution", "Short post."), true), "Short post.");
 });
 
-it("summarises a notice as who did what in which thread, then the start of its text", () => {
-	assert.equal(threadNoticeSummary(notice({}, "The parser\n  rejects empty frames.", "Peer")), "Peer posted in thread “Parser contract” (#4): The parser rejects empty frames.");
-	assert.equal(threadNoticeSummary(notice({ eventKind: "close", title: undefined })), "7f7f7f7f-1111-4222-8333-444444444444 closed thread thread-a (#4)");
-	assert.equal(threadNoticeSummary(notice({ eventKind: undefined, event: undefined }, "", "Peer")), "Thread notice from Peer in thread “Parser contract”");
+it("summarises a notice by what happened, its thread and the start of its text", () => {
+	assert.equal(threadNoticeSummary(notice({}, "The parser\n  rejects empty frames.", "Peer")), "Thread post #4 in “Parser contract” from Peer: The parser rejects empty frames.");
+	assert.equal(threadNoticeSummary(notice({ eventKind: "close", title: undefined })), "Thread closed #4 in thread-a", "a bare identity stays out of the line");
+	assert.equal(threadNoticeSummary(notice({ eventKind: undefined, event: undefined }, "", "Peer")), "Thread notice in “Parser contract” from Peer");
 });

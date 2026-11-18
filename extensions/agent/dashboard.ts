@@ -335,6 +335,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.cardLookup = Object.assign(() => this.page?.rows ?? [], {
 			threadTitle: (id: string) => this.threadTitle(id),
 			nameFor: (identity: string) => this.knownName(identity),
+			modelFor: (identity: string) => this.knownModelFacts(identity),
 		});
 		this.find = new TextField("Find", state.filter, (value) => this.setFilter(value));
 		this.unsubscribe.push(
@@ -401,8 +402,14 @@ export class AgentDashboard implements Component, Focusable {
 	 */
 	private knownModel(identity: string): string | undefined {
 		const reasons = (item: Pick<AgentConversationSummary, "model">) => (item.model ? this.operations.modelInfo?.(item.model.provider, item.model.modelId)?.reasoning : undefined);
+		const model = this.knownModelFacts(identity);
+		return model ? modelLabel({ model }, this.theme, 60, reasons) : undefined;
+	}
+
+	/** The provider, model and thinking level behind `knownModel`, for cards that format them themselves. */
+	private knownModelFacts(identity: string): AgentConversationSummary["model"] | undefined {
 		const row = this.page?.rows.find((item) => relationIdentity(item.id) === relationIdentity(identity));
-		if (row?.model) return modelLabel(row, this.theme, 60, reasons);
+		if (row?.model) return row.model;
 		if (identity.includes(":")) return undefined;
 		const recorded = this.sessionModels.get(identity);
 		if (recorded === undefined) {
@@ -410,7 +417,7 @@ export class AgentDashboard implements Component, Focusable {
 			void this.readMainSessionModel(identity);
 			return undefined;
 		}
-		return recorded ? modelLabel({ model: { provider: recorded.provider, modelId: recorded.modelId, thinkingLevel: recorded.thinkingLevel ?? "" } }, this.theme, 60, reasons) : undefined;
+		return recorded ? { provider: recorded.provider, modelId: recorded.modelId, thinkingLevel: recorded.thinkingLevel ?? "" } : undefined;
 	}
 
 	private async readMainSessionModel(identity: string): Promise<void> {
@@ -418,6 +425,7 @@ export class AgentDashboard implements Component, Focusable {
 		const model = file ? await readSessionModel(file) : undefined;
 		if (this.closed || !model) return;
 		this.sessionModels.set(identity, model);
+		this.console?.conversation.refreshCards();
 		this.redraw();
 	}
 

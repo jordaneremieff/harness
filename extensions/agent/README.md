@@ -328,16 +328,16 @@ evidence. Closing the caller's temporary connection does not cancel that work.
 
 Agent tool and peer cards use one two-tier layout. The first header line shows
 the tool name or message kind and the target or sender label. A thread notice
-whose sender and event kind are known says on its first line who did what in
-which thread: `Reviewer posted in Parser contract`. The thread events read
-`posted in`, `relayed operator direction in`, `joined`, `left`, `closed`,
-`revised the frame of` and `created`; the thread is its title, or its full
-identity when no title is known. Its second line holds the event number
-(`#12`) and `notified this session` for a notice that asked for attention.
-Other thread notices keep `thread notice` with the thread as their subject, and
-their second line starts with `from <sender>` when known. The body is what the
-event says (see [peer threads](#peer-threads)); an event without text, such as a
-join without a statement, has no body. The muted
+names what happened as its kind and the thread as its subject:
+`thread post · Parser contract`. The kinds are `thread post`, `operator
+direction` (a post that relays operator direction), `member joined`, `member
+left`, `thread closed`, `frame revised` and `thread created`; an unknown event
+kind keeps `thread notice`. The thread is its title, or its full identity when
+no title is known. The second line starts with `from <sender>` and the sender's
+provider/model and thinking level when known, then the event number (`#12`)
+and `notified this session` for a notice that asked for attention. The body is
+what the event says (see [peer threads](#peer-threads)); an event without text,
+such as a join without a statement, has no body. The muted
 second line shows known provider/model, thinking level, and other secondary
 facts. All card kinds use the same `provider/model · xhigh` form, without
 redundant `Model:`, `thinking`, or `reasoning` labels. Ambiguous values retain labels such as
@@ -382,10 +382,10 @@ In ordinary chat, retained communications (reports, thread notices, results and
 check-ins carried by a conversation's `communication` view) use the Agent card:
 the first line names the kind (`Report`, `Thread notice`, `Result`,
 `Result unanswered`, `Check-in`) and the thread or work it belongs to; the second
-line names the sender and the recorded local time. A thread notice with a known
-event kind instead reads `<sender> closed <thread title>` on its first line, with
-the event number, `notified this agent` for an addressed notice and the time on
-its second line. The body renders as Markdown
+line names the sender and the recorded local time. A thread notice names its
+event as its kind, as the tool cards do (`Thread closed · <thread title>`), and
+adds the event number and `notified this agent` for an addressed notice to its
+second line. The body renders as Markdown
 with `Partial body` and `Redacted body` marks when they apply. Disclosure adds
 the exact sender identity, the recorded timestamp and every retained metadata
 field in full: a result lists each retained reference on its own line with its
@@ -395,16 +395,19 @@ configuration as if it were.
 
 The agent work view and the attached terminal show the same communications in
 a compact form without a background. One header row holds a disclosure mark
-(`▸` closed, `▾` open), the sender in bold and what it is (`<sender> posted in
-<thread title>` and the other thread event phrases of the tool cards, `<sender>
-in <thread title>` for an unknown event kind, `Report from <sender>`, `Result
-from <sender>`, `Check-in from <sender>`), then muted facts: the post number,
-`notified this agent` for a
-notice that woke it, `unanswered` for an unanswered result, a check-in's elapsed
-time, and the recorded local time (the clock time today, the date and time on
-other days). Two rows of the Markdown body follow; a longer body ends its
+(`▸` closed, `▾` open), the sender in bold and what it is (`Report from
+<sender>`, `Result from <sender>`, `Check-in from <sender>`), then muted facts:
+`unanswered` for an unanswered result, a check-in's elapsed time, and the
+recorded local time (the clock time today, the date and time on other days).
+A thread notice has two header rows, as an agent tool card has: the disclosure
+mark, its kind in bold and the thread title (`Thread post · <thread title>`),
+then `from` and the sender in bold with muted facts: the sender's provider/model
+and thinking level as the view knows them (an agent's from the roster, a main
+session's from its session file), the post number, `notified this agent` for a
+notice that woke it, and the recorded local time. Each row clips at its end in
+a narrow pane. Two rows of the Markdown body follow; a longer body ends its
 second row with a muted `+N lines`. A thread event without text shows its header
-row alone, with no placeholder. A plain click on the header row or on that
+rows alone, with no placeholder. A plain click on a header row or on that
 row opens the card; there is no repeated key hint, and Ctrl+O (the footer's
 `expand all`) opens every card. The open card shows the complete retained body, then muted
 notes, then every retained field in full: the sender identity, the recorded
@@ -508,11 +511,13 @@ status card labels its newest text by role and state: `Latest reply` or
 `Latest input` when idle, and `Replying` or `Working on input` while active.
 Text without a retained author role uses `Latest message` or `Working on the task`.
 When the newest entry is a thread notice, its status text (`lastText`) is one
-line from the notice's verified communication rather than its model text: the
-sender's retained name or full identity, the thread event phrase, the thread,
-the event number and the start of what the event says, for example
-`Peer posted in thread “Parser contract” (#4): The parser rejects empty frames.`
-A notice without a verified communication keeps its retained text. Source:
+line from the notice's verified communication rather than its model text. It
+leads with what happened: the event kind of the cards, the event number, the
+thread, the sender's retained name when one exists, then the start of what the
+event says, for example
+`Thread post #4 in “Parser contract” from Peer: The parser rejects empty frames.`
+A bare sender identity stays out of the line. A notice without a verified
+communication keeps its retained text. Source:
 `durable-observation.ts` (`newestTextOf`) and `thread-notice-display.ts`
 (`threadNoticeSummary`).
 
@@ -525,7 +530,7 @@ is left out:
 
 | Message type | First line | Second line |
 | --- | --- | --- |
-| `agent.peer` | `[agent] result · Parser review`, `[agent] report · …`, `[agent] Reviewer posted in Parser contract` | `provider/model · high`, `#12` and other known facts |
+| `agent.peer` | `[agent] result · Parser review`, `[agent] report · …`, `[agent] thread post · Parser contract` | `from Reviewer · provider/model · high · #12` and other known facts |
 | `agent.compaction` | `[agent] Compaction not applied` | none |
 | `agent.planning-budget` | `[agent] Planning budget reached` | `210000 of 200000 tokens · openai-codex/gpt-6.1-sol` |
 
