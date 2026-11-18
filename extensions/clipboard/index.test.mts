@@ -476,7 +476,10 @@ describe("clipboard entrypoint", () => {
 
 	it("opens one dedicated view and closes it on shutdown", async () => {
 		const { commands, shutdown } = registry();
-		const { promise: shown, resolve: show } = Promise.withResolvers<Frame>();
+		let show: (frame: Frame) => void = () => {};
+		const shown = new Promise<Frame>((resolve) => {
+			show = resolve;
+		});
 		let opens = 0;
 		const ctx = {
 			hasUI: true,
@@ -485,7 +488,7 @@ describe("clipboard entrypoint", () => {
 			sessionManager: { getSessionId: () => "session-1" },
 			ui: {
 				custom: (factory: PanelFactory) =>
-					new Promise<void>((done) => {
+					new Promise((done) => {
 						opens++;
 						const frame = factory(
 							{ terminal: { rows: 40, columns: 120 }, requestRender: () => {} },
