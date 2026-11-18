@@ -4,19 +4,36 @@ import { fileURLToPath } from "node:url";
 import { paneStackingCommand, withPaneStacking } from "./pane-stacking.ts";
 import { parseOrigin, trustedRexExecutable, type Runner, type RunResult, type TerminalOrigin } from "./terminal-origin.ts";
 
-export interface PaneRequest { version: 1; origin: TerminalOrigin | null; argv: string[]; cwd: string }
+export type PanePlacement = { side: "right" | "below"; share: number };
+export interface PaneRequest { version: 1; origin: TerminalOrigin | null; argv: string[]; cwd: string; placement?: PanePlacement; label?: string }
 export interface PaneReceipt { server: string; hostId: string; instanceId: string; sessionId: string; windowId: string; anchorId: string; blockId: string }
 export interface PaneResult { version: 1; outcome: "created" | "stale" | "unavailable" | "uncertain"; detail: string; receipt?: PaneReceipt }
 const LIMIT = 16384;
+const DEFAULT_PLACEMENT: PanePlacement = { side: "right", share: 0.5 };
+const DEFAULT_LABEL = "Reader";
 const validText = (value: unknown, max: number): value is string => typeof value === "string" && Buffer.byteLength(value) <= max && !value.includes("\0");
+function parsePlacement(value: unknown): PanePlacement {
+	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Pane placement must be one object.");
+	const placement = value as Record<string, unknown>;
+	if (Object.keys(placement).some((key) => !["side", "share"].includes(key)) || (placement.side !== "right" && placement.side !== "below") || typeof placement.share !== "number" || !Number.isFinite(placement.share) || placement.share < 0.15 || placement.share > 0.85) throw new Error("Pane placement requires side right or below and a share from 0.15 to 0.85.");
+	return { side: placement.side, share: placement.share };
+}
+// Printable means one to 32 Unicode code points without control, format or surrogate characters.
+function parseLabel(value: unknown): string {
+	const length = typeof value === "string" ? [...value].length : 0;
+	if (typeof value !== "string" || length < 1 || length > 32 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value)) throw new Error("Pane label requires 1 to 32 printable Unicode characters.");
+	return value;
+}
 export function parsePaneRequest(input: string): PaneRequest {
 	if (Buffer.byteLength(input) > LIMIT) throw new Error("Pane request exceeds 16384 bytes.");
 	const value = JSON.parse(input) as Partial<PaneRequest>;
-	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["version", "origin", "argv", "cwd"].includes(key)) || value.version !== 1 || !("origin" in value)) throw new Error("Invalid pane request.");
+	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["version", "origin", "argv", "cwd", "placement", "label"].includes(key)) || value.version !== 1 || !("origin" in value)) throw new Error("Invalid pane request.");
 	if (!Array.isArray(value.argv) || value.argv.length < 1 || value.argv.length > 64 || !value.argv.every((arg) => validText(arg, 4096)) || !isAbsolute(value.argv[0])) throw new Error("Pane argv requires an absolute program and bounded, NUL-free arguments.");
 	if (!validText(value.cwd, 4096) || !isAbsolute(value.cwd)) throw new Error("Pane cwd must be an absolute path.");
+	const placement = value.placement === undefined ? undefined : parsePlacement(value.placement);
+	const label = value.label === undefined ? undefined : parseLabel(value.label);
 	const origin = value.origin === null ? null : parseOrigin(JSON.stringify(value.origin));
-	return { version: 1, origin, argv: value.argv, cwd: value.cwd };
+	return { version: 1, origin, argv: value.argv, cwd: value.cwd, ...(placement ? { placement } : {}), ...(label !== undefined ? { label } : {}) };
 }
 
 // Identity validation and the single mutation share one Rex connection. A block anchor never
@@ -39,8 +56,8 @@ end
 local before = rex.call("session.view", {session_id=a.sessionId})
 local window = placement(before, a.blockId)
 if not window then return {outcome="stale", detail="The invoking terminal block is gone or detached."} end
-local created = rex.call("session.new_split", {session_id=a.sessionId, anchor_id=a.blockId, direction="horizontal", side="after", ratio=0.5, focus=false,
-  layout={block={flavor="com.superlogical.terminal.shell", label="Reader", options={shell="none", command=a.argv, cwd=a.cwd, exit={on_completion=true}}}}})
+local created = rex.call("session.new_split", {session_id=a.sessionId, anchor_id=a.blockId, direction=a.direction, side="after", ratio=a.ratio, focus=false,
+  layout={block={flavor="com.superlogical.terminal.shell", label=a.label, options={shell="none", command=a.argv, cwd=a.cwd, exit={on_completion=true}}}}})
 if not created or created.anchor_id ~= a.blockId or type(created.block_ids) ~= "table" or #created.block_ids ~= 1 or type(created.block_ids[1]) ~= "string" then
   return {outcome="uncertain", detail="Rex did not confirm split creation. Do not retry automatically."}
 end
@@ -76,9 +93,13 @@ export async function splitPane(request: PaneRequest, env: Readonly<NodeJS.Proce
 	for (const key of Object.keys(childEnv)) if (key.startsWith("REX_")) delete childEnv[key];
 	// The program learns which content of the window lies over its pane from Rex's layout, as panes that rex_terminal creates do.
 	const argv = withPaneStacking(request.argv, paneStackingCommand(exact.server, env));
+	const placement = request.placement ?? DEFAULT_PLACEMENT;
+	const direction = placement.side === "below" ? "vertical" : "horizontal";
+	const ratio = 1 - placement.share;
+	const label = request.label ?? DEFAULT_LABEL;
 	let child: RunResult;
 	try {
-		child = await run(trustedRexExecutable(), ["--autostart=false", "--color=never", "--timeout=3s", `--server=${exact.server}`, "do", "--session", exact.sessionId, "-e", splitScript, "--args", JSON.stringify({ ...exact, argv, cwd: request.cwd }), "--json"], { timeout: 5000, maxBuffer: 32768, env: childEnv });
+		child = await run(trustedRexExecutable(), ["--autostart=false", "--color=never", "--timeout=3s", `--server=${exact.server}`, "do", "--session", exact.sessionId, "-e", splitScript, "--args", JSON.stringify({ ...exact, argv, cwd: request.cwd, direction, ratio, label }), "--json"], { timeout: 5000, maxBuffer: 32768, env: childEnv });
 	} catch { return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically."); }
 	if (child.failure === "missing") return result("unavailable", "The trusted Rex program is missing. No pane was created.");
 	if (child.failure || child.code !== 0 || Buffer.byteLength(child.stdout) > 32768) return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically.");

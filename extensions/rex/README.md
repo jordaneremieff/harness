@@ -143,11 +143,17 @@ nothing, emits nothing, and touches no terminal.
 
 The fixed subprocess `node extensions/rex/terminal-pane.ts split` accepts one bounded
 JSON request on stdin under the [terminal-pane contract](../../docs/conventions/terminal-pane.md).
-It accepts an opaque captured origin, literal program arguments and a working directory.
-Rex owns origin validation, exact server identity, anchor membership and same-tab split
-creation. A confirmed result retains the exact placement receipt. An uncertain result
-never permits automatic retry, fallback placement or cleanup of an unconfirmed pane.
-Program acceptance and visibility remain separate from split creation.
+It accepts an opaque captured origin, literal program arguments, a working directory, and
+optional placement and label. Rex owns origin validation, exact server identity, anchor
+membership and same-tab split creation. A confirmed result retains the exact placement receipt.
+An uncertain result never permits automatic retry, fallback placement or cleanup of an
+unconfirmed pane. Program acceptance and visibility remain separate from split creation.
+
+Placement defaults to the right side with an even share. A `right` placement is a horizontal
+split and a `below` placement is a vertical split, both after the anchor, with `ratio` set to
+one minus the requested share; the share is inclusive from 0.15 to 0.85. The optional label
+holds 1 to 32 printable Unicode characters and defaults to `Reader`. Neither option changes
+focus.
 
 Markdown uses this contract for explicit Read actions. It supplies only its configured
 native reader and a pinned open request; document text never supplies a terminal program.

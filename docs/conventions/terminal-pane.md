@@ -22,6 +22,8 @@ Send one UTF-8 JSON record on stdin, at most 16384 bytes:
   origin: TerminalOrigin | null;
   argv: string[];
   cwd: string;
+  placement?: { side: "right" | "below"; share: number };
+  label?: string;
 }
 ```
 
@@ -29,6 +31,13 @@ Send one UTF-8 JSON record on stdin, at most 16384 bytes:
 from this local opening process. The adapter alone interprets its exact fields. It refuses an
 absent exact origin or inherited server/session/block hints that differ from that origin. It
 never chooses global focus, a default server or another tab.
+
+`placement` is optional and defaults to `{ side: "right", share: 0.5 }`. `share` is the new
+pane's share of the split space and is inclusive from 0.15 to 0.85. `side: "right"` maps to a
+horizontal split after the anchor with ratio `1 - share`; `side: "below"` maps to a vertical
+split after the anchor with ratio `1 - share`. `label` is optional, defaults to `Reader`, and
+contains 1 to 32 printable Unicode characters: one to 32 code points with no control, format or
+surrogate characters.
 
 `argv` contains 1 to 64 strings, each at most 4096 UTF-8 bytes, with no NUL. Its first string is
 an absolute executable path. `cwd` is an absolute, NUL-free path of at most 4096 UTF-8 bytes.
@@ -44,8 +53,10 @@ inherited Rex routing variables from the child environment, supplies the exact s
 disables autostart, and checks host/instance identity on the same connection as its single
 `session.new_split` call. It finds the verified terminal block in that session's window layout,
 then uses that full block ID as the explicit split anchor. The public Rex API owns splitting,
-startup and exit behaviour. The split sits on the right, takes half the anchor's space and does
-not take focus. Rex ends zoom in that tab as part of its defined split behaviour. When the server
+startup and exit behaviour. The split follows `placement`: it sits right or below the anchor,
+after it in that direction, and takes the requested share, defaulting to the right and half the
+anchor's space. Its label defaults to `Reader`. The split does not take focus. Rex ends zoom in
+that tab as part of its defined split behaviour. When the server
 is a local Unix socket and the stacking helper is available, the adapter starts the program with
 the [pane stacking](pane-stacking.md) offer in its environment, so a program that places its own
 window over the pane learns from Rex's layout which content lies above it.
@@ -90,6 +101,10 @@ never reuses, types into, closes or cleans up existing panes. The new program ow
 lifetime; normal completion closes the pane under Rex's exit policy, while a quick failure stays
 available for inspection. Later resource changes need the exact receipt and their own authority.
 
-The only consumer is the Markdown command's deliberate Read action. It passes its configured
-native reader and a pinned open-request path. The reader's separate request-consumption signal
-establishes acceptance. Browse-only selection and publication never invoke this adapter.
+Two Markdown actions consume the adapter. The Markdown command's deliberate Read action passes
+its configured native reader and a pinned open-request path with the default placement; the
+reader's separate request-consumption signal establishes acceptance. The `/compose` command
+passes the same native app in composer mode with its private launch file, placement
+`{ side: "below", share: 0.3 }` and the label `Composer`; the composer's first authenticated
+request on its own connection establishes acceptance. Browse-only selection and publication
+never invoke this adapter.

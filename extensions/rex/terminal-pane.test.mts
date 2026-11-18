@@ -80,3 +80,70 @@ test("request admission bounds argv, rejects NUL and requires absolute program/c
 	assert.throws(() => parsePaneRequest(" ".repeat(16385)), /exceeds/u);
 	assert.deepEqual(parsePaneRequest(JSON.stringify(request())).argv, request().argv);
 });
+
+test("placement and label admission preserves absent defaults and accepts the inclusive share range", () => {
+	for (const share of [0.15, 0.5, 0.85]) {
+		const parsed = parsePaneRequest(JSON.stringify({ ...request(), placement: { side: "below", share }, label: "Reader 2" }));
+		assert.deepEqual(parsed.placement, { side: "below", share });
+		assert.equal(parsed.label, "Reader 2");
+	}
+	const plain = parsePaneRequest(JSON.stringify(request()));
+	assert.equal(plain.placement, undefined);
+	assert.equal(plain.label, undefined);
+	for (const change of [
+		{ placement: null },
+		{ placement: [] },
+		{ placement: {} },
+		{ placement: { side: "left", share: 0.5 } },
+		{ placement: { side: "right" } },
+		{ placement: { side: "right", share: "0.5" } },
+		{ placement: { side: "right", share: 0.149 } },
+		{ placement: { side: "right", share: 0.851 } },
+		{ placement: { side: "right", share: null } },
+		{ placement: { side: "right", share: 0.5, extra: true } },
+		{ label: "" },
+		{ label: "x".repeat(33) },
+		{ label: "line\nbreak" },
+		{ label: "\u0000" },
+		{ label: "\u200b" },
+		{ label: "\ud800" },
+	]) assert.throws(() => parsePaneRequest(JSON.stringify({ ...request(), ...change })));
+	const emoji = "😀".repeat(32);
+	assert.equal([...emoji].length, 32);
+	assert.equal(parsePaneRequest(JSON.stringify({ ...request(), label: emoji })).label, emoji);
+});
+
+test("defaults and explicit placement map to Rex direction, side, ratio and label", async () => {
+	const observe = async (change: Partial<PaneRequest>) => {
+		let calls = 0;
+		let payload: Record<string, unknown> | undefined;
+		let script = "";
+		const run: Runner = async (_executable, args) => {
+			calls++;
+			script = args[args.indexOf("-e") + 1] ?? "";
+			payload = JSON.parse(args[args.indexOf("--args") + 1]) as Record<string, unknown>;
+			return { code: 0, stderr: "", stdout: JSON.stringify({ outcome: "created", detail: "Created.", receipt }) };
+		};
+		assert.equal((await splitPane({ ...request(), ...change }, env, run)).outcome, "created");
+		assert.equal(calls, 1);
+		assert.ok(payload);
+		return { payload, script };
+	};
+	const defaults = await observe({});
+	assert.equal(defaults.payload.direction, "horizontal");
+	assert.equal(defaults.payload.ratio, 0.5);
+	assert.equal(defaults.payload.label, "Reader");
+	const right = await observe({ placement: { side: "right", share: 0.25 } });
+	assert.equal(right.payload.direction, "horizontal");
+	assert.equal(right.payload.ratio, 0.75);
+	assert.equal(right.payload.label, "Reader");
+	const below = await observe({ placement: { side: "below", share: 0.3 }, label: "Build log" });
+	assert.equal(below.payload.direction, "vertical");
+	assert.equal(below.payload.ratio, 0.7);
+	assert.equal(below.payload.label, "Build log");
+	for (const { script } of [defaults, right, below]) {
+		assert.match(script, /direction=a\.direction, side="after", ratio=a\.ratio/u);
+		assert.match(script, /label=a\.label/u);
+		assert.match(script, /focus=false/u);
+	}
+});
