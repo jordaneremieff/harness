@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { link, lstat, mkdir, unlink, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -52,9 +52,15 @@ function userText(message: { role: string; content?: unknown }): string | undefi
 	return message.content.filter(part => part?.type === "text" && typeof part.text === "string").map(part => part.text).join("\n");
 }
 
+/**
+ * Node's compile cache keeps the transformed TypeScript of the Rex adapters between runs, so a
+ * pane resize does not pay for the TypeScript transform at each start. The location is Node's own
+ * default, unless the environment names one.
+ */
+const adapterEnvironment = (): NodeJS.ProcessEnv => ({ ...process.env, NODE_COMPILE_CACHE: process.env.NODE_COMPILE_CACHE || join(tmpdir(), "node-compile-cache") });
 function adapter(file: string, operation: string, timeout: number, signal: AbortSignal, input?: string): Promise<unknown> {
 	return new Promise((resolve, reject) => {
-		const child = execFile(process.execPath, [join(ROOT, "extensions", "rex", file), operation], { timeout, signal, maxBuffer: 32768, killSignal: "SIGKILL" }, (error, out) => {
+		const child = execFile(process.execPath, [join(ROOT, "extensions", "rex", file), operation], { timeout, signal, maxBuffer: 32768, killSignal: "SIGKILL", env: adapterEnvironment() }, (error, out) => {
 			if (error) { reject(error); return; }
 			try { resolve(JSON.parse(out)); } catch (error) { reject(error); }
 		});
