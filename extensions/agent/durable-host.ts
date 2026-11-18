@@ -48,7 +48,7 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { ModelEvidenceCollector } from "./model-evidence.ts";
 import { isInputClass, isInputKind, type InputClass } from "./input-entry.ts";
-import { Harness, SessionFailed, ROOT_CONVERSATION_ID, InboxDoc, UsageDoc, type AgentChange, type Conversation, type ConversationId, type EntryId, type GenerationHooks, type HarnessInspection, type HarnessOptions, type ModelRef, type Submission, type SubmissionRecord, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
+import { Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, type AgentChange, type Conversation, type ConversationId, type EntryId, type GenerationHooks, type HarnessInspection, type HarnessOptions, type ModelRef, type Submission, type SubmissionRecord, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { acknowledgeDeliveries, acknowledgeReports, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
 import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseInspectParams, readConversationList, readConversationSnapshotPage, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
@@ -65,8 +65,6 @@ export type { ConfigurationResult } from "./configuration.ts";
 export type { AgentDeliveryState, AgentMeta, DeliveryIntent, DeliveryReceipt, DeliveryReport, DurableConfigureParams, DurableRunOutcome, DurableSubmitParams, DurableSubmitResult } from "./durable-controls.ts";
 export type { ConversationStatus, ConversationSummary, DurableInspectParams, DurableListParams, DurableStatusOptions, RequestParams } from "./durable-observation.ts";
 export type { DurableCommandCall, DurableCommand as DurableContributionCommand } from "./durable-services.ts";
-import { configureNativePlaybook, type ResolvePlaybookExecution } from "./durable-controls.ts";
-import { NativePlaybookDoc, nativePlaybookSelection, projectNativePlaybook, writeNativePlaybook, type NativePlaybook, type NativePlaybookCreation } from "./durable-playbook.ts";
 
 export { AgentForkDoc, AgentMetaDoc };
 
@@ -585,13 +583,6 @@ export class DurableHost {
 				return this.compactRequest(params, requestContext);
 			case "configure":
 				return this.configureRequest(params, requestContext);
-			case "playbook-configure":
-				return this.configureRequest(params, requestContext, {});
-			case "playbook-read": {
-				const conversation = await this.target(params, requestContext);
-				return projectNativePlaybook(await this.harness.snapshot(NativePlaybookDoc, conversation.id, requestContext));
-			}
-			case "playbook-create": return this.playbookCreationReceipt(params, requestContext);
 			case "command":
 				return this.commandRequest(params, requestContext);
 			case "reset":
@@ -997,50 +988,7 @@ export class DurableHost {
 		return { ...outcome, compaction: { ...compaction, ...(outcome.summaryChars === undefined ? {} : { summaryChars: outcome.summaryChars }) } };
 	}
 
-	private async playbookCreationReceipt(params: RequestParams | undefined, context: Context): Promise<unknown> {
-		if (params?.replayOnly !== true) throw new Error("Playbook creation writes occur only during root startup");
-		const conversation = await this.target(params, context);
-		if (conversation.id !== ROOT_CONVERSATION_ID) throw new Error("Playbook creation receipt requires the root conversation");
-		const ownerId = requestRequiredString(params, "ownerId");
-		const requestId = requestRequiredString(params, "requestId");
-		const origin = this.originParam(params);
-		const requested = requestString(params, "playbook");
-		const stored = await this.harness.snapshot(NativePlaybookDoc, conversation.id, context);
-		const retained = stored?.creation;
-		if (retained?.requestId !== requestId) {
-			if (params?.missingOk === true) return null;
-			if (requested === undefined) return projectNativePlaybook(stored);
-		}
-		if (retained === undefined || retained.requestId !== requestId || retained.value.name !== requested || retained.value.actor !== ownerId || !origin || retained.value.origin !== (origin === "operator" ? "operator" : "creator"))
-			throw new Error("Playbook creation request does not match the retained root admission");
-		return retained.value;
-	}
-
-	async initializePlaybook(input: NativePlaybookCreation, agentDir: string, context: Context): Promise<void> {
-		await this.harness.commit(async (tx) => {
-			const meta = await tx.doc(AgentMetaDoc, ROOT_CONVERSATION_ID);
-			if (input.ownerId !== meta.owner || input.ownerId === this.identity(ROOT_CONVERSATION_ID)) throw new Error("Playbook creation requires the root's exact creating owner");
-			const doc = await tx.doc(NativePlaybookDoc, ROOT_CONVERSATION_ID);
-			const previous = doc.creation;
-			if (previous !== undefined) {
-				const origin = input.origin === "operator" ? "operator" : "creator";
-				if (previous.requestId !== input.requestId || previous.value.name !== input.playbook || previous.value.origin !== origin || previous.value.actor !== input.ownerId)
-					throw new Error("Playbook creation request does not match the retained root admission");
-				return;
-			}
-			if (doc.origin !== "unset" || await tx.latestEntryId(ROOT_CONVERSATION_ID) !== undefined || (await tx.doc(InboxDoc, ROOT_CONVERSATION_ID)).items.length > 0)
-				throw new Error("Playbook creation requires an unused root conversation");
-			const value: NativePlaybook = nativePlaybookSelection(agentDir, input.playbook, { identity: input.ownerId, origin: input.origin }, false);
-			await writeNativePlaybook(tx, ROOT_CONVERSATION_ID, value);
-			doc.creation = { requestId: input.requestId, value };
-		}, context);
-	}
-
-	async configurePlaybook(params: RequestParams, context: Context, resolveExecution: ResolvePlaybookExecution): Promise<unknown> {
-		return this.configureRequest(params, context, { resolveExecution });
-	}
-
-	private async configureRequest(params: RequestParams | undefined, context: Context, withPlaybook?: { resolveExecution?: ResolvePlaybookExecution }): Promise<unknown> {
+	private async configureRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
 		const model = modelRefFrom(params?.model);
 		const thinking = params?.thinkingLevel;
@@ -1055,17 +1003,6 @@ export class DurableHost {
 			...(name === undefined ? {} : { name: name as string | null }),
 		};
 		const options = { sessionId: this.identity(conversation.id), models: this.models, storagePath: this.storagePath };
-		if (withPlaybook) {
-			const origin = this.originParam(params);
-			if (origin === undefined || this.contributionHost === undefined) throw new Error("Playbook configuration requires a host-attributed origin and catalog");
-			const preset = requestString(params, "preset");
-			return configureNativePlaybook(conversation, options, change, {
-				name: requestRequiredString(params, "playbook"), actor: { identity: requestRequiredString(params, "ownerId"), origin },
-				requestId: requestRequiredString(params, "requestId"), agentDir: this.contributionHost.agentDir,
-				...(preset === undefined ? {} : { preset }),
-			}, context, withPlaybook.resolveExecution);
-		}
-		if (params?.playbook !== undefined) throw new Error("Use playbook-configure for a playbook selection");
 		return await configureConversation(this.harness, conversation, options, change, context);
 	}
 

@@ -17,7 +17,7 @@ type Digest = {
 
 /** The thread digest recipe of the Agent extension, run against a forward-read double of `agent_collaborate`. */
 function digestFixture(events: ThreadEvent[]) {
-	const content = readFileSync(join(root, "extensions/agent/delegation/codemode.md"), "utf8");
+	const content = readFileSync(join(root, "extensions/agent/codemode.md"), "utf8");
 	const recipe = /```js\n([\s\S]*?)\n```/.exec(content.slice(content.indexOf("\n## Thread digest")))?.[1];
 	assert.ok(recipe, "thread digest recipe");
 	const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (...parameters: string[]) => (...values: unknown[]) => Promise<Digest>;
@@ -114,7 +114,7 @@ test("the thread digest returns a changed frame and stores nothing when a read f
 });
 
 function resultDigest(path: string, finalReport: boolean) {
-	const recipes = readFileSync(join(root, "extensions/agent/delegation/codemode.md"), "utf8");
+	const recipes = readFileSync(join(root, "extensions/agent/codemode.md"), "utf8");
 	const recipe = /\n## Save a result digest to a file\n[\s\S]*?```js\n([\s\S]*?)\n```/.exec(recipes)?.[1];
 	assert.ok(recipe, "file digest recipe");
 	const source = recipe.replace('"<output path>"', JSON.stringify(path)).replace("const finalReport = false;", `const finalReport = ${finalReport};`);
@@ -157,7 +157,7 @@ test("the file digest never writes a partial or unavailable result", async () =>
 });
 
 test("maintained codemode recipes parse their options before their source", () => {
-	for (const path of ["docs/codemode.md", "extensions/agent/delegation/codemode.md"]) {
+	for (const path of ["docs/codemode.md", "extensions/agent/codemode.md"]) {
 		const content = readFileSync(join(root, path), "utf8");
 		const recipes = [...content.matchAll(/```(?:javascript|js)\n([\s\S]*?)\n```/g)];
 		assert.ok(recipes.length > 0, path);

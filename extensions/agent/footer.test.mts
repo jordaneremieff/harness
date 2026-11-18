@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
-import { agentCell, formatDurableFooter, sessionFigures } from "./footer.ts";
+import { formatDurableFooter, sessionFigures } from "./footer.ts";
 import { AgentManager } from "./manager.ts";
 
 function row(id = "a", overrides: Partial<AgentConversationSummary> = {}): AgentConversationSummary {
@@ -20,15 +20,6 @@ function row(id = "a", overrides: Partial<AgentConversationSummary> = {}): Agent
 		...overrides,
 	};
 }
-
-test("the agent cell brackets the playbook after agents and keeps the figures unchanged", () => {
-	assert.equal(agentCell(""), "");
-	assert.equal(agentCell("agents: 1/3 active · ~$0.12"), "agents: 1/3 active · ~$0.12");
-	assert.equal(agentCell("", "architect"), "agents [architect]");
-	assert.equal(agentCell("agents: 1/3 active · ~$0.12", "architect"), "agents [architect]: 1/3 active · ~$0.12");
-	assert.equal(agentCell("agents: 0/2+ active", "architect → maker"), "agents [architect → maker]: 0/2+ active");
-	assert.equal(agentCell(formatDurableFooter([row("a", { state: "working" })]), "maker"), "agents [maker]: 1/1 active");
-});
 
 test("cost always uses a two-decimal recorded-pricing estimate", () => {
 	for (const partial of [false, true]) {

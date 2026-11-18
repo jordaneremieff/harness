@@ -100,7 +100,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; an unavailable endpoint preserves the attachment error and proves no global host absence. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
 | `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. An explicit model is applied first; a failed configuration returns its failure instead of a status snapshot. |
-| `agent_configure` | Change a conversation's playbook. Name, model, preset and reasoning changes require an idle agent. |
+| `agent_configure` | Change the name, model, preset or reasoning of an idle conversation. |
 | `agent_profile` | Read a complete bounded profile, or update role and expertise with `expectedRevision`. Reads start no host. A conflict returns the current profile without a change. |
 | `agent_intent` | Publish or clear the invoking session's intent claim. Native conversations persist their own claim without an ordinary primary. Claims are not locks or authority. |
 | `agent_fork` | Create an idle native fork at an entry or current leaf. |
@@ -350,7 +350,7 @@ it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
 Tool cards retain Pi's native padding. Peer cards supply the same inner top and
 bottom padding, while Pi supplies their outer separator.
-The manager contract is `manager/7.0.0`; a reload over an older retained manager
+The manager contract is `manager/8.0.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
 A result card shows `Answer continuation:` and `Receipt continuation:` as
@@ -465,7 +465,7 @@ results remain unchanged. Status totals mark partial costs with a trailing `+`, 
 `$0.25+`: at least that amount is known; some data was not fully readable.
 
 `/agent` exposes `new`, `list`, `status`, `send`, `steer`, `abort`, `attach`,
-`fork`, `compact`, `inspect`, `rewind`, `configure`, `playbook`, `profile`, `command`, `place`, `places`,
+`fork`, `compact`, `inspect`, `rewind`, `configure`, `profile`, `command`, `place`, `places`,
 `unbind`, `reset`, `schedule`, `timers`, and `timer-cancel`. `help` shows action
 syntax. Tab completes actions, canonical identities, and retained `@handle`
 addresses without executing them. Completion searches retained role hints too.
@@ -492,7 +492,7 @@ A blank configure name clears the stored name. Spawn and configure accept
 `max`. Native attach accepts the same levels alongside an explicit model.
 An exact `provider/model` is validated against the configured catalog, and the
 requested reasoning level is clamped by Pi to the model's supported levels.
-Except for a playbook-only change, configuration requires an idle conversation.
+Configuration requires an idle conversation.
 Configuration starts no task and changes no global defaults. A mutation result carries a compact status:
 identity, conversation, name, cwd, busy state, model, and the capability limits
 that matter. The full status stays available through `agent_status` with
@@ -634,9 +634,7 @@ its warning over the work view and the message field.
 | `/agent new` | Open New conversation. |
 | `/agent browse` | Open the selected conversation's owner views. |
 | `/agent recover` | Open Recover input for the selected conversation. |
-| `/agent playbook [target]`, `/agent playbook [target] <name or off>` | Open the Playbooks view for the selected or named agent, or change its playbook directly. No message goes to the model. |
-| `/agent playbook --import <starter>` | Review a local starter before replacing or adding that file. |
-| `/agent help`, `/agent help playbook` | Open Help or the playbook command reference and local catalog. |
+| `/agent help` | Open dashboard Help. |
 | PageUp / PageDown | Read the conversation or the open thread; PageUp at the oldest loaded entry reads earlier entries. |
 | Ctrl+O / Ctrl+T | Expand tool output / show thinking. |
 
@@ -891,9 +889,7 @@ agent and that view still own the screen: after another form opens, another
 agent is selected, or the view is left, the late answer opens nothing and
 states no failure.
 
-- **Configure** stages the playbook and, for an idle agent, Name, Model and
-  Reasoning. A working agent offers only the playbook field. **Keep current
-  selection** leaves it untouched; **Off** clears it. Models come from the
+- **Configure** stages Name, Model and Reasoning for an idle agent. Models come from the
   host's model list, narrowed as you type; a current model the host does not
   list stays choosable. An unchanged form sends no configuration request.
 - **Fork** starts an idle branch from the latest committed entry or a chosen
@@ -922,8 +918,7 @@ states no failure.
   `/agent profile <identity-or-@handle>` opens the same view; outside the
   interactive terminal it returns the full profile as text.
 - **Details** reads the host status for the captured target and keeps all
-  returned text. It also shows the playbook and who set it, or says that the
-  host cannot report it.
+  returned text.
 - **Stop**, **Stop and release host** and **Reconnect**
   state the effect and run on their labelled action.
 - **Tasks** shows the storage's live task graph. Open conversation selects the
@@ -955,8 +950,7 @@ states no failure.
 
 **New conversation** stages Purpose (the first message, literal text even when
 it looks like a flag; empty creates an idle conversation), Preset (the machine
-presets with resolved model and reasoning, the default first), Playbook (an
-independent choice, initially None), and Directory.
+presets with resolved model and reasoning, the default first), and Directory.
 Start creates the conversation and selects it with a Starting state before its
 host is ready; the conversation then follows the host's live output. A late
 completion never moves a selection the operator changed since: the created
@@ -967,8 +961,7 @@ form is described above. The unsent purpose survives closing the form.
 
 **Help** lists every key and pointer route, and starts with the machine
 execution preferences: the file path, document status, digest, diagnostics,
-enforcement setting, and every preset with its model. It also lists the local
-playbooks and any catalog diagnostics.
+enforcement setting, and every preset with its model.
 
 The work view draws its key row, More, forms, readers and inspector with the
 agent extension's own code on Pi's `pi-tui` components: forms use `Input` and
@@ -1677,22 +1670,6 @@ agent data. The
 statement. Cost uses two decimals; the entire cost segment is hidden below half
 a cent, leaving, for example, `agents: 0/1 active`. The dashboard shows unreadable
 agents and partial costs.
-
-The same cell carries this session's [playbook](#playbooks) in a bracket after
-`agents`, the way the model's reasoning level follows the model:
-`agents [architect]: 1/3 active · ~$0.12`, or `agents [architect]` with no
-scoped rows. No playbook adds nothing. A choice saved during a run shows the
-run's playbook and the next one, `agents [architect → maker]`, until the run
-ends. A saved name whose file supplies no instructions reads
-`agents [architect unavailable]`; an unsupported saved form reads
-`agents [unknown]`. The dashboard heading shows the same text.
-
-Pi sends a prompt that a `before_agent_start` handler replaced (by returning
-`systemPrompt`) as it is, without the sections that later handlers add. When an
-earlier handler has replaced the prompt, the run cannot send the playbook: the
-cell reads `agents [architect not sent]` and the Playbooks view says so until
-a run sends it. Ask the owner of that handler to add its text through
-`systemPromptOptions.sections` instead.
 
 ## Agent collaboration and placement
 
@@ -4182,7 +4159,7 @@ unplaced-input facts separately from native task state.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/7.0.0` uses the package-level Chord transport and includes
+clearance. `manager/8.0.0` uses the package-level Chord transport and includes
 recipient-scoped receipt associations, paged result inspection,
 retained primary acceptance, joined communication display and awaited primary endpoint teardown,
 preset-first creation resolution and machine
@@ -4204,7 +4181,7 @@ Passive-submit requests use 2.0.0. Receipts requests and responses use 3.0.0
 for immediate state reads and recipient-scoped reference pages. Inspect requests use 1.2.0 for
 `receiptCursor`; the inspect response identity is its schema hash.
 `docs/agent-host-contract.md` lists every operation identity.
-`native-controls/3.0.0` binds the native tool inputs and dispatch behavior to
+`native-controls/4.0.0` binds the native tool inputs and dispatch behavior to
 the loaded Durable release. `primary-delivery/4.0.0` requires verified retained
 primary acceptance and carries retry notices, blocked causes, receipt
 associations and exact continuations. Delivered result references travel inside
@@ -4471,91 +4448,11 @@ the error, then use `agent_attach` to reset the manager's retry budget and retry
 This reset does not remove diagnostic records or release another writer's lease.
 Intentional disconnects and unmarked storage do not relaunch.
 
-## Playbooks
-
-A playbook sets defaults for **who does the work**. It does not change the model,
-reasoning level, tools, role or permissions. A task-specific instruction takes
-precedence. With no playbook, decide per task. The [delegation guide](delegation.md)
-covers briefs, supervision, acceptance and operator status reports with or without a playbook.
-
-- `/agent playbook` opens the Playbooks view for this session: `off` and every
-  catalog playbook, with the saved choice marked `●` and the list opened on it.
-  The selected playbook's full instructions show beside the list at 90 columns or
-  more, and in their own view from Right below that. Enter uses the selected row
-  for this session and closes the view; on the saved choice Enter reads it. `c`
-  compares a bundled starter with the installed file (the import review below),
-  and `r` in More reads the catalog again. A run in progress keeps its playbook:
-  the view marks it `○` and says that the choice applies from the next run.
-  Selecting a row changes nothing. Outside the TUI the command prints the choice
-  and the catalog.
-- `/agent playbook maker` selects a playbook without the view. `/agent playbook off`
-  clears it. Use Tab or `/agent help playbook` for names and summaries. Help and
-  completion do not install files.
-- `/agent playbook @editor` opens the same view for an agent, and
-  `/agent playbook @editor architect` selects one directly. Use its exact
-  `@handle` or canonical ID. In the attached agent terminal a command without a
-  target refers to the selected conversation. The dashboard also offers
-  playbooks when creating or configuring an agent.
-- `agent_spawn({playbook:"maker", ...})` chooses a new agent's playbook before its
-  first prompt. A new agent does not inherit its creator's choice. Handle reuse does
-  not set a playbook. Use `agent_configure({sessionId, playbook:"off"})` to clear it.
-  Only the creating owner or the operator sets a native agent's choice. No tool
-  changes the caller's own playbook. Selected `agent_status` reports the choice and
-  origin when known. A reader without selection support does not establish that it is off.
-
-An ordinary session reads the chosen text before each run, including a fresh run
-from an agent reply. Its tool rounds keep that text. A command during a run saves the
-next choice; the receipt, the view and the agent cell distinguish the current run. Selections belong to
-branch ancestry, survive compaction and resume, and follow only copied history on a fork.
-In `/tree`, choosing a question restores its parent so you can edit that question.
-A playbook change after the preceding answer can therefore belong to that branch, even
-when the answer is the last visible message. A new session starts unset. Pi does not flush command-only entries in a new session
-before its first conversation message. A nonpersisting session does not survive exit.
-
-A native conversation reads the text before **each model request**. A playbook-only
-change does not wake the agent and can affect the next tool round of an active task;
-it does not change an already prepared request. Compaction, reset and host retirement
-preserve the selection, separately from profile and execution settings. A removed or
-invalid file leaves the saved name in place, but supplies no instructions. Repair the
-file to apply it at the next run or request. Older running hosts may not apply the
-playbook; an acknowledgement is not evidence of adoption by a provider.
-
-### Edit and recover the catalog
-
-`agent.playbooksDir` (or `PI_AGENT_PLAYBOOKS_DIR`) selects the directory; the default
-is `<agentDir>/playbooks`. The package ships `orchestrator` (save owner turns),
-`architect` (reserve context for design and iteration), and `maker` (do the main work
-and checks). The first explicit catalog use or named selection seeds an absent
-catalog. An existing directory, even an empty one, is never seeded. Package updates
-do not replace its contents. A playbook name may also be a preset name; the catalog
-warns, and the two fields remain independent.
-
-To add one, create a regular UTF-8 `<name>.md`: `# <name>` on line one, a blank line,
-a one-line summary, another blank line, then its instructions. Use a lowercase slug
-starting with a letter, with digits and single internal hyphens if needed (at most 48
-characters). `off` is reserved. The summary limit is 160 characters; the file limit is
-16 KiB. A bad file has its own diagnostic. An incomplete directory inventory does not
-authorise a selection. Use `/agent playbook` to find the directory and diagnostics.
-
-For a new installation the configured leaf is a **relative symbolic link** to its
-private sibling `<leaf>-data`, e.g. `playbooks → playbooks-data`. The seed publishes
-that link only after writing and syncing all the files. Copy the link **and** its
-backing directory together, or copy the files into an ordinary directory at the
-configured path. A backing directory without its link is not reseeded. After confirming
-no publisher is active, inspect the backing directory, preserve its files and restore
-the relative link to the verified directory, or choose another catalog path.
-
-`/agent playbook --import maker` compares the bundled starter with the installed
-file. In ordinary Pi the review opens below the transcript. In the attached
-terminal it opens in the inspector. At 90 columns both files appear side by
-side. In a narrower review, `s` switches files. Scroll either file before you
-choose **Replace this file** or **Add this file**. Escape leaves both files as
-they were if you have not applied the import. A replacement retains the displaced file in a recovery directory named in
-the receipt. If interrupted, inspect the catalog diagnostics and that directory
-before clearing a stale lock. Preserve both versions; do not blindly repeat a
-replacement or overwrite a later save. Outside the interactive UI the preview is read-only.
-
 ## Execution presets and delegation preferences
+
+Use the [delegate skill](../../skills/delegate/SKILL.md) to divide work, brief agents,
+supervise them and report their progress. See the [Codemode recipes](codemode.md)
+for how to combine Agent tool calls and retain exact result references.
 
 The agent section of the optional `<agentDir>/harness.json` machine document
 contains execution presets and delegation preferences. The package-level
@@ -4774,7 +4671,6 @@ facts. No new command is required.
 | idleMinutes | `PI_AGENT_IDLE_MINUTES` | number | 5 | min 0; max 35791 | Idle host retirement interval in minutes; zero disables. |
 | checkInMinutes | `PI_AGENT_CHECK_IN_MINUTES` | number | 0 | min 0; max 35791 | Automatic owner check-in interval for model tasks in minutes; zero, the default, arms none. |
 | presets | `PI_AGENT_PRESETS` | json | {} | none | Named execution presets with exact model identities and optional creation fields. |
-| playbooksDir | `PI_AGENT_PLAYBOOKS_DIR` | path | &lt;agentDir&gt;/playbooks | none | Private directory for editable playbook Markdown files. |
 | preferences | `PI_AGENT_PREFERENCES` | json | {} | none | Delegation preferences, default preset, exclusions, planning budgets, and reporting guidance. |
 <!-- harness:settings:end -->
 

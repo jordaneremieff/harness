@@ -951,7 +951,7 @@ it("returns retained native creation facts without revalidating a later catalog"
 	assert.ok(catalogReads > 0);
 });
 
-it("replays the original foreign playbook spawn receipt through the native tool", { timeout: 30000 }, async (t) => {
+it("replays the original foreign spawn receipt through the native tool", { timeout: 30000 }, async (t) => {
 	const fixture = runtimeFixture(t, { withAgentExtension: true });
 	const source = await acquireHost(fixture.metadata, { env: fixture.env("request") });
 	trackHost(t, source.pid);
@@ -968,26 +968,23 @@ it("replays the original foreign playbook spawn receipt through the native tool"
 			const first = await tool.execute(args, api, ctx);
 			assert.equal(first.isError, undefined, JSON.stringify(first.output));
 			const id = (first.details as { sessionId: string }).sessionId;
-			assert.deepEqual((first.details as { playbook: unknown }).playbook, { name: "maker", origin: "creator", actor: fixture.metadata.storageId });
 			const target = await connectHost(hostMetadata(new AgentCatalog(fixture.root).read(id)));
 			trackHost(t, target.pid);
 			try {
-				await target.request("playbook-configure", { sessionId: id, playbook: "off", ownerId: fixture.metadata.storageId, origin: "model", requestId: "later-playbook" });
 				assert.deepEqual(await tool.execute(args, api, ctx), first);
 				assert.ok(args !== null && typeof args === "object" && !Array.isArray(args));
-				for (const changed of [{ ...args, playbook: "architect" }, { ...args, handle: "other" }]) {
+				for (const changed of [{ ...args, handle: "other" }]) {
 					const refused = await tool.execute(changed, api, ctx);
 					assert.equal(refused.isError, true);
 					assert.match(JSON.stringify(refused.output), /different inputs/u);
 				}
-				assert.deepEqual(await target.request("playbook-read", { sessionId: id }), { name: null, origin: "creator", actor: fixture.metadata.storageId });
 			} finally { await target.close(); }
 			return first;
 		},
 	}) });
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	t.after(() => harness.close(context));
-	route.script.push({ tool: "agent_spawn", args: { cwd: fixture.childCwd, playbook: "maker" } });
+	route.script.push({ tool: "agent_spawn", args: { cwd: fixture.childCwd } });
 	await say(root, "Create a foreign worker");
 	const outcome = (await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_spawn");
 	assert.ok(outcome && !outcome.isError, outcome?.text);

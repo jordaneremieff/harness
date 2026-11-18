@@ -735,25 +735,6 @@ it("a late send receipt keeps a newer draft and never changes focus", async () =
 	}
 });
 
-it("New conversation submits a playbook independently of its preset", async () => {
-	let saved: { preset?: string; playbook?: string } | undefined;
-	const f = fixture(140, 45, source([row("one")]), {
-		playbooks: () => ({ state: "ready", dir: "/playbooks", entries: [{ name: "maker", summary: "Build directly", body: "Do the work." }], diagnostics: [] }),
-		newAgent: async ({ preset, playbook }) => { saved = { preset, playbook }; return { text: "Started" }; },
-	});
-	try {
-		await turn();
-		f.ui.openNamedAction("new");
-		press(f, "\r", "\r");
-		type(f, "maker");
-		press(f, "\r");
-		assert.equal(saved, undefined);
-		press(f, "\r");
-		await turn();
-		assert.deepEqual(saved, { preset: "worker", playbook: "maker" });
-	} finally { f.ui.dispose(); }
-});
-
 it("a new conversation selects its purpose and starting state before host readiness", async () => {
 	const rows = [row("one")];
 	const observed = source(rows);

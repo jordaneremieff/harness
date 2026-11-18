@@ -8,9 +8,8 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { LiveDoc, SessionFailed, section, type Storage, type ConversationId, type EntryId, type HarnessInspection, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
-import { AgentMetaDoc, configureNativePlaybook } from "./durable-controls.ts";
-import { nativePlaybookSection } from "./durable-playbook.ts";
+import { LiveDoc, SessionFailed, type Storage, type ConversationId, type EntryId, type HarnessInspection, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
+import { AgentMetaDoc } from "./durable-controls.ts";
 import { DurableHost, sessionIsIdle, type ConfigurationResult, type DurableCommandHost, type DurableHostOptions } from "./durable-host.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, reasoningRuntime, redactedAnswerMessage, scriptedRuntime, slowEffectTool, toolCallMessage } from "./durable-host-fixture.mts";
 
@@ -96,65 +95,6 @@ async function wait(host: DurableHost, submissionId: SubmissionId) {
 	await submission.wait(BACKGROUND_CONTEXT);
 	return host.wait(submissionId, BACKGROUND_CONTEXT);
 }
-
-it("retains a playbook independently of reset, restart and fork, and refuses unauthorised changes", async (t) => {
-	const root = fixtureRoot(t);
-	const options = { ...hostOptions(join(root, "store.sqlite"), await reasoningRuntime(), fixtureRegistry()), meta: { name: "original", owner: "fixture-owner" } };
-	const host = await DurableHost.open(options);
-	const initial = { ownerId: "fixture-owner", origin: "model" as const, requestId: "create", playbook: "maker" };
-	const read = { sessionId: fixtureStorageId };
-	try {
-		await host.initializePlaybook(initial, root, BACKGROUND_CONTEXT);
-		assert.deepEqual(await host.request("playbook-read", read), { name: "maker", origin: "creator", actor: "fixture-owner" });
-		const args = { ...read, requestId: "switch", playbook: "architect", origin: "model", ownerId: "fixture-owner" };
-		const conversation = await host.conversation(fixtureStorageId);
-		const result = await configureNativePlaybook(conversation, { ...read, models: options.models }, { name: "new name" }, { name: args.playbook, requestId: args.requestId, actor: { identity: args.ownerId, origin: "model" }, agentDir: root }, BACKGROUND_CONTEXT);
-		assert.equal(result.after.name, "new name");
-		await assert.rejects(configureNativePlaybook(conversation, { ...read, models: options.models }, {}, { name: "off", requestId: "forged", actor: { identity: "unrelated", origin: "model" }, agentDir: root }, BACKGROUND_CONTEXT), /creating owner/u);
-		await assert.rejects(configureNativePlaybook(conversation, { ...read, models: options.models }, {}, { name: "off", requestId: "self", actor: { identity: fixtureStorageId, origin: "model" }, agentDir: root }, BACKGROUND_CONTEXT), /own playbook/u);
-		await host.initializePlaybook(initial, root, BACKGROUND_CONTEXT);
-		assert.deepEqual(await host.request("playbook-create", { ...read, ...initial, replayOnly: true }), { name: "maker", origin: "creator", actor: "fixture-owner" });
-		await assert.rejects(host.request("playbook-create", { ...read, ...initial, playbook: undefined, replayOnly: true }), /retained root admission/u);
-		await host.request("reset", { ...read, handoff: "Reset context only" });
-		const fork = await host.request("fork", read) as { identity: string };
-		assert.deepEqual(await host.request("playbook-read", { sessionId: fork.identity }), { name: null, origin: "unset" });
-	} finally { await host.close(); }
-	const reopened = await DurableHost.open(options);
-	try {
-		assert.deepEqual(await reopened.request("playbook-read", read), { name: "architect", origin: "creator", actor: "fixture-owner" });
-	} finally { await reopened.close(); }
-});
-
-it("applies only the playbook portion on its own while busy and rejects a mixed patch before writes", async (t) => {
-	const root = fixtureRoot(t);
-	const release = defer();
-	const started = defer();
-	const models = await scriptedRuntime([toolCallMessage("gate"), answerMessage()]);
-	const registry = fixtureRegistry([gateTool(release.promise, started.resolve)]);
-	registry.install({ name: "playbook-fixture", sections: [nativePlaybookSection(section, root)] });
-	const host = await DurableHost.open({ ...hostOptions(join(root, "store.sqlite"), models, registry), meta: { name: "original", owner: "fixture-owner" } });
-	try {
-		const conversation = await host.conversation(fixtureStorageId);
-		const options = { sessionId: fixtureStorageId, models };
-		const choice = { name: "maker", requestId: "select", actor: { identity: "fixture-owner", origin: "model" as const }, agentDir: root };
-		const input = await host.submit({ message: "Start the tool", ownerId: "fixture-owner", requestId: "start-tool", origin: "operator" });
-		await started.promise;
-		await assert.rejects(configureNativePlaybook(conversation, options, { name: "not written" }, choice, BACKGROUND_CONTEXT), /busy/u);
-		assert.deepEqual(await host.request("playbook-read", options), { name: null, origin: "unset" });
-		const selected = await configureNativePlaybook(conversation, options, {}, choice, BACKGROUND_CONTEXT);
-		assert.equal(selected.after.name, "original");
-		assert.equal(selected.playbookEffective, "next-prepare");
-		release.resolve();
-		assert.equal((await wait(host, input.submissionId)).status, "done");
-		const { messages } = await conversation.context(BACKGROUND_CONTEXT);
-		const toolIndex = messages.findIndex((message) => message.role === "toolResult");
-		const playbookIndex = messages.findIndex((message) => message.role === "system" && message.sections?.["agent-playbook"]?.includes("**maker**"));
-		assert.ok(toolIndex >= 0 && playbookIndex > toolIndex && playbookIndex < messages.length - 1, "the same run prepares the selected playbook after its tool round and before its final answer");
-		await configureNativePlaybook(conversation, options, {}, { ...choice, name: "off", requestId: "clear" }, BACKGROUND_CONTEXT);
-		assert.deepEqual(await configureNativePlaybook(conversation, options, {}, choice, BACKGROUND_CONTEXT), selected);
-		assert.deepEqual(await host.request("playbook-read", options), { name: null, origin: "creator", actor: "fixture-owner" });
-	} finally { release.resolve(); await host.close(); }
-});
 
 it("requests retirement after abort and reports its blockers", async (t) => {
 	const root = fixtureRoot(t);

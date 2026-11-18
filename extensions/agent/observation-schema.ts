@@ -492,23 +492,6 @@ export const CompactStorageStatusSchema = obj({
 });
 export const StatusToolOutputSchema = union([ToolStatusSchema, FleetStatusSchema, OrdinaryPrimaryObservationSchema, CompactSelectedStatusSchema, CompactStorageStatusSchema, PresentationRefusalSchema]);
 
-// The local tool can compose one exact selection without changing the peer status schema.
-export const PlaybookSelectionSchema = obj({
-	name: nullable(str({ maxLength: 48 })), origin: union([lit("operator"), lit("creator"), lit("unset")]), actor: opt(str({ maxLength: 256 })),
-});
-const playbookStatusProperties = { playbook: PlaybookSelectionSchema };
-const playbookFullStatus = all([
-	obj(playbookStatusProperties, { open: true }),
-	partial(singleProperties), union([partial(liveProperties), partial(coldProperties), partial(bareProperties)]),
-	onlyKeys(["playbook", "conversation", "inventory", "pid", "live", "storageId", "deliveryError"]),
-]);
-const playbookCompactStatus = obj({
-	...compactEnvelope, conversation: CompactConversationSchema,
-	deliveryError: opt(str({ maxLength: 512 })), deliveryErrorTruncated: opt(lit(true)),
-	...playbookStatusProperties,
-});
-export const PlaybookStatusToolOutputSchema = union([StatusToolOutputSchema, playbookFullStatus, playbookCompactStatus]);
-
 const entrySource = union([lit("user"), lit("assistant"), lit("toolResult"), lit("summary"), lit("custom")]);
 const messageRole = union([lit("system"), lit("user"), lit("assistant"), lit("toolResult")]);
 const omissions = obj({ providerSignatures: count, imagePayloads: count, redactedThinking: count });

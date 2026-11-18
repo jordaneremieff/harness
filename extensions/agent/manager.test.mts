@@ -128,109 +128,6 @@ function fakeConnection(metadata: HostMetadata, handler: (method: string, params
 	} as FakeConnection;
 }
 
-it("requires the named root's creation receipt before prompt submission and never reseeds on replay", async (t) => {
-	const root = fixtureRoot(t);
-	const original = { name: "maker", origin: "creator", actor: "creator" };
-	const calls: string[] = [];
-	let seed: { requestId: string; playbook: string } | undefined;
-	const manager = new AgentManager(managerOptions(root, {
-		validateModel: () => "off",
-		acquire: async (metadata, options) => {
-			assert.equal(Object.hasOwn(metadata, "playbookCreation"), false);
-			seed = options?.playbookCreation;
-			assert.equal(seed?.playbook, "maker");
-			return fakeConnection(metadata, async (method, raw) => {
-				calls.push(method);
-				const params = raw as Record<string, unknown>;
-				if (method === "playbook-create") {
-					assert.equal(params.replayOnly, true);
-					if (seed?.requestId !== params.requestId || seed?.playbook !== params.playbook) throw new Error("Different creation inputs");
-					return original;
-				}
-				if (method === "playbook-configure") return { outcome: "applied", playbook: { name: null, origin: "creator", actor: "creator" } };
-				return method === "task-submit" ? nativeAdmission(raw) : {};
-			});
-		},
-	}));
-	t.after(() => manager.close());
-	const caller = { id: "creator", cwd: root };
-	const input = { playbook: "maker", prompt: "Review", origin: "model", requestId: "spawn-key" } as const;
-	const first = await manager.spawn(input, caller) as { sessionId: string; playbook: unknown };
-	assert.deepEqual(first.playbook, original);
-	assert.ok(calls.indexOf("playbook-create") < calls.indexOf("task-submit"));
-	await manager.control("configure", { sessionId: first.sessionId, playbook: "off", origin: "model" }, caller);
-	const replay = await manager.spawn(input, caller) as { playbook: unknown };
-	assert.deepEqual(replay.playbook, original);
-	const admissions = calls.filter((method) => method === "task-submit").length;
-	await assert.rejects(manager.spawn({ ...input, playbook: "architect" }, caller), /Different creation inputs/u);
-	await assert.rejects(manager.spawn({ ...input, playbook: undefined }, caller), /Different creation inputs/u);
-	assert.equal(calls.filter((method) => method === "task-submit").length, admissions);
-});
-
-it("reuses a named handle only for an equal selection or the creating owner's exact replay", async (t) => {
-	const root = fixtureRoot(t);
-	const initial = { name: "maker", origin: "creator", actor: "parent" };
-	let current = initial;
-	const admissions: unknown[] = [];
-	const manager = new AgentManager(managerOptions(root, {
-		validateModel: () => "off",
-		acquire: async (metadata, options) => {
-			assert.equal(options?.playbookCreation?.playbook, "maker");
-			return fakeConnection(metadata, async (method, raw) => {
-				const params = raw as Record<string, unknown>;
-				switch (method) {
-					case "profile-read": return { handle: "@helper", model: metadata.model, thinkingLevel: metadata.thinkingLevel };
-					case "playbook-read": return current;
-					case "playbook-create":
-						if (params.requestId !== "original") return null;
-						if (params.playbook !== "maker") throw new Error("Different playbook");
-						assert.equal(params.ownerId, "parent");
-						return initial;
-					case "task-submit": admissions.push(raw); return nativeAdmission(raw);
-					default: return {};
-				}
-			});
-		},
-	}));
-	t.after(() => manager.close());
-	const parent = { id: "parent", cwd: root }, peer = { id: "peer", cwd: root };
-	const input = { handle: "helper", playbook: "maker", origin: "model", requestId: "original" } as const;
-	const created = await manager.spawn(input, parent) as { sessionId: string; playbook: unknown };
-	assert.deepEqual(created.playbook, initial);
-	assert.deepEqual(await manager.control("playbook-read", { sessionId: "@helper" }, peer), initial);
-	await assert.rejects(manager.control("configure", { sessionId: "@helper", origin: "model", playbook: "off" }, { id: created.sessionId, cwd: root }), /calling primary session/u);
-	current = { ...initial, name: "architect" };
-	assert.deepEqual((await manager.spawn(input, parent) as { playbook: unknown }).playbook, initial);
-	await assert.rejects(manager.spawn({ ...input, playbook: undefined }, parent), /Different playbook/u);
-	await assert.rejects(manager.spawn({ ...input, prompt: "Do not admit" }, peer), /retained handle does not have/u);
-	assert.equal(admissions.length, 0);
-	await manager.spawn({ ...input, playbook: "architect", prompt: "Continue" }, peer);
-	assert.equal(admissions.length, 1);
-});
-
-it("uses an optional operation for playbooks and refuses an old writer before a mixed patch", async (t) => {
-	const root = fixtureRoot(t);
-	const operations = Object.fromEntries(Object.entries(HOST_CONTRACT.operations).filter(([name]) => !name.startsWith("playbook-")));
-	const requests: string[] = [];
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => fakeConnection(metadata, async (method) => {
-			requests.push(method);
-			return {};
-		}, { ...HOST_CONTRACT, operations }),
-	}));
-	t.after(() => manager.close());
-	const { storageId: sessionId } = createRecord(manager, root);
-	const stranger = { id: "stranger", cwd: root };
-	await assert.rejects(manager.control("configure", { sessionId, playbook: "off", origin: "model", ownerId: "owner-1" }, stranger), /creating owner/u);
-	assert.equal(requests.length, 0);
-	await assert.rejects(manager.control("configure", { sessionId, name: "Not written", playbook: "off", origin: "operator" }, stranger), /does not advertise playbook-configure/u);
-	assert.equal(await manager.control("playbook-read", { sessionId }, stranger), undefined);
-	assert.equal(requests.includes("playbook-configure"), false);
-	assert.equal(requests.includes("configure"), false);
-	await manager.control("configure", { sessionId, name: "Legacy title" }, stranger);
-	assert.equal(requests.includes("configure"), true);
-});
-
 async function settleCatalogueRecovery(manager: AgentManager): Promise<void> {
 	const state = manager as unknown as { catalogueScan?: Promise<void>; recoveryQueue: Promise<void> };
 	await state.catalogueScan;
@@ -517,7 +414,6 @@ it("retains exact prompted handle references across creation and reuse", async (
 	const seen: Record<string, unknown>[] = [];
 	const manager = new AgentManager(managerOptions(root, { validateModel: () => {}, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
 		if (method === "profile-read") return { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel };
-		if (method === "playbook-create") return null; // The retained handle has no playbook creation receipt.
 		assert.equal(method, "task-submit");
 		seen.push(params as Record<string, unknown>);
 		return nativeAdmission(params, seen.length);

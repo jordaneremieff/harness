@@ -33,12 +33,6 @@ export const settings = {
 			description: "Named execution presets with exact model identities and optional creation fields.",
 			default: {},
 		},
-		playbooksDir: {
-			type: "path",
-			env: "PI_AGENT_PLAYBOOKS_DIR",
-			description: "Private directory for editable playbook Markdown files.",
-			defaultText: "<agentDir>/playbooks",
-		},
 		preferences: {
 			type: "json",
 			env: "PI_AGENT_PREFERENCES",
@@ -65,7 +59,7 @@ type Diagnostic = {
 type SettingRecord = {
 	name: string;
 	key: string;
-	type: "number" | "json" | "path";
+	type: "number" | "json";
 	description: string;
 	env: string;
 	secret: false;
@@ -83,7 +77,6 @@ export type SettingsPublication = {
 type SettingsValues = {
 	idleMinutes: number;
 	checkInMinutes: number;
-	playbooksDir: string;
 	presets: ExecutionPresets;
 	preferences: DelegationPreferences;
 };
@@ -188,15 +181,8 @@ function boundedJson(value: unknown): boolean {
 	}
 	return visit(value, 0) && Buffer.byteLength(JSON.stringify(value)) <= DOCUMENT_MAX_BYTES;
 }
-function checkedValue(key: keyof SettingsValues, input: unknown, agentDir: string): unknown {
+function checkedValue(key: keyof SettingsValues, input: unknown): unknown {
 	const field = settings.fields[key];
-	if (field.type === "path") {
-		if (typeof input !== "string" || !input.length || input.length > 4096 || !textValid(input))
-			throw new Error("Invalid path setting");
-		const path = resolve(agentDir, input);
-		if (path.length > 4096) throw new Error("Resolved path exceeds length limit");
-		return path;
-	}
 	if (field.type === "number") {
 		if (typeof input !== "number" || !Number.isFinite(input) || input < field.min || input > field.max)
 			throw new Error("Invalid numeric setting");
@@ -205,20 +191,19 @@ function checkedValue(key: keyof SettingsValues, input: unknown, agentDir: strin
 	}
 	return input;
 }
-function environmentValue(type: "number" | "json" | "path", raw: string): unknown {
+function environmentValue(type: "number" | "json", raw: string): unknown {
 	if (Buffer.byteLength(raw) > DOCUMENT_MAX_BYTES) throw new Error("Oversized environment input");
-	if (type === "path") return raw;
 	if (type === "json") return JSON.parse(raw);
 	if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(raw)) throw new Error("Invalid numeric input");
 	return Number(raw);
 }
 
-function selectField(key: keyof SettingsValues, env: Environment, section: Record<string, unknown>, agentDir: string, add: (fact: Diagnostic) => void) {
+function selectField(key: keyof SettingsValues, env: Environment, section: Record<string, unknown>, add: (fact: Diagnostic) => void) {
 	const field = settings.fields[key];
 	let origin: Origin = env[field.env] !== undefined ? "env" : Object.hasOwn(section, key) ? "file" : "default";
 	let value: unknown;
 	try {
-		value = checkedValue(key, field.type === "path" ? "playbooks" : structuredClone(field.default), agentDir);
+		value = checkedValue(key, structuredClone(field.default));
 	} catch {
 		throw new Error(`Invalid default for agent.${key}`);
 	}
@@ -226,7 +211,7 @@ function selectField(key: keyof SettingsValues, env: Environment, section: Recor
 	if (origin !== "default") {
 		try {
 			const input = origin === "env" ? environmentValue(field.type, env[field.env] as string) : section[key];
-			value = checkedValue(key, input, agentDir);
+			value = checkedValue(key, input);
 		} catch {
 			add(diagnostic(`agent.${key}`, origin, "invalid"));
 			origin = "default";
@@ -258,7 +243,7 @@ export function readSettings(options: ReadOptions): Snapshot {
 	const records: SettingRecord[] = [];
 	for (const key of Object.keys(settings.fields) as (keyof SettingsValues)[]) {
 		const field = settings.fields[key];
-		const { value, origin, status } = selectField(key, env, section, options.agentDir, add);
+		const { value, origin, status } = selectField(key, env, section, add);
 		values[key] = value;
 		records.push({ name: `agent.${key}`, key, type: field.type, description: field.description, env: field.env, secret: false, origin, status, value: structuredClone(value) });
 	}

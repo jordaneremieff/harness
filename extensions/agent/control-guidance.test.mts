@@ -174,7 +174,7 @@ it("teaches nested spawn placement and lineage status", () => {
 	const spawn = AGENT_CONTROL_GUIDANCE.agent_spawn.guidelines?.join("\n") ?? "";
 	assert.match(spawn, /without a handle in the same cwd creates a conversation in your storage/u);
 	assert.match(spawn, /a storage with its own host/u);
-	assert.match(spawn, /selected controls permit further delegation/u);
+	assert.ok(spawn.includes("selected controls permit further delegation"));
 	assert.ok(spawn.includes("bounded /agent roster"));
 	const status = AGENT_CONTROL_GUIDANCE.agent_status.guidelines?.join("\n") ?? "";
 	assert.match(status, /names what it omits: host inventory, effort awareness and created-agent detail/u);

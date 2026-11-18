@@ -39,12 +39,11 @@ async function guidanceFixture(t: TestContext, holdStartup = false) {
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false }, compaction: { enabled: false } }));
 	const harnessFile = join(agentDir, "harness.json");
 	writeFileSync(harnessFile, JSON.stringify(machineConfig({ presets: {}, preferences: { reportingNotes: "PEER_RUN_GUIDANCE" } })));
-	const saved = new Map(["PI_AGENT_DIR", "PI_CODING_AGENT_DIR", "PI_AGENT_SESSIONS_DIR", "PI_HARNESS_FILE", "PI_AGENT_PLAYBOOKS_DIR"].map((key) => [key, process.env[key]]));
+	const saved = new Map(["PI_AGENT_DIR", "PI_CODING_AGENT_DIR", "PI_AGENT_SESSIONS_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]]));
 	process.env.PI_AGENT_DIR = agentDir;
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	process.env.PI_AGENT_SESSIONS_DIR = sessionsRoot;
 	process.env.PI_HARNESS_FILE = harnessFile;
-	process.env.PI_AGENT_PLAYBOOKS_DIR = join(agentDir, "playbooks");
 	const entered = deferred();
 	const gate = deferred();
 	let session: AgentSession | undefined;
@@ -139,11 +138,6 @@ async function guidanceFixture(t: TestContext, holdStartup = false) {
 	};
 }
 
-function latestSections(requests: TranscriptContext[]) {
-	const latest = requests.at(-1); assert.ok(latest);
-	return getCurrentSystemMessage(latest.messages)?.sections;
-}
-
 function assertRunGuidance(requests: TranscriptContext[]) {
 	assert.equal(requests.length, 2, "the tool result causes one subsequent provider request");
 	for (const context of requests) {
@@ -172,57 +166,6 @@ it("ordinary peer-result runs supply agent guidance on the first request and aft
 	assertRunGuidance(fixture.requests);
 	assert.ok(fixture.requests[0].messages.some((message) => message.role === "user" && Array.isArray(message.content) && message.content.some((part) => part.type === "text" && part.text === "PEER_ASYNC_RESULT")));
 	assert.ok(fixture.sessionManager.getEntries().some((entry) => entry.type === "message" && entry.message.role === "assistant" && JSON.stringify(entry.message.content).includes("PEER_RESULT_COMPLETE")));
-});
-
-it("applies a busy playbook switch to the next ordinary run, not a queued message or tool round", { timeout: 20000 }, async (t) => {
-	const f = await guidanceFixture(t, true);
-	await f.session.prompt("/agent playbook orchestrator");
-	const work = f.session.prompt("Start the work"); await f.entered;
-	await f.session.prompt("/agent playbook maker");
-	await f.deliver("peer:queued", "Continue the same work");
-	f.release(); await work; await f.session.waitForIdle();
-	assert.equal(f.starts.length, 1);
-	assert.ok(f.requests.length >= 2);
-	const section = (request: TranscriptContext) => getCurrentSystemMessage(request.messages)?.sections?.["agent-playbook"];
-	for (const request of f.requests) assert.match(section(request) ?? "", /runs the \*\*orchestrator\*\* playbook/u);
-	const path = join(f.agentDir, "playbooks", "maker.md");
-	writeFileSync(path, "# maker\n\nEdited summary\n\nUse the revised text for this run.\n");
-	await f.deliver("peer:fresh", "Fresh task"); await f.session.waitForIdle();
-	assert.equal(f.starts.at(-1)?.messageType, "custom");
-	assert.match(latestSections(f.requests)?.["agent-playbook"] ?? "", /runs the \*\*maker\*\* playbook[\s\S]*Use the revised text/u);
-	writeFileSync(path, "Invalid playbook");
-	await f.session.prompt("Another task");
-	assert.equal(latestSections(f.requests)?.["agent-playbook"], undefined, "a malformed file cannot keep its old instructions");
-	writeFileSync(path, "# maker\n\nRepaired summary\n\nRepaired instructions.\n");
-	await f.session.prompt("Next task");
-	assert.match(latestSections(f.requests)?.["agent-playbook"] ?? "", /Repaired instructions/u);
-	await f.session.prompt("/agent playbook off");
-	await f.session.prompt("Continue");
-	assert.equal(latestSections(f.requests)?.["agent-playbook"], undefined);
-	assert.match(latestSections(f.requests)?.["agent-preferences"] ?? "", /Agent delegation guide at .*delegation\.md/u);
-});
-
-it("restores only the selection on copied ancestry across ordinary compaction, tree, fork and reopen", { timeout: 20000 }, async (t) => {
-	const f = await guidanceFixture(t);
-	await f.session.prompt("An ordinary message that mentions /agent playbook orchestrator");
-	const initial = f.sessionManager.getLeafId(); assert.ok(initial);
-	const lastSection = () => latestSections(f.requests)?.["agent-playbook"];
-	assert.equal(lastSection(), undefined);
-	await f.session.prompt("/agent playbook architect");
-	await f.session.prompt("Record a design decision");
-	const retained = f.sessionManager.getLeafId(); assert.ok(retained);
-	f.sessionManager.appendCompaction("An unrelated summary mentioning maker", retained, 1000);
-	await f.restart(); await f.session.prompt("Iterate once");
-	assert.match(lastSection() ?? "", /runs the \*\*architect\*\* playbook/u);
-	const forkPath = f.sessionManager.createBranchedSession(retained); assert.ok(forkPath);
-	await f.restart(forkPath); await f.session.prompt("Continue the fork");
-	assert.match(lastSection() ?? "", /runs the \*\*architect\*\* playbook/u);
-	await f.session.navigateTree(initial); await f.session.prompt("Continue an earlier branch");
-	assert.equal(lastSection(), undefined);
-	f.sessionManager.appendCustomEntry("agent.playbook", { version: 1, name: "maker", origin: "operator" });
-	f.sessionManager.appendCustomEntry("agent.playbook", { version: 2, name: "architect", origin: "operator" });
-	await f.session.prompt("Continue after an unsupported selection");
-	assert.equal(lastSection(), undefined, "a future marker does not resurrect the previous choice");
 });
 
 it("ordinary peer-result startup stays busy and honors abort before the first provider request", { timeout: 20000 }, async (t) => {

@@ -9,7 +9,6 @@
  * by the public listener.
  */
 import { createHash } from "node:crypto";
-import { playbookName } from "./playbook-files.ts";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { unixSocketPath } from "../../transport/index.ts";
@@ -193,22 +192,6 @@ export function hostPaths(metadata: Pick<HostMetadata, "agentDir" | "storageId" 
 	return { directory, serverId, socket: unixSocketPath(serverId, socketDirectory(metadata.agentDir, serverId)), claim: claimPath(directory, identity), identity };
 }
 
-/** One runner launch argument, separate from persisted host metadata. */
-export interface PlaybookCreation {
-	readonly ownerId: string;
-	readonly origin: "operator" | "model";
-	readonly requestId: string;
-	readonly playbook: string;
-}
-
-export function parsePlaybookCreation(value: unknown): PlaybookCreation {
-	if (!isRecord(value) || (value.origin !== "operator" && value.origin !== "model")) throw new Error("Invalid root playbook creation arguments");
-	rejectUnknownFields(value, ["ownerId", "origin", "requestId", "playbook"], "root playbook creation arguments");
-	const playbook = boundedText(value.playbook, "playbook name", 48);
-	if (!playbookName(playbook)) throw new Error("Creation requires a named playbook");
-	return { ownerId: boundedText(value.ownerId, "creating owner", IDENTITY_LIMIT), origin: value.origin, requestId: boundedText(value.requestId, "creation request ID", 1024), playbook };
-}
-
 export function formatHostReady(ready: HostReady): string {
 	return `${HOST_READY_PREFIX}${JSON.stringify({ pid: ready.pid, socketPath: ready.socketPath, writerId: ready.writerId, contract: ready.contract })}\n`;
 }
@@ -246,7 +229,7 @@ export function parseHostReadyLine(line: string): HostReady | undefined {
  * by request ID or acknowledgement state; read methods are naturally safe.
  * Unknown methods are never retried.
  */
-const HOST_RETRY_SAFE_METHODS: ReadonlySet<string> = new Set(["playbook-read", "playbook-create", "playbook-configure", "profile-read", "profile-list", "profile-update", "task-submit", "resolve-agent", "collaboration-list", "collaboration-read", "collaboration-mutate", "passive-submit", "submit", "report", "acknowledge", "inspect", "status", "list", "receipts", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "timer-list", "models"]);
+const HOST_RETRY_SAFE_METHODS: ReadonlySet<string> = new Set(["profile-read", "profile-list", "profile-update", "task-submit", "resolve-agent", "collaboration-list", "collaboration-read", "collaboration-mutate", "passive-submit", "submit", "report", "acknowledge", "inspect", "status", "list", "receipts", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "timer-list", "models"]);
 
 export function isRetrySafeHostMethod(method: string): boolean {
 	return HOST_RETRY_SAFE_METHODS.has(method);

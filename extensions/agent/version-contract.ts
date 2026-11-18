@@ -36,10 +36,7 @@ for (const method of ["close", "recovery-state", "submit", "passive-submit", "sp
 }
 for (const method of ["profile-read", "profile-update", "profile-list", "resolve-agent", "task-submit", "release"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 operations["task-submit"] = { request: "task-submit/1.1.0", response: "task-submit/1.4.0" };
-for (const method of ["spawn", "resolve-agent", "place"]) operations[method] = { request: `${method}/2.0.0`, response: `${method}/2.0.0` };
 operations.configure = { request: "configure/1.3.0", response: "configure/1.3.0" };
-// Optional operations preserve legacy reads and controls without playbook semantics.
-for (const method of ["playbook-create", "playbook-configure", "playbook-read"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 operations.compact = { request: "compact/2.0.0", response: "compact/2.0.0" };
 for (const method of ["run-scope", "run-stop", "request-cancel"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 operations.submit = { request: "submit/1.7.0", response: "submit/1.4.0" };
@@ -53,7 +50,7 @@ operations["timer-schedule"] = { ...operations["timer-schedule"], response: "tim
 operations["timer-cancel"] = { ...operations["timer-cancel"], response: "timer-cancel/1.1.0" };
 operations.place = { request: "place/2.1.0", response: "place/2.3.0" };
 // A spawn, resolve or place result embeds the task-submit response of its prompt admission.
-for (const method of ["spawn", "resolve-agent"]) operations[method] = { ...operations[method], response: `${method}/2.2.0` };
+for (const method of ["spawn", "resolve-agent"]) operations[method] = { request: `${method}/3.0.0`, response: `${method}/3.0.0` };
 operations.receipts = { request: "receipts/3.0.0", response: "receipts/3.0.0" };
 operations["profile-list"] = { ...operations["profile-list"], response: schemaId(ProfiledListOutputSchema) };
 operations["profile-read"] = { ...operations["profile-read"], response: schemaId(AgentProfileSchema) };
@@ -72,7 +69,7 @@ operations["collaboration-mutate"] = { ...operations["collaboration-mutate"], re
 /** Release identifies source; operation identities, not release ordering, authorize calls. */
 export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 	format: "pi.agent.contract/1",
-	release: "1.0.0",
+	release: "2.0.0",
 	upstream: Object.freeze({ codingAgent: CODING_AGENT_VERSION, durable: durableVersion }),
 	// Injected key hints set the coding-agent floor; Chord v2 and stream options set the Durable floor.
 	requires: Object.freeze({ codingAgent: "1.5.0", durable: "1.5.1" }),
@@ -80,10 +77,8 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 });
 
 /** Separate interfaces refuse reload only when their own current contract changes. */
-export const MANAGER_CONTRACT = "manager/7.0.0";
-/** Optional in-process capability; a retained older manager/binding still serves legacy calls. */
-export const PLAYBOOK_CONTROL_CONTRACT = "agent-playbooks/1";
-export const CONTROL_BINDING_CONTRACT = `native-controls/3.0.0;durable=${durableVersion}`;
+export const MANAGER_CONTRACT = "manager/8.0.0";
+export const CONTROL_BINDING_CONTRACT = `native-controls/4.0.0;durable=${durableVersion}`;
 export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/4.0.0";
 
 function record(value: unknown): value is Record<string, unknown> {

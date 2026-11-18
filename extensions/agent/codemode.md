@@ -55,8 +55,6 @@ Notes:
 - `sessionId` on `create` places the thread in the new agent's storage. A
   native Durable session omits it to create the thread in its own storage.
 - The agent joins the thread itself as the first act of its task.
-- A long or reused frame can live in a file filled from [the frame template](templates/frame.md);
-  `node extensions/agent/delegation-contract.mts frame <file>` prints its fields as JSON.
 - Choose the preset and check-in interval using current delegation preferences
   and the public tool definition. The values in the examples are illustrative.
 
@@ -83,7 +81,7 @@ return sent.map((s) => (s.ref ? { name: s.name, ref: s.ref } : { name: s.name, f
 
 A task message that already lives in a scratch file can come from
 `await tools.read({ path })`. A receipt does not settle the task. Follow
-[event-driven supervision](../delegation.md#supervise-without-polling) for
+[the delegate skill](../../skills/delegate/SKILL.md) for
 results and open work.
 
 ## Fleet sweep

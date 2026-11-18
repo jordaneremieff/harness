@@ -7,7 +7,7 @@ import { matchesSchema } from "./schema-check.ts";
 import register from "./index.ts";
 import { parseInspectParams } from "./durable-observation.ts";
 import { AGENT_CONTROL_TOOL_NAMES, agentControlGuidance } from "./control-guidance.ts";
-import { StatusToolOutputSchema, PlaybookStatusToolOutputSchema, InspectToolOutputSchema } from "./observation-schema.ts";
+import { StatusToolOutputSchema, InspectToolOutputSchema } from "./observation-schema.ts";
 
 interface ToolDeclaration { name: string; parameters: Schema; outputSchema?: Schema; promptSnippet?: string; promptGuidelines?: string[] }
 async function declarations(): Promise<Map<string, ToolDeclaration>> {
@@ -33,17 +33,12 @@ it("declares shared task guidance and exact observation results on primary tools
 	assert.deepEqual(tools.get("agent_list")?.outputSchema, ProfiledListOutputSchema);
 	const status = tools.get("agent_status")?.outputSchema;
 	assert.ok(status);
-	assert.equal(status, PlaybookStatusToolOutputSchema);
-	const legacy = { conversation: {
+	assert.equal(status, StatusToolOutputSchema);
+	const selected = { conversation: {
 		conversationId: 1, identity: "storage", busy: false, lastText: null, live: null, inbox: null,
 		agent: { thinkingLevel: "off", tools: [], extensions: [] }, tasks: [], submissions: [],
 	} };
-	const enriched = { ...legacy, playbook: { name: "maker", origin: "operator" } };
-	assert.equal(matchesSchema(StatusToolOutputSchema, legacy), true);
-	assert.equal(matchesSchema(status, legacy), true);
-	assert.equal(matchesSchema(StatusToolOutputSchema, enriched), false);
-	assert.equal(matchesSchema(status, enriched), true);
-	assert.equal(matchesSchema(status, { ...enriched, playbook: { name: null, origin: "unknown" } }), false);
+	assert.equal(matchesSchema(status, selected), true);
 	assert.deepEqual(tools.get("agent_inspect")?.outputSchema, InspectToolOutputSchema);
 });
 

@@ -1,6 +1,5 @@
 import { str, num, nul, lit, union, arr, opt, obj } from "@earendil-works/pi-schema";
 import { createHash } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import { matchesSchema } from "./schema-check.ts";
@@ -248,7 +247,7 @@ export function renderPreferenceStatus(snapshot: PreferenceSnapshot): string[] {
 
 /** Compact current facts, with explicit omitted coverage rather than silent clipping. */
 export function renderAgentPreferences(snapshot: PreferenceSnapshot): string {
-	const lines = [`For help dividing work, briefing agents, supervision and operator status reports, read the Agent delegation guide at ${fileURLToPath(new URL("./delegation.md", import.meta.url))}.`, "Operator machine configuration for agent delegation. Catalog check results are local evidence.", `Source: ${JSON.stringify(snapshot.source.path)}; ${snapshot.source.status}; digest ${snapshot.source.digest ?? "none"}.`];
+	const lines = ["To divide work, brief agents, supervise them and report their progress, use the delegate skill.", "Operator machine configuration for agent delegation. Catalog check results are local evidence.", `Source: ${JSON.stringify(snapshot.source.path)}; ${snapshot.source.status}; digest ${snapshot.source.digest ?? "none"}.`];
 	if (snapshot.source.status === "unavailable" || snapshot.source.status === "invalid") lines.push(`Machine document is ${snapshot.source.status}. Previous preference text is not current. Invalid fields use safe defaults; valid environment settings remain available.`);
 	lines.push(...preferenceLines(snapshot.document));
 	for (const fact of snapshot.diagnostics) lines.push(`Diagnostic ${JSON.stringify(fact.field)}: ${JSON.stringify(fact.message)}`);

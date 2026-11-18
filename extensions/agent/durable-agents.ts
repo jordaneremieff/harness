@@ -24,9 +24,6 @@ import { agentRunControlDoc } from "./run-control-state.ts";
 import { storageStatusPageInput, validateStatusSelectors } from "./storage-status.ts";
 import { agentChildrenDoc, type AgentChild } from "./children.ts";
 import { createHash } from "node:crypto";
-import { NativeForeignSpawnReceipt, NativePlaybookDoc, nativePlaybookSection, nativePlaybookSelection, projectNativePlaybook, writeNativePlaybook } from "./durable-playbook.ts";
-import { readPlaybookCatalog } from "./playbook-catalog.ts";
-import { PlaybookParameter, playbookParameter } from "./playbook.ts";
 import { captureProviderRecovery, linkProviderRecovery } from "./provider-block.ts";
 import { MODEL_CHOICE_TOOL_NAMES, processProviderBlockNotes, renderProviderBlockSection } from "./provider-block-notes.ts";
 import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
@@ -62,7 +59,7 @@ import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { inputEntry, sentInputClass } from "./input-entry.ts";
 import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
-import { CONTROL_BINDING_CONTRACT, PLAYBOOK_CONTROL_CONTRACT } from "./version-contract.ts";
+import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_TOOL_NAMES, FOLLOW_UP_DELIVERY_BOUNDARY, NATIVE_COMPACTION_SEED, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines, type AgentControlToolName } from "./control-guidance.ts";
 import { abortScopeContains, abortScopeConversations } from "./abort-scope.ts";
@@ -75,7 +72,6 @@ import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
 import {
 	InspectToolOutputSchema,
 	StatusToolOutputSchema,
-	PlaybookStatusToolOutputSchema,
 	StatusToolInputSchema,
 	structuredObservation,
 	nativeStructuredObservation,
@@ -99,8 +95,6 @@ export type AgentControlMethod =
 	| "resolve-target"
 	| "compact"
 	| "configure"
-	| "playbook-configure"
-	| "playbook-read"
 	| "attach"
 	| "command"
 	| "receipts"
@@ -130,7 +124,6 @@ export const AGENT_CONTROL_BINDING_KEY = Symbol.for("pi.agent.durable.controls")
 export interface AgentControlBinding {
 	readonly version: string;
 	readonly dispatch: AgentControlDispatch;
-	readonly playbookControlContract?: string;
 }
 
 function controlGlobals(): Record<PropertyKey, unknown> {
@@ -145,7 +138,7 @@ function controlGlobals(): Record<PropertyKey, unknown> {
 export function publishAgentControlDispatch(dispatch: AgentControlDispatch): () => void {
 	const globals = controlGlobals();
 	const previous = globals[AGENT_CONTROL_BINDING_KEY];
-	globals[AGENT_CONTROL_BINDING_KEY] = { version: AGENT_CONTROL_BINDING_VERSION, dispatch, playbookControlContract: PLAYBOOK_CONTROL_CONTRACT } satisfies AgentControlBinding;
+	globals[AGENT_CONTROL_BINDING_KEY] = { version: AGENT_CONTROL_BINDING_VERSION, dispatch } satisfies AgentControlBinding;
 	return () => {
 		const current = globals[AGENT_CONTROL_BINDING_KEY] as Partial<AgentControlBinding> | undefined;
 		if (current?.dispatch === dispatch) globals[AGENT_CONTROL_BINDING_KEY] = previous;
@@ -172,14 +165,7 @@ export function resolveAgentControlDispatch(): AgentControlDispatch {
 		);
 	const dispatch = (raw as { readonly dispatch?: unknown }).dispatch;
 	if (typeof dispatch !== "function") throw new Error("The native Durable host control binding is malformed. Restart the agent host.");
-	const typed = dispatch as AgentControlDispatch;
-	if ((raw as AgentControlBinding).playbookControlContract === PLAYBOOK_CONTROL_CONTRACT) return typed;
-	return async (method, params, context) => {
-		if (method === "playbook-read") return undefined;
-		if (method === "playbook-configure" || (params.playbook !== undefined && ["configure", "spawn", "resolve-agent"].includes(method)))
-			throw new Error("This host does not support playbook controls. Start a matching host before retrying.");
-		return typed(method, params, context);
-	};
+	return dispatch as AgentControlDispatch;
 }
 
 /** One command invocation, as the host control passes it to a registered command. */
@@ -343,7 +329,6 @@ const SpawnParams = obj(
 	{
 		handle: opt(HandleSchema),
 		preset: PresetParameter,
-		playbook: PlaybookParameter,
 		role: opt(str({
 			maxLength: 2000,
 			description: "Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.",
@@ -449,7 +434,6 @@ const RewindParams = obj(
 const ConfigureParams = obj(
 	{
 		preset: PresetParameter,
-		playbook: PlaybookParameter,
 		sessionId: str({ minLength: 1 }),
 		name: opt(str({ description: "Owner-visible name; stored by the session host." })),
 		model: opt(
@@ -636,8 +620,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const effortCatalog = host.catalogRoot === undefined ? undefined : new AgentCatalog(dirname(host.catalogRoot));
 	const effortResources: EffortReadResources | undefined = effortCatalog === undefined ? undefined : { catalog: effortCatalog, locations };
 	const registrationPreferences = readAgentPreferences(host.agentDir, host.services.modelRuntime);
-	const registrationPlaybooks = readPlaybookCatalog(host.agentDir);
-	const presetParams = <T extends typeof SpawnParams | typeof ConfigureParams | typeof PlaceParams>(params: T): T => ({ ...params, properties: { ...(params.properties as Record<string, Schema>), preset: presetParameter(registrationPreferences).schema, ...(params === PlaceParams ? {} : { playbook: playbookParameter(registrationPlaybooks).schema }) } });
+	const presetParams = <T extends typeof SpawnParams | typeof ConfigureParams | typeof PlaceParams>(params: T): T => ({ ...params, properties: { ...(params.properties as Record<string, Schema>), preset: presetParameter(registrationPreferences).schema } });
 	const preferenceSnapshot = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context): Promise<PreferenceSnapshot> => {
 		const retained = await api.memo("agent-preferences", context);
 		if (retained !== undefined) return retained as unknown as PreferenceSnapshot;
@@ -822,6 +805,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	};
 
 	const Children = agentChildrenDoc(durable);
+	const ForeignSpawnReceipt = durable.defineDocFamily<{ digest?: string; outcome?: string }, null>({
+		kind: "agent.foreign-spawn-receipt", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false,
+		initial: () => ({}),
+	});
 
 	const Anchor = durable.defineTask<null, { phase: "done" }, null>({
 		name: "agent.anchor",
@@ -1007,13 +994,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		await refreshManagedInstructions(tx, conversationId);
 	};
 
-	async function initializeChildPlaybook(tx: Durable.Tx, child: LocalChild, parentId: Durable.ConversationId, name?: string): Promise<void> {
-		if (name === undefined) return;
-		const value = nativePlaybookSelection(host.agentDir, name, { identity: identity(parentId), origin: "model" }, false);
-		await writeNativePlaybook(tx, child.conversationId, value);
-		(await tx.doc(NativePlaybookDoc, child.conversationId)).creation = { requestId: String(child.createdBy), value };
-	}
-
 	const spawnLocalInCommit = async (
 		tx: Durable.Tx,
 		api: Durable.ToolExecutionApi<ControlDetails>,
@@ -1042,7 +1022,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		meta.name = args.name ?? "agent";
 		meta.owner = identity(api.conversationId);
 		await initializeChildProfile(tx, child.conversationId, args.role);
-		await initializeChildPlaybook(tx, child, api.conversationId, args.playbook);
 		registry.children.push(child);
 		if (args.prompt !== undefined) {
 			const reporter = await tx.createTask(
@@ -1060,9 +1039,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return { kind: "foreign", child, sessionId, deduped: true };
 	};
 
-	type ForeignCreationOutcome = { kind: "foreign"; child: AgentChild; sessionId: string; deduped: boolean; playbook?: import("./durable-playbook.ts").NativePlaybook } | { kind: "error"; message: string };
+	type ForeignCreationOutcome = { kind: "foreign"; child: AgentChild; sessionId: string; deduped: boolean } | { kind: "error"; message: string };
 	const foreignSpawnDigest = (api: Durable.ToolExecutionApi<ControlDetails>, args: SpawnInput): string => createHash("sha256").update(JSON.stringify([
-		identity(api.conversationId), args.handle, args.cwd, args.name, args.role, args.prompt, args.preset, args.model, args.thinkingLevel, args.checkInMinutes, args.playbook,
+		identity(api.conversationId), args.handle, args.cwd, args.name, args.role, args.prompt, args.preset, args.model, args.thinkingLevel, args.checkInMinutes,
 	])).digest("hex");
 	const retainForeignCreation = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, args: SpawnInput, cwd: string, result: unknown): Promise<ForeignCreationOutcome> => {
 		const sessionId = sessionIdOf(result);
@@ -1072,7 +1051,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		try { reference = args.prompt === undefined ? undefined : admittedResult(sessionId, (result as Record<string, unknown>).result, `spawn:${host.storageId}:${api.taskId}`); }
 		catch (error) { return { kind: "error", message: String(error) }; }
 		if (args.prompt !== undefined) await retainDispatch(api, context, reference ?? null);
-		const playbook = (result as { playbook?: import("./durable-playbook.ts").NativePlaybook }).playbook;
 		const digest = foreignSpawnDigest(api, args);
 		const describeCreation = () => {
 			const selection = (result as { selection?: ExecutionSelection }).selection;
@@ -1084,10 +1062,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				...(reference === undefined ? {} : { result: reference }),
 				createdBy: api.taskId,
 			};
-			return { kind: "foreign", child, sessionId, deduped: false, ...(playbook === undefined ? {} : { playbook }) } as const;
+			return { kind: "foreign", child, sessionId, deduped: false } as const;
 		};
 		const outcome = await api.commit(async (tx): Promise<ForeignCreationOutcome> => {
-			const receipt = await tx.doc(NativeForeignSpawnReceipt, api.conversationId, String(api.taskId), null);
+			const receipt = await tx.doc(ForeignSpawnReceipt, api.conversationId, String(api.taskId), null);
 			if (receipt.outcome !== undefined) return receipt.digest === digest ? (JSON.parse(receipt.outcome) as { outcome: ForeignCreationOutcome }).outcome : { kind: "error", message: "Spawn request ID belongs to different inputs" };
 			const registry = await tx.doc(Children, api.conversationId);
 			const created = describeCreation();
@@ -1143,7 +1121,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			(outcome.deduped
 				? `Reused the agent created by this call: ${outcome.child.name} (${outcome.sessionId}).`
 				: `Spawned ${outcome.child.name} in ${cwd} as ${outcome.sessionId} with its own storage and host.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (outcome.child.result === undefined ? "" : `\nResult: ${JSON.stringify(outcome.child.result)}`) + thinkingNotice(outcome.child),
-			{ sessionId: outcome.sessionId, name: outcome.child.name, ...(outcome.child.selection === undefined ? {} : { selection: JSON.parse(JSON.stringify(outcome.child.selection)) }), ...thinkingFacts(outcome.child), ...(outcome.playbook === undefined ? {} : { playbook: outcome.playbook }), ...(outcome.child.result === undefined ? {} : { result: outcome.child.result }) },
+			{ sessionId: outcome.sessionId, name: outcome.child.name, ...(outcome.child.selection === undefined ? {} : { selection: JSON.parse(JSON.stringify(outcome.child.selection)) }), ...thinkingFacts(outcome.child), ...(outcome.child.result === undefined ? {} : { result: outcome.child.result }) },
 		);
 	};
 
@@ -1176,13 +1154,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const outcome = await localSpawn(api, context, args, cwd);
 		if (outcome.kind === "error") return errorResult(outcome.message);
 		const child = outcome.child;
-		const playbook = projectNativePlaybook((await api.snapshot(NativePlaybookDoc, child.conversationId, context))?.creation?.value);
 		const admission = args.prompt === undefined ? undefined : await admitLocal(api, context, await admissionOwner(api, context), reporterInput(child.name, child.conversationId, args.prompt, "followUp", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes, "model", host.agentDir)), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
 		return textResult(
 			(outcome.deduped
 				? `Reused the agent created by this call: ${child.name} (${identity(child.conversationId)}).`
 				: `Spawned ${child.name} as conversation ${identity(child.conversationId)} in your storage.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (admission === undefined ? "" : `\nResult: ${JSON.stringify(admission.result)}${placementText(admission.placement)}`) + thinkingNotice(child),
-			{ sessionId: identity(child.conversationId), conversationId: child.conversationId, name: child.name, anchorTaskId: child.anchorTaskId, playbook, ...selectionSnapshot(child), ...thinkingFacts(child), ...(admission === undefined ? {} : { result: admission.result, placement: admission.placement }) },
+			{ sessionId: identity(child.conversationId), conversationId: child.conversationId, name: child.name, anchorTaskId: child.anchorTaskId, ...selectionSnapshot(child), ...thinkingFacts(child), ...(admission === undefined ? {} : { result: admission.result, placement: admission.placement }) },
 		);
 	};
 
@@ -1202,7 +1179,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		parameters: presetParams(SpawnParams),
 		replay: "safe",
 		execute: async (args: SpawnInput, api, context) => {
-			const receipt = await api.snapshot(NativeForeignSpawnReceipt, api.conversationId, String(api.taskId), context);
+			const receipt = await api.snapshot(ForeignSpawnReceipt, api.conversationId, String(api.taskId), context);
 			if (receipt?.outcome !== undefined) {
 				if (receipt.digest !== foreignSpawnDigest(api, args)) return errorResult("Spawn request ID belongs to different inputs");
 				const retained = JSON.parse(receipt.outcome) as { outcome: ForeignCreationOutcome; cwd: string };
@@ -1606,9 +1583,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	});
 
 	/** Configure one conversation through the host outcome contract. */
-	const needsConfigurePreferences = (args: ConfigureInput) => args.playbook === undefined || args.model !== undefined || args.thinkingLevel !== undefined || args.preset !== undefined;
-	const configurePreferenceFields = async (args: ConfigureInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => needsConfigurePreferences(args) ? { preferenceSnapshot: await preferenceSnapshot(api, context) } : {};
-
 	const dispatchConfigure = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		args: ConfigureInput,
@@ -1623,8 +1597,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		try {
 			const result = await dispatch("configure", {
 				sessionId: args.sessionId,
-				...defined(args, ["name", "model", "thinkingLevel", "preset", "playbook"]),
-				...await configurePreferenceFields(args, api, context),
+				...defined(args, ["name", "model", "thinkingLevel", "preset"]),
+				preferenceSnapshot: await preferenceSnapshot(api, context),
 				senderIdentity: identity(api.conversationId),
 				requestId: `configure:${host.storageId}:${api.taskId}`,
 			});
@@ -1648,7 +1622,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const configureTool = durable.defineTool({
 		name: "agent_configure",
 		description:
-			"Change a conversation's model, thinking level, name, or playbook. Only the creating owner or operator changes a playbook. A playbook-only change works while busy and applies when the next model request is prepared. Other fields require an idle target.",
+			"Change a conversation's model, preset, thinking level, or name. Configuration requires an idle target.",
 		parameters: presetParams(ConfigureParams),
 		replay: "unsafe",
 		execute: async (args: ConfigureInput, api, context) => dispatchConfigure(api, args, context),
@@ -1707,8 +1681,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	});
 
 	const publicStatus = (value: unknown): Durable.ToolExecutionResult<ControlDetails> => {
-		const structured = structuredObservation(PlaybookStatusToolOutputSchema, value) as Record<string, JsonValue>;
-		return { ...nativeStructuredObservation(PlaybookStatusToolOutputSchema, structured, controlText(structured)), details: structured };
+		const structured = structuredObservation(StatusToolOutputSchema, value) as Record<string, JsonValue>;
+		return { ...nativeStructuredObservation(StatusToolOutputSchema, structured, controlText(structured)), details: structured };
 	};
 
 	const readStoragePage = async (args: StatusInput): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
@@ -1733,18 +1707,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusToolOutputSchema);
 	};
 
-	const projectPlaybookStatus = async (args: StatusInput, result: Durable.ToolExecutionResult<ControlDetails>, context: Context) => {
-		if (result.isError || args.view === "fleet") return result;
-		if (args.sessionId === undefined) return publicStatus(projectStorageStatus(result.details));
-		let playbook: unknown;
-		try {
-			playbook = await dispatch?.("playbook-read", { sessionId: args.sessionId }, context);
-			if (args.detail === true && playbook !== null && typeof playbook === "object" && "origin" in playbook)
-				return publicStatus({ ...result.details, playbook });
-		} catch (error) { if (context.abortSignal?.aborted) throw error; }
-		return args.detail === true ? result : publicStatus(projectSelectedStatus(result.details, playbook));
-	};
-
 	const statusTool = {
 		...durable.defineTool({
 			name: "agent_status",
@@ -1762,10 +1724,13 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				}
 				catch (error) { return errorResult(error instanceof Error ? error.message : String(error)); }
 				if (args.view === "storage-page") return readStoragePage(args);
-				return projectPlaybookStatus(args, await readStatus(args, api, context, selection), context);
+				const result = await readStatus(args, api, context, selection);
+				if (result.isError || args.view === "fleet") return result;
+				if (args.sessionId === undefined) return publicStatus(projectStorageStatus(result.details));
+				return args.detail === true ? result : publicStatus(projectSelectedStatus(result.details));
 			},
 		}),
-		structuredOutputSchema: PlaybookStatusToolOutputSchema,
+		structuredOutputSchema: StatusToolOutputSchema,
 	};
 
 	const listTool = {
@@ -1966,8 +1931,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	const preferences = durable.section("agent-preferences", () => renderAgentPreferences(readAgentPreferences(host.agentDir, host.services.modelRuntime)));
 
-	const playbook = nativePlaybookSection(durable.section, host.agentDir);
-
 	const efforts = durable.section("agent-efforts", async (input, context) => {
 		if (effortResources === undefined) return undefined;
 		try {
@@ -1989,6 +1952,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	return durable.defineExtension({
 		name: "agent",
 		tasks: [Anchor, Reporter, TimerTask],
+		sections: [guidance, efforts, preferences, providerBlocks],
 		tools: [
 			structuredControl(spawnTool, DispatchOutputSchema),
 			structuredControl(workTool, AgentWorkOutputSchema),
@@ -2010,6 +1974,5 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			resetTool,
 			collaborateTool,
 		].map(exposedControl),
-		sections: [guidance, efforts, preferences, playbook, providerBlocks],
 	});
 }

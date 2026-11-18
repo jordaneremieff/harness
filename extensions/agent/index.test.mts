@@ -123,7 +123,7 @@ test("ordinary fleet calls forward exact selection and reject incompatible query
 	await assert.rejects(manager.status(undefined, undefined, undefined, { model: "sample/a" }), /require view: fleet/u);
 	for (const version of ["manager/4.0.0", "manager/5.0.0", "manager/6.0.0"]) {
 		Object.defineProperty(manager, "managerProtocol", { value: version, configurable: true });
-		await assert.rejects(tool.execute("stale", input, new AbortController().signal, undefined, ctx), /retained agent manager uses manager\/[456]\.0\.0.*requires manager\/7\.0\.0.*Restart Pi/u);
+		await assert.rejects(tool.execute("stale", input, new AbortController().signal, undefined, ctx), /retained agent manager uses manager\/[456]\.0\.0.*requires manager\/8\.0\.0.*Restart Pi/u);
 	}
 });
 

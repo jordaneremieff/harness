@@ -2,7 +2,7 @@
 import type { AgentPriorityPage, AgentConversationSummary } from "./dashboard-types.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { CatalogPriorityCoverage } from "./catalog.ts";
-import { type CompactConversationSchema, type CompactSelectedStatusSchema, type CompactStorageStatusSchema, PlaybookSelectionSchema, StorageStatusCoverageSchema, type ToolOverviewRow } from "./observation-schema.ts";
+import { type CompactConversationSchema, type CompactSelectedStatusSchema, type CompactStorageStatusSchema, StorageStatusCoverageSchema, type ToolOverviewRow } from "./observation-schema.ts";
 import type { Static } from "@earendil-works/pi-schema";
 import { matchesSchema } from "./schema-check.ts";
 import { safeFactText } from "./primary-observation.ts";
@@ -349,10 +349,9 @@ export function buildStatusOverview(
 	}
 }
 
-export const SELECTED_STATUS_BYTE_LIMIT = 8 * 1024;
+const SELECTED_STATUS_BYTE_LIMIT = 8 * 1024;
 type CompactConversation = Static<typeof CompactConversationSchema>;
 type CompactSelected = Static<typeof CompactSelectedStatusSchema>;
-type SelectedStatus = CompactSelected & { playbook?: Static<typeof PlaybookSelectionSchema> };
 type CompactStorage = Static<typeof CompactStorageStatusSchema>;
 export interface PresentationRefusal { format: "refused"; cause: "byte-limit" | "source"; reason: string; byteLimit: number }
 function refusal(cause: PresentationRefusal["cause"], byteLimit: number, reason: string): PresentationRefusal { return { format: "refused", cause, reason, byteLimit }; }
@@ -507,7 +506,7 @@ function reduceSelectedRecovery(value: CompactSelected): CompactSelected {
 }
 
 /** Public selected status is separate from the complete host record. */
-export function projectSelectedStatus(value: unknown, playbook: unknown = record(value).playbook): SelectedStatus | PresentationRefusal {
+export function projectSelectedStatus(value: unknown): CompactSelected | PresentationRefusal {
 	const source = record(value);
 	const conversation = source.kind === "ordinary-primary" ? compactPrimary(source) : compactConversation(source.conversation, sourceAvailability(source));
 	if (!conversation) return refusal("source", SELECTED_STATUS_BYTE_LIMIT, "Selected status source identity is unavailable.");
@@ -519,11 +518,6 @@ export function projectSelectedStatus(value: unknown, playbook: unknown = record
 	if (measure(result) > SELECTED_STATUS_BYTE_LIMIT) result = reduceSelectedRecovery(result);
 	if (measure(result) > SELECTED_STATUS_BYTE_LIMIT)
 		return refusal("byte-limit", SELECTED_STATUS_BYTE_LIMIT, "Mandatory selected identity, state, or recovery metadata exceeds the output byte limit; request detail:true.");
-	// A selection is useful only when it fits without displacing existing status facts.
-	if (matchesSchema(PlaybookSelectionSchema, playbook)) {
-		const enriched = { ...result, playbook };
-		if (measure(enriched) <= SELECTED_STATUS_BYTE_LIMIT) return enriched;
-	}
 	return result;
 }
 

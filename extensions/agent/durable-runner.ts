@@ -14,21 +14,19 @@ function callerInstallation(input: unknown): string {
  * The runner binds Pi package imports to the caller installation for the whole
  * process, so host modules load by dynamic import after the binding.
  */
-async function runDurableAgentHost(metadataJson: string, creationJson?: string): Promise<void> {
+async function runDurableAgentHost(metadataJson: string): Promise<void> {
 	const detachedOutput = (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") process.exitCode = 1; };
 	process.stdout.on("error", detachedOutput);
 	process.stderr.on("error", detachedOutput);
 	const input: unknown = JSON.parse(metadataJson);
 	bindInstallationPackages(callerInstallation(input), new URL("./", import.meta.url));
-	const [{ parseHostMetadata, parsePlaybookCreation }, { runHost, HostClaimRefusedError }, { createDurableRuntime }] = await Promise.all([
+	const [{ parseHostMetadata }, { runHost, HostClaimRefusedError }, { createDurableRuntime }] = await Promise.all([
 		import("./host-protocol.ts"),
 		import("./host-process.ts"),
 		import("./durable-runtime.ts"),
 	]);
 	const metadata = parseHostMetadata(input);
-	const playbookCreation = creationJson === undefined ? undefined : parsePlaybookCreation(JSON.parse(creationJson));
-	if (playbookCreation !== undefined && playbookCreation.ownerId !== metadata.ownerId) throw new Error("The creating owner does not match the root owner");
-	const host = await runHost(() => createDurableRuntime(metadata, { playbookCreation }), { metadata, exit: () => process.exit(0) }).catch((error: unknown) => {
+	const host = await runHost(() => createDurableRuntime(metadata), { metadata, exit: () => process.exit(0) }).catch((error: unknown) => {
 		if (!(error instanceof HostClaimRefusedError) || error.observation !== "busy") throw error;
 		return undefined;
 	});
@@ -43,7 +41,7 @@ async function runDurableAgentHost(metadataJson: string, creationJson?: string):
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	const input = process.argv[2];
 	if (!input) throw new Error("Durable host metadata is required");
-	void runDurableAgentHost(input, process.argv[3]).catch((error: unknown) => {
+	void runDurableAgentHost(input).catch((error: unknown) => {
 		// Process exit stops a partial runtime before the kernel releases its lease.
 		process.stderr.write(`Durable host failed: ${String(error)}\n`, () => process.exit(1));
 	});

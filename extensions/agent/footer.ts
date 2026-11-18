@@ -48,18 +48,6 @@ export function sessionFigures(
 	return formatDurableFooter(scopedRows, creationRows);
 }
 
-/**
- * The session's agent cell: its playbook in a bracket after `agents`, the way a reasoning level
- * follows a model, then the figures. No playbook leaves the figures as they are; a playbook
- * without figures still names it.
- */
-export function agentCell(figures: string, playbook?: string): string {
-	if (!playbook) return figures;
-	const lead = `agents [${playbook}]`;
-	if (!figures) return lead;
-	return figures.startsWith("agents: ") ? `${lead}:${figures.slice("agents:".length)}` : `${lead} · ${figures}`;
-}
-
 /** Recorded-pricing estimate for already-scoped rows; hide costs below half a cent. */
 export function formatDurableFooter(
 	rows: readonly AgentConversationSummary[],

@@ -6,7 +6,6 @@
  */
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	AGENT_CONTROL_BINDING_KEY,
 	AGENT_CONTROL_BINDING_VERSION,
@@ -28,38 +27,12 @@ function restoreAfter(t: { after(fn: () => void): void }): void {
 
 const noop: AgentControlDispatch = async () => null;
 
-it("preserves the capable dispatch identity and refuses a bare function", (t) => {
+it("preserves the dispatch identity and refuses a bare function", (t) => {
 	restoreAfter(t);
-	globals[AGENT_CONTROL_BINDING_KEY] = { version: AGENT_CONTROL_BINDING_VERSION, dispatch: noop, playbookControlContract: "agent-playbooks/1" };
+	globals[AGENT_CONTROL_BINDING_KEY] = { version: AGENT_CONTROL_BINDING_VERSION, dispatch: noop };
 	assert.equal(resolveAgentControlDispatch(), noop);
 	globals[AGENT_CONTROL_BINDING_KEY] = noop;
 	assert.throws(() => resolveAgentControlDispatch(), /malformed/u, "a pre-versioning bare function refuses");
-});
-
-it("guards playbook calls on a trusted legacy binding and forwards its other controls unchanged", async (t) => {
-	restoreAfter(t);
-	const calls: Parameters<AgentControlDispatch>[] = [];
-	const receipt = { accepted: true };
-	const legacy: AgentControlDispatch = async (...args) => { calls.push(args); return receipt; };
-	globals[AGENT_CONTROL_BINDING_KEY] = { version: AGENT_CONTROL_BINDING_VERSION, dispatch: legacy };
-	const dispatch = resolveAgentControlDispatch();
-	assert.notEqual(dispatch, legacy);
-	const target = { sessionId: "target" };
-	assert.equal(await dispatch("playbook-read", target, BACKGROUND_CONTEXT), undefined);
-	await assert.rejects(dispatch("playbook-configure", target, BACKGROUND_CONTEXT), /does not support playbook controls.*matching host/u);
-	for (const method of ["configure", "spawn", "resolve-agent"] as const) {
-		await assert.rejects(dispatch(method, { ...target, playbook: "maker" }, BACKGROUND_CONTEXT), /does not support playbook controls.*matching host/u);
-	}
-	assert.deepEqual(calls, [], "unsupported controls never reach the legacy dispatch");
-	for (const method of ["status", "submit", "configure", "spawn", "resolve-agent"] as const) {
-		const params = { ...target, requestId: `legacy-${method}` };
-		assert.equal(await dispatch(method, params, BACKGROUND_CONTEXT), receipt);
-		const call = calls.pop();
-		assert.equal(call?.[0], method);
-		assert.equal(call?.[1], params);
-		assert.equal(call?.[2], BACKGROUND_CONTEXT);
-		assert.deepEqual(calls, []);
-	}
 });
 
 it("refuses a mismatched binding with both versions and a restart", (t) => {

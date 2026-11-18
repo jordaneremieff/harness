@@ -1,5 +1,4 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { playbookName } from "./playbook-files.ts";
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
 export const CONFIGURATION_LIMITS = { name: 256, model: 512, sessionId: 256 } as const;
@@ -9,7 +8,6 @@ export interface ConfigurationPatch {
 	name?: string;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
-	playbook?: string;
 }
 export interface ConfigurationModel { provider: string; modelId: string }
 export interface ConfigurationCommand { sessionId: string; patch: ConfigurationPatch }
@@ -71,19 +69,12 @@ export function configurationModel(value: unknown): ConfigurationModel {
 	return { provider: text.slice(0, separator), modelId: text.slice(separator + 1) };
 }
 
-export function configurationPlaybook(value: unknown): string {
-	if (typeof value !== "string" || (value !== "off" && !playbookName(value))) {
-		throw new Error("Use a playbook name (lowercase letters, digits and single hyphens) or off.");
-	}
-	return value;
-}
-
 /** Undefined fields are absent; an empty or whitespace-only name explicitly clears the name. */
-export function validateConfigurationPatch(value: unknown, allowPlaybook = false): ConfigurationPatch {
+export function validateConfigurationPatch(value: unknown): ConfigurationPatch {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("configuration must be an object");
-	const supported = allowPlaybook ? [...fields, "playbook"] : [...fields];
+	const supported: readonly string[] = fields;
 	if (Object.keys(value).some((key) => !supported.includes(key))) {
-		throw new Error(`unsupported configuration field; use ${supported.join(", ")}`);
+		throw new Error(`unsupported configuration field; use ${fields.join(", ")}`);
 	}
 	const input = value as Record<string, unknown>;
 	const patch: ConfigurationPatch = {};
@@ -96,8 +87,7 @@ export function validateConfigurationPatch(value: unknown, allowPlaybook = false
 		if (!isThinkingLevel(input.thinkingLevel)) throw new Error(`thinkingLevel must be one of ${THINKING_LEVELS.join(", ")}`);
 		patch.thinkingLevel = input.thinkingLevel;
 	}
-	if (allowPlaybook && Object.hasOwn(input, "playbook") && input.playbook !== undefined) patch.playbook = configurationPlaybook(input.playbook);
-	if (!Object.keys(patch).length) throw new Error(`configuration requires at least one of ${supported.join(", ")}`);
+	if (!Object.keys(patch).length) throw new Error(`configuration requires at least one of ${fields.join(", ")}`);
 	return patch;
 }
 

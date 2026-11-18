@@ -15,7 +15,7 @@ import { answerMessage, completed, fixtureRegistry, fixtureStorageId, hostOption
 import { deferred, page as rosterPage } from "./dashboard-test-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { LiveObservationService } from "./live-observation.ts";
-import { AssistantMessageSchema, ConversationStatusSchema, InspectOutputSchema, PlaybookStatusToolOutputSchema, StatusOutputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { AssistantMessageSchema, ConversationStatusSchema, InspectOutputSchema, StatusOutputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 
@@ -96,16 +96,14 @@ it("observes a provider's live tool call through native status, frames, and comp
 	await (await observer.submit({ type: "input", content: "Observe the storage", requestId: "observe" }, context)).wait(context);
 	assert.ok(observed, "the model issued native selected detail through the real contribution and host dispatch");
 	assert.equal(observed.isError, false, JSON.stringify(observed.content));
-	const status = structuredObservation(PlaybookStatusToolOutputSchema, observed.details) as {
-		conversation: { conversationId: number; live: Durable.LiveState }; playbook: unknown;
+	const status = structuredObservation(StatusToolOutputSchema, observed.details) as {
+		conversation: { conversationId: number; live: Durable.LiveState };
 	};
-	assert.deepEqual(status.playbook, { name: null, origin: "unset" });
 	const workerStatus = status.conversation;
 	assert.equal(workerStatus.conversationId, worker.id);
 	assert.ok(workerStatus?.live.generation?.message);
 	assert.deepEqual(workerStatus.live.generation.message.content[1], streamedCall);
-	const wireStatus = structuredObservation(StatusOutputSchema, await dispatch("status", { sessionId: fixtureStorageId })) as object;
-	assert.equal(Object.hasOwn(wireStatus, "playbook"), false);
+	structuredObservation(StatusOutputSchema, await dispatch("status", { sessionId: fixtureStorageId }));
 
 	service = new LiveObservationService(host.harness, { storageId: fixtureStorageId }, context);
 	const frame = await service.open("stream", { scope: "conversation", conversationId: worker.id });

@@ -86,25 +86,6 @@ it("configure sends only the changed fields on Apply and refuses an unchanged fo
 	assert.equal(closes(), 1, "success closes the form");
 });
 
-it("a working agent shows its playbook origin and accepts only the staged playbook", async () => {
-	const target = row("storage:1", { name: "Parser review", state: "working" });
-	const s = setup({ target, patch: {
-		playbooks: () => ({ state: "ready", dir: "/playbooks", entries: [{ name: "maker", summary: "Build directly", body: "Do the work." }], diagnostics: [] }),
-		playbook: async () => ({ name: "maker", origin: "creator", actor: "parent" }),
-		models: async () => { throw new Error("busy configuration must not read models"); },
-	} });
-	const { frame } = mount("configure", s.host);
-	const shown = await until(frame, /Playbook: maker \(creator: parent\)/);
-	assert.doesNotMatch(shown, /Reasoning|blank clears the name|must not read models/);
-	assert.deepEqual(s.calls, []);
-	frame.handleInput(DOWN);
-	frame.handleInput(ENTER);
-	await turn();
-	assert.deepEqual(s.calls, [{ name: "configure", args: [JSON.stringify({ playbook: "off" })], target: target.id }]);
-	const details = mount("status", s.host);
-	assert.match(await until(details.frame, /Playbook: maker/), /creator: parent/);
-});
-
 it("a refused Apply keeps every staged field and Apply sends the same patch again", async () => {
 	let answers = 0;
 	const s = setup({ answer: async (call) => (++answers === 1 ? Promise.reject(new Error("Stop current work first")) : `${call.name} done`) });

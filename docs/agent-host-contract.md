@@ -418,9 +418,9 @@ Sources: `transport/{index,endpoint,unix-link}.ts`; Chord 1.5.2
 `dist/host/{host,facet,reference,attempt}.d.ts`, and
 `dist/link/{link,message,part}.d.ts`.
 
-The manager's retained-object identity is `manager/7.0.0`; ordinary primary
+The manager's retained-object identity is `manager/8.0.0`; ordinary primary
 channels use `primary-delivery/4.0.0`. Native tool bindings use
-`native-controls/3.0.0;durable=<loaded Durable version>`.
+`native-controls/4.0.0;durable=<loaded Durable version>`.
 The typed `deliver` payload accepts optional
 `requireRetained:boolean`, defaulting to true. Source-ledger owner and fallback
 routes explicitly require retained acceptance: an exact `agent.peer` source
@@ -457,7 +457,7 @@ Call `Endpoint.request` with `{method:"runtime-contract"}` through a Chord root.
 }
 ```
 
-The parser rejects malformed descriptors, invalid operation names, more than 128 operation entries, invalid operation records, and unmet advertised API floors. Floors and release labels are not a promise of compatibility with future releases. Source: `extensions/agent/version-contract.ts:14-28,72-116`; `extensions/agent/host-client.ts:338-347`.
+The parser rejects malformed descriptors, invalid operation names, more than 128 operation entries, invalid operation records, and unmet advertised API floors. Floors and release labels are not a promise of compatibility with future releases. Source: `extensions/agent/version-contract.ts`; `extensions/agent/host-client.ts:338-347`.
 
 An operation call uses:
 
@@ -470,13 +470,13 @@ host.root(ctx => endpoint.request({
 }, ctx), {signal})
 ```
 
-The host recognizes `runtime-contract` before operation dispatch. Otherwise it compares the supplied operation's request, response, and optional Durable identities against its own identities **before parsing or admitting the operation payload**. A mismatch produces a Chord `unavailable` error with reason `version` and no operation is admitted. The client also checks before dispatch. Source: `extensions/agent/host-client.ts:499-516`; `extensions/agent/host-process.ts:523-544`; `extensions/agent/version-contract.ts:118-131`.
+The host recognizes `runtime-contract` before operation dispatch. Otherwise it compares the supplied operation's request, response, and optional Durable identities against its own identities **before parsing or admitting the operation payload**. A mismatch produces a Chord `unavailable` error with reason `version` and no operation is admitted. The client also checks before dispatch. Source: `extensions/agent/host-client.ts:499-516`; `extensions/agent/host-process.ts:523-544`; `extensions/agent/version-contract.ts`.
 
-A consumer must possess an expected contract for the payload it implements. It must not simply echo unknown identities from the remote descriptor: that defeats the check. Require equality of request, response, and optional `durable`. Missing or malformed negotiation disables the host; mismatch of one operation disables that operation. Check the complete dependency set for a composite action. Re-negotiate after reconnect with a fresh transport client. Do not infer compatibility from source release ordering, endpoint liveness, or a successful unrelated call. Source: `extensions/agent/version-contract.ts:118-131`; `extensions/agent/host-protocol.ts:218-223`; `extensions/agent/host-client.ts:325-347,499-506,640-646`.
+A consumer must possess an expected contract for the payload it implements. It must not simply echo unknown identities from the remote descriptor: that defeats the check. Require equality of request, response, and optional `durable`. Missing or malformed negotiation disables the host; mismatch of one operation disables that operation. Check the complete dependency set for a composite action. Re-negotiate after reconnect with a fresh transport client. Do not infer compatibility from source release ordering, endpoint liveness, or a successful unrelated call. Source: `extensions/agent/version-contract.ts`; `extensions/agent/host-protocol.ts:218-223`; `extensions/agent/host-client.ts:325-347,499-506,640-646`.
 
 ### Current operation identities
 
-`D` below is the exact `@earendil-works/pi-durable` release loaded by that process, not a future version pinned by this document. A consumer of opaque native values compares it with the Durable representation it supports. The descriptor's `release` is currently `1.0.0`.
+`D` below is the exact `@earendil-works/pi-durable` release loaded by that process, not a future version pinned by this document. A consumer of opaque native values compares it with the Durable representation it supports. The descriptor's `release` is currently `2.0.0`.
 
 The current descriptor requires `codingAgent: "1.5.0"` and `durable: "1.5.1"`. Injected keybinding hints set the coding-agent floor; the Chord v2 dependency graph and provider stream options set the Durable floor. The host observes stored commits with `observeCommits()`, reads the task graph through `observeTaskGraph()` and `watchTaskGraph()`, and reads conversation windows through `Conversation.watch()`; tool cards read the keybinding hints Pi injects into render contexts. Native timer and check-in deadline tasks use `TaskRuntime.sleepUntil()`. The `harness.chord/2` identity prelude and Chord v2 codec form a separate transport contract. These are minimum required APIs, not dependency pins, a supported-version ceiling, or a substitute for exact operation checks. Read floors from the loaded descriptor, not from the source release label. Sources: `extensions/agent/version-contract.ts`, `durable-timers.ts`, `durable-checkins.ts`, and the installed Durable `dist/types.d.ts`.
 
@@ -486,10 +486,7 @@ For every member in the following set, request and response are both `<member>/1
 close attach acknowledge abort release reset
  timer-list observe-close models
  collaboration-list
- playbook-create playbook-configure playbook-read
 ```
-
-A client checks the playbook operation before it admits a creation or configuration that includes a playbook. If the host does not support the requested change, the client refuses it without changing the target or admitting its prompt. Existing `status`, `list`, `dashboard` and `inspect` wire shapes do not gain a playbook field. A client without a supported `playbook-read` reports the selection as unknown, not unset.
 
 `changes` uses `changes/2.0.0` for request and response. Its initial and later frames are `{revision,writerId,view?}`. `writerId` comes from the server's immutable current hello identity. `view` is the runtime's latest successful bounded catalogue publication, retained after `updateView` succeeds and before notification. A revision without a view proves no publication. The client consumes the initial subscription value and later frames only for the current link and binding. Loss, rebind, local close and successful owner close clear that evidence; obsolete callbacks cannot restore it. A changes-operation mismatch refuses without a fallback and remains visible as unavailable publication evidence. Sources: `extensions/agent/{host-changes,host-client,host-process,durable-runtime,version-contract}.ts`.
 
@@ -516,9 +513,9 @@ Overrides and remaining members:
 | submit | submit/1.7.0 | submit/1.4.0 | absent |
 | report | report/2.0.0 | report/1.2.0 | absent |
 | passive-submit | passive-submit/2.0.0 | passive-submit/1.0.0 | absent |
-| spawn | spawn/2.0.0 | spawn/2.2.0 | absent |
+| spawn | spawn/3.0.0 | spawn/3.0.0 | absent |
 | place | place/2.1.0 | place/2.3.0 | absent |
-| resolve-agent | resolve-agent/2.0.0 | resolve-agent/2.2.0 | absent |
+| resolve-agent | resolve-agent/3.0.0 | resolve-agent/3.0.0 | absent |
 | receipts | receipts/3.0.0 | receipts/3.0.0 | D |
 | inspect | inspect/1.3.0 | H-inspect | D |
 | status | status/1.1.0 | H-status | D |
@@ -557,7 +554,7 @@ H-profile-update 8eb14a948f9d42366d9d4eb211d498563693d48806495032fe28f22ca66d942
 H-profile-list  c0ed7d36ad6652094183a7728db9874eccc72a86842868a356ca26640d8d9a49
 ```
 
-Schema owners in table order are `InspectOutputSchema`, `StatusOutputSchema`, `ListRowSchema`, `AgentConversationSummarySchema`, `AgentProfileSchema`, `ProfileUpdateSchema`, and `ProfiledListOutputSchema`. `dashboard` returns an array despite its response identity hashing the row schema. Maintain these identities with the defining schemas; do not infer a complete result shape from the schema name alone. Source: `extensions/agent/version-contract.ts:30-56`; `extensions/agent/durable-host.ts:454-457`.
+Schema owners in table order are `InspectOutputSchema`, `StatusOutputSchema`, `ListRowSchema`, `AgentConversationSummarySchema`, `AgentProfileSchema`, `ProfileUpdateSchema`, and `ProfiledListOutputSchema`. `dashboard` returns an array despite its response identity hashing the row schema. Maintain these identities with the defining schemas; do not infer a complete result shape from the schema name alone. Source: `extensions/agent/version-contract.ts`; `extensions/agent/durable-host.ts:454-457`.
 
 `StatusOutputSchema` owns the host response identity. Caller-side catalog rank, inventory coverage, and priority omission counts belong to the existing `ToolStatusSchema` overview extension, not to that wire schema. The caller's catalog scan produces those facts; a host status response does not. An actual host schema change changes its generated operation identity.
 
@@ -691,7 +688,7 @@ A summary has required fields:
 {id, storageId, cwd, modifiedAt:number, owner, state, cost:number, partial:boolean}
 ```
 
-Optional fields are `creatingOwnerId`, `name`, `firstMessage`, `model:{provider,modelId,thinkingLevel}`, `ownerLabel`, `latestReply`, `error`, `toolCalls`, `currentTool:{name,argument}`, `durationMs`, `health`, `unplaced`, `oldest`, `openWorkCount`, and `openWorkOldest`. Manager-enriched rows can also include `profile`; it is not part of the base native row contract. `owner` is `here | unavailable | unknown`. `state` is `starting | working | idle | done | failed | stopped | interrupted | new | unavailable`. `health` carries optional `lastError`, `compactionFailure:{trigger,at?,errorMessage?}`, and `autoRetry:{attempt,maxAttempts,delayMs,errorMessage}`. `unplaced` counts admitted inputs still queued; `oldest` is the age of the oldest in milliseconds and is absent when none is unplaced. Source: `extensions/agent/dashboard-types.ts:13-104`; `extensions/agent/version-contract.ts:54`; `extensions/agent/manager.ts:677-700`.
+Optional fields are `creatingOwnerId`, `name`, `firstMessage`, `model:{provider,modelId,thinkingLevel}`, `ownerLabel`, `latestReply`, `error`, `toolCalls`, `currentTool:{name,argument}`, `durationMs`, `health`, `unplaced`, `oldest`, `openWorkCount`, and `openWorkOldest`. Manager-enriched rows can also include `profile`; it is not part of the base native row contract. `owner` is `here | unavailable | unknown`. `state` is `starting | working | idle | done | failed | stopped | interrupted | new | unavailable`. `health` carries optional `lastError`, `compactionFailure:{trigger,at?,errorMessage?}`, and `autoRetry:{attempt,maxAttempts,delayMs,errorMessage}`. `unplaced` counts admitted inputs still queued; `oldest` is the age of the oldest in milliseconds and is absent when none is unplaced. Source: `extensions/agent/dashboard-types.ts:13-104`; `extensions/agent/version-contract.ts`; `extensions/agent/manager.ts:677-700`.
 
 Dashboard summary `durationMs` remains the wall-clock span of the latest user turn, ending at the live clock while busy or the final retained message when settled. It is not recorded tool execution time. Activity `runningTools.elapsedMs` remains elapsed time from the tool-call entry, qualified by `elapsedFrom:"tool-call-entry"`. Native task timestamps do not replace either quantity. These are the separate `turnDuration` and `activityMetadata` projections in
 `extensions/agent/durable-observation.ts`; native task execution duration does
