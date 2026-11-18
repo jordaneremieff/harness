@@ -41,7 +41,7 @@
     --ok: light-dark(#40a02b, #a6da95);                /* green */
     --warn: light-dark(#df8e1d, #eed49f);              /* yellow */
     --err: light-dark(#c5153e, #ed8796);               /* red, legible */
-    --code-ink: light-dark(#2b711c, var(--literal-green)); /* green, legible */
+    --code-ink: light-dark(#2b711c, #aed7a0);          /* green, legible / muted green */
     --selection: light-dark(rgb(124 127 147 / .28), rgb(147 154 183 / .28)); /* overlay 2 */
     --caret: light-dark(#dc8a78, #f4dbd6);             /* rosewater */
     --mark: light-dark(#b9d9de, #435b65);              /* teal over base: find matches */
@@ -57,12 +57,12 @@
 
     /* Code colours, as the style guide assigns them. */
     --syn-key: light-dark(#8839ef, #c6a0f6);           /* mauve */
-    /* Literals are the palette's green and peach mixed with a neutral grey, which keeps their hue:
-       a fifth less saturated in dark, so long strings and numbers do not glare, and darker in
-       light, so they read on the pale page. */
-    --literal-green: color-mix(in oklch, #a6da95 80%, oklch(84% 0 0));
-    --syn-str: light-dark(color-mix(in oklch, #40a02b 72%, oklch(40% 0 0)), var(--literal-green));
-    --syn-num: light-dark(color-mix(in oklch, #fe640b 72%, oklch(40% 0 0)), color-mix(in oklch, #f5a97f 80%, oklch(84% 0 0)));
+    /* Literals keep the palette's green and peach hues. In dark they carry a fifth less chroma, so
+       long strings and numbers do not glare; in light they are darker, for 4.5:1 on code surfaces.
+       The values are fixed: a color-mix with an achromatic oklch() grey interpolates toward its
+       hue of 0 and turns green yellow. */
+    --syn-str: light-dark(#2b711c, #aed7a0);           /* green */
+    --syn-num: light-dark(#ae4715, #edb08f);           /* peach: numbers and constants */
     --syn-com: light-dark(#7c7f93, #939ab7);           /* overlay 2 */
     --syn-type: light-dark(#df8e1d, #eed49f);          /* yellow */
     --syn-fn: light-dark(#1e66f5, #8aadf4);            /* blue: functions, properties */
