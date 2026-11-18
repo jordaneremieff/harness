@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { NavigationFrame, type OperatorView, type ViewHost } from "../../operator-ui/index.ts";
+import { Frame, type View, type ViewHost } from "./frame.ts";
 import { access, type AccessError, type AccessPage, type AccessRequest } from "./access.ts";
 import { loadCatalog, type Catalog } from "./catalog.ts";
 import { browserEntries, type BrowserEntry } from "./inventory.ts";
@@ -15,14 +15,42 @@ import { pillarsView } from "./operator-view.ts";
 initTheme("dark");
 setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 
-const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
+const theme = {
+	fg: (_color: string, text: string) => text,
+	bg: (_color: string, text: string) => text,
+	bold: (text: string) => text,
+} as Theme;
 const digest = "a".repeat(64);
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
-const page = (over: Partial<AccessPage> = {}): AccessPage => ({ schema: "pillars-source", resource: "governance", referenceBodyDigest: digest, bodyBytes: 96, offset: 0, endOffset: 48, text: "body", ...over });
+const page = (over: Partial<AccessPage> = {}): AccessPage => ({
+	schema: "pillars-source",
+	resource: "governance",
+	referenceBodyDigest: digest,
+	bodyBytes: 96,
+	offset: 0,
+	endOffset: 48,
+	text: "body",
+	...over,
+});
 const entries: BrowserEntry[] = [
-	{ resource: "inventory", title: "Pillars", type: "inventory", index: "Portable design doctrine for agent-assisted work." },
-	{ resource: "governance", title: "Pillars Governance", type: "governance", index: "Operating rules for the pillar corpus." },
-	{ resource: "pattern-frame-inspection", title: "Frame Inspection", type: "pattern", index: "At an option set, name the frame, test whether it binds, step out if not." },
+	{
+		resource: "inventory",
+		title: "Pillars",
+		type: "inventory",
+		index: "Portable design doctrine for agent-assisted work.",
+	},
+	{
+		resource: "governance",
+		title: "Pillars Governance",
+		type: "governance",
+		index: "Operating rules for the pillar corpus.",
+	},
+	{
+		resource: "pattern-frame-inspection",
+		title: "Frame Inspection",
+		type: "pattern",
+		index: "At an option set, name the frame, test whether it binds, step out if not.",
+	},
 ];
 
 function open(read: (request: AccessRequest) => Promise<AccessPage | AccessError>) {
@@ -37,14 +65,15 @@ function open(read: (request: AccessRequest) => Promise<AccessPage | AccessError
 		back: () => {},
 		close: () => {},
 	};
-	const view: OperatorView = pillarsView(host, {
+	const view: View = pillarsView(host, {
 		inventory: async () => entries,
 		read: async (request) => {
 			calls.push(request);
 			return read(request);
 		},
 	});
-	const screen = (width = 120) => (view.render(width, 30) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
+	const screen = (width = 120) =>
+		(view.render(width, 30) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
 	const action = (label: string) => {
 		const found = view.actions?.().find((candidate) => candidate.label === label);
 		assert.ok(found, `no ${label}`);
@@ -54,7 +83,9 @@ function open(read: (request: AccessRequest) => Promise<AccessPage | AccessError
 }
 
 test("the inventory lists every source read-only; selecting reads its first page and shows the complete digest", async () => {
-	const v = open(async (request) => page({ resource: request.resource ?? "inventory", text: `${request.resource} text` }));
+	const v = open(async (request) =>
+		page({ resource: request.resource ?? "inventory", text: `${request.resource} text` }),
+	);
 	await turn();
 	const first = v.screen();
 	assert.match(first, /3 sources · read-only/);
@@ -67,12 +98,22 @@ test("the inventory lists every source read-only; selecting reads its first page
 	const detail = v.screen(200);
 	assert.ok(detail.includes(`SHA-256: ${digest}`), "the digest is complete");
 	assert.ok(detail.includes("governance text"));
-	assert.deepEqual(v.view.actions?.().map((action) => action.label), ["Read more", "Read again"], "no judgment action starts from here");
+	assert.deepEqual(
+		v.view.actions?.().map((action) => action.label),
+		["Read more", "Read again"],
+		"no judgment action starts from here",
+	);
 });
 
 test("Read more carries the exact offset and digest of the pages shown; Read again starts from the first page", async () => {
-	const pages = [page({ text: "first ", nextOffset: 48 }), page({ text: "second", offset: 48, endOffset: 96 }), page({ text: "again" })];
-	const v = open(async (request) => (request.resource === "inventory" ? page({ resource: "inventory" }) : (pages.shift() ?? page())));
+	const pages = [
+		page({ text: "first ", nextOffset: 48 }),
+		page({ text: "second", offset: 48, endOffset: 96 }),
+		page({ text: "again" }),
+	];
+	const v = open(async (request) =>
+		request.resource === "inventory" ? page({ resource: "inventory" }) : (pages.shift() ?? page()),
+	);
 	await turn();
 	v.view.handleInput("\u001b[B");
 	await turn();
@@ -90,8 +131,14 @@ test("Read more carries the exact offset and digest of the pages shown; Read aga
 });
 
 test("a source error shows its code and stops further pages; the filter narrows the inventory", async () => {
-	const error: AccessError = { schema: "pillars-source-error", code: "source_changed", message: "The source changed; omit both continuation fields for a fresh read." };
-	const v = open(async (request) => (request.offset === undefined ? page({ resource: "inventory", nextOffset: 48 }) : error));
+	const error: AccessError = {
+		schema: "pillars-source-error",
+		code: "source_changed",
+		message: "The source changed; omit both continuation fields for a fresh read.",
+	};
+	const v = open(async (request) =>
+		request.offset === undefined ? page({ resource: "inventory", nextOffset: 48 }) : error,
+	);
 	await turn();
 	v.action("Read more").run();
 	await turn();
@@ -106,25 +153,20 @@ test("a source error shows its code and stops further pages; the filter narrows 
 
 test("the footer shows m read more and r read again, and a footer click reads as its key does", async () => {
 	const calls: AccessRequest[] = [];
-	const frame = new NavigationFrame({
+	const frame = new Frame({
 		theme,
 		target: { id: "session", label: "This session · work" },
-		destinations: () => [
-			{
-				key: "pillars",
-				label: "Pillars",
-				open: (host: ViewHost) =>
-					pillarsView(host, {
-						inventory: async () => entries,
-						read: async (request) => {
-							calls.push(request);
-							return request.offset === undefined
-								? page({ resource: request.resource ?? "inventory", text: "first ", nextOffset: 48 })
-								: page({ resource: request.resource ?? "inventory", text: "second", offset: 48, endOffset: 96 });
-						},
-					}),
-			},
-		],
+		expandKey: "ctrl+o",
+		open: (host: ViewHost) =>
+			pillarsView(host, {
+				inventory: async () => entries,
+				read: async (request) => {
+					calls.push(request);
+					return request.offset === undefined
+						? page({ resource: request.resource ?? "inventory", text: "first ", nextOffset: 48 })
+						: page({ resource: request.resource ?? "inventory", text: "second", offset: 48, endOffset: 96 });
+				},
+			}),
 		rows: () => 24,
 		requestRender: () => {},
 		close: () => {},
@@ -132,12 +174,25 @@ test("the footer shows m read more and r read again, and a footer click reads as
 	await turn();
 	const drawn = frame.render(160);
 	const row = stripVTControlCharacters(drawn.at(-1) ?? "");
-	for (const control of ["m read more", "r read again", "esc close"]) assert.ok(row.includes(control), `${control} in: ${row}`);
+	for (const control of ["m read more", "r read again", "esc close"])
+		assert.ok(row.includes(control), `${control} in: ${row}`);
 	frame.handleInput("m");
 	await turn();
 	assert.deepEqual(calls.at(-1), { resource: "inventory", offset: 48, referenceBodyDigest: digest });
 	const at = row.indexOf("r read again");
-	const event: TuiMouseEvent = { type: "click", button: "left", x: at, y: drawn.length - 1, screenX: at, screenY: drawn.length - 1, width: 160, height: drawn.length, shift: false, alt: false, ctrl: false };
+	const event: TuiMouseEvent = {
+		type: "click",
+		button: "left",
+		x: at,
+		y: drawn.length - 1,
+		screenX: at,
+		screenY: drawn.length - 1,
+		width: 160,
+		height: drawn.length,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	};
 	assert.ok(frame.handleMouse(event)?.handled, "the read again control is clickable");
 	await turn();
 	assert.deepEqual(calls.at(-1), { resource: "inventory" }, "the click reads again from the first page");
@@ -148,7 +203,10 @@ test("the footer shows m read more and r read again, and a footer click reads as
 async function tempCorpus(): Promise<{ catalog: Catalog; root: string }> {
 	const root = await mkdtemp(join(tmpdir(), "pillars-view-"));
 	const long = `${"filler line for a multi-page source\n".repeat(900)}PAGE-TWO-TAIL`;
-	await writeFile(join(root, "README.md"), "# Pillars\n\n| [Frame Inspection](pattern-frame-inspection.md) | At an option set, name the frame. |\n\n| [Made Up Heuristic](heuristic-made-up.md) | Quoted index statement. |\n");
+	await writeFile(
+		join(root, "README.md"),
+		"# Pillars\n\n| [Frame Inspection](pattern-frame-inspection.md) | At an option set, name the frame. |\n\n| [Made Up Heuristic](heuristic-made-up.md) | Quoted index statement. |\n",
+	);
 	await writeFile(join(root, "GOVERNANCE.md"), "Governance rules for the corpus.\n");
 	await writeFile(join(root, "pattern-frame-inspection.md"), `PAGE-ONE-HEAD\n${long}`);
 	await writeFile(join(root, "heuristic-made-up.md"), "A short heuristic body.\n");
@@ -183,7 +241,9 @@ function gate(resource: string, options: { skip?: number; offset?: boolean; reje
 	});
 	return {
 		matches: (request) =>
-				request.resource === resource && (!options.offset || request.offset !== undefined) && ++seen > (options.skip ?? 0),
+			request.resource === resource &&
+			(!options.offset || request.offset !== undefined) &&
+			++seen > (options.skip ?? 0),
 		used: false,
 		release,
 		promise,
@@ -227,10 +287,16 @@ test("a late read that fulfils with an error value after cancellation leaves no 
 	const { calls, read } = gatedAccess(catalog, [held]);
 	const view = pillarsView(viewHost(), { inventory: (signal) => browserEntries(catalog, read, signal), read });
 	await settle();
-	assert.ok(calls.some((request) => request.resource === "inventory"), "selection reads the inventory source");
+	assert.ok(
+		calls.some((request) => request.resource === "inventory"),
+		"selection reads the inventory source",
+	);
 	view.handleInput("\u001b[B");
 	await settle();
-	assert.ok(calls.some((request) => request.resource === "governance"), "the next row reads its own source");
+	assert.ok(
+		calls.some((request) => request.resource === "governance"),
+		"the next row reads its own source",
+	);
 	held.release();
 	await settle();
 	const again = calls.filter((request) => request.resource === "inventory").length;

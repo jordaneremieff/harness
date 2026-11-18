@@ -5,12 +5,13 @@
  * reads no corpus.
  */
 
-import type { JsonValue, OperatorPanelModule, PanelHost } from "../../operator-ui/index.ts";
+import type { JsonValue, OperatorPanelModule, PanelHost } from "./frame.ts";
 import { createPillarsViewState, type PillarsOperations, type PillarsViewState, pillarsView } from "./operator-view.ts";
 import { readPanelAnswer, type PillarsPanelRequest } from "./panel-protocol.ts";
 
 function routedOperations(host: PanelHost): PillarsOperations {
-	const ask = async (request: PillarsPanelRequest, signal: AbortSignal) => readPanelAnswer(request, (await host.request(request as JsonValue, signal)).data);
+	const ask = async (request: PillarsPanelRequest, signal: AbortSignal) =>
+		readPanelAnswer(request, (await host.request(request as JsonValue, signal)).data);
 	return {
 		inventory: async (signal) => {
 			const answer = await ask({ op: "inventory" }, signal);
@@ -46,5 +47,9 @@ function stateFor(target: string): PillarsViewState {
 }
 
 export function operatorPanel(): OperatorPanelModule {
-	return { version: 2, title: "Pillars", open: (host) => pillarsView(host, routedOperations(host), stateFor(host.target.id)) };
+	return {
+		version: 2,
+		title: "Pillars",
+		open: (host) => pillarsView(host, routedOperations(host), stateFor(host.target.id)),
+	};
 }

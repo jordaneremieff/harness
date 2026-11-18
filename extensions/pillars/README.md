@@ -192,8 +192,8 @@ Operator commands:
 `/pillars` displays command help, examples, and the actual inventory.
 `/pillars help` shows just the guide, even if the corpus is unavailable.
 In the terminal UI, `/pillars` and `/pillars browse` open the read-only Pillars
-view in the shared browsing frame below the native transcript
-(`docs/conventions/operator-panels.md`): a searchable inventory of every
+view below the transcript, following the
+[operator panel convention](../../docs/conventions/operator-panels.md): a searchable inventory of every
 catalogued source with its canonical title, type, and index statement quoted
 from the inventory, and a detail that reads the selected source page by page.
 The detail shows the exact resource and reference digest of the page it read;
@@ -204,13 +204,10 @@ leaves the view waiting, and a cancelled continuation keeps the pages already
 read. The footer at the bottom lists each control as its
 key and its short label: `m` reads more, `r` reads again. A click on a control
 runs the same action as its key. `/` focuses the search field, which filters
-titles, types, and statements. `x` opens the list of every other action.
-Escape goes back. Selecting a row reads; nothing in the view starts a check,
+titles, types, and statements. `x` opens More; use `ctrl+n` while search has focus.
+Tab moves among the regions. PageUp and PageDown read the detail. Escape goes back. Selecting a row reads; nothing in the view starts a check,
 derivation, or review, and nothing writes to the corpus. The command shows
 Pillars on its own.
-Because this extension publishes it as an operator view, `/dashboard` also
-shows it as a tab. The view module loads when the destination opens; until it
-is ready the frame shows a reading placeholder.
 The attached Agent terminal opens the same view through `operator-panel.ts`,
 a presentation-only module that routes the inventory and every page read
 through the host's `pillars` contribution command. Outside the terminal UI, or when the

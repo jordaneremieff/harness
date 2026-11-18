@@ -1,12 +1,13 @@
 /**
- * The read-only Pillars browser in the shared browsing frame. The inventory lists every
+ * The read-only Pillars browser under its own title. The inventory lists every
  * catalogued source with its quoted title, type and index statement; selecting a source reads
  * it page by page, and each continuation carries the exact resource and reference digest of the
  * first page. No judgment action or corpus change starts from here.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { type Action, Browser, type OperatorView, type ViewHost } from "../../operator-ui/index.ts";
+import type { Action, View, ViewHost } from "./frame.ts";
+import { Browser } from "./browser.ts";
 import type { AccessError, AccessPage, AccessRequest } from "./access.ts";
 import type { BrowserEntry } from "./inventory.ts";
 
@@ -34,7 +35,8 @@ interface SourceRead {
 }
 
 /** Control characters, bidi controls and lone surrogates become a visible placeholder. */
-const safe = (text: string) => text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]|\p{Cs}/gu, "\ufffd");
+const safe = (text: string) =>
+	text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]|\p{Cs}/gu, "\ufffd");
 const message = (error: unknown) => safe(error instanceof Error ? error.message : String(error));
 
 /** Append one page, or record the refusal; a refused continuation never mixes source revisions. */
@@ -67,9 +69,12 @@ class PillarsView {
 			key: (entry) => entry.resource,
 			line: (entry, _width, theme) => this.line(entry, theme),
 			detail: (entry) => this.detail(entry),
-			detailKey: (entry) => entry.resource,
 			actions: (entry) => this.actions(entry),
-			search: { value: state.query, placeholder: "filter titles, types and statements", change: (query) => this.filter(query) },
+			search: {
+				value: state.query,
+				placeholder: "filter titles, types and statements",
+				change: (query) => this.filter(query),
+			},
 			status: () => this.status(),
 			empty: () => this.empty(),
 			onSelect: (entry) => this.selected(entry),
@@ -124,10 +129,13 @@ class PillarsView {
 		const controller = new AbortController();
 		this.reading = controller;
 		const signal = AbortSignal.any([controller.signal, this.host.signal]);
-		const source: SourceRead = continuation && known ? { ...known, pending: true, error: undefined } : { text: "", pending: true };
+		const source: SourceRead =
+			continuation && known ? { ...known, pending: true, error: undefined } : { text: "", pending: true };
 		this.sources.set(resource, source);
 		this.host.requestRender();
-		const request: AccessRequest = last ? { resource, offset: last.nextOffset, referenceBodyDigest: last.referenceBodyDigest } : { resource };
+		const request: AccessRequest = last
+			? { resource, offset: last.nextOffset, referenceBodyDigest: last.referenceBodyDigest }
+			: { resource };
 		try {
 			const page = await this.ops.read(request, signal);
 			// The real accessor answers a cancelled read with an error value, not a rejection.
@@ -156,11 +164,14 @@ class PillarsView {
 		const source = this.sources.get(entry.resource);
 		const head = [`${safe(entry.title)} · ${safe(entry.type)}`, entry.index ? safe(entry.index) : ""].filter(Boolean);
 		if (!source || (source.pending && !source.text)) return [...head, "", "Reading the source…"].join("\n");
-		const digest = source.last ? `Source: ${safe(source.last.resource)} · SHA-256: ${source.last.referenceBodyDigest}` : "";
+		const digest = source.last
+			? `Source: ${safe(source.last.resource)} · SHA-256: ${source.last.referenceBodyDigest}`
+			: "";
 		const tail: string[] = [];
 		if (source.pending) tail.push("Reading the next page…");
 		else if (source.error) tail.push(`The read stopped: ${source.error}`);
-		else if (source.last?.nextOffset !== undefined) tail.push(`[Read more continues at byte ${source.last.nextOffset} of ${source.last.bodyBytes}]`);
+		else if (source.last?.nextOffset !== undefined)
+			tail.push(`[Read more continues at byte ${source.last.nextOffset} of ${source.last.bodyBytes}]`);
 		return [...head, digest, "", safe(source.text), ...(tail.length ? ["", ...tail] : [])].join("\n");
 	}
 
@@ -169,8 +180,26 @@ class PillarsView {
 		const source = this.sources.get(entry.resource);
 		const more = source?.last?.nextOffset !== undefined && !source.error;
 		return [
-			{ id: "more", label: "Read more", key: "m", short: "read more", primary: true, disabled: source?.pending ? "A read is running" : more ? undefined : "The whole source is shown", description: "Read the next page of the same source revision", run: () => void this.read(entry.resource, true) },
-			{ id: "again", label: "Read again", key: "r", short: "read again", primary: true, disabled: source?.pending ? "A read is running" : undefined, description: "Read the source from its first page", run: () => void this.read(entry.resource, false) },
+			{
+				id: "more",
+				label: "Read more",
+				key: "m",
+				short: "read more",
+				primary: true,
+				disabled: source?.pending ? "A read is running" : more ? undefined : "The whole source is shown",
+				description: "Read the next page of the same source revision",
+				run: () => void this.read(entry.resource, true),
+			},
+			{
+				id: "again",
+				label: "Read again",
+				key: "r",
+				short: "read again",
+				primary: true,
+				disabled: source?.pending ? "A read is running" : undefined,
+				description: "Read the source from its first page",
+				run: () => void this.read(entry.resource, false),
+			},
 		];
 	}
 
@@ -178,7 +207,9 @@ class PillarsView {
 		if (this.inventory === "pending") return "Reading the inventory…";
 		if (typeof this.inventory === "object") return `The inventory could not be read: ${this.inventory.error}`;
 		const shown = this.shown().length;
-		return this.state.query.trim() ? `${shown} of ${this.entries.length} sources match · read-only` : `${this.entries.length} sources · read-only`;
+		return this.state.query.trim()
+			? `${shown} of ${this.entries.length} sources match · read-only`
+			: `${this.entries.length} sources · read-only`;
 	}
 
 	private empty(): string {
@@ -189,6 +220,10 @@ class PillarsView {
 }
 
 /** Open the Pillars browser inside a frame. */
-export function pillarsView(host: ViewHost, ops: PillarsOperations, state: PillarsViewState = createPillarsViewState()): OperatorView {
+export function pillarsView(
+	host: ViewHost,
+	ops: PillarsOperations,
+	state: PillarsViewState = createPillarsViewState(),
+): View {
 	return new PillarsView(host, ops, state).browser;
 }

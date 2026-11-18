@@ -3,15 +3,10 @@ import { writeSync } from "node:fs";
 import { resolve } from "node:path";
 import { publishSettings, readSettings, type ReadOptions } from "./settings.ts";
 import { fileURLToPath } from "node:url";
-import {
-	type ExtensionAPI,
-	type ExtensionContext,
-	getAgentDir,
-	VERSION,
-} from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import { int, obj, opt, str, type Schema, type Static } from "@earendil-works/pi-schema";
 import { ACCESS_DESCRIPTION, access, parseAccess } from "./access.ts";
-import { LoadingView, openOperatorFrame, publishOperatorViews, type OperatorView, type ViewHost } from "../../operator-ui/registration.ts";
+import type { Frame } from "./frame.ts";
 import { browserEntries } from "./inventory.ts";
 import type { PillarsViewState } from "./operator-view.ts";
 import { InputError } from "./input.ts";
@@ -21,9 +16,22 @@ import { COMMAND_HELP, commandCompletions, judgmentPrompt, parseJudgmentRequest 
 import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, DraftSchema, splitDraft } from "./draft.ts";
 import { toolDisplay } from "./display.ts";
 import { pillarsDurableContribution } from "./durable.ts";
-import { JUDGMENT_REQUEST_MESSAGE, renderJudgmentRequestMessage, renderViewEntry, VIEW_ENTRY, type ViewEntryData } from "./request-card.ts";
+import {
+	JUDGMENT_REQUEST_MESSAGE,
+	renderJudgmentRequestMessage,
+	renderViewEntry,
+	VIEW_ENTRY,
+	type ViewEntryData,
+} from "./request-card.ts";
 import { exportLocal, parseCommand } from "./export.ts";
-import { accessEvidence, Deduplicator, type DeliveryExtent, extract, readEvidence, type ResultEvidence } from "./observation.ts";
+import {
+	accessEvidence,
+	Deduplicator,
+	type DeliveryExtent,
+	extract,
+	readEvidence,
+	type ResultEvidence,
+} from "./observation.ts";
 import { usageMarkdown } from "./presentation.ts";
 import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./readback.ts";
 import { PillarsStore } from "./store.ts";
@@ -31,10 +39,18 @@ import { PillarsStore } from "./store.ts";
 const PillarsParameters = obj(
 	{
 		resource: opt(
-			str({ maxLength: 64, description: "Canonical identifier from the inventory, not a filename or path. For governance use {\"resource\":\"governance\"}; omit for inventory." }),
+			str({
+				maxLength: 64,
+				description:
+					'Canonical identifier from the inventory, not a filename or path. For governance use {"resource":"governance"}; omit for inventory.',
+			}),
 		),
 		offset: opt(
-			int({ minimum: 0, maximum: 1048576, description: "Copy nextOffset with referenceBodyDigest from the same page; omit both fields for a fresh read." }),
+			int({
+				minimum: 0,
+				maximum: 1048576,
+				description: "Copy nextOffset with referenceBodyDigest from the same page; omit both fields for a fresh read.",
+			}),
 		),
 		referenceBodyDigest: opt(
 			str({
@@ -47,12 +63,22 @@ const PillarsParameters = obj(
 	{ open: false },
 );
 
-const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({
+	type: "string",
+	enum: [...values],
+});
 const PillarsUsageParameters = obj(
 	{
 		view: opt(StringEnum(["overview", "revisions"])),
 		windowDays: opt(int({ minimum: 1, maximum: 30 })),
-		cursor: opt(str({ minLength: 4, maxLength: 256, pattern: "^[-_A-Za-z0-9]+$", description: "Copy nextCursor unchanged and send cursor alone, without view or windowDays." })),
+		cursor: opt(
+			str({
+				minLength: 4,
+				maxLength: 256,
+				pattern: "^[-_A-Za-z0-9]+$",
+				description: "Copy nextCursor unchanged and send cursor alone, without view or windowDays.",
+			}),
+		),
 	},
 	{ open: false },
 );
@@ -64,10 +90,14 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 	let catalog: Catalog | undefined;
 	let collector: Collector | undefined;
 	const snapshot = readSettings(options);
-	let enabled = snapshot.values.collect && snapshot.records.find((record) => record.key === "collect")?.status !== "invalid";
+	let enabled =
+		snapshot.values.collect && snapshot.records.find((record) => record.key === "collect")?.status !== "invalid";
 	const store = new PillarsStore(snapshot.values.dir);
 	const stopSettings = publishSettings(pi.events, options);
-	pi.events.emit("durable:contribution", pillarsDurableContribution(fileURLToPath(import.meta.url), { bus: pi.events, stopFactory: stopSettings }));
+	pi.events.emit(
+		"durable:contribution",
+		pillarsDurableContribution(fileURLToPath(import.meta.url), { bus: pi.events, stopFactory: stopSettings }),
+	);
 	const reader = createReader((signal) => store.capture(utcDay(), signal), { enabled: () => enabled });
 	const dedup = new Deduplicator();
 	const delivered = new Map<string, DeliveryExtent>();
@@ -90,7 +120,11 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		const invalidCollect = current.records.find((record) => record.key === "collect")?.status === "invalid";
 		enabled = current.values.collect && !invalidCollect;
 		for (const issue of current.diagnostics) diagnostic(ctx, `${issue.field}: ${issue.message}`);
-		if (invalidCollect) diagnostic(ctx, "pillars.collect requires a boolean (environment: 0, 1, false, or true). The collector is disabled.");
+		if (invalidCollect)
+			diagnostic(
+				ctx,
+				"pillars.collect requires a boolean (environment: 0, 1, false, or true). The collector is disabled.",
+			);
 		collector = new Collector(store, { diagnostic: (text) => diagnostic(ctx, text) });
 		dedup.newTurn();
 		sourceWarned = false;
@@ -108,7 +142,11 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 	pi.on("turn_end", async (_event, ctx) => {
 		if (enabled) await collector?.flush(true, ctx.signal);
 	});
+	let frame: Frame | undefined;
+	let closed = false;
 	pi.on("session_shutdown", async () => {
+		closed = true;
+		frame?.close();
 		stopSettings();
 		displayPublisher.stop();
 		if (enabled) await collector?.shutdown();
@@ -140,11 +178,20 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		reference: Buffer | undefined,
 	): ResultEvidence | undefined {
 		if (event.toolName === "pillars")
-			return accessEvidence(event.content, resource.resourceId, event.isError ?? false, delivered.get(event.toolCallId));
+			return accessEvidence(
+				event.content,
+				resource.resourceId,
+				event.isError ?? false,
+				delivered.get(event.toolCallId),
+			);
 		if (event.toolName === "read") return readEvidence(event.content, reference, event.isError ?? false);
 		return undefined;
 	}
-	function admitObservation(event: ObservedToolEvent, stage: "tool_request" | "tool_result", ctx: ExtensionContext): boolean {
+	function admitObservation(
+		event: ObservedToolEvent,
+		stage: "tool_request" | "tool_result",
+		ctx: ExtensionContext,
+	): boolean {
 		const admission = dedup.admit(event.toolCallId, stage);
 		if (admission === "admitted") return true;
 		if (admission === "saturated" && dedup.warnOnce())
@@ -172,12 +219,17 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			result,
 		});
 	}
-	async function observe(event: ObservedToolEvent, ctx: ExtensionContext, stage: "tool_request" | "tool_result"): Promise<void> {
+	async function observe(
+		event: ObservedToolEvent,
+		ctx: ExtensionContext,
+		stage: "tool_request" | "tool_result",
+	): Promise<void> {
 		if (!enabled || !collector || !catalog || !["read", "pillars"].includes(event.toolName)) return;
 		try {
-			const resource = event.toolName === "pillars"
-				? ownedResource(event, catalog)
-				: await resourceByPath(catalog, event.input.path, ctx.cwd);
+			const resource =
+				event.toolName === "pillars"
+					? ownedResource(event, catalog)
+					: await resourceByPath(catalog, event.input.path, ctx.cwd);
 			if (!resource || !admitObservation(event, stage, ctx)) return;
 			let reference: Buffer | undefined;
 			try {
@@ -213,18 +265,27 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			try {
 				const { source, draft } = splitDraft(input);
 				const { referenceBodyDigest, ...args } = parseAccess(source, catalog);
-				return { ...args, ...(referenceBodyDigest === undefined ? {} : { referenceBodyDigest }), ...(draft === undefined ? {} : { draft }) };
+				return {
+					...args,
+					...(referenceBodyDigest === undefined ? {} : { referenceBodyDigest }),
+					...(draft === undefined ? {} : { draft }),
+				};
 			} catch (error) {
 				if (!(error instanceof InputError) && !(error instanceof DraftInputError)) throw error;
-				throw new Error(JSON.stringify({ schema: "pillars-source-error", code: "invalid_input", message: error.message }));
+				throw new Error(
+					JSON.stringify({ schema: "pillars-source-error", code: "invalid_input", message: error.message }),
+				);
 			}
 		},
 		async execute(id, args: Static<typeof PillarsParameters>, signal) {
 			let input: ReturnType<typeof splitDraft>;
-			try { input = splitDraft(args); }
-			catch (error) {
+			try {
+				input = splitDraft(args);
+			} catch (error) {
 				if (!(error instanceof DraftInputError)) throw error;
-				throw new Error(JSON.stringify({ schema: "pillars-source-error", code: "invalid_input", message: error.message }));
+				throw new Error(
+					JSON.stringify({ schema: "pillars-source-error", code: "invalid_input", message: error.message }),
+				);
 			}
 			const result = await access(catalog, input.source, signal);
 			if (result.schema === "pillars-source" && delivered.size < 4096 && Buffer.byteLength(id) <= 256) {
@@ -233,7 +294,10 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			}
 			if (result.schema === "pillars-source-error") throw new Error(JSON.stringify(result));
 			if (input.draft !== undefined && !signal?.aborted)
-				pi.sendMessage({ customType: "pillars-draft", content: draftAssessment(input.draft), display: false }, { triggerTurn: false });
+				pi.sendMessage(
+					{ customType: "pillars-draft", content: draftAssessment(input.draft), display: false },
+					{ triggerTurn: false },
+				);
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 		},
 	});
@@ -244,15 +308,20 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		parameters: PillarsUsageParameters,
 		...displayRecords.get("pillars_usage"),
 		prepareArguments(input) {
-			try { return parseRequest(input); }
-			catch (error) {
+			try {
+				return parseRequest(input);
+			} catch (error) {
 				if (!(error instanceof InputError)) throw error;
 				throw new Error(JSON.stringify(errorResponse("invalid_input", error.message)));
 			}
 		},
 		async execute(_id, args: Static<typeof PillarsUsageParameters>, signal) {
 			const result = await reader.read(args, signal);
-			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result, isError: result.kind === "error" };
+			return {
+				content: [{ type: "text", text: JSON.stringify(result) }],
+				details: result,
+				isError: result.kind === "error",
+			};
 		},
 	});
 	pi.registerEntryRenderer<ViewEntryData>(VIEW_ENTRY, renderViewEntry);
@@ -285,14 +354,22 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			ctx.signal,
 		);
 		if (result.schema === "pillars-source-error") {
-			display(`Pillars source: ${result.code}. ${result.message ?? ""}`.trimEnd(), { title: "Source unavailable", facts: [result.code] }, ctx);
+			display(
+				`Pillars source: ${result.code}. ${result.message ?? ""}`.trimEnd(),
+				{ title: "Source unavailable", facts: [result.code] },
+				ctx,
+			);
 			return;
 		}
 		const continuation =
 			result.nextOffset !== undefined
 				? `Continue: /pillars read ${result.resource} ${result.nextOffset} ${result.referenceBodyDigest}`
 				: "Read an entry: /pillars read <resource>. Read consultation rules: /pillars read governance. View access evidence: /pillars usage.";
-		display(`${result.text}\n\nSource: ${result.resource}; SHA-256: ${result.referenceBodyDigest}.\n${continuation}`, { title: "Source", subject: result.resource }, ctx);
+		display(
+			`${result.text}\n\nSource: ${result.resource}; SHA-256: ${result.referenceBodyDigest}.\n${continuation}`,
+			{ title: "Source", subject: result.resource },
+			ctx,
+		);
 	}
 	async function usageOrExport(input: string, ctx: ExtensionContext): Promise<void> {
 		const parsed = parseCommand(input === "usage" ? "" : input.startsWith("usage ") ? input.slice(6) : input);
@@ -302,10 +379,18 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 				display(usageMarkdown(document), { title: "Access evidence" }, ctx);
 				return;
 			}
-			display(JSON.stringify(await exportLocal(parsed.path, document, { signal: ctx.signal })), { title: "Access evidence export" }, ctx);
+			display(
+				JSON.stringify(await exportLocal(parsed.path, document, { signal: ctx.signal })),
+				{ title: "Access evidence export" },
+				ctx,
+			);
 			return;
 		}
-		display(usageMarkdown(await reader.read({ view: parsed.kind, windowDays: parsed.windowDays }, ctx.signal)), { title: "Access evidence" }, ctx);
+		display(
+			usageMarkdown(await reader.read({ view: parsed.kind, windowDays: parsed.windowDays }, ctx.signal)),
+			{ title: "Access evidence" },
+			ctx,
+		);
 	}
 	/** Corpus reads behind the browser; the catalogue is discovered on first use. */
 	const browserOperations = {
@@ -321,21 +406,28 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		},
 	};
 	const viewStates = new Map<string, PillarsViewState>();
-	/** The view module loads when the destination opens, not when this factory runs. */
-	const loadView = async (ctx: ExtensionContext, host: ViewHost): Promise<OperatorView> => {
-		const module = await import("./operator-view.ts");
-		const id = ctx.sessionManager.getSessionId();
-		let state = viewStates.get(id);
-		if (!state) {
-			state = module.createPillarsViewState();
-			viewStates.set(id, state);
-		}
-		return module.pillarsView(host, browserOperations, state);
-	};
-	/** Open the read-only browser in the interactive terminal; it returns false when only the text route applies. */
+	let opening = false;
+	/** Return false when only the text route applies. */
 	async function openBrowser(ctx: ExtensionContext): Promise<boolean> {
 		if (ctx.mode !== "tui" || !catalog) return false;
-		await openOperatorFrame(pi, ctx, { owner: OWNER, id: "pillars" });
+		if (opening || closed) return true;
+		opening = true;
+		try {
+			const [{ openFrame }, module] = await Promise.all([import("./frame.ts"), import("./operator-view.ts")]);
+			if (closed) return true;
+			const id = ctx.sessionManager.getSessionId();
+			const state = viewStates.get(id) ?? module.createPillarsViewState();
+			viewStates.set(id, state);
+			await openFrame(
+				ctx,
+				(host) => module.pillarsView(host, browserOperations, state),
+				(current) => {
+					frame = current;
+				},
+			);
+		} finally {
+			opening = false;
+		}
 		return true;
 	}
 	/** Browse opens the reader when a TUI is present; every other input keeps its text route. */
@@ -347,16 +439,23 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			return;
 		}
 		if (input.startsWith("next ")) {
-			display(usageMarkdown(await reader.read({ cursor: input.slice(5) }, ctx.signal)), { title: "Access evidence" }, ctx);
+			display(
+				usageMarkdown(await reader.read({ cursor: input.slice(5) }, ctx.signal)),
+				{ title: "Access evidence" },
+				ctx,
+			);
 			return;
 		}
 		await usageOrExport(input, ctx);
 	}
 	async function refreshJudgment(ctx: ExtensionContext): Promise<void> {
 		if (await discover(ctx.signal, true)) return;
-		diagnostic(ctx, catalog
-			? "Pillars catalogue refresh failed. The judgment uses the last available catalogue; source reads still verify current body bytes."
-			: "Pillars catalogue refresh failed. No catalogue is available; check the configured corpus and retry.");
+		diagnostic(
+			ctx,
+			catalog
+				? "Pillars catalogue refresh failed. The judgment uses the last available catalogue; source reads still verify current body bytes."
+				: "Pillars catalogue refresh failed. No catalogue is available; check the configured corpus and retry.",
+		);
 	}
 	pi.registerCommand("pillars", {
 		description:
@@ -390,13 +489,4 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		},
 	});
 	displayPublisher.publish();
-	// Package contract: docs/conventions/operator-panels.md. Browse is a harmless read; the judgment verbs stay in command search.
-	publishOperatorViews(pi, {
-		version: 2,
-		owner: OWNER,
-		views: [{ id: "pillars", label: "Pillars", command: { name: "pillars", args: "browse" }, order: 40, view: (ctx, host) => new LoadingView("Pillars", host, () => loadView(ctx, host)) }],
-	});
 }
-
-/** This extension's entrypoint; the ordinary frame binds the published view to its /pillars registration. */
-const OWNER = fileURLToPath(import.meta.url);
