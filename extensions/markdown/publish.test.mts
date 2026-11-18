@@ -230,21 +230,26 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 	assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /^Saved new document md-[a-f0-9]{20} revision 1 \(7 bytes, sha256:[a-f0-9]{64}\)\. No window opened\.\n/u);
 	assert.ok(tool.outputSchema);
 	const guideline = tool.promptGuidelines?.join("\n") ?? "";
-	assert.match(guideline, /^Before you send a reply with headings, a table, three or more explained points, or more than about ten lines, publish it with markdown_publish and run its show command in a new split on the right of your own pane, with no target;/u, "the reply decision itself carries the publication rule");
+	assert.match(guideline, /^Use markdown_publish without waiting to be asked/u, "the reply decision itself carries the publication rule");
+	assert.match(guideline, /run its show command in a new split on the right of your own pane, with no target/u);
 	assert.match(tool.description, /new split on the right of your own pane that closes when its program ends, and give it no target/u);
 	assert.doesNotMatch(tool.description + guideline, /float/u);
 	const floating = createPublishTool({ store, cwd: root, pane: "float" });
 	for (const guidance of [floating.description, floating.promptGuidelines?.join("\n") ?? "", publishDescription("float"), NATIVE_PUBLISH_GUIDANCE]) assert.match(guidance, /floating pane that stays (?:where it is|in place)/u, "agents without a pane of their own always float");
-	for (const guidance of [tool.description, guideline, floating.description, NATIVE_PUBLISH_GUIDANCE]) {
+	for (const guidance of [tool.description, guideline, floating.description, floating.promptGuidelines?.join("\n") ?? "", NATIVE_PUBLISH_GUIDANCE]) {
+		assert.match(guidance, /without waiting to be asked/u);
+		assert.match(guidance, /a reply with headings, a table, three or more explained points, or more than about ten lines/u);
+		assert.match(guidance, /a document, comparison, or diagram; or a worker's findings and progress/u);
+		assert.match(guidance, /Agents that work for other agents follow this rule too/u);
+		assert.match(guidance, /A report to another agent stays complete/u);
 		assert.match(guidance, /Ask card, give the substantive answer in your final message/u);
 		assert.match(guidance, /no target/u, "the pane opens on the tab where the work belongs, not wherever the operator looks");
+		assert.match(guidance, /Do not take focus unless the operator asked to see it now/u);
+		assert.match(guidance, /A plain answer of a few sentences stays in chat/u);
 		assert.doesNotMatch(guidance, /operator's (?:focus|tab)|default|setting|agentPane/u, "the guidance names a pane, not a default or the setting behind it");
+		assert.doesNotMatch(guidance, /not every reply|do not publish every reply|explicitly requested document/u);
 	}
 	assert.match(NATIVE_PUBLISH_GUIDANCE, /tab of the ordinary session that started your chain of agents/u);
-	for (const guidance of [tool.description, NATIVE_PUBLISH_GUIDANCE]) {
-		assert.doesNotMatch(guidance, /not every reply|do not publish every reply|explicitly requested document/u, "no wording limits publication to requested documents");
-		assert.match(guidance, /A report to another agent stays complete/u);
-	}
 	const first = success(result.details);
 	assert.equal(first.show, undefined);
 	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith("\nIt cannot be shown in a pane: No reader app is configured. Build it with node extensions/markdown/native/build.mts.")); assert.equal(first.provenance.session, "first"); assert.equal(first.provenance.model, "faux/faux-1"); assert.ok(first.provenance.host);
