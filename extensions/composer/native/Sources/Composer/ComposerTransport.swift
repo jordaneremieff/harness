@@ -127,7 +127,94 @@ private enum ComposerValidation {
     }
 }
 
-private final class ComposerRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+private final class ComposerResponseReader: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    struct Body: Sendable {
+        let response: HTTPURLResponse
+        let data: Data
+        let headers: UInt64
+        let firstByte: UInt64?
+        let end: UInt64
+    }
+
+    private struct Read {
+        let continuation: CheckedContinuation<Body, any Error>
+        var response: HTTPURLResponse?
+        var data = Data()
+        var headers: UInt64 = 0
+        var firstByte: UInt64?
+    }
+
+    private let lock = NSLock()
+    private var reads: [Int: Read] = [:]
+
+    func body(task: URLSessionDataTask) async throws -> Body {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let accepted = lock.withLock {
+                    guard !Task.isCancelled else { return false }
+                    reads[task.taskIdentifier] = Read(continuation: continuation)
+                    return true
+                }
+                if accepted { task.resume() }
+                else {
+                    continuation.resume(throwing: URLError(.cancelled))
+                    task.cancel()
+                }
+            }
+        } onCancel: {
+            if self.lock.withLock({ self.reads[task.taskIdentifier] != nil }) { task.cancel() }
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+        let id = dataTask.taskIdentifier
+        guard let response = response as? HTTPURLResponse else {
+            fail(id, ComposerTransportError.invalidResponse)
+            completionHandler(.cancel)
+            return
+        }
+        guard response.expectedContentLength <= maximumComposerResponseBytes else {
+            fail(id, ComposerTransportError.responseTooLarge)
+            completionHandler(.cancel)
+            return
+        }
+        let accepted = lock.withLock {
+            guard reads[id] != nil else { return false }
+            reads[id]?.response = response
+            reads[id]?.headers = DispatchTime.now().uptimeNanoseconds
+            return true
+        }
+        completionHandler(accepted ? .allow : .cancel)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let id = dataTask.taskIdentifier
+        let overflow = lock.withLock {
+            guard let count = reads[id]?.data.count else { return false }
+            guard data.count <= maximumComposerResponseBytes - count else { return true }
+            if reads[id]?.firstByte == nil { reads[id]?.firstByte = DispatchTime.now().uptimeNanoseconds }
+            reads[id]?.data.append(data)
+            return false
+        }
+        if overflow {
+            fail(id, ComposerTransportError.responseTooLarge)
+            dataTask.cancel()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        guard let read = lock.withLock({ reads.removeValue(forKey: task.taskIdentifier) }) else { return }
+        if let error { read.continuation.resume(throwing: error) }
+        else if let response = read.response {
+            read.continuation.resume(returning: Body(response: response, data: read.data, headers: read.headers,
+                                                      firstByte: read.firstByte, end: DispatchTime.now().uptimeNanoseconds))
+        } else { read.continuation.resume(throwing: ComposerTransportError.invalidResponse) }
+    }
+
+    private func fail(_ id: Int, _ error: ComposerTransportError) {
+        lock.withLock { reads.removeValue(forKey: id) }?.continuation.resume(throwing: error)
+    }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(nil)
@@ -141,6 +228,7 @@ private let maximumComposerResponseBytes = 4 * 1024 * 1024
 final class ComposerTransport {
     private let configuration: ComposerConfiguration
     private let session: URLSession
+    private let reader = ComposerResponseReader()
 
     init(_ configuration: ComposerConfiguration) {
         self.configuration = configuration
@@ -152,7 +240,7 @@ final class ComposerTransport {
         settings.requestCachePolicy = .reloadIgnoringLocalCacheData
         settings.timeoutIntervalForRequest = 35
         settings.timeoutIntervalForResource = 35
-        session = URLSession(configuration: settings, delegate: ComposerRedirectDelegate(), delegateQueue: nil)
+        session = URLSession(configuration: settings, delegate: reader, delegateQueue: nil)
     }
 
     deinit { session.invalidateAndCancel() }
@@ -167,18 +255,16 @@ final class ComposerTransport {
         request.setValue("Bearer " + configuration.token, forHTTPHeaderField: "Authorization")
         request.httpBody = try Self.encodedBody(fields, configuration: configuration)
 
-        let (bytes, response) = try await session.bytes(for: request)
-        guard let response = response as? HTTPURLResponse else {
-            throw ComposerTransportError.invalidResponse
-        }
-        var data = Data()
-        for try await byte in bytes {
-            guard data.count < maximumComposerResponseBytes else {
-                throw ComposerTransportError.responseTooLarge
-            }
-            data.append(byte)
-        }
-        return try Self.decodeResponse(status: response.statusCode, data: data)
+        let start = DispatchTime.now().uptimeNanoseconds
+        let body = try await reader.body(task: session.dataTask(with: request))
+        let first = body.firstByte ?? body.headers
+        let headerMS = Double(body.headers - start) / 1e6
+        let firstMS = Double(first - start) / 1e6
+        let bodyMS = Double(body.end - first) / 1e6
+        let value = try Self.decodeResponse(status: body.response.statusCode, data: body.data)
+        let totalMS = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
+        ComposerHost.perf.debug("http.response path=\(relative, privacy: .public) headers_ms=\(headerMS) first_chunk_ms=\(firstMS) body_ms=\(bodyMS) total_ms=\(totalMS) bytes=\(body.data.count)")
+        return value
     }
 
     nonisolated static func encodedBody(_ fields: [String: Any],
