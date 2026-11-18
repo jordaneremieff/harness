@@ -8,12 +8,11 @@
   .doc > .reader-block { margin:0 0 1.05em;border-radius:6px;position:relative; }
   .doc h1,.doc h2,.doc h3,.doc h4,.doc h5,.doc h6 { color:var(--heading);text-wrap:balance;font-family:var(--font-display);margin:0; }
   /* Headings scale with the pane, so a small floating pane is not filled by its title. */
-  .doc h1 { color:var(--h1);font-size:clamp(1.55rem,1.15rem + 1.6cqi,2.05rem);font-weight:700;letter-spacing:-.022em;line-height:1.16; }
-  .doc h2 { color:var(--h2);font-size:clamp(1.24rem,1.06rem + .7cqi,1.42rem);font-weight:650;letter-spacing:-.014em;line-height:1.26; }
-  .doc h3 { color:var(--h3);font-size:1.16rem;font-weight:650;letter-spacing:-.008em;line-height:1.32; }
-  .doc h4 { color:var(--h4);font-size:1rem;font-weight:650; }
-  .doc h5,.doc h6 { font-size:.82rem;font-weight:650;text-transform:uppercase;letter-spacing:.06em; }
-  .doc h5 { color:var(--h5); }.doc h6 { color:var(--h6); }
+  .doc h1 { font-size:clamp(1.55rem,1.15rem + 1.6cqi,2.05rem);font-weight:700;letter-spacing:-.022em;line-height:1.16; }
+  .doc h2 { font-size:clamp(1.24rem,1.06rem + .7cqi,1.42rem);font-weight:650;letter-spacing:-.014em;line-height:1.26; }
+  .doc h3 { font-size:1.16rem;font-weight:650;letter-spacing:-.008em;line-height:1.32; }
+  .doc h4 { font-size:1rem;font-weight:650; }
+  .doc h5,.doc h6 { font-size:.82rem;font-weight:650;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2); }
   .doc > [data-type="heading1"] { margin-bottom:.7em; }
   .doc > [data-type="heading2"] { margin-top:2.1em;margin-bottom:.55em; }
   .doc > [data-type="heading3"] { margin-top:1.7em;margin-bottom:.45em; }
@@ -44,7 +43,10 @@
   .doc figure.code > .code-copy { top:5px;right:6px; }
   .doc .code-copy:hover { background:var(--hover); }.doc .code-copy .i { width:14px;height:14px; }
   #app[data-wrap] .doc pre { white-space:pre-wrap;overflow-wrap:anywhere; }
-  .syn-p { color:var(--syn-fn); }.syn-v { color:var(--syn-var); }.syn-a { color:var(--syn-type); }.syn-meta { color:var(--syn-meta); }.syn-ins { color:var(--ok); }.syn-del { color:var(--err); }
+  /* Code colours by the style guide's roles; highlight.ts names the token kinds. */
+  .syn-p { color:var(--syn-fn); }.syn-m { color:var(--syn-member); }.syn-r { color:var(--syn-param); }.syn-b { color:var(--syn-builtin); }.syn-v { color:var(--syn-param); }
+  .syn-e { color:var(--syn-escape); }.syn-o { color:var(--syn-op); }.syn-d { color:var(--syn-punct); }.syn-ev { color:var(--syn-variant); }.syn-x { color:var(--syn-macro); }
+  .syn-meta { color:var(--syn-meta); }.syn-ins { color:var(--ok); }.syn-del { color:var(--err); }
   .syn-k { color:var(--syn-key); }.syn-s { color:var(--syn-str); }.syn-n { color:var(--syn-num); }.syn-c { color:var(--syn-com);font-style:italic; }.syn-t { color:var(--syn-type); }.syn-f { color:var(--syn-fn); }
   /* Columns take the width their content needs and cells never split a word. A table whose words
      cannot fit scrolls inside its frame, and an edge shadow shows that more of it lies beside the

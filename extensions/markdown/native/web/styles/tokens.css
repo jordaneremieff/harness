@@ -62,17 +62,17 @@
     --syn-com: light-dark(#7c7f93, #939ab7);           /* overlay 2 */
     --syn-type: light-dark(#df8e1d, #eed49f);          /* yellow */
     --syn-fn: light-dark(#1e66f5, #8aadf4);            /* blue: functions, properties */
-    --syn-var: light-dark(#e64553, #ee99a0);           /* maroon: shell variables */
+    --syn-param: light-dark(#e64553, #ee99a0);         /* maroon: parameters and variables */
+    --syn-builtin: light-dark(#d20f39, #ed8796);       /* red: builtins such as this and self */
+    --syn-escape: light-dark(#ea76cb, #f5bde6);        /* pink: escapes, regular expressions, interpolation */
+    --syn-op: light-dark(#04a5e5, #91d7e3);            /* sky: operators */
+    --syn-punct: light-dark(#7c7f93, #939ab7);         /* overlay 2: braces and delimiters */
+    --syn-member: light-dark(#7287fd, #b7bdf8);        /* lavender: members */
+    --syn-variant: light-dark(#179299, #8bd5ca);       /* teal: enum cases */
+    --syn-macro: light-dark(#dc8a78, #f4dbd6);         /* rosewater: macros */
     --syn-meta: light-dark(#209fb5, #7dc4e4);          /* sapphire: diff headers */
 
-    /* Markdown structure: headings in the style guide's rainbow sequence (red, peach, yellow, green,
-       sapphire, lavender), lavender list markers, and links that turn sky on hover. */
-    --h1: light-dark(#d20f39, #ed8796);
-    --h2: light-dark(#da601e, #f5a97f);                /* legible in Latte */
-    --h3: light-dark(#b37b34, #eed49f);                /* legible in Latte */
-    --h4: light-dark(#2b711c, #a6da95);                /* legible in Latte */
-    --h5: light-dark(#38738b, #7dc4e4);                /* legible in Latte */
-    --h6: light-dark(#5b65a4, #b7bdf8);                /* legible in Latte */
+    /* Markdown structure: lavender list markers and links that turn sky on hover. */
     --list-marker: light-dark(#7287fd, #b7bdf8);
     --link-hover: light-dark(#2f719b, #91d7e3);        /* legible in Latte */
 

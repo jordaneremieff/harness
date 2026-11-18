@@ -16,21 +16,27 @@ const kinds = (text: string, language: string) =>
 			.filter((token) => token.kind)
 			.map((token) => `${token.kind}:${token.text}`),
 	);
-
+const has = (text: string, language: string, expected: string[]) => {
+	const found = kinds(text, language);
+	for (const item of expected) assert.ok(found.includes(item), `${language}: ${item} in ${found.join(" ")}`);
+};
 // A literal dollar and brace, as code contains them.
 const at = (name: string) => `$${"{"}${name}}`;
+
 const samples: [string, string][] = [
 	["ts", `export async function show(id: string): Promise<Pane> {\n\t// open it\n\treturn open(\`pane ${at("id")}\`, 42, true);\n}\n`],
-	["swift", 'let paper = NSColor(srgbRed: 36 / 255, green: 0x27, blue: 0.5, alpha: 1) // base\nguard let x else { return nil }\n"""\nmulti\n"""'],
+	["swift", 'let paper = NSColor(srgbRed: 36 / 255, green: 0x27, blue: 0.5, alpha: 1) // base\nguard let x else { return nil }\n"""\nmulti \\(x)\n"""'],
 	["json", '{ "kind": "published", "revision": 2, "open": null, "items": ["a\\"b"] }'],
 	["bash", `export PI_MARKDOWN_APP="$HOME/app" # build\nif [ -n "${at("X")}" ]; then node build.mts --verify; fi`],
 	["python", 'def run(self, path: str) -> None:\n    """Doc."""\n    return f"{path}" if True else None  # done'],
 	["diff", "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n same"],
-	["html", '<a href="https://x.test" class=\'y\'>link</a><!-- note -->'],
+	["html", '<a href="https://x.test" class=\'y\'>link &amp; more</a><!-- note -->'],
 	["yaml", "title: Reader\ncount: 3\nok: true\n- name: x # c"],
-	["css", "@media (width < 860px) { .outline { margin-top: var(--bar-h); } }"],
+	["css", "@media (width < 860px) { .outline { margin-top: var(--bar-h); color: #24273a; } }"],
 	["sql", "SELECT name FROM docs WHERE id = 'a''b' -- one\n"],
-	["md", "# Title\n\nSee `code` and [a link](https://x.test)."],
+	["md", "# Title\n\n- See `code` and [a link](https://x.test)."],
+	["js", "const re = /a\\/b+/gi; const half = a / b;\nitems.map((x, i) => x * 2).filter(y => y);\nthis.root = console.log;"],
+	["rust", 'fn main() { println!("{}", self.len()); }'],
 	["unknown", "nothing to colour 42"],
 ];
 
@@ -46,21 +52,34 @@ test("tokens join to the exact code text for every language", () => {
 		);
 });
 
-test("tokens follow the style guide's roles", () => {
-	const ts = kinds(samples[0][1], "typescript");
-	for (const expected of ["k:export", "k:async", "k:function", "f:show", "t:Promise", "t:Pane", "c:// open it", `s:\`pane ${at("id")}\``, "n:42", "n:true"])
-		assert.ok(ts.includes(expected), `${expected} in ${ts.join(" ")}`);
-	assert.ok(kinds(samples[2][1], "json").includes('p:"kind"'), "a JSON key is a property");
-	assert.ok(kinds(samples[2][1], "json").includes('s:"published"'), "a JSON value is a string");
-	const shell = kinds(samples[3][1], "sh");
-	for (const expected of ["k:export", "s:\"$HOME/app\"", "c:# build", "k:if", "k:then", "k:fi"]) assert.ok(shell.includes(expected), `${expected} in ${shell.join(" ")}`);
+test("definitions, parameters, members and builtins take their own colours", () => {
+	has(samples[0][1], "typescript", ["k:export", "k:async", "k:function", "f:show", "r:id", "t:string", "t:Promise", "t:Pane", "c:// open it", "k:return", "f:open", "n:42", "n:true", "d:(", "o::"]);
+	has(samples[4][1], "py", ["k:def", "f:run", "b:self", "r:path", "t:str", "o:->", "n:None", "n:True", 'c:# done']);
+	has(samples[11][1], "javascript", ["e:/a\\/b+/gi", "o:/", "f:map", "r:x", "r:i", "f:filter", "r:y", "b:this", "m:root", "b:console", "m:log"]);
+	has(samples[1][1], "swift", ["t:NSColor", "n:0x27", "n:0.5", "c:// base", "k:guard", "n:nil"]);
+	has("split(direction: .horizontal, view.frame)", "swift", ["ev:horizontal", "m:frame"]);
+	has(samples[12][1], "rs", ["k:fn", "f:main", "x:println", "b:self", "f:len"]);
+});
+
+test("strings show escapes and interpolated code", () => {
+	has(samples[0][1], "ts", ["s:`pane ", `e:${"$"}{`, "e:}", "s:`"]);
+	has(samples[4][1], "python", ['s:f"', "e:{", "e:}"]);
+	has(samples[1][1], "swift", ["e:\\(", "e:)"]);
+	has(samples[2][1], "json", ['p:"kind"', 's:"published"', "n:2", "n:null", 's:"a', 'e:\\"', 's:b"']);
+	has(samples[3][1], "sh", ["k:export", "v:PI_MARKDOWN_APP", "v:$HOME", "c:# build", "k:if", "r:-n", `v:${at("X")}`, "k:then", "f:node", "r:--verify", "k:fi"]);
+});
+
+test("markup, data and diff languages use their own scanners", () => {
 	assert.deepEqual(kinds(samples[5][1], "patch"), ["meta:diff --git a/x b/x", "meta:--- a/x", "meta:+++ b/x", "meta:@@ -1 +1 @@", "del:-old", "ins:+new"]);
-	assert.deepEqual(kinds(samples[6][1], "html"), ["k:a", "a:href", 's:"https://x.test"', "a:class", "s:'y'", "k:a", "c:<!-- note -->"]);
-	assert.ok(kinds(samples[7][1], "yml").includes("p:title") && kinds(samples[7][1], "yml").includes("n:true"));
-	assert.ok(kinds(samples[8][1], "css").includes("p:margin-top") || kinds(samples[8][1], "css").includes("p:top"));
-	assert.ok(kinds(samples[9][1], "sql").includes("k:SELECT") && kinds(samples[9][1], "sql").includes("s:'a''b'"));
-	assert.deepEqual(kinds(samples[10][1], "markdown"), ["k:# Title", "s:`code`", "f:[a link](https://x.test)"]);
-	assert.deepEqual(plain(syntax.tokens(samples[11][1], "unknown")), [{ text: samples[11][1] }], "an unknown language stays plain");
+	assert.deepEqual(kinds(samples[6][1], "html"), ["d:<", "f:a", "t:href", "o:=", 's:"https://x.test"', "t:class", "o:=", "s:'y'", "d:>", "e:&amp;", "d:</", "f:a", "d:>", "c:<!-- note -->"]);
+	assert.deepEqual(kinds(samples[7][1], "yml"), ["p:title", "s:Reader", "p:count", "n:3", "p:ok", "n:true", "d:-", "p:name", "s:x", "c:# c"]);
+	has(samples[8][1], "css", ["k:@media", "n:860px", "t:.outline", "p:margin-top", "f:var", "v:--bar-h", "p:color", "n:#24273a"]);
+	has(samples[9][1], "sql", ["k:SELECT", "k:FROM", "k:WHERE", "s:'a''b'", "c:-- one"]);
+	assert.deepEqual(kinds(samples[10][1], "markdown"), ["k:# Title", "d:- ", "s:`code`", "f:[a link](https://x.test)"]);
+	assert.deepEqual(plain(syntax.tokens(samples[13][1], "unknown")), [{ text: samples[13][1] }], "an unknown language stays plain");
 	assert.equal(syntax.supports("Front matter"), true);
 	assert.equal(syntax.supports("code"), false);
+	assert.equal(syntax.detect('{ "a": [1, 2] }'), "json");
+	assert.equal(syntax.detect("$ ls -la\ntotal 0"), "shell");
+	assert.equal(syntax.detect("Plain words."), "");
 });
