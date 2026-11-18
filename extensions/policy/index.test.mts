@@ -10,12 +10,10 @@ import { PACKAGE_CATALOG } from "./catalog.ts";
 import registerPolicy from "./index.ts";
 import { RULES_FILE, type RuleEvent, RuleRegistry, validateRuleEvent } from "./local-rules.ts";
 import { fileURLToPath } from "node:url";
-import type { NavigationFrame, OperatorView, ViewHost } from "../../operator-ui/index.ts";
-import { OPERATOR_VIEW_PUBLISH, OPERATOR_VIEW_REQUEST } from "../../operator-ui/index.ts";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { Frame } from "./frame.ts";
 import { PolicyProposeParams } from "./tools.ts";
 
-/** The policy entrypoint; the ordinary frame binds the published view to this registration of /policy. */
+/** The policy entrypoint; the command and shortcut open its ordinary view. */
 const POLICY_ENTRY = fileURLToPath(new URL("./index.ts", import.meta.url));
 const PAGE_DOWN = "\u001b[6~";
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -46,7 +44,11 @@ interface RegisteredTool {
 class FakePi {
 	readonly events = eventBus();
 	getCommands() {
-		return [...this.commands.keys()].map((name) => ({ name, source: "extension", sourceInfo: { path: POLICY_ENTRY, source: "local", scope: "user", origin: "top-level" } }));
+		return [...this.commands.keys()].map((name) => ({
+			name,
+			source: "extension",
+			sourceInfo: { path: POLICY_ENTRY, source: "local", scope: "user", origin: "top-level" },
+		}));
 	}
 	readonly handlers = new Map<string, Array<(event: never, ctx: never) => unknown>>();
 	readonly commands = new Map<
@@ -157,7 +159,12 @@ function context(notifications: Array<{ message: string; type?: string }>, overr
 				factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: T) => void) => unknown,
 			): Promise<T> {
 				return new Promise<T>((resolve) => {
-					const component = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, { getKeys: () => [] }, resolve) as {
+					const component = factory(
+						{ terminal: { rows: 40 }, requestRender() {} },
+						theme,
+						{ getKeys: () => [] },
+						resolve,
+					) as {
 						handleInput(data: string): void;
 					};
 					component.handleInput("\u001b");
@@ -199,7 +206,9 @@ async function storedEvents(dir: string): Promise<RuleEvent[]> {
 
 async function telemetry(dir: string): Promise<Array<Record<string, unknown>>> {
 	const segments = join(dir, "telemetry");
-	const files = (await readdir(segments).catch(() => [] as string[])).filter((name) => /^\d{4}-\d{2}-\d{2}\.\d{6}\.jsonl$/.test(name)).sort();
+	const files = (await readdir(segments).catch(() => [] as string[]))
+		.filter((name) => /^\d{4}-\d{2}-\d{2}\.\d{6}\.jsonl$/.test(name))
+		.sort();
 	const records: Array<Record<string, unknown>> = [];
 	for (const file of files) {
 		for (const line of (await readFile(join(segments, file), "utf8")).trim().split("\n")) {
@@ -214,10 +223,21 @@ async function callTool(tool: RegisteredTool, params: unknown, ctx: unknown): Pr
 }
 
 /** Open the policy frame once through `open`, run the script against it, then close it with its Close control. */
-async function driveFrame(ctx: { ui: Record<string, unknown> }, open: () => unknown, script: (frame: NavigationFrame) => Promise<void>): Promise<void> {
-	ctx.ui.custom = async <T,>(factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown): Promise<T> =>
+async function driveFrame(
+	ctx: { ui: Record<string, unknown> },
+	open: () => unknown,
+	script: (frame: Frame) => Promise<void>,
+): Promise<void> {
+	ctx.ui.custom = async <T,>(
+		factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
+	): Promise<T> =>
 		new Promise<T>((resolve, reject) => {
-			const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender() {} }, theme, { getKeys: () => [] }, resolve) as NavigationFrame;
+			const frame = factory(
+				{ terminal: { rows: 40, columns: 120 }, requestRender() {} },
+				theme,
+				{ getKeys: () => [] },
+				resolve,
+			) as Frame;
 			script(frame).then(
 				() => frame.close(),
 				(error: unknown) => {
@@ -230,9 +250,9 @@ async function driveFrame(ctx: { ui: Record<string, unknown> }, open: () => unkn
 	await open();
 }
 
-const frameText = (frame: NavigationFrame) => frame.render(120).join("\n");
+const frameText = (frame: Frame) => frame.render(120).join("\n");
 
-async function until(frame: NavigationFrame, pattern: RegExp): Promise<string> {
+async function until(frame: Frame, pattern: RegExp): Promise<string> {
 	for (let attempt = 0; attempt < 400; attempt++) {
 		const text = frameText(frame);
 		if (pattern.test(text)) return text;
@@ -242,33 +262,33 @@ async function until(frame: NavigationFrame, pattern: RegExp): Promise<string> {
 }
 
 /** Run one labelled action of the view the operator reads, as its control would. */
-function act(frame: NavigationFrame, label: string): void {
+function act(frame: Frame, label: string): void {
 	const action = frame.viewActions.find((candidate) => candidate.label === label);
 	assert.ok(action, `no action ${label}: ${frame.viewActions.map((candidate) => candidate.label).join(", ")}`);
 	assert.equal(action.disabled, undefined, `${label} is unavailable: ${action.disabled}`);
 	action.run();
 }
 
-function typeText(frame: NavigationFrame, text: string): void {
+function typeText(frame: Frame, text: string): void {
 	for (const character of text) frame.handleInput(character);
 }
 
 /** Focus the filter field with `/`, type to filter the list, then return to the list. */
-function filterTo(frame: NavigationFrame, text: string): void {
+function filterTo(frame: Frame, text: string): void {
 	frame.handleInput("/");
 	typeText(frame, text);
 	frame.handleInput("\r");
 }
 
 /** Move from the list to the scope row, step right, and return to the list. */
-function scopeRight(frame: NavigationFrame, steps: number): void {
+function scopeRight(frame: Frame, steps: number): void {
 	frame.handleInput("\u001b[Z");
 	for (let step = 0; step < steps; step++) frame.handleInput("\u001b[C");
 	frame.handleInput("\r");
 }
 
 /** Page through a complete artifact review until it reports every line read. */
-async function readArtifact(frame: NavigationFrame): Promise<void> {
+async function readArtifact(frame: Frame): Promise<void> {
 	for (let page = 0; page < 400; page++) {
 		if (/All \d+ lines read/.test(frameText(frame))) return;
 		frame.handleInput(PAGE_DOWN);
@@ -277,24 +297,50 @@ async function readArtifact(frame: NavigationFrame): Promise<void> {
 	throw new Error("the review never reported a complete read");
 }
 
+function acceptReview(
+	factory: (tui: unknown, theme: unknown, keys: unknown, done: () => void) => Frame,
+): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const frame = factory(
+			{ terminal: { rows: 40, columns: 120 }, requestRender() {} },
+			theme,
+			{ getKeys: () => [] },
+			resolve,
+		);
+		readArtifact(frame).then(() => frame.handleInput("\r"), reject);
+	});
+}
+
 /** The footer row as drawn, without colour codes. */
-function footer(frame: NavigationFrame, width = 200): string {
+function footer(frame: Frame, width = 200): string {
 	const lines = frame.render(width);
 	return stripVTControlCharacters(lines.at(-1) ?? "");
 }
 
 /** Click the footer control drawn as `label`, at the position the last render gave it. */
-function clickFooter(frame: NavigationFrame, label: string, width = 200): void {
+function clickFooter(frame: Frame, label: string, width = 200): void {
 	const lines = frame.render(width);
 	const row = stripVTControlCharacters(lines.at(-1) ?? "");
 	const at = row.indexOf(label);
 	assert.ok(at >= 0, `no footer control ${label} in: ${row}`);
-	const event: TuiMouseEvent = { type: "click", button: "left", x: at, y: lines.length - 1, screenX: at, screenY: lines.length - 1, width, height: lines.length, shift: false, alt: false, ctrl: false };
+	const event: TuiMouseEvent = {
+		type: "click",
+		button: "left",
+		x: at,
+		y: lines.length - 1,
+		screenX: at,
+		screenY: lines.length - 1,
+		width,
+		height: lines.length,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	};
 	assert.ok(frame.handleMouse(event)?.handled, `${label} is clickable`);
 }
 
 /** The final action of an open artifact review. */
-function decideAction(frame: NavigationFrame) {
+function decideAction(frame: Frame) {
 	return frame.viewActions.find((action) => action.id === "decide");
 }
 
@@ -324,7 +370,8 @@ describe("registration and lazy catalog use", () => {
 			"policy_propose",
 			"policy_rules",
 		]);
-		for (const tool of pi.tools.values()) assert.equal(tool.exposure, "deferred", `${tool.name} is discovered on demand`);
+		for (const tool of pi.tools.values())
+			assert.equal(tool.exposure, "deferred", `${tool.name} is discovered on demand`);
 		assert.deepEqual([...pi.commands.keys()], ["policy"]);
 		assert.equal(pi.handlers.has("user_bash"), false, "Operator shell commands remain outside model-tool policy");
 		await pi.emit("session_start", { type: "session_start" }, ctx);
@@ -389,15 +436,23 @@ describe("panel command and shortcut", () => {
 	it("keeps the view's filter and selection between command and shortcut opens", async () => {
 		const { pi, ctx } = await setup();
 		let first = "";
-		await driveFrame(ctx, () => pi.command().handler("", ctx as never), async (frame) => {
-			await until(frame, /\d+ rules/);
-			filterTo(frame, "routing");
-			frame.handleInput("\u001b[B");
-			first = await until(frame, /routing\./);
-		});
-		await driveFrame(ctx, () => pi.shortcut().handler(ctx as unknown as ExtensionContext), async (frame) => {
-			assert.equal(await until(frame, /routing\./), first, "the reopened view shows the same filter and selection");
-		});
+		await driveFrame(
+			ctx,
+			() => pi.command().handler("", ctx as never),
+			async (frame) => {
+				await until(frame, /\d+ rules/);
+				filterTo(frame, "routing");
+				frame.handleInput("\u001b[B");
+				first = await until(frame, /routing\./);
+			},
+		);
+		await driveFrame(
+			ctx,
+			() => pi.shortcut().handler(ctx as unknown as ExtensionContext),
+			async (frame) => {
+				assert.equal(await until(frame, /routing\./), first, "the reopened view shows the same filter and selection");
+			},
+		);
 	});
 
 	it("opens one frame for overlapping command and shortcut opens and reads the registry once", async (t) => {
@@ -410,19 +465,27 @@ describe("panel command and shortcut", () => {
 		});
 		t.after(() => snapshot.mock.restore());
 		let frames = 0;
-		await driveFrame(ctx, () => pi.command().handler("", ctx as never), async (frame) => {
-			frames++;
-			await until(frame, /\d+ rules/);
-			await pi.shortcut().handler(ctx as unknown as ExtensionContext);
-			await pi.command().handler("", ctx as never);
-			assert.equal(frame.viewTitle, "Policy", "a second open moves the open frame to the policy view");
-		});
+		await driveFrame(
+			ctx,
+			() => pi.command().handler("", ctx as never),
+			async (frame) => {
+				frames++;
+				await until(frame, /\d+ rules/);
+				await pi.shortcut().handler(ctx as unknown as ExtensionContext);
+				await pi.command().handler("", ctx as never);
+				assert.equal(frame.viewTitle, "Policy", "a second open leaves the open Policy view in place");
+			},
+		);
 		assert.equal(frames, 1, "no second frame opened");
 		assert.equal(reads, 1, "the open view reads the registry once");
-		await driveFrame(ctx, () => pi.shortcut().handler(ctx as unknown as ExtensionContext), async (frame) => {
-			frames++;
-			await until(frame, /\d+ rules/);
-		});
+		await driveFrame(
+			ctx,
+			() => pi.shortcut().handler(ctx as unknown as ExtensionContext),
+			async (frame) => {
+				frames++;
+				await until(frame, /\d+ rules/);
+			},
+		);
 		assert.equal(frames, 2);
 		assert.equal(reads, 2, "a new frame reads again");
 	});
@@ -436,18 +499,29 @@ describe("panel command and shortcut", () => {
 			return original.call(this);
 		});
 		t.after(() => snapshot.mock.restore());
-		await driveFrame(ctx, () => pi.shortcut().handler(ctx as unknown as ExtensionContext), async (frame) => {
-			await until(frame, /could not be read: snapshot unavailable/);
-		});
+		await driveFrame(
+			ctx,
+			() => pi.shortcut().handler(ctx as unknown as ExtensionContext),
+			async (frame) => {
+				await until(frame, /could not be read: snapshot unavailable/);
+			},
+		);
 		assert.deepEqual(notifications, [], "a read failure stays in the view");
 		ctx.ui.custom = async () => {
 			throw new Error("panel unavailable");
 		};
 		await pi.command().handler("", ctx as never);
-		assert.deepEqual(notifications.at(-1), { message: "Policy registry action failed: panel unavailable", type: "error" });
-		await driveFrame(ctx, () => pi.shortcut().handler(ctx as unknown as ExtensionContext), async (frame) => {
-			await until(frame, /\d+ rules/);
+		assert.deepEqual(notifications.at(-1), {
+			message: "Policy registry action failed: panel unavailable",
+			type: "error",
 		});
+		await driveFrame(
+			ctx,
+			() => pi.shortcut().handler(ctx as unknown as ExtensionContext),
+			async (frame) => {
+				await until(frame, /\d+ rules/);
+			},
+		);
 		assert.equal(reads, 2);
 	});
 
@@ -469,51 +543,30 @@ describe("panel command and shortcut", () => {
 		await assert.rejects(stat(dir), /ENOENT/);
 	});
 
-	/** The destinations this owner published, as the dashboard and the frame read them. */
-	function publishedDestinations(pi: FakePi): Array<{ id: string; view: (ctx: unknown, host: ViewHost) => OperatorView }> {
-		const views: Array<{ id: string; view: (ctx: unknown, host: ViewHost) => OperatorView }> = [];
-		pi.events.on(OPERATOR_VIEW_PUBLISH, (value) => {
-			const publication = value as { views: Array<{ id: string; view: (ctx: unknown, host: ViewHost) => OperatorView }> };
-			views.push(...publication.views);
-		});
-		pi.events.emit(OPERATOR_VIEW_REQUEST, { version: 2 });
-		return views;
-	}
-
-	function destinationHost(): ViewHost {
-		return {
-			theme: theme as unknown as Theme,
-			target: { id: "session-1", label: "This session · work" },
-			signal: new AbortController().signal,
-			requestRender: () => {},
-			notify: () => {},
-			push: () => {},
-			back: () => {},
-			close: () => {},
-		};
-	}
-
-	it("refuses the published destination on an invalid mode before creating the view or the store", async () => {
-		const { dir, pi, ctx } = await setup("invalid");
-		const policy = publishedDestinations(pi).find((view) => view.id === "policy");
-		assert.ok(policy, "the policy destination is published");
-		const view = policy.view(ctx as unknown, destinationHost());
-		const text = (view.render(120, 20) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
-		assert.match(text, /Policy is stopped because its mode configuration is invalid\./);
-		await assert.rejects(stat(dir), /ENOENT/, "the store directory is never created");
+	it("closes the current Policy frame on session shutdown", async () => {
+		const { pi, ctx } = await setup();
+		await driveFrame(
+			ctx,
+			() => pi.command().handler("", ctx as never),
+			async (frame) => {
+				await until(frame, /\d+ rules/);
+				await pi.emit("session_shutdown", { type: "session_shutdown" }, ctx);
+				assert.equal(frame.viewTitle, undefined);
+			},
+		);
 	});
 
-	it("opens the published destination with a valid mode and loads the store", async () => {
+	it("opens the dedicated view with a valid mode and loads the store", async () => {
 		const { dir, pi, ctx } = await setup("observe");
-		const policy = publishedDestinations(pi).find((view) => view.id === "policy");
-		assert.ok(policy, "the policy destination is published");
-		const view = policy.view(ctx as unknown, destinationHost());
-		let text = "";
-		for (let attempt = 0; attempt < 400 && !/\d+ rules/.test(text); attempt++) {
-			text = (view.render(120, 20) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
-			await turn();
-		}
-		assert.match(text, /\d+ rules/, "the destination loads the registry");
+		await driveFrame(
+			ctx,
+			() => pi.command().handler("", ctx as never),
+			async (frame) => {
+				const text = await until(frame, /\d+ rules/);
+				assert.match(text.split("\n")[0], /Policy.*This session/, "the view title names Policy and its target");
+				assert.equal(frame.capturesViewportInput, true);
+			},
+		);
 		assert.ok((await stat(dir)).isDirectory(), "the store directory is created on first use");
 	});
 
@@ -573,11 +626,13 @@ describe("telemetry operator command", () => {
 
 	it("uses protocol notifications in RPC and non-context entries in JSON mode", async () => {
 		const { pi, notifications } = await setup();
-		await pi.command().handler("telemetry 2026-02-01 2026-02-01",
-			context(notifications, { mode: "rpc", hasUI: true }) as never);
+		await pi
+			.command()
+			.handler("telemetry 2026-02-01 2026-02-01", context(notifications, { mode: "rpc", hasUI: true }) as never);
 		assert.match(notifications.at(-1)?.message ?? "", /Policy telemetry/);
-		await pi.command().handler("telemetry 2026-02-01 2026-02-01",
-			context(notifications, { mode: "json", hasUI: false }) as never);
+		await pi
+			.command()
+			.handler("telemetry 2026-02-01 2026-02-01", context(notifications, { mode: "json", hasUI: false }) as never);
 		const entry = pi.entries.at(-1);
 		assert.ok(entry);
 		assert.equal(entry.customType, "policy_command");
@@ -916,7 +971,7 @@ describe("unified tools and command gates", () => {
 					return choices.find((choice) => choice.startsWith("local.guided")) ?? choices[0];
 				},
 				input: async () => "Selected reason.",
-				custom: async () => true,
+				custom: acceptReview,
 			},
 		};
 		await callTool(
@@ -1028,9 +1083,9 @@ describe("unified tools and command gates", () => {
 			...ctx,
 			ui: {
 				...(ctx as { ui: object }).ui,
-				custom: async () => {
+				custom: (factory: Parameters<typeof acceptReview>[0]) => {
 					reviews++;
-					return true;
+					return acceptReview(factory);
 				},
 			},
 		};
@@ -1116,8 +1171,10 @@ describe("unified tools and command gates", () => {
 		assert.ok((await completions("sh")).includes("show"));
 		assert.ok((await completions("show rou")).includes("show routing.cat-read"));
 		assert.ok((await completions("show ")).includes(`show ${proposalId}`));
-		const shown = await complete("show local.scan") as Array<{ value: string; label: string; description: string }>;
-		assert.deepEqual(shown, [{ value: `show ${proposalId}`, label: "local.scan · pending add", description: "Keep search output bounded." }]);
+		const shown = (await complete("show local.scan")) as Array<{ value: string; label: string; description: string }>;
+		assert.deepEqual(shown, [
+			{ value: `show ${proposalId}`, label: "local.scan · pending add", description: "Keep search output bounded." },
+		]);
 		assert.deepEqual(await completions("approve "), [
 			`approve ${proposalId} steer ${revision}`,
 			`approve ${proposalId} block ${revision}`,
@@ -1154,15 +1211,19 @@ describe("unified tools and command gates", () => {
 		);
 		const proposalId = (proposed.details as { proposalId: string }).proposalId;
 		ctx.ui.confirm = async () => assert.fail("Native confirmation must not approve complete artifacts");
-		await driveFrame(ctx, () => pi.shortcut().handler(ctx as unknown as ExtensionContext), async (frame) => {
-			await until(frame, /\d+ rules/);
-			scopeRight(frame, 1);
-			await until(frame, /Panel-approved pause/);
-			act(frame, "Approve…");
-			await readArtifact(frame);
-			act(frame, "Approve disable");
-			await until(frame, /Approved proposal/);
-		});
+		await driveFrame(
+			ctx,
+			() => pi.shortcut().handler(ctx as unknown as ExtensionContext),
+			async (frame) => {
+				await until(frame, /\d+ rules/);
+				scopeRight(frame, 1);
+				await until(frame, /Panel-approved pause/);
+				act(frame, "Approve…");
+				await readArtifact(frame);
+				act(frame, "Approve disable");
+				await until(frame, /Approved proposal/);
+			},
+		);
 		const events = await storedEvents(dir);
 		const panelDecision = events.find((event) => event.kind === "decision" && event.proposalId === proposalId);
 		assert.equal(panelDecision?.kind, "decision");
@@ -1260,7 +1321,12 @@ describe("catalog command controls", () => {
 			factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
 		): Promise<T> =>
 			new Promise<T>((resolve) => {
-				const frame = factory({ terminal: { rows: 24, columns: 80 }, requestRender() {} }, theme, { getKeys: () => [] }, resolve) as NavigationFrame;
+				const frame = factory(
+					{ terminal: { rows: 24, columns: 80 }, requestRender() {} },
+					theme,
+					{ getKeys: () => [] },
+					resolve,
+				) as Frame;
 				for (; pages < 1000; pages++) {
 					assert.ok(frame.render(80).length <= 24);
 					const final = frame.viewActions.find((action) => action.label === "Import");
@@ -1337,7 +1403,11 @@ describe("dispatch and telemetry", () => {
 		const { pi, ctx } = await setup("enforce");
 		await pi.command().handler("disable form.find-discovery intentional exception", ctx as never);
 		assert.equal(
-			await pi.emit("tool_call", { toolName: "bash", toolCallId: "c1", input: { command: "find src -type f | head -n 10" } }, ctx),
+			await pi.emit(
+				"tool_call",
+				{ toolName: "bash", toolCallId: "c1", input: { command: "find src -type f | head -n 10" } },
+				ctx,
+			),
 			undefined,
 		);
 	});
@@ -1431,7 +1501,8 @@ describe("dispatch and telemetry", () => {
 });
 
 describe("view controls reach the owner operations", () => {
-	const open = (pi: Awaited<ReturnType<typeof setup>>["pi"], ctx: Awaited<ReturnType<typeof setup>>["ctx"]) => () => pi.shortcut().handler(ctx as unknown as ExtensionContext);
+	const open = (pi: Awaited<ReturnType<typeof setup>>["pi"], ctx: Awaited<ReturnType<typeof setup>>["ctx"]) => () =>
+		pi.shortcut().handler(ctx as unknown as ExtensionContext);
 
 	it("disables the selected rule with the entered reason, panel audit, and the displayed identity", async () => {
 		const { dir, pi, ctx } = await setup();
@@ -1466,7 +1537,10 @@ describe("view controls reach the owner operations", () => {
 			await until(frame, /\d+ rules/);
 		});
 		const events = await storedEvents(dir);
-		assert.equal(events.some((event) => event.kind === "override"), false);
+		assert.equal(
+			events.some((event) => event.kind === "override"),
+			false,
+		);
 	});
 
 	it("refuses an effect change after the target changed and reads the registry again", async () => {
@@ -1486,7 +1560,10 @@ describe("view controls reach the owner operations", () => {
 			await until(frame, /override reason: external pause/);
 		});
 		const events = await storedEvents(dir);
-		assert.equal(events.some((event) => event.kind === "override" && JSON.stringify(event).includes("late reason")), false);
+		assert.equal(
+			events.some((event) => event.kind === "override" && JSON.stringify(event).includes("late reason")),
+			false,
+		);
 	});
 
 	it("starts a pinned observation period for reset and reads State and Data through owner operations", async () => {
@@ -1506,14 +1583,22 @@ describe("view controls reach the owner operations", () => {
 			frame.handleInput("\r");
 			await until(frame, /\d+ named data/);
 			const data = footer(frame);
-			for (const control of ["s set data", "r refresh", "esc close"]) assert.ok(data.includes(control), `${control} in: ${data}`);
+			for (const control of ["s set data", "r refresh", "esc close"])
+				assert.ok(data.includes(control), `${control} in: ${data}`);
 		});
-		assert.deepEqual(notifications.filter((entry) => entry.type === "error"), []);
+		assert.deepEqual(
+			notifications.filter((entry) => entry.type === "error"),
+			[],
+		);
 	});
 
 	it("labels a rejection's final action Reject and never Approve", async () => {
 		const { pi, ctx } = await setup();
-		const proposed = await callTool(pi.tool("policy_propose"), { operation: "disable", id: "routing.cat-read", reason: "Reader label" }, ctx);
+		const proposed = await callTool(
+			pi.tool("policy_propose"),
+			{ operation: "disable", id: "routing.cat-read", reason: "Reader label" },
+			ctx,
+		);
 		assert.ok((proposed.details as { proposalId?: string }).proposalId);
 		await driveFrame(ctx, open(pi, ctx), async (frame) => {
 			await until(frame, /\d+ rules/);
@@ -1530,22 +1615,32 @@ describe("view controls reach the owner operations", () => {
 
 	it("shows the keyed rule and proposal controls, and approve opens the review by key or click", async () => {
 		const { pi, ctx } = await setup();
-		const proposed = await callTool(pi.tool("policy_propose"), { operation: "disable", id: "routing.cat-read", reason: "Footer approve" }, ctx);
+		const proposed = await callTool(
+			pi.tool("policy_propose"),
+			{ operation: "disable", id: "routing.cat-read", reason: "Footer approve" },
+			ctx,
+		);
 		assert.ok((proposed.details as { proposalId?: string }).proposalId);
 		await driveFrame(ctx, open(pi, ctx), async (frame) => {
 			await until(frame, /\d+ rules/);
 			const rules = footer(frame);
-			for (const control of ["f effect", "e explain", "r refresh", "x more", "esc close"]) assert.ok(rules.includes(control), `${control} in: ${rules}`);
+			for (const control of ["f effect", "e explain", "r refresh", "x more", "esc close"])
+				assert.ok(rules.includes(control), `${control} in: ${rules}`);
 			assert.ok(rules.includes("d disable") || rules.includes("d enable"), rules);
 			scopeRight(frame, 1);
 			await until(frame, /Footer approve/);
 			const proposals = footer(frame);
-			for (const control of ["a approve", "r refresh", "esc close"]) assert.ok(proposals.includes(control), `${control} in: ${proposals}`);
+			for (const control of ["a approve", "r refresh", "esc close"])
+				assert.ok(proposals.includes(control), `${control} in: ${proposals}`);
 			frame.handleInput("a");
 			await until(frame, /Read the artifact|Read \d+ of \d+ lines/);
 			if (frame.viewActions.some((action) => action.label === "Read the artifact")) frame.handleInput("\r");
 			await until(frame, /Read \d+ of \d+ lines/);
-			assert.equal(decideAction(frame)?.disabled, "Read every line of the artifact first", "Enter cannot decide before every line was read");
+			assert.equal(
+				decideAction(frame)?.disabled,
+				"Read every line of the artifact first",
+				"Enter cannot decide before every line was read",
+			);
 			const review = footer(frame);
 			assert.ok(review.includes("enter approve disable"), review);
 			assert.ok(review.includes("esc cancel"), review);
@@ -1576,7 +1671,10 @@ test("captures the configured telemetry retention when its writer starts", async
 	const priorHarness = process.env.PI_HARNESS_FILE;
 	const priorDir = process.env.PI_POLICY_DIR;
 	const path = join(base, "harness.json");
-	await writeFile(path, JSON.stringify({ version: 1, policy: { mode: "observe", telemetryMaxBytes: 33554432, telemetryMaxAgeDays: 1 } }));
+	await writeFile(
+		path,
+		JSON.stringify({ version: 1, policy: { mode: "observe", telemetryMaxBytes: 33554432, telemetryMaxAgeDays: 1 } }),
+	);
 	process.env.PI_HARNESS_FILE = path;
 	let fixture: Awaited<ReturnType<typeof setup>>;
 	const priorHarnessFile = process.env.PI_HARNESS_FILE;
@@ -1589,7 +1687,11 @@ test("captures the configured telemetry retention when its writer starts", async
 	try {
 		await mkdir(join(fixture.dir, "telemetry"), { recursive: true, mode: 0o700 });
 		await writeFile(join(fixture.dir, "telemetry", "2020-01-01.000001.jsonl"), "", { mode: 0o600 });
-		await fixture.pi.emit("tool_call", { toolName: "bash", toolCallId: "retention", input: { command: "ls" } }, fixture.ctx);
+		await fixture.pi.emit(
+			"tool_call",
+			{ toolName: "bash", toolCallId: "retention", input: { command: "ls" } },
+			fixture.ctx,
+		);
 		await fixture.pi.emit(
 			"tool_execution_end",
 			{ toolCallId: "retention", isError: false, result: { content: [{ type: "text", text: "listed" }] } },

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import type { JsonValue, OperatorView, PanelHost } from "../../operator-ui/index.ts";
+import type { JsonValue, View, PanelHost } from "./frame.ts";
 import { operatorPanel } from "./operator-panel.ts";
 import { readPanelRequest, serializeFireSummary, serializeSnapshot } from "./panel-protocol.ts";
 import type { RuleSnapshot } from "./local-rules.ts";
@@ -22,30 +22,70 @@ function rule(id: string): RuleRecord {
 	return {
 		id,
 		source: { kind: "package" },
-		matcher: { kind: "declarative", language: "facts/v1", spec: { phase: "input", when: { op: "eq", path: ["tool"], value: "bash" }, action: { kind: "guide", text: "Mind it." }, onUnavailable: "skip" } },
-		definition: { revision: "aaaaaaaaaaaa", state: "active", authority: "steer-or-block", effect: "steer", purpose: "Guide.", note: "Note." },
+		matcher: {
+			kind: "declarative",
+			language: "facts/v1",
+			spec: {
+				phase: "input",
+				when: { op: "eq", path: ["tool"], value: "bash" },
+				action: { kind: "guide", text: "Mind it." },
+				onUnavailable: "skip",
+			},
+		},
+		definition: {
+			revision: "aaaaaaaaaaaa",
+			state: "active",
+			authority: "steer-or-block",
+			effect: "steer",
+			purpose: "Guide.",
+			note: "Note.",
+		},
 		matcherAvailable: true,
 		staleOverride: false,
 	} as unknown as RuleRecord;
 }
 
 function snapshot(): RuleSnapshot {
-	return { records: new Map([["local.scan", rule("local.scan")]]), pending: [], data: new Map(), health: { status: "ok", path: "/tmp/policy" } };
+	return {
+		records: new Map([["local.scan", rule("local.scan")]]),
+		pending: [],
+		data: new Map(),
+		health: { status: "ok", path: "/tmp/policy" },
+	};
 }
 
 /** A panel host over a fake route, with the nested views a frame would keep. */
 function hostFixture(answers: Partial<Record<string, (request: Record<string, unknown>) => unknown>> = {}) {
 	const requests: Record<string, unknown>[] = [];
-	const layers: Array<{ view: OperatorView; controller: AbortController }> = [];
+	const layers: Array<{ view: View; controller: AbortController }> = [];
 	const notices: string[] = [];
 	const answer = async (data: JsonValue) => {
 		const request = data as Record<string, unknown>;
 		requests.push(request);
 		const custom = answers[String(request.op)];
 		if (custom) return { text: "custom", data: custom(request) as JsonValue };
-		if (request.op === "load") return { text: "load", data: { op: "load", snapshot: serializeSnapshot(snapshot()), fireSummary: serializeFireSummary({ fires: new Map(), firesByModel: new Map(), partial: false }), activity: { records: [], partial: false, byteLimited: false, recordLimited: false, bytesRead: 0 }, scope: { cwd: "/work" } } as unknown as JsonValue };
-		if (request.op === "lifecycle") return { text: "ok", data: { op: "lifecycle", outcome: `Disabled ${String(request.id)}.`, snapshot: serializeSnapshot(snapshot()) } as unknown as JsonValue };
-		if (request.op === "refresh") return { text: "ok", data: { op: "refresh", snapshot: serializeSnapshot(snapshot()) } as unknown as JsonValue };
+		if (request.op === "load")
+			return {
+				text: "load",
+				data: {
+					op: "load",
+					snapshot: serializeSnapshot(snapshot()),
+					fireSummary: serializeFireSummary({ fires: new Map(), firesByModel: new Map(), partial: false }),
+					activity: { records: [], partial: false, byteLimited: false, recordLimited: false, bytesRead: 0 },
+					scope: { cwd: "/work" },
+				} as unknown as JsonValue,
+			};
+		if (request.op === "lifecycle")
+			return {
+				text: "ok",
+				data: {
+					op: "lifecycle",
+					outcome: `Disabled ${String(request.id)}.`,
+					snapshot: serializeSnapshot(snapshot()),
+				} as unknown as JsonValue,
+			};
+		if (request.op === "refresh")
+			return { text: "ok", data: { op: "refresh", snapshot: serializeSnapshot(snapshot()) } as unknown as JsonValue };
 		throw new Error(`unexpected ${String(request.op)}`);
 	};
 	const host = (controller: AbortController): PanelHost => ({
@@ -75,7 +115,9 @@ function hostFixture(answers: Partial<Record<string, (request: Record<string, un
 		depth: () => layers.length,
 		screen: () => (top()?.render(120, 24) ?? []).map((line) => stripVTControlCharacters(line)).join("\n"),
 		action(label: string) {
-			const action = top()?.actions?.().find((candidate) => candidate.label === label);
+			const action = top()
+				?.actions?.()
+				.find((candidate) => candidate.label === label);
 			assert.ok(action, `no action ${label}`);
 			return action;
 		},
@@ -122,7 +164,10 @@ test("a cancelled form sends no control, and a host refusal keeps the form and r
 	assert.equal(f.requests.filter((request) => request.op === "lifecycle").length, 1);
 	assert.match(f.screen(), /target identity changed/);
 	assert.equal(f.depth(), 2, "the staged form stays after a refusal");
-	assert.ok(f.requests.some((request) => request.op === "refresh"), "a refusal refreshes the registry");
+	assert.ok(
+		f.requests.some((request) => request.op === "refresh"),
+		"a refusal refreshes the registry",
+	);
 });
 
 test("an unreadable registry is reported in the view, and the request union refuses an exact effect", async () => {

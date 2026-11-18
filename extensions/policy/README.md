@@ -294,8 +294,8 @@ finite union in `panel-protocol.ts` and answers `{ text, data }`:
 | `reset-revision`, `reset` | Persist the synced observation periods, return their revision, then start a new period only under that revision. |
 | `data` (`args`: `list`, `show <name>`, `set <JSON>`, `set-file <JSON>`, `remove <name> <revision>`) | The owner's data command, prepared against the bound conversation's cwd (set-file paths resolve there). Reads answer with their text. A change answers first with its complete review and the exact approval arguments, and changes nothing; the view sends those arguments only after every line of the review was on screen and the operator chooses the effect-labelled final action (`Set policy data`, `Remove policy data`). Applying rechecks the binding revision, rereads the file, and requires the same artifact revision; a change in between refuses and changes nothing. Every change carries a `panel` audit. |
 
-In the attached terminal the Policy view is the one ordinary Pi shows: Data
-lists the bindings and offers the same show, set, set-file and remove as
+In the [attached terminal](../../docs/conventions/operator-panels.md#attached-panels),
+the Policy view is the one ordinary Pi shows: Data lists the bindings and offers the same show, set, set-file and remove as
 `/policy data`, through staged forms, and a set without `expectedRevision`
 binds to the revision shown. Approval remains distinct from session enforcement
 on both routes.
@@ -1404,18 +1404,14 @@ partial import. There is no automatic reimport, external catalog-file loader,
 or update daemon. Large imports require smaller explicit selections rather than
 truncated approval artifacts.
 
-Bare `/policy` and `ctrl+alt+p` open the Policy view in the shared browsing frame
-below the native transcript (`docs/conventions/operator-panels.md`), without
-submitting or replacing the editor draft. A second open while the frame is open
-navigates that frame instead of opening another. The view keeps its scope,
+Bare `/policy` and `ctrl+alt+p` open the dedicated Policy view below the native
+transcript, without submitting or replacing the editor draft. The view follows
+the [operator panel convention](../../docs/conventions/operator-panels.md).
+Another open leaves the current view in place. The view keeps its scope,
 filter, and selection across closes. Opening the view makes no approval or rule
 edit; the normal first-use catalog initialization still applies when no
-registry exists. The command shows Policy on its own. Because this extension
-publishes it as an operator view, `/dashboard` also shows it as a tab. The view
-module loads when the destination opens, and the frame shows a reading
-placeholder until it is ready. The artifact review frame and its presentation
-load when an actual review opens. An invalid policy mode refuses at once,
-without loading either.
+registry exists. The browser and artifact review load on demand. An invalid
+policy mode refuses at once, without loading either.
 
 The view shares rule and proposal details and operator gates with the command.
 Its scopes are Rules, Proposals, Activity, Data, and State. Titles come first:
@@ -1427,8 +1423,9 @@ The footer at the bottom lists each control as its key and its short label. A
 click on a control runs the same action as its key. The keys of this view are
 `d` to enable or disable, `f` for the effect, `e` to explain, `a` to approve,
 `s` to set data, and `r` to refresh. `x` opens the list of every other action,
-such as reject, retire, reset, set from file, and remove. Escape closes the
-browser or goes back from a nested view.
+such as reject, retire, reset, set from file, and remove. Use `ctrl+n` to open
+More in a text field. Escape closes More, leaves an edit, cancels a form, or
+goes back from a nested view before it closes the browser.
 
 Every change is an action with a staged form, shown in the footer with its key.
 A rule offers **Disable…** or **Enable…**, **Effect…**, **Explain**,

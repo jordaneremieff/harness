@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import { NavigationFrame } from "../../operator-ui/index.ts";
+import { Frame } from "./frame.ts";
 import { type PolicyOperations, policyView } from "./operator-view.ts";
 import { data as panelData, snapshot as policySnapshot, scopeContext, viewTheme } from "./view-fixture.mts";
 
@@ -23,7 +23,12 @@ function operations(): PolicyOperations {
 		throw new Error("unexpected policy change");
 	};
 	return {
-		load: async () => ({ snapshot, fireSummary: panelData().fireSummary, activity: panelData().activity, scope: scopeContext }),
+		load: async () => ({
+			snapshot,
+			fireSummary: panelData().fireSummary,
+			activity: panelData().activity,
+			scope: scopeContext,
+		}),
 		refresh: async () => snapshot,
 		inspect: async () => ({ text: "Observation state", snapshot }),
 		approve: refused,
@@ -47,10 +52,11 @@ async function until(shown: () => string, pattern: RegExp, label: string): Promi
 
 /** A frame that gives its body the rows an ordinary 24-row terminal leaves below the header. */
 function frame() {
-	return new NavigationFrame({
+	return new Frame({
 		theme: viewTheme,
 		target: { id: "session", label: "This session" },
-		destinations: () => [{ key: "policy", label: "Policy", open: (host) => policyView(host, operations()) }],
+		expandKey: "ctrl+o",
+		open: (host) => policyView(host, operations()),
 		rows: () => 14,
 		requestRender: () => {},
 		close: () => {},

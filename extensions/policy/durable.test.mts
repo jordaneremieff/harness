@@ -23,12 +23,17 @@ import * as DurableModule from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 
-import { createPolicyDurableExtension, durableResultDisposition, policyPanelCommand, type PolicyDurableHost } from "./durable.ts";
+import {
+	createPolicyDurableExtension,
+	durableResultDisposition,
+	policyPanelCommand,
+	type PolicyDurableHost,
+} from "./durable.ts";
 import type { PolicyRecord } from "./record.ts";
 import type { AppendTelemetry } from "./telemetry-files.ts";
 import { makeRuleAudit, proposalRevision, RuleRegistry, targetIdentity } from "./local-rules.ts";
 import { deserializeSnapshot, readPanelAnswer } from "./panel-protocol.ts";
-import type { OperatorView, PanelHost } from "../../operator-ui/index.ts";
+import type { View, PanelHost } from "./frame.ts";
 import { operatorPanel } from "./operator-panel.ts";
 import type { FactsProgram } from "./program.ts";
 import { localDate, TelemetryLockBusyError } from "./telemetry-files.ts";
@@ -42,7 +47,11 @@ import { compileRule } from "./compiler.ts";
 import { ObservationState, type StoredObservationPeriod } from "./state.ts";
 
 const context = BACKGROUND_CONTEXT;
-const plainTheme = { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text } as unknown as PanelHost["theme"];
+const plainTheme = {
+	fg: (_c: string, text: string) => text,
+	bg: (_c: string, text: string) => text,
+	bold: (text: string) => text,
+} as unknown as PanelHost["theme"];
 const MODEL = { provider: "faux", modelId: "faux-1" } as const;
 
 test("host diagnostics distinguish rejected calls from uncertain execution and tool errors", () => {
@@ -55,14 +64,25 @@ test("host diagnostics distinguish rejected calls from uncertain execution and t
 		["aborted", "aborted", "unknown"],
 		["abandoned", "unexecuted", false],
 	] as const) {
-		assert.deepEqual(durableResultDisposition({
-			isError: true,
-			diagnostics: [{ code: "truncated", severity: "warn", message: "Partial output." }, { code, severity: "error", message: code }],
-		}), { outcome, executed, diagnostic: code });
+		assert.deepEqual(
+			durableResultDisposition({
+				isError: true,
+				diagnostics: [
+					{ code: "truncated", severity: "warn", message: "Partial output." },
+					{ code, severity: "error", message: code },
+				],
+			}),
+			{ outcome, executed, diagnostic: code },
+		);
 	}
 	assert.deepEqual(durableResultDisposition({}), { outcome: "success", executed: true });
-	assert.deepEqual(durableResultDisposition({ isError: true, diagnostics: [{ code: "tool_error", severity: "error", message: "Execution failed." }] }),
-		{ outcome: "execution-error", executed: true });
+	assert.deepEqual(
+		durableResultDisposition({
+			isError: true,
+			diagnostics: [{ code: "tool_error", severity: "error", message: "Execution failed." }],
+		}),
+		{ outcome: "execution-error", executed: true },
+	);
 });
 
 async function telemetryLines(dir: string, day: string): Promise<string[]> {
@@ -86,9 +106,20 @@ function captureDiagnostics(): { lines: string[]; restore(): void } {
 	const lines: string[] = [];
 	const warn = console.warn;
 	const write = process.stderr.write;
-	console.warn = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
-	process.stderr.write = ((chunk: unknown) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
-	return { lines, restore() { console.warn = warn; process.stderr.write = write; } };
+	console.warn = (...args: unknown[]) => {
+		lines.push(args.map(String).join(" "));
+	};
+	process.stderr.write = ((chunk: unknown) => {
+		lines.push(String(chunk));
+		return true;
+	}) as typeof process.stderr.write;
+	return {
+		lines,
+		restore() {
+			console.warn = warn;
+			process.stderr.write = write;
+		},
+	};
 }
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -122,11 +153,7 @@ function reportHarnessError(error: unknown): void {
 
 type HostCleanup = () => void | Promise<void>;
 
-function hostFor(
-	directory: string,
-	harness: DurableModule.Harness,
-	cleanups: HostCleanup[] = [],
-): PolicyDurableHost {
+function hostFor(directory: string, harness: DurableModule.Harness, cleanups: HostCleanup[] = []): PolicyDurableHost {
 	return {
 		durable: DurableModule,
 		services: {} as PolicyDurableHost["services"],
@@ -135,7 +162,9 @@ function hostFor(
 		storageId: "durable-test-storage",
 		harness,
 		signal: new AbortController().signal,
-		onClose: (dispose) => { cleanups.push(dispose); },
+		onClose: (dispose) => {
+			cleanups.push(dispose);
+		},
 		inventory: {
 			contributions: [
 				{
@@ -205,13 +234,27 @@ function probeExtension(counter: { executed: number }): DurableModule.Extension 
 test("defers the management tools without changing enforcement sections or replay classes", async (t) => {
 	const fixture = await openFixture();
 	t.after(fixture.close);
-	const extension = fixture.registry.snapshot().installed().find((candidate) => candidate.name === "policy");
+	const extension = fixture.registry
+		.snapshot()
+		.installed()
+		.find((candidate) => candidate.name === "policy");
 	assert.ok(extension, "the policy contribution is installed");
 	const tools = extension.tools ?? [];
-	assert.deepEqual(tools.map((tool) => tool.name).sort(), ["policy_approve", "policy_control", "policy_propose", "policy_rules"]);
-	assert.ok(tools.every((tool) => tool.deferred === true), "every management tool is discovered on demand");
+	assert.deepEqual(tools.map((tool) => tool.name).sort(), [
+		"policy_approve",
+		"policy_control",
+		"policy_propose",
+		"policy_rules",
+	]);
+	assert.ok(
+		tools.every((tool) => tool.deferred === true),
+		"every management tool is discovered on demand",
+	);
 	assert.deepEqual(tools.map((tool) => tool.replay).sort(), ["safe", "unsafe", "unsafe", "unsafe"]);
-	assert.deepEqual((extension.sections ?? []).map((section) => section.key), ["policy", "policy_shell"]);
+	assert.deepEqual(
+		(extension.sections ?? []).map((section) => section.key),
+		["policy", "policy_shell"],
+	);
 });
 
 async function toolResults(
@@ -227,9 +270,7 @@ async function toolResults(
 }
 
 function textOf(message: ToolResultMessage | undefined): string {
-	return (message?.content ?? [])
-		.flatMap((part) => (part.type === "text" ? [part.text] : []))
-		.join("\n");
+	return (message?.content ?? []).flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
 
 function detailsOf(message: ToolResultMessage | undefined): Record<string, unknown> | undefined {
@@ -268,7 +309,11 @@ interface FixtureOptions {
 
 /** The policy management tools start undeclared; a fixture that calls them loads them explicitly. */
 function policyTools(registry: DurableModule.Registry): readonly DurableModule.ToolRegistration[] {
-	return registry.snapshot().installed().filter((entry) => entry.name === "policy").flatMap((entry) => entry.tools ?? []);
+	return registry
+		.snapshot()
+		.installed()
+		.filter((entry) => entry.name === "policy")
+		.flatMap((entry) => entry.tools ?? []);
 }
 
 async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
@@ -326,11 +371,7 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 			close: async () => {
 				for (const dispose of cleanups.splice(0)) await dispose();
 				await harness.close(context);
-				assert.equal(
-					reports.length,
-					0,
-					`harness reports: ${reports.map((error) => String(error)).join("; ")}`,
-				);
+				assert.equal(reports.length, 0, `harness reports: ${reports.map((error) => String(error)).join("; ")}`);
 				await rm(directory, { recursive: true, force: true });
 				if (priorDir === undefined) delete process.env.PI_POLICY_DIR;
 				else process.env.PI_POLICY_DIR = priorDir;
@@ -370,7 +411,13 @@ async function addRule(
 		"Test rule.",
 		makeRuleAudit(auditContext, "agent-tool"),
 	);
-	await policy.decide(proposal.id, "approved", undefined, makeRuleAudit(auditContext, "command"), proposalRevision(proposal));
+	await policy.decide(
+		proposal.id,
+		"approved",
+		undefined,
+		makeRuleAudit(auditContext, "command"),
+		proposalRevision(proposal),
+	);
 }
 
 const proposeArgs = {
@@ -387,15 +434,24 @@ test("native tools use host-relative document settings and environment precedenc
 	for (const override of [undefined, "notice", "invalid-mode"]) {
 		const fixture = await openFixture({ configuration: { dir: "configured-store", mode: "enforce" }, mode: override });
 		try {
-			await submit(fixture, [
-				fauxAssistantMessage(fauxToolCall("policy_control", { operation: "mode" }), { stopReason: "toolUse" }),
-				fauxAssistantMessage("inspected"),
-			], "inspect mode");
+			await submit(
+				fixture,
+				[
+					fauxAssistantMessage(fauxToolCall("policy_control", { operation: "mode" }), { stopReason: "toolUse" }),
+					fauxAssistantMessage("inspected"),
+				],
+				"inspect mode",
+			);
 			const results = await toolResults(fixture.root, "policy_control");
-			assert.equal(detailsOf(results.at(-1))?.mode, override === undefined ? "enforce" : override === "notice" ? "notice" : "observe");
+			assert.equal(
+				detailsOf(results.at(-1))?.mode,
+				override === undefined ? "enforce" : override === "notice" ? "notice" : "observe",
+			);
 			assert.equal((await fixture.policy.snapshot()).health.status, "ok");
 			await assert.rejects(readFile(join(fixture.directory, "policy", "rules.jsonl")), /ENOENT/);
-		} finally { await fixture.close(); }
+		} finally {
+			await fixture.close();
+		}
 	}
 });
 
@@ -404,11 +460,18 @@ for (const state of ["healthy", "degraded", "incomplete"] as const) {
 		const fixture = await openFixture();
 		try {
 			await fixture.policy.snapshot();
-			if (state !== "healthy") await writeFile(join(fixture.storeDir, "rules.jsonl"), state === "degraded" ? "invalid\n" : "{", { mode: 0o600 });
-			await submit(fixture, [
-				fauxAssistantMessage(fauxToolCall("policy_rules", { id: "missing.rule" }), { stopReason: "toolUse" }),
-				fauxAssistantMessage("inspected"),
-			], "inspect exact rule");
+			if (state !== "healthy")
+				await writeFile(join(fixture.storeDir, "rules.jsonl"), state === "degraded" ? "invalid\n" : "{", {
+					mode: 0o600,
+				});
+			await submit(
+				fixture,
+				[
+					fauxAssistantMessage(fauxToolCall("policy_rules", { id: "missing.rule" }), { stopReason: "toolUse" }),
+					fauxAssistantMessage("inspected"),
+				],
+				"inspect exact rule",
+			);
 			const result = (await toolResults(fixture.root, "policy_rules")).at(-1);
 			assert.ok(result);
 			const text = textOf(result);
@@ -417,7 +480,9 @@ for (const state of ["healthy", "degraded", "incomplete"] as const) {
 				assert.doesNotMatch(text, /No rule or pending proposal/);
 				assert.match(text, state === "degraded" ? /registry health: degraded=true/ : /append in flight/);
 			}
-		} finally { await fixture.close(); }
+		} finally {
+			await fixture.close();
+		}
 	});
 }
 
@@ -426,7 +491,10 @@ test("every policy tool answers a model-issued call", async () => {
 	try {
 		await submit(
 			fixture,
-			[fauxAssistantMessage(fauxToolCall("policy_rules", { view: "rules" }), { stopReason: "toolUse" }), fauxAssistantMessage("inspected")],
+			[
+				fauxAssistantMessage(fauxToolCall("policy_rules", { view: "rules" }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("inspected"),
+			],
 			"list rules",
 		);
 		const rules = await toolResults(fixture.root, "policy_rules");
@@ -438,7 +506,10 @@ test("every policy tool answers a model-issued call", async () => {
 
 		await submit(
 			fixture,
-			[fauxAssistantMessage(fauxToolCall("policy_propose", proposeArgs), { stopReason: "toolUse" }), fauxAssistantMessage("proposed")],
+			[
+				fauxAssistantMessage(fauxToolCall("policy_propose", proposeArgs), { stopReason: "toolUse" }),
+				fauxAssistantMessage("proposed"),
+			],
 			"propose a rule",
 		);
 		const proposals = await toolResults(fixture.root, "policy_propose");
@@ -475,7 +546,10 @@ test("every policy tool answers a model-issued call", async () => {
 
 		await submit(
 			fixture,
-			[fauxAssistantMessage(fauxToolCall("policy_control", { operation: "mode" }), { stopReason: "toolUse" }), fauxAssistantMessage("reported")],
+			[
+				fauxAssistantMessage(fauxToolCall("policy_control", { operation: "mode" }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("reported"),
+			],
 			"report mode",
 		);
 		const controls = await toolResults(fixture.root, "policy_control");
@@ -489,8 +563,12 @@ test("native codemode receives structured policy results and rejects tool errors
 	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
 	const fixture = await openFixture({ extension: createCodemodeExtension({ sandbox, models: false }) });
 	try {
-		await submit(fixture, [
-			fauxAssistantMessage(fauxToolCall("codemode", { code: `
+		await submit(
+			fixture,
+			[
+				fauxAssistantMessage(
+					fauxToolCall("codemode", {
+						code: `
 const rules = await tools.policy_rules({ view: "rules" });
 const proposal = await tools.policy_propose(${JSON.stringify(proposeArgs)});
 const approved = await tools.policy_approve({ proposalId: proposal.proposalId, proposalRevision: proposal.proposalRevision, effect: "exact", authorization: "The fixture operator approved this exact proposal." });
@@ -499,16 +577,24 @@ const telemetry = await tools.policy_control({ operation: "telemetry", since: "2
 text({ rules: rules.rules, pending: proposal.state, approved: approved.decision, mode: control.mode, telemetry: { kind: telemetry.selection.kind, sinceUtc: telemetry.selection.sinceUtc, writer: telemetry.recording.writer.scope, next: telemetry.continuation.nextCursor } });
 try { await tools.policy_approve({ proposalId: proposal.proposalId, proposalRevision: proposal.proposalRevision, effect: "exact", authorization: "The fixture operator approved this exact proposal." }); }
 catch (error) { text(String(error)); }
-` }), { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
-		], "inspect and change the isolated fixture rule");
+`,
+					}),
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("done"),
+			],
+			"inspect and change the isolated fixture rule",
+		);
 		const result = (await toolResults(fixture.root, "codemode")).at(-1);
 		assert.equal(result?.isError, false);
 		assert.match(textOf(result), /"rules":\s*\d+/);
 		assert.match(textOf(result), /"pending":\s*"pending"/);
 		assert.match(textOf(result), /"approved":\s*"approved"/);
 		assert.match(textOf(result), /"mode":\s*"observe"/);
-		assert.match(textOf(result), /"kind":\s*"instants",\s*"sinceUtc":\s*"2025-12-31T22:00:00.000Z",\s*"writer":\s*"this-process-since-start",\s*"next":\s*null/);
+		assert.match(
+			textOf(result),
+			/"kind":\s*"instants",\s*"sinceUtc":\s*"2025-12-31T22:00:00.000Z",\s*"writer":\s*"this-process-since-start",\s*"next":\s*null/,
+		);
 		assert.match(textOf(result), /No pending proposal with that ID/);
 		assert.equal((await toolResults(fixture.root, "policy_rules")).length, 0);
 	} finally {
@@ -520,13 +606,23 @@ catch (error) { text(String(error)); }
 test("native telemetry control gives the model readable text and keeps the structured page", async () => {
 	const fixture = await openFixture();
 	try {
-		await submit(fixture, [
-			fauxAssistantMessage(fauxToolCall("policy_control", { operation: "telemetry", from: "2026-01-01", to: "2026-01-02" }), { stopReason: "toolUse" }),
-			fauxAssistantMessage("reported"),
-		], "report telemetry");
+		await submit(
+			fixture,
+			[
+				fauxAssistantMessage(
+					fauxToolCall("policy_control", { operation: "telemetry", from: "2026-01-01", to: "2026-01-02" }),
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("reported"),
+			],
+			"report telemetry",
+		);
 		const result = (await toolResults(fixture.root, "policy_control")).at(-1);
 		assert.equal(result?.isError, false);
-		assert.match(textOf(result), /^Policy telemetry: 2026-01-01 through 2026-01-02 \(inclusive writer-local calendar day files\)/);
+		assert.match(
+			textOf(result),
+			/^Policy telemetry: 2026-01-01 through 2026-01-02 \(inclusive writer-local calendar day files\)/,
+		);
 		assert.match(textOf(result), /Recording: unknown\. This process's writer since its start: ok/);
 		const details = detailsOf(result) as { selection?: { kind?: string }; coverage?: { days?: unknown[] } } | undefined;
 		assert.equal(details?.selection?.kind, "dates");
@@ -538,20 +634,25 @@ test("native telemetry control gives the model readable text and keeps the struc
 
 test("nested tools-only and deferred calls receive schema-validated policy corrections", async () => {
 	const seen: string[] = [];
-	const tools = ["tools_only", "deferred_probe"].map((name) => DurableModule.defineTool({
-		name,
-		description: "Return a corrected fixture value",
-		parameters: obj({ old: opt(str()), value: opt(str()) }, { open: false }),
-		...(name === "tools_only" ? { callers: ["tools"] as const } : { deferred: true as const }),
-		execute: async (args) => {
-			assert.ok(typeof args.value === "string");
-			assert.equal(args.old, undefined);
-			seen.push(args.value);
-			return { output: [{ type: "text" as const, text: args.value }] };
-		},
-	}));
+	const tools = ["tools_only", "deferred_probe"].map((name) =>
+		DurableModule.defineTool({
+			name,
+			description: "Return a corrected fixture value",
+			parameters: obj({ old: opt(str()), value: opt(str()) }, { open: false }),
+			...(name === "tools_only" ? { callers: ["tools"] as const } : { deferred: true as const }),
+			execute: async (args) => {
+				assert.ok(typeof args.value === "string");
+				assert.equal(args.old, undefined);
+				seen.push(args.value);
+				return { output: [{ type: "text" as const, text: args.value }] };
+			},
+		}),
+	);
 	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
-	const fixture = await openFixture({ mode: "enforce", extension: DurableModule.defineExtension({ name: "nested-probes", tools }) });
+	const fixture = await openFixture({
+		mode: "enforce",
+		extension: DurableModule.defineExtension({ name: "nested-probes", tools }),
+	});
 	fixture.registry.install(createCodemodeExtension({ sandbox, models: false }));
 	try {
 		await addRule(fixture.policy, "nested-correction", {
@@ -562,11 +663,23 @@ test("nested tools-only and deferred calls receive schema-validated policy corre
 			onUnavailable: "deny",
 		});
 		const agent = await fixture.root.agent(context);
-		assert.equal(agent.tools.some((tool) => tools.some((probe) => probe.name === tool.name)), false);
-		await submit(fixture, [
-			fauxAssistantMessage(fauxToolCall("codemode", { code: 'text(await tools.tools_only({ old: "first" })); text(await tools.deferred_probe({ old: "second" }));' }), { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
-		], "run the nested fixture probes");
+		assert.equal(
+			agent.tools.some((tool) => tools.some((probe) => probe.name === tool.name)),
+			false,
+		);
+		await submit(
+			fixture,
+			[
+				fauxAssistantMessage(
+					fauxToolCall("codemode", {
+						code: 'text(await tools.tools_only({ old: "first" })); text(await tools.deferred_probe({ old: "second" }));',
+					}),
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("done"),
+			],
+			"run the nested fixture probes",
+		);
 		const result = (await toolResults(fixture.root, "codemode")).at(-1);
 		assert.equal(result?.isError, false, textOf(result));
 		assert.deepEqual(seen, ["first", "second"]);
@@ -579,54 +692,114 @@ test("nested tools-only and deferred calls receive schema-validated policy corre
 });
 
 test("the shell contract card reaches a model when bash is callable only", async () => {
-	const fixture = await openFixture({ mode: "annotate", extension: DurableModule.defineExtension({
-		name: "nested-shell",
-		tools: [DurableModule.defineTool({
-			name: "bash", description: "A nonexecuting shell fixture", callers: ["tools"],
-			parameters: obj({ command: str() }, { open: true }),
-			execute: async () => ({ output: [{ type: "text", text: "fixture only" }] }),
-		})],
-	}) });
+	const fixture = await openFixture({
+		mode: "annotate",
+		extension: DurableModule.defineExtension({
+			name: "nested-shell",
+			tools: [
+				DurableModule.defineTool({
+					name: "bash",
+					description: "A nonexecuting shell fixture",
+					callers: ["tools"],
+					parameters: obj({ command: str() }, { open: true }),
+					execute: async () => ({ output: [{ type: "text", text: "fixture only" }] }),
+				}),
+			],
+		}),
+	});
 	try {
 		const agent = await fixture.root.agent(context);
-		assert.equal(agent.tools.some((tool) => tool.name === "bash"), false);
-		assert.equal(agent.callable.some((tool) => tool.name === "bash"), true);
+		assert.equal(
+			agent.tools.some((tool) => tool.name === "bash"),
+			false,
+		);
+		assert.equal(
+			agent.callable.some((tool) => tool.name === "bash"),
+			true,
+		);
 		const requests: Array<readonly import("@earendil-works/pi-ai").Message[]> = [];
-		await submit(fixture, [(modelContext: { messages: readonly import("@earendil-works/pi-ai").Message[] }) => {
-			requests.push(modelContext.messages);
-			return fauxAssistantMessage(fauxToolCall("policy_rules", {}), { stopReason: "toolUse" });
-		}, (modelContext: { messages: readonly import("@earendil-works/pi-ai").Message[] }) => {
-			requests.push(modelContext.messages);
-			return fauxAssistantMessage("done");
-		}], "inspect shell guidance");
-		const cards = requests.map((messages) => messages.filter((message) => message.role === "system" &&
-			JSON.stringify(message).includes("Shell contract snapshot")));
+		await submit(
+			fixture,
+			[
+				(modelContext: { messages: readonly import("@earendil-works/pi-ai").Message[] }) => {
+					requests.push(modelContext.messages);
+					return fauxAssistantMessage(fauxToolCall("policy_rules", {}), { stopReason: "toolUse" });
+				},
+				(modelContext: { messages: readonly import("@earendil-works/pi-ai").Message[] }) => {
+					requests.push(modelContext.messages);
+					return fauxAssistantMessage("done");
+				},
+			],
+			"inspect shell guidance",
+		);
+		const cards = requests.map((messages) =>
+			messages.filter(
+				(message) => message.role === "system" && JSON.stringify(message).includes("Shell contract snapshot"),
+			),
+		);
 		assert.equal(cards[0].length, 1);
 		assert.deepEqual(cards[1], cards[0], "the system card retains identical bytes across generation requests");
-	} finally { await fixture.close(); }
+	} finally {
+		await fixture.close();
+	}
 });
 
 test("native unavailable command denials name their rule without claiming a match", async () => {
 	let executions = 0;
-	const fixture = await openFixture({ mode: "enforce",
+	const fixture = await openFixture({
+		mode: "enforce",
 		prepare: async (storeDir) => {
 			const registry = new RuleRegistry(storeDir);
 			const auditContext = { sessionManager: { getSessionId: () => "command-evidence" }, model: null };
 			const audit = makeRuleAudit(auditContext, "agent-tool");
-			const proposal = await registry.proposeAdd({
-				id: "synthetic.git", purpose: "Evaluate the declared command.", authority: "steer-or-block", note: "Use a permitted command shape.",
-				matcher: { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
-					spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } },
-			}, "Synthetic restriction.", audit);
-			await registry.decide(proposal.id, "approved", "block", makeRuleAudit(auditContext, "command"), proposalRevision(proposal));
+			const proposal = await registry.proposeAdd(
+				{
+					id: "synthetic.git",
+					purpose: "Evaluate the declared command.",
+					authority: "steer-or-block",
+					note: "Use a permitted command shape.",
+					matcher: {
+						kind: "declarative",
+						language: "command-shape/v1",
+						onUnavailable: "deny",
+						spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } },
+					},
+				},
+				"Synthetic restriction.",
+				audit,
+			);
+			await registry.decide(
+				proposal.id,
+				"approved",
+				"block",
+				makeRuleAudit(auditContext, "command"),
+				proposalRevision(proposal),
+			);
 		},
-		extension: DurableModule.defineExtension({ name: "command-evidence", tools: [DurableModule.defineTool({
-			name: "bash", description: "Nonexecuting command fixture", parameters: obj({ command: str() }, { open: true }),
-			execute: async () => { executions++; return { output: [{ type: "text", text: "fixture only" }] }; },
-		})] }),
+		extension: DurableModule.defineExtension({
+			name: "command-evidence",
+			tools: [
+				DurableModule.defineTool({
+					name: "bash",
+					description: "Nonexecuting command fixture",
+					parameters: obj({ command: str() }, { open: true }),
+					execute: async () => {
+						executions++;
+						return { output: [{ type: "text", text: "fixture only" }] };
+					},
+				}),
+			],
+		}),
 	});
 	try {
-		await submit(fixture, [fauxAssistantMessage(fauxToolCall("bash", { command: "timeout 1 echo safe" }), { stopReason: "toolUse" }), fauxAssistantMessage("done")], "inspect command evidence");
+		await submit(
+			fixture,
+			[
+				fauxAssistantMessage(fauxToolCall("bash", { command: "timeout 1 echo safe" }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("done"),
+			],
+			"inspect command evidence",
+		);
 		const result = (await toolResults(fixture.root, "bash")).at(-1);
 		assert.equal(executions, 0);
 		assert.equal(result?.isError, true);
@@ -638,79 +811,107 @@ test("native unavailable command denials name their rule without claiming a matc
 		const record = records.find((entry) => entry.tool === "bash");
 		assert.equal(record?.outcome, "denied");
 		assert.equal(record?.policy.decision, "deny");
-	} finally { await fixture.close(); }
+	} finally {
+		await fixture.close();
+	}
 });
 
 test("native result.content rules preserve structured values and mark nested errors", async () => {
-	const fixture = await openFixture({ mode: "enforce", extension: DurableModule.defineExtension({
-		name: "structured-probe",
-		tools: [DurableModule.defineTool({
-			name: "structured_probe",
-			description: "Return separate output and structured data",
-			parameters: obj({}, { open: true }),
-			structuredOutputSchema: obj({ value: num() }, { open: true }),
-			execute: async () => ({ output: [{ type: "text", text: "review this result" }], structuredOutput: { value: 7 }, details: { label: "fixture" } }),
-		}), DurableModule.defineTool({
-			name: "nested_probe",
-			description: "Read a nested result at the public API",
-			parameters: obj({}, { open: true }),
-			execute: async (_args, api, callContext) => {
-				const result = await api.executeTool("structured_probe", {}, callContext);
-				assert.equal(result.isError, true);
-				assert.deepEqual(result.structuredOutput, { value: 7 });
-				assert.deepEqual(result.details, { label: "fixture" });
-				return { output: [{ type: "text", text: "nested error and data preserved" }] };
-			},
-		})],
-	}) });
+	const fixture = await openFixture({
+		mode: "enforce",
+		extension: DurableModule.defineExtension({
+			name: "structured-probe",
+			tools: [
+				DurableModule.defineTool({
+					name: "structured_probe",
+					description: "Return separate output and structured data",
+					parameters: obj({}, { open: true }),
+					structuredOutputSchema: obj({ value: num() }, { open: true }),
+					execute: async () => ({
+						output: [{ type: "text", text: "review this result" }],
+						structuredOutput: { value: 7 },
+						details: { label: "fixture" },
+					}),
+				}),
+				DurableModule.defineTool({
+					name: "nested_probe",
+					description: "Read a nested result at the public API",
+					parameters: obj({}, { open: true }),
+					execute: async (_args, api, callContext) => {
+						const result = await api.executeTool("structured_probe", {}, callContext);
+						assert.equal(result.isError, true);
+						assert.deepEqual(result.structuredOutput, { value: 7 });
+						assert.deepEqual(result.details, { label: "fixture" });
+						return { output: [{ type: "text", text: "nested error and data preserved" }] };
+					},
+				}),
+			],
+		}),
+	});
 	try {
 		for (const [id, action] of [
 			["result-error", { kind: "assert-error" }],
 			["result-guide", { kind: "guide", text: "Inspect the reviewed result." }],
 		] as const) {
 			await addRule(fixture.policy, id, {
-				phase: "result", selector: { tools: ["structured_probe"] },
+				phase: "result",
+				selector: { tools: ["structured_probe"] },
 				when: { op: "eq", path: ["result", "content", "0", "text"], value: "review this result" },
-				action, onUnavailable: "skip",
+				action,
+				onUnavailable: "skip",
 			});
 		}
-		await submit(fixture, [
-			fauxAssistantMessage(fauxToolCall("structured_probe", {}), { stopReason: "toolUse" }),
-			fauxAssistantMessage(fauxToolCall("nested_probe", {}), { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
-		], "review direct and nested fixture output");
+		await submit(
+			fixture,
+			[
+				fauxAssistantMessage(fauxToolCall("structured_probe", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage(fauxToolCall("nested_probe", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("done"),
+			],
+			"review direct and nested fixture output",
+		);
 		const direct = (await toolResults(fixture.root, "structured_probe")).at(-1);
 		assert.equal(direct?.isError, true);
 		assert.match(textOf(direct), /review this result/);
 		assert.match(textOf(direct), /Inspect the reviewed result/);
 		assert.match(textOf((await toolResults(fixture.root, "nested_probe")).at(-1)), /nested error and data preserved/);
-	} finally { await fixture.close(); }
+	} finally {
+		await fixture.close();
+	}
 });
 
 /** A tool whose successive executions return the queued texts; every execution counts. */
 function verdictExtension(verdicts: string[], counter: { executed: number }, replay?: "safe"): DurableModule.Extension {
 	return DurableModule.defineExtension({
 		name: "verdict-probe",
-		tools: [DurableModule.defineTool({
-			name: "verdict_probe",
-			description: "Return the next queued verdict",
-			parameters: obj({}, { open: true }),
-			...(replay ? { replay } : {}),
-			execute: async () => {
-				counter.executed += 1;
-				return { output: [{ type: "text", text: verdicts.shift() ?? "EMPTY" }] };
-			},
-		})],
+		tools: [
+			DurableModule.defineTool({
+				name: "verdict_probe",
+				description: "Return the next queued verdict",
+				parameters: obj({}, { open: true }),
+				...(replay ? { replay } : {}),
+				execute: async () => {
+					counter.executed += 1;
+					return { output: [{ type: "text", text: verdicts.shift() ?? "EMPTY" }] };
+				},
+			}),
+		],
 	});
 }
 
 const badVerdictRule: FactsProgram = {
-	phase: "result", selector: { tools: ["verdict_probe"] },
+	phase: "result",
+	selector: { tools: ["verdict_probe"] },
 	when: { op: "eq", path: ["result", "content", "0", "text"], value: "BAD" },
-	action: { kind: "assert-error" }, onUnavailable: "skip",
+	action: { kind: "assert-error" },
+	onUnavailable: "skip",
 };
 
-async function verdictCall(fixture: Fixture, id: string, conversation: DurableModule.Conversation = fixture.root): Promise<void> {
+async function verdictCall(
+	fixture: Fixture,
+	id: string,
+	conversation: DurableModule.Conversation = fixture.root,
+): Promise<void> {
 	fixture.faux.appendResponses([
 		fauxAssistantMessage(fauxToolCall("verdict_probe", {}, { id }), { stopReason: "toolUse" }),
 		fauxAssistantMessage("done"),
@@ -721,22 +922,32 @@ async function verdictCall(fixture: Fixture, id: string, conversation: DurableMo
 
 async function verdictRecords(storeDir: string): Promise<Array<{ outcome: string; error: boolean }>> {
 	return (await telemetryLines(storeDir, localDate(new Date())))
-		.map((line) => JSON.parse(line)).filter((record) => record.tool === "verdict_probe");
+		.map((line) => JSON.parse(line))
+		.filter((record) => record.tool === "verdict_probe");
 }
 
 test("distinct tool tasks with one provider call id each receive their own result correction", async () => {
-	for (const verdicts of [["BAD", "GOOD", "GOOD"], ["GOOD", "BAD", "GOOD"]]) {
+	for (const verdicts of [
+		["BAD", "GOOD", "GOOD"],
+		["GOOD", "BAD", "GOOD"],
+	]) {
 		const counter = { executed: 0 };
 		const fixture = await openFixture({ mode: "enforce", extension: verdictExtension([...verdicts], counter) });
 		try {
 			await addRule(fixture.policy, "verdict-bad", badVerdictRule);
 			for (const id of ["same-provider-id", "same-provider-id", "fresh-provider-id"]) await verdictCall(fixture, id);
 			const errors = (await toolResults(fixture.root, "verdict_probe")).map((result) => result.isError);
-			assert.deepEqual(errors, verdicts.map((verdict) => verdict === "BAD"), verdicts.join(","));
+			assert.deepEqual(
+				errors,
+				verdicts.map((verdict) => verdict === "BAD"),
+				verdicts.join(","),
+			);
 			await fixture.closeHost();
 			assert.equal(counter.executed, 3);
 			assert.equal((await verdictRecords(fixture.storeDir)).length, 3);
-		} finally { await fixture.close(); }
+		} finally {
+			await fixture.close();
+		}
 	}
 });
 
@@ -746,23 +957,34 @@ test("a result correction is the outcome that completion rules and telemetry obs
 	try {
 		await addRule(fixture.policy, "verdict-bad", badVerdictRule);
 		await addRule(fixture.policy, "verdict-failed", {
-			phase: "completion", selector: { tools: ["verdict_probe"] },
+			phase: "completion",
+			selector: { tools: ["verdict_probe"] },
 			when: { op: "eq", path: ["outcome", "kind"], value: "execution-error" },
-			action: { kind: "observe", label: "failed" }, onUnavailable: "skip",
+			action: { kind: "observe", label: "failed" },
+			onUnavailable: "skip",
 		});
 		await verdictCall(fixture, "bad-call");
 		await verdictCall(fixture, "good-call");
-		assert.deepEqual((await toolResults(fixture.root, "verdict_probe")).map((result) => result.isError), [true, false]);
+		assert.deepEqual(
+			(await toolResults(fixture.root, "verdict_probe")).map((result) => result.isError),
+			[true, false],
+		);
 		await fixture.closeHost();
 		const records = (await telemetryLines(fixture.storeDir, localDate(new Date())))
-			.map((line) => JSON.parse(line)).filter((record) => record.tool === "verdict_probe");
-		assert.deepEqual(records.map((record) => [record.callId, record.error, record.outcome, record.policy.resultCorrected]), [
-			["bad-call", true, "execution-error", true],
-			["good-call", false, "success", undefined],
-		]);
+			.map((line) => JSON.parse(line))
+			.filter((record) => record.tool === "verdict_probe");
+		assert.deepEqual(
+			records.map((record) => [record.callId, record.error, record.outcome, record.policy.resultCorrected]),
+			[
+				["bad-call", true, "execution-error", true],
+				["good-call", false, "success", undefined],
+			],
+		);
 		assert.deepEqual(records[0].policy.metadata, [{ id: "verdict-failed", label: "failed" }]);
 		assert.deepEqual(records[1].policy.metadata, []);
-	} finally { await fixture.close(); }
+	} finally {
+		await fixture.close();
+	}
 });
 
 test("a forked conversation reusing a provider call id observes its own task", async () => {
@@ -780,7 +1002,9 @@ test("a forked conversation reusing a provider call id observes its own task", a
 		await fixture.closeHost();
 		assert.equal(counter.executed, 2);
 		assert.equal((await verdictRecords(fixture.storeDir)).length, 2);
-	} finally { await fixture.close(); }
+	} finally {
+		await fixture.close();
+	}
 });
 
 test("a replayed tool task reuses its own correction once and a later task with its provider id does not", async () => {
@@ -802,14 +1026,16 @@ test("a replayed tool task reuses its own correction once and a later task with 
 		// Runs after Policy's afterTool and holds the first result until the host closes, so the task replays.
 		const holder = DurableModule.defineExtension({
 			name: "result-holder",
-			hooks: [DurableModule.hook(DurableModule.ToolTask, {
-				afterTool: async (_call, _result, _api, callContext) => {
-					if (!hold) return undefined;
-					hold = false;
-					held.resolve();
-					return aborted(callContext.abortSignal);
-				},
-			})],
+			hooks: [
+				DurableModule.hook(DurableModule.ToolTask, {
+					afterTool: async (_call, _result, _api, callContext) => {
+						if (!hold) return undefined;
+						hold = false;
+						held.resolve();
+						return aborted(callContext.abortSignal);
+					},
+				}),
+			],
 		});
 		const open = async (cleanups: HostCleanup[]) => {
 			const registry = DurableModule.createRegistry();
@@ -822,7 +1048,9 @@ test("a replayed tool task reuses its own correction once and a later task with 
 		const policy = new RuleRegistry(storeDir);
 		await addRule(policy, "verdict-bad", badVerdictRule);
 		faux.setResponses([
-			fauxAssistantMessage(fauxToolCall("verdict_probe", {}, { id: "replayed-provider-id" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("verdict_probe", {}, { id: "replayed-provider-id" }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("done"),
 		]);
 		const firstCleanups: HostCleanup[] = [];
@@ -841,7 +1069,9 @@ test("a replayed tool task reuses its own correction once and a later task with 
 		await reacquired.wait(context);
 		const reopened = await second.harness.root(context);
 		faux.setResponses([
-			fauxAssistantMessage(fauxToolCall("verdict_probe", {}, { id: "replayed-provider-id" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("verdict_probe", {}, { id: "replayed-provider-id" }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("done"),
 		]);
 		await (await reopened.submit({ type: "input", content: "call again" }, context)).wait(context);
@@ -850,7 +1080,10 @@ test("a replayed tool task reuses its own correction once and a later task with 
 		await second.harness.close(context);
 		for (const dispose of secondCleanups.splice(0)) await dispose();
 		assert.equal(counter.executed, 3);
-		assert.deepEqual((await verdictRecords(storeDir)).map((record) => record.error), [true, false]);
+		assert.deepEqual(
+			(await verdictRecords(storeDir)).map((record) => record.error),
+			[true, false],
+		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 		if (priorDir === undefined) delete process.env.PI_POLICY_DIR;
@@ -864,41 +1097,58 @@ test("native telemetry preserves the full call interval from the input memo", as
 	const start = Date.now();
 	let now = start;
 	t.mock.method(Date, "now", () => now);
-	const fixture = await openFixture({ extension: DurableModule.defineExtension({
-		name: "clock-probe",
-		tools: [DurableModule.defineTool({
-			name: "clock_probe", description: "Advance a controlled clock", parameters: obj({}, { open: true }),
-			execute: async () => {
-				now += 500;
-				return { output: [{ type: "text", text: "clock advanced" }] };
-			},
-		})],
-		hooks: [DurableModule.hook(DurableModule.ToolTask, {
-			beforeTool: (call) => {
-				if (call.name === "clock_probe") now += 250;
-				return undefined;
-			},
-		})],
-	}) });
+	const fixture = await openFixture({
+		extension: DurableModule.defineExtension({
+			name: "clock-probe",
+			tools: [
+				DurableModule.defineTool({
+					name: "clock_probe",
+					description: "Advance a controlled clock",
+					parameters: obj({}, { open: true }),
+					execute: async () => {
+						now += 500;
+						return { output: [{ type: "text", text: "clock advanced" }] };
+					},
+				}),
+			],
+			hooks: [
+				DurableModule.hook(DurableModule.ToolTask, {
+					beforeTool: (call) => {
+						if (call.name === "clock_probe") now += 250;
+						return undefined;
+					},
+				}),
+			],
+		}),
+	});
 	try {
-		await submit(fixture, [
-			fauxAssistantMessage(fauxToolCall("clock_probe", {}), { stopReason: "toolUse" }),
-			fauxAssistantMessage("done"),
-		], "measure the isolated fixture interval");
+		await submit(
+			fixture,
+			[fauxAssistantMessage(fauxToolCall("clock_probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("done")],
+			"measure the isolated fixture interval",
+		);
 		await fixture.closeHost();
-		const records = (await telemetryLines(fixture.storeDir, localDate(new Date(start))))
-			.map((line) => JSON.parse(line));
+		const records = (await telemetryLines(fixture.storeDir, localDate(new Date(start)))).map((line) =>
+			JSON.parse(line),
+		);
 		const record = records.find((entry) => entry.tool === "clock_probe");
 		assert.equal(record?.durationMs, 750);
 		assert.equal(record?.at, new Date(start).toISOString());
-	} finally { await fixture.close(); }
+	} finally {
+		await fixture.close();
+	}
 });
 
 test("policy parameter schemas preserve optional CLI fields and bounded record keywords", () => {
 	const proposal = compile(JSON.parse(JSON.stringify(PolicyProposeParams)));
 	const input = {
-		operation: "add", id: "local.push", purpose: "Protect updates.", authority: "exact",
-		reason: "Preserve explicit approval.", note: "Inspect the push.", onUnavailable: "deny",
+		operation: "add",
+		id: "local.push",
+		purpose: "Protect updates.",
+		authority: "exact",
+		reason: "Preserve explicit approval.",
+		note: "Inspect the push.",
+		onUnavailable: "deny",
 		match: { command: "git", cli: { profile: "git", subcommand: ["push"] } },
 	};
 	assert.equal(proposal.check(input), true);
@@ -912,7 +1162,8 @@ test("policy parameter schemas preserve optional CLI fields and bounded record k
 	assert.equal(proposal.check(indexed({ other: 1 })), true);
 	assert.throws(() => validateProposal(indexed({ "0": [1] })));
 
-	const entries = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`k${index}`, index]));
+	const entries = (count: number) =>
+		Object.fromEntries(Array.from({ length: count }, (_, index) => [`k${index}`, index]));
 	const rules = compile(JSON.parse(JSON.stringify(PolicyRulesParams)));
 	assert.equal(rules.check({ draft: entries(16), input: entries(128) }), true);
 	assert.equal(rules.check({ draft: entries(17) }), false);
@@ -924,7 +1175,9 @@ test("policy parameter schemas preserve optional CLI fields and bounded record k
 	assert.equal(control.check(artifact(entries(13))), false);
 	assert.equal(control.check({ operation: "mode", extra: true }), false);
 	const cases = compile(JSON.parse(JSON.stringify(DraftCasesSchema)));
-	const checkCase = (input: unknown) => [{ name: "bounded", steps: [{ kind: "call", at: 0, turn: 0, tool: "probe", input }] }];
+	const checkCase = (input: unknown) => [
+		{ name: "bounded", steps: [{ kind: "call", at: 0, turn: 0, tool: "probe", input }] },
+	];
 	assert.equal(cases.check(checkCase(entries(128))), true);
 	assert.equal(cases.check(checkCase(entries(129))), false);
 });
@@ -960,7 +1213,10 @@ test("every tool declares its replay class explicitly", async () => {
 			assert.ok(schema);
 			const check = compile(schema);
 			if (entry.tool.name === "policy_rules") {
-				assert.equal(check.check({ rules: 0, pending: 0, ruleStoreDegraded: false, ruleStorePath: "rules.jsonl", extra: true }), true);
+				assert.equal(
+					check.check({ rules: 0, pending: 0, ruleStoreDegraded: false, ruleStorePath: "rules.jsonl", extra: true }),
+					true,
+				);
 				assert.equal(check.check({ rules: 0 }), false);
 			}
 			if (entry.tool.name === "policy_control") {
@@ -991,7 +1247,11 @@ test("an interrupted unsafe tool yields the interrupted result instead of rerunn
 			fauxAssistantMessage("done"),
 		]);
 		const firstCleanups: HostCleanup[] = [];
-		const first = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
+		const first = await DurableModule.Harness.open(
+			storage,
+			{ models, registry, onReport: reportHarnessError },
+			context,
+		);
 		registry.install(
 			blockOnce(
 				await createPolicyDurableExtension(hostFor(directory, first, firstCleanups)),
@@ -1006,7 +1266,11 @@ test("an interrupted unsafe tool yields the interrupted result instead of rerunn
 		for (const dispose of firstCleanups.splice(0)) await dispose();
 
 		const secondCleanups: HostCleanup[] = [];
-		const second = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
+		const second = await DurableModule.Harness.open(
+			storage,
+			{ models, registry, onReport: reportHarnessError },
+			context,
+		);
 		registry.install(await createPolicyDurableExtension(hostFor(directory, second, secondCleanups)));
 		second.resume();
 		const reacquired = await second.submission(submission.id, context);
@@ -1023,7 +1287,8 @@ test("an interrupted unsafe tool yields the interrupted result instead of rerunn
 		const store = await readFile(join(storeDir, "rules.jsonl"), "utf8");
 		assert.equal(store.includes('"kind":"proposal"'), false);
 		const records = (await telemetryLines(storeDir, localDate(new Date())))
-			.map((line) => JSON.parse(line)).filter((record) => record.tool === "policy_propose");
+			.map((line) => JSON.parse(line))
+			.filter((record) => record.tool === "policy_propose");
 		assert.equal(records.length, 1);
 		assert.equal(records[0].outcome, "incomplete");
 		assert.equal(records[0].observationComplete, false);
@@ -1039,9 +1304,7 @@ test("an aborted call records an uncertain execution without a completed executi
 	const started = deferred();
 	const fixture = await openFixture({ block: { name: "policy_rules", started: started.resolve } });
 	try {
-		fixture.faux.setResponses([
-			fauxAssistantMessage(fauxToolCall("policy_rules", {}), { stopReason: "toolUse" }),
-		]);
+		fixture.faux.setResponses([fauxAssistantMessage(fauxToolCall("policy_rules", {}), { stopReason: "toolUse" })]);
 		const submission = await fixture.root.submit({ type: "input", content: "Inspect policy." }, context);
 		await started.promise;
 		await fixture.root.abort(context);
@@ -1050,7 +1313,8 @@ test("an aborted call records an uncertain execution without a completed executi
 		assert.equal(result?.isError, true);
 		await fixture.closeHost();
 		const records = (await telemetryLines(fixture.storeDir, localDate(new Date())))
-			.map((line) => JSON.parse(line)).filter((record) => record.tool === "policy_rules");
+			.map((line) => JSON.parse(line))
+			.filter((record) => record.tool === "policy_rules");
 		assert.equal(records.length, 1);
 		assert.equal(records[0].outcome, "aborted");
 		assert.equal(records[0].abortRequested, true);
@@ -1078,15 +1342,29 @@ test("an interrupted safe tool reruns and answers after reopen", async () => {
 			fauxAssistantMessage(fauxToolCall("policy_rules", { view: "rules" }), { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),
 		]);
-		const first = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
-		registry.install(blockOnce(await createPolicyDurableExtension(hostFor(fixtureDirectory, first, cleanups)), "policy_rules", started.resolve));
+		const first = await DurableModule.Harness.open(
+			storage,
+			{ models, registry, onReport: reportHarnessError },
+			context,
+		);
+		registry.install(
+			blockOnce(
+				await createPolicyDurableExtension(hostFor(fixtureDirectory, first, cleanups)),
+				"policy_rules",
+				started.resolve,
+			),
+		);
 		const root = await first.root(context, { agent: { model: MODEL, modelTools: { add: policyTools(registry) } } });
 		const submission = await root.submit({ type: "input", content: "list" }, context);
 		await started.promise;
 		await first.close(context);
 		for (const dispose of cleanups.splice(0)) await dispose();
 
-		const second = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
+		const second = await DurableModule.Harness.open(
+			storage,
+			{ models, registry, onReport: reportHarnessError },
+			context,
+		);
 		registry.install(await createPolicyDurableExtension(hostFor(fixtureDirectory, second, cleanups)));
 		second.resume();
 		const reacquired = await second.submission(submission.id, context);
@@ -1110,23 +1388,38 @@ test("native read redirects preserve rule guidance and append concrete calls", a
 	let executed = 0;
 	const extension = DurableModule.defineExtension({
 		name: "reader-probes",
-		tools: ["bash", "read"].map((name) => DurableModule.defineTool({
-			name,
-			description: "A synthetic reader probe.",
-			parameters: obj({ command: opt(str()) }, { open: true }),
-			execute: async () => { executed++; return { output: [{ type: "text", text: "unexpected execution" }] }; },
-		})),
+		tools: ["bash", "read"].map((name) =>
+			DurableModule.defineTool({
+				name,
+				description: "A synthetic reader probe.",
+				parameters: obj({ command: opt(str()) }, { open: true }),
+				execute: async () => {
+					executed++;
+					return { output: [{ type: "text", text: "unexpected execution" }] };
+				},
+			}),
+		),
 	});
-	const fixture = await openFixture({ mode: "enforce", extension, prepare: async (storeDir) => {
-		const readerIds = new Set(["routing.cat-read", "routing.sed-slice", "routing.head-slice", "routing.tail-slice", "routing.inline-script-read"]);
-		const catalog = PACKAGE_CATALOG.map((row) => {
-			if (!readerIds.has(row.id)) return row;
-			const { revision: _revision, ...definition } = row;
-			const blocked = { ...definition, effect: "block" as const };
-			return { ...blocked, revision: packageRowRevision(blocked) };
-		});
-		await new RuleRegistry(storeDir, { catalog }).snapshot();
-	} });
+	const fixture = await openFixture({
+		mode: "enforce",
+		extension,
+		prepare: async (storeDir) => {
+			const readerIds = new Set([
+				"routing.cat-read",
+				"routing.sed-slice",
+				"routing.head-slice",
+				"routing.tail-slice",
+				"routing.inline-script-read",
+			]);
+			const catalog = PACKAGE_CATALOG.map((row) => {
+				if (!readerIds.has(row.id)) return row;
+				const { revision: _revision, ...definition } = row;
+				const blocked = { ...definition, effect: "block" as const };
+				return { ...blocked, revision: packageRowRevision(blocked) };
+			});
+			await new RuleRegistry(storeDir, { catalog }).snapshot();
+		},
+	});
 	try {
 		const before = await readFile(join(fixture.storeDir, "rules.jsonl"), "utf8");
 		const cases = [
@@ -1137,10 +1430,14 @@ test("native read redirects preserve rule guidance and append concrete calls", a
 			[`python3 -c "print(open('notes.md').read())"`, "read path=notes.md"],
 		];
 		for (const [command, suggestion] of cases) {
-			await submit(fixture, [
-				fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" }),
-				fauxAssistantMessage("stopped"),
-			], "inspect the note");
+			await submit(
+				fixture,
+				[
+					fauxAssistantMessage(fauxToolCall("bash", { command }), { stopReason: "toolUse" }),
+					fauxAssistantMessage("stopped"),
+				],
+				"inspect the note",
+			);
 			const result = (await toolResults(fixture.root, "bash")).at(-1);
 			assert.equal(result?.isError, true);
 			assert.ok(textOf(result).includes(`\nFor this command: ${suggestion}`), textOf(result));
@@ -1182,15 +1479,22 @@ test("enforce mode completes a denied call and projects result guidance once", a
 		assert.equal(textOf(result).split("Inspect the refusal before another call.").length - 1, 1);
 		assert.equal(counter.executed, 0);
 		await fixture.closeHost();
-		const records = (await telemetryLines(fixture.storeDir, localDate(new Date())))
-			.map((line) => JSON.parse(line));
+		const records = (await telemetryLines(fixture.storeDir, localDate(new Date()))).map((line) => JSON.parse(line));
 		assert.equal(records.filter((entry) => entry.tool === "probe").length, 1);
 		const record = records.find((entry) => entry.tool === "probe");
 		assert.equal(record.outcome, "denied");
 		assert.equal(record.policy.decision, "deny");
 		assert.ok(record.classes.includes("durable-deny-probe"));
-		assert.ok(record.policy.evaluations.some((entry: { id: string; phase: string; deny: boolean; truth: unknown; applicable: unknown }) =>
-			entry.id === "durable-deny-probe" && entry.phase === "input" && entry.deny && entry.truth === true && entry.applicable === true));
+		assert.ok(
+			record.policy.evaluations.some(
+				(entry: { id: string; phase: string; deny: boolean; truth: unknown; applicable: unknown }) =>
+					entry.id === "durable-deny-probe" &&
+					entry.phase === "input" &&
+					entry.deny &&
+					entry.truth === true &&
+					entry.applicable === true,
+			),
+		);
 		const day = localDate(new Date());
 		const summary = await readTelemetry(fixture.storeDir, day, day);
 		assert.equal(summary.rules.find((entry) => entry.id === "durable-deny-probe")?.deniedCalls, 1);
@@ -1235,15 +1539,26 @@ for (const scenario of ["tool_unavailable", "invalid_arguments", "blocked"] as c
 		let executed = 0;
 		const extension = DurableModule.defineExtension({
 			name: "host-result-probe",
-			tools: [DurableModule.defineTool({
-				name: "host_probe",
-				description: "A strictly typed local probe.",
-				parameters: obj({ count: int() }, { open: false }),
-				execute: async () => { executed++; return { output: [] }; },
-			})],
-			hooks: scenario === "blocked" ? [DurableModule.hook(DurableModule.ToolTask, {
-				beforeTool: (call) => call.name === "host_probe" ? { block: "The host refused this call." } : undefined,
-			})] : [],
+			tools: [
+				DurableModule.defineTool({
+					name: "host_probe",
+					description: "A strictly typed local probe.",
+					parameters: obj({ count: int() }, { open: false }),
+					execute: async () => {
+						executed++;
+						return { output: [] };
+					},
+				}),
+			],
+			hooks:
+				scenario === "blocked"
+					? [
+							DurableModule.hook(DurableModule.ToolTask, {
+								beforeTool: (call) =>
+									call.name === "host_probe" ? { block: "The host refused this call." } : undefined,
+							}),
+						]
+					: [],
 		});
 		const fixture = await openFixture({ mode: "annotate", extension });
 		try {
@@ -1261,19 +1576,27 @@ for (const scenario of ["tool_unavailable", "invalid_arguments", "blocked"] as c
 			});
 			const name = scenario === "tool_unavailable" ? "absent_probe" : "host_probe";
 			const args = scenario === "invalid_arguments" ? { count: {} } : { count: 1 };
-			await submit(fixture, [
-				fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }),
-				fauxAssistantMessage("The call ended."),
-			], "Attempt the local probe.");
+			await submit(
+				fixture,
+				[
+					fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }),
+					fauxAssistantMessage("The call ended."),
+				],
+				"Attempt the local probe.",
+			);
 			const result = (await toolResults(fixture.root, name)).at(-1);
 			assert.equal(result?.isError, true);
 			assert.match(textOf(result), /Inspect the rejected call/);
 			assert.equal(executed, 0);
 			await fixture.closeHost();
 			const records = (await telemetryLines(fixture.storeDir, localDate(new Date())))
-				.map((line) => JSON.parse(line)).filter((record) => record.tool === name);
+				.map((line) => JSON.parse(line))
+				.filter((record) => record.tool === name);
 			assert.equal(records.length, 1);
-			assert.equal(records[0].outcome, scenario === "invalid_arguments" ? "invalid" : scenario === "blocked" ? "denied" : "unexecuted");
+			assert.equal(
+				records[0].outcome,
+				scenario === "invalid_arguments" ? "invalid" : scenario === "blocked" ? "denied" : "unexecuted",
+			);
 			assert.equal(records[0].policy.hostDiagnostic, scenario);
 			assert.ok(records[0].policy.metadata.some((entry: { label: string }) => entry.label === "not-executed"));
 		} finally {
@@ -1333,11 +1656,17 @@ test("native restoration reconciles future evidence and preserves once allowance
 	const storage = new DurableModule.MemoryStorage();
 	const fixture = await openFixture({ mode: "annotate", storage });
 	try {
-		const program = (text: string): FactsProgram => ({ phase: "context",
+		const program = (text: string): FactsProgram => ({
+			phase: "context",
 			when: { op: "gte", path: ["state", "windowCount"], value: 1 },
-			action: { kind: "guide", text }, onUnavailable: "skip",
-			state: { observe: { op: "eq", path: ["outcome", "kind"], value: "execution-error" }, once: "period", cooldownMs: 50,
-				window: { maxEvents: 4, maxAgeMs: 100 } },
+			action: { kind: "guide", text },
+			onUnavailable: "skip",
+			state: {
+				observe: { op: "eq", path: ["outcome", "kind"], value: "execution-error" },
+				once: "period",
+				cooldownMs: 50,
+				window: { maxEvents: 4, maxAgeMs: 100 },
+			},
 		});
 		const ids = ["restored-window", "future-period", "consumed-once"];
 		await addRule(fixture.policy, ids[0], program("Restored window guidance."));
@@ -1358,17 +1687,37 @@ test("native restoration reconciles future evidence and preserves once allowance
 			period.window = [wall - 20, wall - 1, wall + 1_000].map((at) => ({ at, turn: 1, total: 1 }));
 			period.lastProjectedAt = wall + 1_000;
 			if (period.id === "future-period") period.startedAt = wall + 1_000;
-			if (period.id === "consumed-once") { period.projected = 1; period.projectedTurns = [1]; }
+			if (period.id === "consumed-once") {
+				period.projected = 1;
+				period.projectedTurns = [1];
+			}
 		}
-		const SeededState = DurableModule.defineDoc<DurableModule.JsonObject>({ kind: "policy.state", version: 1,
-			scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
-			initial: () => ({ identity: "synthetic-observation-state", generation: 0, turn: 0,
-				observation: observation as unknown as DurableModule.JsonObject, retainedGuidance: [], completedCalls: [],
-				incomplete: 0, stale: 0, shellCard: null }),
+		const SeededState = DurableModule.defineDoc<DurableModule.JsonObject>({
+			kind: "policy.state",
+			version: 1,
+			scope: "conversation",
+			history: "latest",
+			fork: "current",
+			checkpointWhen: () => false,
+			initial: () => ({
+				identity: "synthetic-observation-state",
+				generation: 0,
+				turn: 0,
+				observation: observation as unknown as DurableModule.JsonObject,
+				retainedGuidance: [],
+				completedCalls: [],
+				incomplete: 0,
+				stale: 0,
+				shellCard: null,
+			}),
 		});
 		await fixture.harness.commit((tx) => tx.doc(SeededState, fixture.root.id), context);
 		const readPeriods = async () => {
-			const record = await storage.findDocument({ kind: "policy.state", scope: { kind: "conversation", conversationId: fixture.root.id } }, "current", context);
+			const record = await storage.findDocument(
+				{ kind: "policy.state", scope: { kind: "conversation", conversationId: fixture.root.id } },
+				"current",
+				context,
+			);
 			assert.ok(record);
 			const document = await storage.document(record.id, "current", context);
 			assert.ok(document);
@@ -1383,10 +1732,12 @@ test("native restoration reconciles future evidence and preserves once allowance
 		};
 		const seen: string[] = [];
 		const request = async (label: string) => {
-			fixture.faux.appendResponses([(callContext) => {
-				seen.push(JSON.stringify(callContext.messages));
-				return fauxAssistantMessage(label);
-			}]);
+			fixture.faux.appendResponses([
+				(callContext) => {
+					seen.push(JSON.stringify(callContext.messages));
+					return fauxAssistantMessage(label);
+				},
+			]);
 			const submission = await fixture.root.submit({ type: "input", content: label }, context);
 			await submission.wait(context);
 		};
@@ -1452,22 +1803,37 @@ test("context-phase guidance is selected once per period and keeps its place", a
 });
 
 test("native shell and guidance notes preserve the complete request prefix", async () => {
-	const fixture = await openFixture({ mode: "annotate", extension: DurableModule.defineExtension({
-		name: "synthetic-command", tools: [DurableModule.defineTool({ name: "bash", description: "Synthetic command tool",
-			parameters: obj({ command: str() }), execute: async () => ({ output: [{ type: "text", text: "unused" }] }) })],
-	}) });
+	const fixture = await openFixture({
+		mode: "annotate",
+		extension: DurableModule.defineExtension({
+			name: "synthetic-command",
+			tools: [
+				DurableModule.defineTool({
+					name: "bash",
+					description: "Synthetic command tool",
+					parameters: obj({ command: str() }),
+					execute: async () => ({ output: [{ type: "text", text: "unused" }] }),
+				}),
+			],
+		}),
+	});
 	try {
-		await addRule(fixture.policy, "synthetic-context", { phase: "context",
-			when: { op: "exists", path: ["context"] }, action: { kind: "guide", text: "Retain the synthetic guidance." },
-			onUnavailable: "skip", state: { observe: { op: "exists", path: ["outcome"] }, once: "period" },
+		await addRule(fixture.policy, "synthetic-context", {
+			phase: "context",
+			when: { op: "exists", path: ["context"] },
+			action: { kind: "guide", text: "Retain the synthetic guidance." },
+			onUnavailable: "skip",
+			state: { observe: { op: "exists", path: ["outcome"] }, once: "period" },
 		});
 		let previous: string[] = [];
 		for (let request = 0; request < 3; request++) {
 			let current: string[] = [];
-			fixture.faux.appendResponses([(callContext) => {
-				current = callContext.messages.map((message) => JSON.stringify(message));
-				return fauxAssistantMessage("Synthetic response.");
-			}]);
+			fixture.faux.appendResponses([
+				(callContext) => {
+					current = callContext.messages.map((message) => JSON.stringify(message));
+					return fauxAssistantMessage("Synthetic response.");
+				},
+			]);
 			const submitted = await fixture.root.submit({ type: "input", content: `Synthetic input ${request}.` }, context);
 			await submitted.wait(context);
 			assert.ok(current.length > previous.length);
@@ -1568,7 +1934,10 @@ const isGuidance = (message: SeenMessage | undefined) => message?.text === "[pol
 async function guidanceHealth(fixture: Fixture): Promise<{ status: string; epoch: string | null; records: number }> {
 	await submit(
 		fixture,
-		[fauxAssistantMessage(fauxToolCall("policy_rules", { view: "health" }), { stopReason: "toolUse" }), fauxAssistantMessage("done")],
+		[
+			fauxAssistantMessage(fauxToolCall("policy_rules", { view: "health" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		],
 		"inspect health",
 	);
 	const health = JSON.parse(textOf((await toolResults(fixture.root, "policy_rules")).at(-1))) as {
@@ -1711,7 +2080,11 @@ test("durable inspection and control surfaces answer model-issued calls", async 
 			input: {},
 			result: { isError: false },
 		});
-		const previewJson = JSON.parse(textOf(preview)) as { preview?: boolean; stateAdvanced?: boolean; decision?: unknown };
+		const previewJson = JSON.parse(textOf(preview)) as {
+			preview?: boolean;
+			stateAdvanced?: boolean;
+			decision?: unknown;
+		};
 		assert.equal(previewJson.preview, true);
 		assert.equal(previewJson.stateAdvanced, false);
 		assert.equal(typeof previewJson.decision, "object");
@@ -1771,7 +2144,9 @@ test("a reset revision survives process loss", async () => {
 			context,
 		);
 		registry.install(await createPolicyDurableExtension(hostFor(directory, first, cleanups)));
-		const firstRoot = await first.root(context, { agent: { model: MODEL, modelTools: { add: policyTools(registry) } } });
+		const firstRoot = await first.root(context, {
+			agent: { model: MODEL, modelTools: { add: policyTools(registry) } },
+		});
 		faux.appendResponses([
 			fauxAssistantMessage(fauxToolCall("policy_control", { operation: "reset-preview", id: "--all" }), {
 				stopReason: "toolUse",
@@ -1785,7 +2160,11 @@ test("a reset revision survives process loss", async () => {
 		await first.close(context);
 		for (const dispose of cleanups.splice(0)) await dispose();
 
-		const second = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
+		const second = await DurableModule.Harness.open(
+			storage,
+			{ models, registry, onReport: reportHarnessError },
+			context,
+		);
 		registry.install(await createPolicyDurableExtension(hostFor(directory, second, cleanups)));
 		const secondRoot = await second.root(context);
 		faux.appendResponses([
@@ -1859,7 +2238,10 @@ test("a malformed state document is contained without failing the read", async (
 		await fixture.harness.commit((tx) => tx.doc(MalformedState, fixture.root.id), context);
 		await submit(
 			fixture,
-			[fauxAssistantMessage(fauxToolCall("policy_rules", { view: "state" }), { stopReason: "toolUse" }), fauxAssistantMessage("state")],
+			[
+				fauxAssistantMessage(fauxToolCall("policy_rules", { view: "state" }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("state"),
+			],
 			"show state",
 		);
 		const results = await toolResults(fixture.root, "policy_rules");
@@ -1878,31 +2260,94 @@ test("the policy command serves the attached panel: reads, an effect-labelled ap
 	try {
 		const host = hostFor(fixture.directory, fixture.harness);
 		await createPolicyDurableExtension(host);
-		const call = (data?: unknown, origin: "operator" | "model" = "operator") => policyPanelCommand.run({ args: "", ...(data === undefined ? {} : { data: data as never }), origin, conversation: fixture.root, context, host, invocationId: "panel" });
-		const answer = async <T,>(data: unknown) => (await call(data) as { text: string; data: unknown }).data as T;
+		const call = (data?: unknown, origin: "operator" | "model" = "operator") =>
+			policyPanelCommand.run({
+				args: "",
+				...(data === undefined ? {} : { data: data as never }),
+				origin,
+				conversation: fixture.root,
+				context,
+				host,
+				invocationId: "panel",
+			});
+		const answer = async <T,>(data: unknown) => ((await call(data)) as { text: string; data: unknown }).data as T;
 		assert.match(String(await call()), /Policy mode \w+ · \d+ rules · 0 pending proposals/);
 		const auditContext = { sessionManager: { getSessionId: () => "panel-test" }, model: null };
 		const proposal = await fixture.policy.proposeAdd(
-			{ id: "panel-rule", purpose: "Guide panel tests.", authority: "steer-or-block", matcher: { kind: "declarative", language: "facts/v1", spec: { phase: "input", when: { op: "eq", path: ["tool"], value: "bash" }, action: { kind: "guide", text: "Mind the panel." }, onUnavailable: "skip" } as FactsProgram }, note: "Panel rule." },
+			{
+				id: "panel-rule",
+				purpose: "Guide panel tests.",
+				authority: "steer-or-block",
+				matcher: {
+					kind: "declarative",
+					language: "facts/v1",
+					spec: {
+						phase: "input",
+						when: { op: "eq", path: ["tool"], value: "bash" },
+						action: { kind: "guide", text: "Mind the panel." },
+						onUnavailable: "skip",
+					} as FactsProgram,
+				},
+				note: "Panel rule.",
+			},
 			"Panel test.",
 			makeRuleAudit(auditContext, "agent-tool"),
 		);
 		const loaded = readPanelAnswer({ op: "load" }, await answer({ op: "load" }));
-		assert.ok(loaded.op === "load" && loaded.snapshot.pending.some((entry) => entry.id === proposal.id) && typeof loaded.scope.cwd === "string");
-		await assert.rejects(call({ op: "approve", proposalId: proposal.id, effect: "steer", revision: "000000000000" }), /revision|changed/i, "a stale revision refuses");
-		const approved = readPanelAnswer({ op: "approve", proposalId: proposal.id }, await answer({ op: "approve", proposalId: proposal.id, effect: "steer", revision: proposalRevision(proposal) }));
+		assert.ok(
+			loaded.op === "load" &&
+				loaded.snapshot.pending.some((entry) => entry.id === proposal.id) &&
+				typeof loaded.scope.cwd === "string",
+		);
+		await assert.rejects(
+			call({ op: "approve", proposalId: proposal.id, effect: "steer", revision: "000000000000" }),
+			/revision|changed/i,
+			"a stale revision refuses",
+		);
+		const approved = readPanelAnswer(
+			{ op: "approve", proposalId: proposal.id },
+			await answer({ op: "approve", proposalId: proposal.id, effect: "steer", revision: proposalRevision(proposal) }),
+		);
 		assert.ok(approved.op === "approve" && /Approved proposal/.test(approved.outcome));
 		const snapshot = deserializeSnapshot(approved.snapshot);
 		const record = snapshot.records.get("panel-rule");
-		assert.ok(record && record.source.kind === "local" && record.source.approvedAudit.surface === "panel", "the panel audit surface is recorded");
-		const disabled = readPanelAnswer({ op: "lifecycle", verb: "disable", id: "panel-rule", reason: "panel test" }, await answer({ op: "lifecycle", verb: "disable", id: "panel-rule", reason: "panel test", expectedIdentity: targetIdentity(record) }));
+		assert.ok(
+			record && record.source.kind === "local" && record.source.approvedAudit.surface === "panel",
+			"the panel audit surface is recorded",
+		);
+		const disabled = readPanelAnswer(
+			{ op: "lifecycle", verb: "disable", id: "panel-rule", reason: "panel test" },
+			await answer({
+				op: "lifecycle",
+				verb: "disable",
+				id: "panel-rule",
+				reason: "panel test",
+				expectedIdentity: targetIdentity(record),
+			}),
+		);
 		assert.ok(disabled.op === "lifecycle" && /Disabled panel-rule/.test(disabled.outcome));
-		await assert.rejects(call({ op: "lifecycle", verb: "enable", id: "panel-rule", reason: "stale", expectedIdentity: targetIdentity(record) }), /identity|changed/i, "a stale target identity refuses");
+		await assert.rejects(
+			call({
+				op: "lifecycle",
+				verb: "enable",
+				id: "panel-rule",
+				reason: "stale",
+				expectedIdentity: targetIdentity(record),
+			}),
+			/identity|changed/i,
+			"a stale target identity refuses",
+		);
 		const state = readPanelAnswer({ op: "inspect", view: "state" }, await answer({ op: "inspect", view: "state" }));
 		assert.ok(state.op === "inspect" && /observationPeriods/.test(state.text));
-		const revision = readPanelAnswer({ op: "reset-revision", id: "--all" }, await answer({ op: "reset-revision", id: "--all" }));
+		const revision = readPanelAnswer(
+			{ op: "reset-revision", id: "--all" },
+			await answer({ op: "reset-revision", id: "--all" }),
+		);
 		assert.ok(revision.op === "reset-revision" && /^[a-f0-9]{12}$/.test(revision.revision));
-		const reset = readPanelAnswer({ op: "reset", id: "--all", reason: "panel", revision: revision.revision }, await answer({ op: "reset", id: "--all", reason: "panel", revision: revision.revision }));
+		const reset = readPanelAnswer(
+			{ op: "reset", id: "--all", reason: "panel", revision: revision.revision },
+			await answer({ op: "reset", id: "--all", reason: "panel", revision: revision.revision }),
+		);
 		assert.ok(reset.op === "reset" && /new policy observation period/.test(reset.outcome));
 		await assert.rejects(call({ op: "steal" }), /not supported/);
 	} finally {
@@ -1923,9 +2368,17 @@ test("the attached view's Data actions set, set-file and remove through the owne
 				beforeApply = undefined;
 				await run();
 			}
-			return (await policyPanelCommand.run({ args: "", data: data as never, origin: "operator", conversation: fixture.root, context, host, invocationId: "panel-data" })) as { text: string; data?: never };
+			return (await policyPanelCommand.run({
+				args: "",
+				data: data as never,
+				origin: "operator",
+				conversation: fixture.root,
+				context,
+				host,
+				invocationId: "panel-data",
+			})) as { text: string; data?: never };
 		};
-		const layers: Array<{ view: OperatorView; controller: AbortController }> = [];
+		const layers: Array<{ view: View; controller: AbortController }> = [];
 		const notices: string[] = [];
 		let decisionComplete: (() => void) | undefined;
 		const panelHost = (controller: AbortController): PanelHost => ({
@@ -1951,7 +2404,8 @@ test("the attached view's Data actions set, set-file and remove through the owne
 		layers.push({ view: operatorPanel().open(panelHost(new AbortController())), controller: new AbortController() });
 		const top = () => layers.at(-1)?.view;
 		const rendered = () => (top()?.render(110, 24) ?? []).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
-		const shows = (pattern: RegExp) => () => rendered().some((line) => pattern.test(line)) || notices.some((notice) => pattern.test(notice));
+		const shows = (pattern: RegExp) => () =>
+			rendered().some((line) => pattern.test(line)) || notices.some((notice) => pattern.test(notice));
 		/** The frame shows a view's title in its breadcrumb; here the title is read from the view. */
 		const titled = (title: string) => () => top()?.title === title;
 		/** Owner reads touch the store, so waits poll the rendered view against a deadline instead of counting turns. */
@@ -1963,8 +2417,16 @@ test("the attached view's Data actions set, set-file and remove through the owne
 			assert.fail(`${what} within 5 s:\n${rendered().join("\n")}\n${notices.join("\n")}`);
 		};
 		const act = (label: string) => {
-			const action = top()?.actions?.().find((candidate) => candidate.label === label);
-			assert.ok(action, `no ${label}: ${top()?.actions?.().map((candidate) => candidate.label).join(", ")}`);
+			const action = top()
+				?.actions?.()
+				.find((candidate) => candidate.label === label);
+			assert.ok(
+				action,
+				`no ${label}: ${top()
+					?.actions?.()
+					.map((candidate) => candidate.label)
+					.join(", ")}`,
+			);
 			action.run();
 		};
 		const typeText = (text: string) => {
@@ -1987,57 +2449,96 @@ test("the attached view's Data actions set, set-file and remove through the owne
 		top()?.handleInput("\r");
 		await until(shows(/No named policy data/), "the Data scope lists the bindings");
 		act("Set data…");
-		typeText(JSON.stringify({ data: { name: "panel-table", kind: "table", rows: [{ key: "alias", value: "canonical" }] } }));
+		typeText(
+			JSON.stringify({ data: { name: "panel-table", kind: "table", rows: [{ key: "alias", value: "canonical" }] } }),
+		);
 		act("Review change");
 		await until(titled("Approve policy data"), "the complete review shows before any change");
 		assert.equal((await fixture.policy.snapshot()).data.size, 0, "nothing changed before approval");
 		await approveReview("Set policy data");
-		await until(async () => Boolean((await fixture.policy.snapshot()).data.get("panel-table")), "the approved change applies");
+		await until(
+			async () => Boolean((await fixture.policy.snapshot()).data.get("panel-table")),
+			"the approved change applies",
+		);
 		const bound = (await fixture.policy.snapshot()).data.get("panel-table");
 		assert.ok(bound, "approval applied the reviewed artifact");
 		assert.equal(bound.source, "operator");
 		assert.equal(layers.length, 1, "the review and the form leave after the change applies");
 
 		act("Set data…");
-		typeText(JSON.stringify({ data: { name: "panel-table", kind: "table", rows: [{ key: "alias", value: "changed" }] } }));
+		typeText(
+			JSON.stringify({ data: { name: "panel-table", kind: "table", rows: [{ key: "alias", value: "changed" }] } }),
+		);
 		beforeApply = async () => {
 			const current = (await fixture.policy.snapshot()).data.get("panel-table");
 			assert.ok(current);
 			const raced = { ...current, rows: [{ key: "alias", value: "raced" }] };
 			const { namedDataRevision } = await import("./local-rules.ts");
 			raced.revision = namedDataRevision(raced as never);
-			await fixture.policy.setData(raced as never, current.revision, makeRuleAudit({ sessionManager: { getSessionId: () => "other" }, model: null }, "command"));
+			await fixture.policy.setData(
+				raced as never,
+				current.revision,
+				makeRuleAudit({ sessionManager: { getSessionId: () => "other" }, model: null }, "command"),
+			);
 		};
 		act("Review change");
 		await until(titled("Approve policy data"), "the second review shows");
 		await approveReview("Set policy data");
 		await until(shows(/revision changed|refused/i), "a binding changed after the review refuses");
-		assert.equal((await fixture.policy.snapshot()).data.get("panel-table")?.rows[0]?.value, "raced", "the stale approval changed nothing");
+		assert.equal(
+			(await fixture.policy.snapshot()).data.get("panel-table")?.rows[0]?.value,
+			"raced",
+			"the stale approval changed nothing",
+		);
 		// Cancel on the review leaves the form too, back to the data list.
 		act("Cancel");
 		assert.equal(layers.length, 1);
 
 		const file = join(fixture.directory, "panel-data.json");
-		await writeFile(file, JSON.stringify({ data: { name: "panel-file", kind: "table", source: "file", capturedAt: 1, rows: [{ key: "k", value: "v" }] }, expectedRevision: null }));
+		await writeFile(
+			file,
+			JSON.stringify({
+				data: { name: "panel-file", kind: "table", source: "file", capturedAt: 1, rows: [{ key: "k", value: "v" }] },
+				expectedRevision: null,
+			}),
+		);
 		act("Set from file…");
 		typeText(JSON.stringify({ path: "panel-data.json" }));
 		act("Review change");
 		await until(titled("Approve policy data"), "the file review shows");
 		await approveReview("Set policy data");
-		await until(async () => Boolean((await fixture.policy.snapshot()).data.get("panel-file")), "set-file resolves the path against the bound conversation's cwd and applies");
+		await until(
+			async () => Boolean((await fixture.policy.snapshot()).data.get("panel-file")),
+			"set-file resolves the path against the bound conversation's cwd and applies",
+		);
 
 		await until(shows(/panel-file/), "the list shows the file binding");
-		for (let step = 0; step < 5 && !rendered().some((line) => line.startsWith("›panel-file") || line.includes("› panel-file")); step++) top()?.handleInput("\u001b[B");
+		for (
+			let step = 0;
+			step < 5 && !rendered().some((line) => line.startsWith("›panel-file") || line.includes("› panel-file"));
+			step++
+		)
+			top()?.handleInput("\u001b[B");
 		const selected = (top() as unknown as { selected?: { name?: string } }).selected;
 		assert.equal(selected?.name, "panel-file", rendered().join("\n"));
 		act("Remove…");
 		await until(titled("Remove policy data"), "the removal review shows");
 		await approveReview("Remove policy data");
-		await until(async () => (await fixture.policy.snapshot()).data.get("panel-file") === undefined, "remove applies the reviewed binding revision");
+		await until(
+			async () => (await fixture.policy.snapshot()).data.get("panel-file") === undefined,
+			"remove applies the reviewed binding revision",
+		);
 		await until(shows(/panel-table/), "the list shows the remaining binding");
-		const events = (await readFile(join(fixture.directory, "policy", "rules.jsonl"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as { kind?: string; audit?: { surface?: string } });
+		const events = (await readFile(join(fixture.directory, "policy", "rules.jsonl"), "utf8"))
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as { kind?: string; audit?: { surface?: string } });
 		const surfaces = events.filter((event) => event.kind === "data").map((event) => event.audit?.surface);
-		assert.deepEqual(surfaces, ["panel", "command", "panel", "panel"], "the view's set, set-file and remove carry the panel audit; the raced write keeps its own");
+		assert.deepEqual(
+			surfaces,
+			["panel", "command", "panel", "panel"],
+			"the view's set, set-file and remove carry the panel audit; the raced write keeps its own",
+		);
 	} finally {
 		await fixture.close();
 	}
@@ -2095,7 +2596,10 @@ test("native tool execution does not wait for telemetry persistence", async () =
 		assert.equal(counter.executed, 1);
 		assert.equal((await toolResults(fixture.root, "probe")).length, 1);
 		assert.equal(batches.length, 1, "the accepted batch is still held open");
-		assert.equal(batches[0].some((record) => record.tool === "probe"), true);
+		assert.equal(
+			batches[0].some((record) => record.tool === "probe"),
+			true,
+		);
 		release.resolve();
 		await fixture.closeHost();
 		assert.equal(batches.length, 1);
@@ -2155,19 +2659,32 @@ test("native telemetry health follows pressure and recovery from the writer snap
 	});
 	const output = captureDiagnostics();
 	try {
-		await submit(fixture,
-			[fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("done")], "run probe");
+		await submit(
+			fixture,
+			[fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("done")],
+			"run probe",
+		);
 		await pressure.promise;
 		const inspect = async () => {
-			await submit(fixture,
-				[fauxAssistantMessage(fauxToolCall("policy_rules", { view: "health" }), { stopReason: "toolUse" }), fauxAssistantMessage("done")], "inspect health");
+			await submit(
+				fixture,
+				[
+					fauxAssistantMessage(fauxToolCall("policy_rules", { view: "health" }), { stopReason: "toolUse" }),
+					fauxAssistantMessage("done"),
+				],
+				"inspect health",
+			);
 			return JSON.parse(textOf((await toolResults(fixture.root, "policy_rules")).at(-1))).telemetry;
 		};
 		assert.deepEqual(await inspect(), { state: "pressure", lostRecords: 0, lostBytes: 0 });
 		gate.resolve();
 		await recovered.promise;
 		assert.deepEqual(await inspect(), { state: "ok", lostRecords: 0, lostBytes: 0 });
-		assert.deepEqual(output.lines.filter((line) => line.includes("[policy]")), [], "recovered contention is routine");
+		assert.deepEqual(
+			output.lines.filter((line) => line.includes("[policy]")),
+			[],
+			"recovered contention is routine",
+		);
 	} finally {
 		gate.resolve();
 		output.restore();
@@ -2212,7 +2729,10 @@ test("native telemetry failure reports once in health without changing an approv
 
 		await submit(
 			fixture,
-			[fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("stopped again")],
+			[
+				fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("stopped again"),
+			],
 			"run the probe again",
 		);
 		const deniedAgain = (await toolResults(fixture.root, "probe")).at(-1);
@@ -2222,7 +2742,10 @@ test("native telemetry failure reports once in health without changing an approv
 
 		await submit(
 			fixture,
-			[fauxAssistantMessage(fauxToolCall("policy_rules", { view: "health" }), { stopReason: "toolUse" }), fauxAssistantMessage("done")],
+			[
+				fauxAssistantMessage(fauxToolCall("policy_rules", { view: "health" }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("done"),
+			],
 			"inspect health",
 		);
 		const health = JSON.parse(textOf((await toolResults(fixture.root, "policy_rules")).at(-1))) as {

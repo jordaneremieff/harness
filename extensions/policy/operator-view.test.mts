@@ -4,15 +4,29 @@ import { describe, it } from "node:test";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS, visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { proposalRevision, type RuleSnapshot, targetIdentity } from "./local-rules.ts";
-import { ArtifactReview, artifactLines, type PolicyOperations, type PolicyResult, policyView } from "./operator-view.ts";
-import { data, localRule, operatorAudit, packageRule, scopeContext, snapshot, viewStack as stack, viewTheme } from "./view-fixture.mts";
-import { NavigationFrame } from "../../operator-ui/index.ts";
+import {
+	ArtifactReview,
+	artifactLines,
+	type PolicyOperations,
+	type PolicyResult,
+	policyView,
+} from "./operator-view.ts";
+import {
+	data,
+	localRule,
+	operatorAudit,
+	packageRule,
+	scopeContext,
+	snapshot,
+	viewStack as stack,
+	viewTheme,
+} from "./view-fixture.mts";
+import { Frame } from "./frame.ts";
 
 initTheme("dark");
 setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
-
 
 type Call = readonly [string, ...unknown[]];
 
@@ -62,11 +76,28 @@ function operations(current: RuleSnapshot = snapshot(), patch: Partial<PolicyOpe
 			calls.push(["data", args]);
 			if (args.startsWith("show")) return { outcome: "binding text", snapshot: shown };
 			if (args.includes("APPROVED")) return { outcome: "Set data hosts.", snapshot: shown };
-			return { review: { title: "Approve policy data", text: `Review of ${args}`, approval: `${args} APPROVED`, action: "Set policy data" }, snapshot: shown };
+			return {
+				review: {
+					title: "Approve policy data",
+					text: `Review of ${args}`,
+					approval: `${args} APPROVED`,
+					action: "Set policy data",
+				},
+				snapshot: shown,
+			};
 		},
 		...patch,
 	};
-	return { ops, calls, mutations: () => calls.filter(([name]) => !["load", "refresh", "inspect", "data"].includes(name) || (name === "data" && String(calls.at(-1)?.[1]).includes("APPROVED"))) };
+	return {
+		ops,
+		calls,
+		mutations: () =>
+			calls.filter(
+				([name]) =>
+					!["load", "refresh", "inspect", "data"].includes(name) ||
+					(name === "data" && String(calls.at(-1)?.[1]).includes("APPROVED")),
+			),
+	};
 }
 
 async function opened(ops: PolicyOperations) {
@@ -78,17 +109,29 @@ async function opened(ops: PolicyOperations) {
 
 describe("complete artifact review", () => {
 	it("keeps every whitespace character and grapheme across display wraps", () => {
-		const artifact = "  {\n    \"key\":  \"two  spaces\"\n  }\n👩‍👩‍👧 family";
+		const artifact = '  {\n    "key":  "two  spaces"\n  }\n👩‍👩‍👧 family';
 		const lines = artifactLines(artifact, 12);
 		assert.equal(lines.join(""), artifact.replace(/\n/g, ""), "no character is dropped or reflowed");
 		assert.ok(lines.every((line) => visibleWidth(line) <= 12));
-		assert.ok(lines.some((line) => line.includes("👩‍👩‍👧")), "a grapheme is never split");
+		assert.ok(
+			lines.some((line) => line.includes("👩‍👩‍👧")),
+			"a grapheme is never split",
+		);
 	});
 
 	it("offers the final action only after every line was on screen, and a width change starts again", async () => {
 		const frame = stack();
 		const decisions: boolean[] = [];
-		frame.mount((host) => new ArtifactReview({ host, title: "Import review", artifact: Array.from({ length: 60 }, (_, row) => `artifact-row-${row}`).join("\n"), label: "Import", decide: (approved) => void decisions.push(approved) }));
+		frame.mount(
+			(host) =>
+				new ArtifactReview({
+					host,
+					title: "Import review",
+					artifact: Array.from({ length: 60 }, (_, row) => `artifact-row-${row}`).join("\n"),
+					label: "Import",
+					decide: (approved) => void decisions.push(approved),
+				}),
+		);
 		assert.ok(frame.screen(100, 8).includes("read every line before Import"));
 		assert.equal(typeof frame.action("Import").disabled, "string");
 		frame.action("Import").run();
@@ -109,16 +152,29 @@ describe("complete artifact review", () => {
 
 describe("policy view", () => {
 	it("lists rule titles first with their identities, and selection only reads", async () => {
-		const { ops, calls } = operations(snapshot({ records: new Map([["routing.cat-read", packageRule()], ["local.scan", localRule()], ["local.other", localRule({ id: "local.other" })]]) }));
+		const { ops, calls } = operations(
+			snapshot({
+				records: new Map([
+					["routing.cat-read", packageRule()],
+					["local.scan", localRule()],
+					["local.other", localRule({ id: "local.other" })],
+				]),
+			}),
+		);
 		const frame = await opened(ops);
 		const screen = frame.screen();
 		assert.ok(screen.includes("Read complete file content."));
 		assert.ok(screen.includes("routing.cat-read"));
 		assert.ok(screen.includes("local.other"), "rules that share a purpose stay distinguishable");
-		for (const scope of ["Rules", "Proposals", "Activity", "Data", "State"]) assert.ok(screen.includes(scope), `${scope} scope missing`);
+		for (const scope of ["Rules", "Proposals", "Activity", "Data", "State"])
+			assert.ok(screen.includes(scope), `${scope} scope missing`);
 		frame.top()?.handleInput("\u001b[B");
 		frame.screen();
-		assert.deepEqual(calls.map(([name]) => name), ["load"], "moving the selection calls no owner change");
+		assert.deepEqual(
+			calls.map(([name]) => name),
+			["load"],
+			"moving the selection calls no owner change",
+		);
 	});
 
 	it("never offers an exact-only rule an effect choice", async () => {
@@ -142,7 +198,10 @@ describe("policy view", () => {
 		for (const key of "too noisy") form?.handleInput(key === " " ? " " : key);
 		frame.action("Disable rule").run();
 		await turn();
-		assert.deepEqual(calls.find(([name]) => name === "lifecycle"), ["lifecycle", "disable", "routing.cat-read", "too noisy", targetIdentity(packageRule()) ?? undefined]);
+		assert.deepEqual(
+			calls.find(([name]) => name === "lifecycle"),
+			["lifecycle", "disable", "routing.cat-read", "too noisy", targetIdentity(packageRule()) ?? undefined],
+		);
 		assert.equal(frame.depth(), 1, "the form leaves after success");
 		assert.ok(frame.notices.some((notice) => notice === "success:Done disable routing.cat-read."));
 	});
@@ -159,14 +218,24 @@ describe("policy view", () => {
 		frame.screen();
 		assert.ok(frame.screen().includes("Pause noisy guidance"));
 		frame.action("Approve…").run();
-		assert.ok(frame.screen(100, 8).includes(`Approve disable proposal ${proposal.id}`), "a short window shows the first lines only");
+		assert.ok(
+			frame.screen(100, 8).includes(`Approve disable proposal ${proposal.id}`),
+			"a short window shows the first lines only",
+		);
 		frame.action("Approve disable").run();
 		await turn();
-		assert.equal(calls.filter(([name]) => name === "approve").length, 0, "nothing approves before the whole artifact was read");
+		assert.equal(
+			calls.filter(([name]) => name === "approve").length,
+			0,
+			"nothing approves before the whole artifact was read",
+		);
 		frame.readAll();
 		frame.action("Approve disable").run();
 		await turn();
-		assert.deepEqual(calls.find(([name]) => name === "approve"), ["approve", proposal.id, undefined, proposalRevision(proposal)]);
+		assert.deepEqual(
+			calls.find(([name]) => name === "approve"),
+			["approve", proposal.id, undefined, proposalRevision(proposal)],
+		);
 		assert.equal(frame.depth(), 1);
 		assert.ok(frame.notices.includes(`success:Approved proposal ${proposal.id}.`));
 	});
@@ -179,7 +248,15 @@ describe("policy view", () => {
 			ruleId: "local.new",
 			reason: "Add guidance",
 			audit: snapshot().pending[0]?.audit ?? ({} as never),
-			candidate: { purpose: "Guide bounded scans.", authority: "steer-or-block" as const, matcher: { kind: "declarative" as const, language: "command-shape/v1" as const, spec: { command: "scan" } }, note: "Bound it.", state: "active" as const, effect: "steer" as const, revision: "333333333333" },
+			candidate: {
+				purpose: "Guide bounded scans.",
+				authority: "steer-or-block" as const,
+				matcher: { kind: "declarative" as const, language: "command-shape/v1" as const, spec: { command: "scan" } },
+				note: "Bound it.",
+				state: "active" as const,
+				effect: "steer" as const,
+				revision: "333333333333",
+			},
 		};
 		const { ops, calls } = operations(snapshot({ pending: [add] as never }));
 		const frame = await opened(ops);
@@ -194,7 +271,10 @@ describe("policy view", () => {
 		frame.readAll();
 		frame.action("Approve as block").run();
 		await turn();
-		assert.deepEqual(calls.find(([name]) => name === "approve"), ["approve", add.id, "block", proposalRevision(add as never)]);
+		assert.deepEqual(
+			calls.find(([name]) => name === "approve"),
+			["approve", add.id, "block", proposalRevision(add as never)],
+		);
 		assert.equal(frame.depth(), 1, "the operator returns to the list through the effect choice");
 	});
 
@@ -211,7 +291,10 @@ describe("policy view", () => {
 		frame.action("Disable rule").run();
 		await turn();
 		await turn();
-		assert.ok(calls.some(([name]) => name === "refresh"), "a refusal reads the registry again");
+		assert.ok(
+			calls.some(([name]) => name === "refresh"),
+			"a refusal reads the registry again",
+		);
 		assert.ok(frame.screen().includes("changed since it was read"));
 		assert.equal(frame.depth(), 2, "the staged form stays");
 	});
@@ -232,7 +315,10 @@ describe("policy view", () => {
 		frame.readAll();
 		frame.action("Set policy data").run();
 		await turn();
-		assert.deepEqual(calls.filter(([name]) => name === "data").map(([, args]) => args), ["set {}", "set {} APPROVED"]);
+		assert.deepEqual(
+			calls.filter(([name]) => name === "data").map(([, args]) => args),
+			["set {}", "set {} APPROVED"],
+		);
 		assert.equal(frame.depth(), 1, "the review and the form both leave after the change applies");
 	});
 });
@@ -262,25 +348,36 @@ function replaceableOperations() {
 		reset: refused,
 		data: refused,
 	};
-	return { ops, calls, replace(next: RuleSnapshot) { shown = next; } };
+	return {
+		ops,
+		calls,
+		replace(next: RuleSnapshot) {
+			shown = next;
+		},
+	};
 }
 
 /** The real frame at 80 columns: below the split width, with the rows an ordinary 24-row terminal leaves. */
 function narrowFrame(ops: PolicyOperations) {
-	return new NavigationFrame({
+	return new Frame({
 		theme: viewTheme,
 		target: { id: "session", label: "This session · work" },
-		destinations: () => [{ key: "policy", label: "Policy", open: (host) => policyView(host, ops) }],
+		expandKey: "ctrl+o",
+		open: (host) => policyView(host, ops),
 		rows: () => 14,
 		requestRender: () => {},
 		close: () => {},
 	});
 }
 
-const drawn = (frame: NavigationFrame) => frame.render(80).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
+const drawn = (frame: Frame) =>
+	frame
+		.render(80)
+		.map((line) => stripVTControlCharacters(line).trimEnd())
+		.join("\n");
 
 /** Wait for the loaded list, open the selected rule's narrow detail, and return the screen. */
-async function openNarrowDetail(frame: NavigationFrame): Promise<string> {
+async function openNarrowDetail(frame: Frame): Promise<string> {
 	for (let attempt = 0; attempt < 400 && !/Read complete file content/.test(drawn(frame)); attempt++) await turn();
 	frame.render(80);
 	frame.handleInput(RIGHT_KEY);
@@ -290,7 +387,7 @@ async function openNarrowDetail(frame: NavigationFrame): Promise<string> {
 }
 
 /** Page the open detail until the pattern is on screen, as an operator reading to it. */
-async function pageTo(frame: NavigationFrame, pattern: RegExp): Promise<string> {
+async function pageTo(frame: Frame, pattern: RegExp): Promise<string> {
 	const pageDown = "\u001b[6~";
 	for (let page = 0; page < 60; page++) {
 		const screen = drawn(frame);
@@ -310,8 +407,16 @@ describe("narrow policy detail", () => {
 		const screen = await openNarrowDetail(frame);
 		assert.match(screen, /id: routing\.cat-read/, "the detail reads the selected rule");
 		assert.match(frame.viewTitle ?? "", /routing\.cat-read/, "the detail names the rule");
-		assert.match(await pageTo(frame, /effective state: active/), /effective state: active/, "the detail shows the current state");
-		assert.match(frame.viewActions.map((action) => action.label).join(", "), /Disable…/, "the detail offers the current action");
+		assert.match(
+			await pageTo(frame, /effective state: active/),
+			/effective state: active/,
+			"the detail shows the current state",
+		);
+		assert.match(
+			frame.viewActions.map((action) => action.label).join(", "),
+			/Disable…/,
+			"the detail offers the current action",
+		);
 		frame.handleInput("d");
 		await turn();
 		assert.equal(frame.viewTitle, "Disable rule", `d opens the disable form from the detail: ${drawn(frame)}`);
@@ -321,9 +426,16 @@ describe("narrow policy detail", () => {
 		cancel.run();
 		await turn();
 		assert.match(frame.viewTitle ?? "", /routing\.cat-read/, "Cancel returns to the same rule's detail");
-		assert.match(await pageTo(frame, /effective state: active/), /effective state: active/, "the detail is shown again");
+		assert.match(
+			await pageTo(frame, /effective state: active/),
+			/effective state: active/,
+			"the detail is shown again",
+		);
 		assert.doesNotMatch(drawn(frame), /Write the reason first/);
-		assert.ok(frame.viewActions.some((action) => action.label === "Disable…"), "the rule's own actions are back");
+		assert.ok(
+			frame.viewActions.some((action) => action.label === "Disable…"),
+			"the rule's own actions are back",
+		);
 	});
 
 	it("shows the current state and actions after a refresh changes the selected rule", async () => {
@@ -336,13 +448,26 @@ describe("narrow policy detail", () => {
 		replace({
 			...changed,
 			records: new Map([
-				["routing.cat-read", { ...record, override: { state: "disabled", effect: "block", reason: "Paused elsewhere", audit: operatorAudit, againstDefinitionRevision: "000000000000" } }],
+				[
+					"routing.cat-read",
+					{
+						...record,
+						override: {
+							state: "disabled",
+							effect: "block",
+							reason: "Paused elsewhere",
+							audit: operatorAudit,
+							againstDefinitionRevision: "000000000000",
+						},
+					},
+				],
 				["local.scan", changed.records.get("local.scan") ?? record],
 			]),
 		});
 		const loads = calls.filter(([name]) => name === "load").length;
 		frame.handleInput("r");
-		for (let attempt = 0; attempt < 400 && calls.filter(([name]) => name === "load").length === loads; attempt++) await turn();
+		for (let attempt = 0; attempt < 400 && calls.filter(([name]) => name === "load").length === loads; attempt++)
+			await turn();
 		assert.equal(calls.filter(([name]) => name === "load").length, loads + 1, "Refresh asks the owner again");
 		const screen = await pageTo(frame, /effective state: disabled/);
 		assert.match(screen, /effective state: disabled/, "the detail shows the current state");

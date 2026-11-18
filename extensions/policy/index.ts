@@ -22,10 +22,17 @@ import {
 	type RuleSnapshot,
 } from "./local-rules.ts";
 import { POLICY_MODES, type PolicyMode, resolvePolicyModeValue } from "./mode.ts";
-import { capText, formatPolicyList, formatPolicyShow, readFireSummary, readRecentActivity, terminalSafe } from "./panel.ts";
+import {
+	capText,
+	formatPolicyList,
+	formatPolicyShow,
+	readFireSummary,
+	readRecentActivity,
+	terminalSafe,
+} from "./panel.ts";
 import type { PolicyOperations, PolicyResult, PolicyViewState } from "./operator-view.ts";
 import { effectiveState, selectableForAction, type SessionRuleAudit } from "./rule.ts";
-import { LoadingView, openOperatorFrame, publishOperatorViews, type OperatorView, type ViewHost } from "../../operator-ui/registration.ts";
+import type { Frame, View, ViewHost } from "./frame.ts";
 import { PolicyRuntime } from "./runtime.ts";
 import { formatTelemetry, readTelemetryPage } from "./telemetry.ts";
 import {
@@ -42,7 +49,6 @@ const POLICY_MODE_FLAG = "policy-mode";
 /** Bounds notices raised before the first session context; settings diagnostics and one mode error fit. */
 const HELD_NOTICE_LIMIT = 16;
 /** This extension's entrypoint; the ordinary frame binds the published view to its /policy registration. */
-const OWNER = fileURLToPath(import.meta.url);
 const POLICY_USAGE = [
 	"Usage:",
 	"  /policy                                      Open the policy panel (TUI only)",
@@ -133,8 +139,7 @@ function primaryChoices(verb: string, snapshot: RuleSnapshot | undefined, regist
 }
 
 function secondChoices(verb: string, parts: string[], snapshot: RuleSnapshot | undefined): string[] {
-	if (verb === "data" && (parts[1] === "show" || parts[1] === "remove"))
-		return [...(snapshot?.data.keys() ?? [])];
+	if (verb === "data" && (parts[1] === "show" || parts[1] === "remove")) return [...(snapshot?.data.keys() ?? [])];
 	if (verb === "import") return ["exact"];
 	if (verb === "effect") return ["steer", "block"];
 	if (verb === "approve") {
@@ -163,15 +168,34 @@ function fourthChoices(verb: string, parts: string[], snapshot: RuleSnapshot | u
 	return binding?.revision === parts[3] ? ["exact"] : [];
 }
 
-function primaryCompletions(verb: string, partial: string, snapshot: RuleSnapshot, registry: RuleRegistry): AutocompleteItem[] {
+function primaryCompletions(
+	verb: string,
+	partial: string,
+	snapshot: RuleSnapshot,
+	registry: RuleRegistry,
+): AutocompleteItem[] {
 	if (verb === "show") return showCompletions(partial, snapshot);
 	if (verb === "approve" || verb === "reject") return proposalCompletions(verb, partial, snapshot);
-	return primaryChoices(verb, snapshot, registry).filter((value) => value.startsWith(partial)).map((value) => ({ value: `${verb} ${value}`, label: value }));
+	return primaryChoices(verb, snapshot, registry)
+		.filter((value) => value.startsWith(partial))
+		.map((value) => ({ value: `${verb} ${value}`, label: value }));
 }
 
 function showCompletions(partial: string, snapshot: RuleSnapshot): AutocompleteItem[] {
-	const records = [...snapshot.records.values()].filter((record) => record.id.startsWith(partial)).map((record) => ({ value: `show ${record.id}`, label: record.id, description: choiceText(record.definition.purpose) }));
-	const pending = snapshot.pending.filter((proposal) => proposal.id.startsWith(partial) || proposal.ruleId.startsWith(partial)).map((proposal) => ({ value: `show ${proposal.id}`, label: `${proposal.ruleId} · pending ${proposal.operation}`, description: choiceText(proposal.candidate?.purpose ?? proposal.reason) }));
+	const records = [...snapshot.records.values()]
+		.filter((record) => record.id.startsWith(partial))
+		.map((record) => ({
+			value: `show ${record.id}`,
+			label: record.id,
+			description: choiceText(record.definition.purpose),
+		}));
+	const pending = snapshot.pending
+		.filter((proposal) => proposal.id.startsWith(partial) || proposal.ruleId.startsWith(partial))
+		.map((proposal) => ({
+			value: `show ${proposal.id}`,
+			label: `${proposal.ruleId} · pending ${proposal.operation}`,
+			description: choiceText(proposal.candidate?.purpose ?? proposal.reason),
+		}));
 	return [...records, ...pending];
 }
 
@@ -249,7 +273,11 @@ function reviewLabel(title: string): string {
 }
 
 /** The policy view's data command: reads answer text; a change answers its review until its approval arrives. */
-async function viewData(env: PolicyCommandEnv, ctx: ExtensionContext, args: string): Promise<Awaited<ReturnType<PolicyOperations["data"]>>> {
+async function viewData(
+	env: PolicyCommandEnv,
+	ctx: ExtensionContext,
+	args: string,
+): Promise<Awaited<ReturnType<PolicyOperations["data"]>>> {
 	const prepared = await prepareDataCommand(env.registry, args, makeRuleAudit(ctx, "panel"), ctx.cwd);
 	if ("text" in prepared) return { outcome: prepared.text, snapshot: await env.loadRegistry(ctx) };
 	if (prepared.approved) {
@@ -257,7 +285,10 @@ async function viewData(env: PolicyCommandEnv, ctx: ExtensionContext, args: stri
 		return { outcome, snapshot: await env.loadRegistry(ctx) };
 	}
 	const action = prepared.title === "Remove policy data" ? "Remove policy data" : "Set policy data";
-	return { review: { title: prepared.title, text: prepared.review, approval: prepared.approval, action }, snapshot: await env.loadRegistry(ctx) };
+	return {
+		review: { title: prepared.title, text: prepared.review, approval: prepared.approval, action },
+		snapshot: await env.loadRegistry(ctx),
+	};
 }
 
 /**
@@ -267,14 +298,24 @@ async function viewData(env: PolicyCommandEnv, ctx: ExtensionContext, args: stri
  */
 function ordinaryOperations(env: PolicyCommandEnv, ctx: ExtensionContext): PolicyOperations {
 	const audit = () => makeRuleAudit(ctx, "panel");
-	const settled = async (outcome: string): Promise<PolicyResult> => ({ outcome, snapshot: await env.loadRegistry(ctx) });
+	const settled = async (outcome: string): Promise<PolicyResult> => ({
+		outcome,
+		snapshot: await env.loadRegistry(ctx),
+	});
 	return {
 		load: async () => {
-			const [snapshot, fireSummary, activity] = await Promise.all([env.loadRegistry(ctx), readFireSummary(env.dir), readRecentActivity(env.dir)]);
+			const [snapshot, fireSummary, activity] = await Promise.all([
+				env.loadRegistry(ctx),
+				readFireSummary(env.dir),
+				readRecentActivity(env.dir),
+			]);
 			return { snapshot, fireSummary, activity, scope: scope(ctx) };
 		},
 		refresh: () => env.loadRegistry(ctx),
-		inspect: async (view, id) => ({ text: boundedInspection(await env.runtime.inspect(view, id === undefined ? {} : { id }, ctx)), snapshot: await env.loadRegistry(ctx) }),
+		inspect: async (view, id) => ({
+			text: boundedInspection(await env.runtime.inspect(view, id === undefined ? {} : { id }, ctx)),
+			snapshot: await env.loadRegistry(ctx),
+		}),
 		approve: async (proposalId, effect, revision) => {
 			await env.registry.decide(proposalId, "approved", effect, audit(), revision);
 			return settled(`Approved proposal ${proposalId}.`);
@@ -297,51 +338,6 @@ function ordinaryOperations(env: PolicyCommandEnv, ctx: ExtensionContext): Polic
 		reset: async (id, reason, revision) => settled(await applyReset(env, ctx, id, reason, revision)),
 		data: (args) => viewData(env, ctx, args),
 	};
-}
-
-/**
- * The complete artifact review for a command route, in the editor slot below the transcript. The
- * final action is available only after every line was on screen; Cancel and Escape decide nothing.
- */
-function reviewInFrame(ctx: ExtensionContext, title: string, artifact: string, label: string): Promise<boolean> {
-	if (ctx.mode !== "tui" || !ctx.hasUI) return Promise.resolve(false);
-	return openArtifactReview(ctx, title, artifact, label);
-}
-
-/** The review frame and artifact presentation load when an actual review opens. */
-async function openArtifactReview(ctx: ExtensionContext, title: string, artifact: string, label: string): Promise<boolean> {
-	const [{ NavigationFrame, frameRows, ordinaryTarget }, { ArtifactReview }] = await Promise.all([
-		import("../../operator-ui/index.ts"),
-		import("./operator-view.ts"),
-	]);
-	return ctx.ui.custom<boolean>((tui, theme, _keys, done) => {
-		let approved = false;
-		return new NavigationFrame({
-			theme,
-			target: ordinaryTarget(ctx),
-			destinations: () => [
-				{
-					key: "review",
-					label: "Review",
-					open: (host) =>
-						new ArtifactReview({
-							host,
-							title,
-							artifact,
-							label,
-							tone: /^(reject|remove)\b/i.test(label) ? "danger" : "accent",
-							decide: (decision) => {
-								approved = decision;
-								host.close();
-							},
-						}),
-				},
-			],
-			rows: () => frameRows(tui.terminal.rows, true),
-			requestRender: () => tui.requestRender(),
-			close: () => done(approved),
-		});
-	});
 }
 
 type PolicyVerbHandler = (
@@ -367,7 +363,10 @@ async function policyTelemetryVerb(
 		return;
 	}
 	const request = { from: parts[0], to: parts[1], ...(parts[2] === undefined ? {} : { cursor: parts[2] }) };
-	env.output(ctx, formatTelemetry(await readTelemetryPage(env.dir, request, { health: env.runtime.telemetryHealth() })));
+	env.output(
+		ctx,
+		formatTelemetry(await readTelemetryPage(env.dir, request, { health: env.runtime.telemetryHealth() })),
+	);
 }
 
 function policyHelpVerb(env: PolicyCommandEnv, ctx: ExtensionCommandContext): void {
@@ -390,7 +389,9 @@ function policyModeVerb(
 	env.output(
 		ctx,
 		`${mode} (${source})\n${MODE_EFFECT[mode]}\n${
-			snapshot.health.status === "degraded" ? "Rule-store degradation caps mechanisms at notice." : "Rule store healthy."
+			snapshot.health.status === "degraded"
+				? "Rule-store degradation caps mechanisms at notice."
+				: "Rule store healthy."
 		}`,
 	);
 }
@@ -559,7 +560,14 @@ async function dataArguments(
 	snapshot: RuleSnapshot,
 ): Promise<string | undefined> {
 	if (ctx.mode !== "tui" || !ctx.hasUI) return supplied;
-	return chooseDataArguments({ select: (title, options) => ctx.ui.select(title, [...options]), editor: (title, initial) => ctx.ui.editor(title, initial) }, supplied, snapshot);
+	return chooseDataArguments(
+		{
+			select: (title, options) => ctx.ui.select(title, [...options]),
+			editor: (title, initial) => ctx.ui.editor(title, initial),
+		},
+		supplied,
+		snapshot,
+	);
 }
 
 async function policyDataVerb(
@@ -828,10 +836,7 @@ async function policyLifecycleVerb(
 		return;
 	}
 	const [id, ...reasons] = parts;
-	env.output(
-		ctx,
-		await applyLifecycle(env, ctx, verb, id, reasons.join(" "), makeRuleAudit(ctx, "command"), snapshot),
-	);
+	env.output(ctx, await applyLifecycle(env, ctx, verb, id, reasons.join(" "), makeRuleAudit(ctx, "command"), snapshot));
 }
 
 /** Disable, enable, or retire one rule against the target identity the operator saw. */
@@ -922,7 +927,13 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		report(`[policy] ${diagnostic.field} (${diagnostic.source}): ${diagnostic.message}`, "warning");
 	}
 	const disposeSettings = publishSettings(eventBus, { agentDir });
-	pi.on("session_shutdown", disposeSettings);
+	let frame: Frame | undefined;
+	let opening: AbortController | undefined;
+	pi.on("session_shutdown", () => {
+		opening?.abort();
+		frame?.close();
+		disposeSettings();
+	});
 	eventBus.emit("durable:contribution", {
 		name: "policy",
 		source: fileURLToPath(import.meta.url),
@@ -964,8 +975,12 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 	let valid = true;
 	const modeRecord = configured.records.find((record) => record.key === "mode");
 	if (!modeRecord) throw new Error("Policy mode declaration is missing");
-	let modeSource = modeRecord.origin === "env" ? modeRecord.env
-		: modeRecord.origin === "file" ? `${configured.source.path}: policy.mode` : "default";
+	let modeSource =
+		modeRecord.origin === "env"
+			? modeRecord.env
+			: modeRecord.origin === "file"
+				? `${configured.source.path}: policy.mode`
+				: "default";
 	if (modeRecord.status === "invalid") modeSource += "; invalid configured input, safe default";
 	const ensureMode = (): boolean => {
 		if (resolved) return valid;
@@ -982,38 +997,66 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		}
 		return valid;
 	};
-	runtime = new PolicyRuntime(pi, loadRegistry, () => mode, dir, ensureMode, undefined, undefined, undefined, true, retention);
-	registerRuleTools(pi, {
-		registry,
+	runtime = new PolicyRuntime(
+		pi,
 		loadRegistry,
-		getMode: () => (ensureMode() ? mode : "unavailable"),
-		actionControl: (params, ctx) => runtime.actionControl(params, ctx as ExtensionContext),
-		resetRevision: (id) => runtime.resetRevision(id),
-		reset: (id, reason, revision) => runtime.reset(id === "--all" ? undefined : [id], reason, revision),
-		telemetry: (request) => readTelemetryPage(dir, request, { health: runtime.telemetryHealth() }),
-		inspect: (view, params, ctx) => runtime.inspect(view, params, ctx as ExtensionContext),
-	}, registerTool);
+		() => mode,
+		dir,
+		ensureMode,
+		undefined,
+		undefined,
+		undefined,
+		true,
+		retention,
+	);
+	registerRuleTools(
+		pi,
+		{
+			registry,
+			loadRegistry,
+			getMode: () => (ensureMode() ? mode : "unavailable"),
+			actionControl: (params, ctx) => runtime.actionControl(params, ctx as ExtensionContext),
+			resetRevision: (id) => runtime.resetRevision(id),
+			reset: (id, reason, revision) => runtime.reset(id === "--all" ? undefined : [id], reason, revision),
+			telemetry: (request) => readTelemetryPage(dir, request, { health: runtime.telemetryHealth() }),
+			inspect: (view, params, ctx) => runtime.inspect(view, params, ctx as ExtensionContext),
+		},
+		registerTool,
+	);
 	publish();
 	runtime.attach();
 	const viewStates = new Map<string, PolicyViewState>();
-	/** The invalid-configuration refusal shows at once and loads no presentation module. */
-	const stoppedView = (): OperatorView => ({
-		title: "Policy",
-		render: (_width, height) =>
-			Array.from({ length: height }, (_, row) => (row === 0 ? "Policy is stopped because its mode configuration is invalid." : "")),
-		handleInput: () => false,
-	});
-	/** The view module loads when the destination opens, not when this factory runs. */
-	const loadView = async (ctx: ExtensionContext, host: ViewHost): Promise<OperatorView> => {
-		const module = await import("./operator-view.ts");
-		const id = ctx.sessionManager.getSessionId();
-		let state = viewStates.get(id);
-		if (!state) {
-			state = module.createPolicyViewState();
-			viewStates.set(id, state);
+	/** One editor slot for Policy. Hold it during the imports as well as while the view is open. */
+	const openPolicyFrame = async (
+		ctx: ExtensionContext,
+		makeView: (module: typeof import("./operator-view.ts")) => (host: ViewHost) => View,
+		expanded = false,
+	): Promise<void> => {
+		if (opening) return;
+		const controller = new AbortController();
+		opening = controller;
+		try {
+			const [{ openFrame }, module] = await Promise.all([import("./frame.ts"), import("./operator-view.ts")]);
+			if (!controller.signal.aborted)
+				await openFrame(
+					ctx,
+					makeView(module),
+					(current) => {
+						frame = current;
+					},
+					expanded,
+				);
+		} finally {
+			opening = undefined;
 		}
-		return module.policyView(host, ordinaryOperations(commandEnv, ctx), state);
 	};
+	const browse = (ctx: ExtensionContext) =>
+		openPolicyFrame(ctx, (module) => {
+			const id = ctx.sessionManager.getSessionId();
+			const state = viewStates.get(id) ?? module.createPolicyViewState();
+			viewStates.set(id, state);
+			return (host) => module.policyView(host, ordinaryOperations(commandEnv, ctx), state);
+		});
 	const output = (ctx: ExtensionContext, text: string, error = false): void => {
 		const safe = capText(terminalSafe(text), 32768);
 		if (ctx.hasUI) {
@@ -1026,13 +1069,39 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		}
 		(error ? process.stderr : process.stdout).write(`${safe}\n`);
 	};
-	const reviewArtifact = (ctx: ExtensionContext, title: string, artifact: string, actionLabel = reviewLabel(title)): Promise<boolean> =>
-		reviewInFrame(ctx, title, artifact, actionLabel);
+	const reviewArtifact = async (
+		ctx: ExtensionContext,
+		title: string,
+		artifact: string,
+		label = reviewLabel(title),
+	): Promise<boolean> => {
+		if (ctx.mode !== "tui" || !ctx.hasUI) return false;
+		let approved = false;
+		await openPolicyFrame(
+			ctx,
+			({ ArtifactReview }) =>
+				(host) =>
+					new ArtifactReview({
+						host,
+						title,
+						artifact,
+						label,
+						tone: /^(reject|remove)\b/i.test(label) ? "danger" : "accent",
+						decide: (decision) => {
+							approved = decision;
+							host.close();
+						},
+					}),
+			true,
+		);
+		return approved;
+	};
 	const openPanel = async (ctx: ExtensionContext): Promise<void> => {
 		try {
 			if (!ensureMode()) return output(ctx, "Policy is stopped because its mode configuration is invalid.", true);
-			if (ctx.mode !== "tui" || !ctx.hasUI) return output(ctx, "The policy view requires TUI mode. Run: /policy list", true);
-			await openOperatorFrame(pi, ctx, { owner: OWNER, id: "policy" });
+			if (ctx.mode !== "tui" || !ctx.hasUI)
+				return output(ctx, "The policy view requires TUI mode. Run: /policy list", true);
+			await browse(ctx);
 		} catch (error) {
 			output(ctx, `Policy registry action failed: ${failureText(error)}`, true);
 		}
@@ -1041,22 +1110,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		description: "Open the policy view",
 		handler: openPanel,
 	});
-	// Package contract: docs/conventions/operator-panels.md. The view opens harmlessly; every change is its own labelled action inside.
-	// The owner's mode admission runs before the view or its store loads, so every entry route
-	// (command, shortcut, or a published destination) refuses an invalid configuration alike.
-	publishOperatorViews(pi, {
-		version: 2,
-		owner: OWNER,
-		views: [
-			{
-				id: "policy",
-				label: "Policy",
-				command: { name: "policy" },
-				order: 30,
-				view: (ctx, host) => (ensureMode() ? new LoadingView("Policy", host, () => loadView(ctx, host)) : stoppedView()),
-			},
-		],
-	});
+
 	const commandEnv: PolicyCommandEnv = {
 		output,
 		loadRegistry,

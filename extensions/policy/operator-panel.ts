@@ -6,14 +6,27 @@
  * panel audit. Evaluating this module registers nothing and opens no store.
  */
 
-import type { JsonValue, OperatorPanelModule, PanelHost } from "../../operator-ui/index.ts";
-import { createPolicyViewState, type PolicyOperations, type PolicyResult, type PolicyViewState, policyView } from "./operator-view.ts";
-import { deserializeFireSummary, deserializeSnapshot, type PolicyPanelAnswer, type PolicyPanelRequest, readPanelAnswer } from "./panel-protocol.ts";
+import type { JsonValue, OperatorPanelModule, PanelHost } from "./frame.ts";
+import {
+	createPolicyViewState,
+	type PolicyOperations,
+	type PolicyResult,
+	type PolicyViewState,
+	policyView,
+} from "./operator-view.ts";
+import {
+	deserializeFireSummary,
+	deserializeSnapshot,
+	type PolicyPanelAnswer,
+	type PolicyPanelRequest,
+	readPanelAnswer,
+} from "./panel-protocol.ts";
 
 const unexpected = () => new Error("The host answered a different policy request");
 
 function routedOperations(host: PanelHost): PolicyOperations {
-	const ask = async (request: PolicyPanelRequest, signal?: AbortSignal): Promise<PolicyPanelAnswer> => readPanelAnswer(request, (await host.request(request as JsonValue, signal)).data);
+	const ask = async (request: PolicyPanelRequest, signal?: AbortSignal): Promise<PolicyPanelAnswer> =>
+		readPanelAnswer(request, (await host.request(request as JsonValue, signal)).data);
 	const settled = async (request: PolicyPanelRequest): Promise<PolicyResult> => {
 		const answer = await ask(request);
 		if (!("outcome" in answer)) throw unexpected();
@@ -23,7 +36,12 @@ function routedOperations(host: PanelHost): PolicyOperations {
 		load: async (signal) => {
 			const answer = await ask({ op: "load" }, signal);
 			if (answer.op !== "load") throw unexpected();
-			return { snapshot: deserializeSnapshot(answer.snapshot), fireSummary: deserializeFireSummary(answer.fireSummary), activity: answer.activity, scope: answer.scope };
+			return {
+				snapshot: deserializeSnapshot(answer.snapshot),
+				fireSummary: deserializeFireSummary(answer.fireSummary),
+				activity: answer.activity,
+				scope: answer.scope,
+			};
 		},
 		refresh: async () => {
 			const answer = await ask({ op: "refresh" });
@@ -35,10 +53,13 @@ function routedOperations(host: PanelHost): PolicyOperations {
 			if (answer.op !== "inspect") throw unexpected();
 			return { text: answer.text, snapshot: deserializeSnapshot(answer.snapshot) };
 		},
-		approve: (proposalId, effect, revision) => settled({ op: "approve", proposalId, ...(effect === undefined ? {} : { effect }), revision }),
+		approve: (proposalId, effect, revision) =>
+			settled({ op: "approve", proposalId, ...(effect === undefined ? {} : { effect }), revision }),
 		reject: (proposalId, revision) => settled({ op: "reject", proposalId, revision }),
-		lifecycle: (verb, id, reason, expectedIdentity) => settled({ op: "lifecycle", verb, id, reason, ...(expectedIdentity === undefined ? {} : { expectedIdentity }) }),
-		effect: (id, effect, reason, expectedIdentity) => settled({ op: "effect", id, effect, reason, ...(expectedIdentity === undefined ? {} : { expectedIdentity }) }),
+		lifecycle: (verb, id, reason, expectedIdentity) =>
+			settled({ op: "lifecycle", verb, id, reason, ...(expectedIdentity === undefined ? {} : { expectedIdentity }) }),
+		effect: (id, effect, reason, expectedIdentity) =>
+			settled({ op: "effect", id, effect, reason, ...(expectedIdentity === undefined ? {} : { expectedIdentity }) }),
 		resetRevision: async (id) => {
 			const answer = await ask({ op: "reset-revision", id });
 			if (answer.op !== "reset-revision") throw unexpected();
@@ -67,5 +88,9 @@ function stateFor(target: string): PolicyViewState {
 }
 
 export function operatorPanel(): OperatorPanelModule {
-	return { version: 2, title: "Policy", open: (host) => policyView(host, routedOperations(host), stateFor(host.target.id)) };
+	return {
+		version: 2,
+		title: "Policy",
+		open: (host) => policyView(host, routedOperations(host), stateFor(host.target.id)),
+	};
 }

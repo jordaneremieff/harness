@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { OperatorView, ViewHost } from "../../operator-ui/index.ts";
+import type { View, ViewHost } from "./frame.ts";
 import type { RuleSnapshot } from "./local-rules.ts";
 import type { PolicyActivityRecord, PolicyPanelData } from "./panel.ts";
 import type { RuleMatchContext, RuleRecord } from "./rule.ts";
@@ -141,7 +141,6 @@ export function data(overrides: Partial<PolicyPanelData> = {}): PolicyPanelData 
 	};
 }
 
-
 export const viewTheme = {
 	fg: (_color: string, text: string) => text,
 	bg: (_color: string, text: string) => text,
@@ -155,9 +154,9 @@ const PAGE_DOWN = "\u001b[6~";
 const text = (lines: readonly string[]) => lines.map((line) => stripVTControlCharacters(line)).join("\n");
 const theme = viewTheme;
 
-/** A minimal frame: a stack of views with their own signals, as NavigationFrame provides them. */
+/** A minimal frame: a stack of views with their own signals, as Frame provides them. */
 export function viewStack() {
-	const layers: Array<{ view: OperatorView; controller: AbortController }> = [];
+	const layers: Array<{ view: View; controller: AbortController }> = [];
 	const notices: string[] = [];
 	let closed = false;
 	const host = (controller: AbortController): ViewHost => ({
@@ -183,15 +182,23 @@ export function viewStack() {
 	return {
 		notices,
 		closed: () => closed,
-		mount(open: (host: ViewHost) => OperatorView) {
+		mount(open: (host: ViewHost) => View) {
 			layers.push({ view: open(host(root)), controller: root });
 		},
 		top,
 		depth: () => layers.length,
 		screen: (width = 120, height = 30) => text(top()?.render(width, height) ?? []),
 		action(label: string) {
-			const action = top()?.actions?.().find((candidate) => candidate.label === label);
-			assert.ok(action, `no action ${label}; have ${top()?.actions?.().map((candidate) => candidate.label).join(", ")}`);
+			const action = top()
+				?.actions?.()
+				.find((candidate) => candidate.label === label);
+			assert.ok(
+				action,
+				`no action ${label}; have ${top()
+					?.actions?.()
+					.map((candidate) => candidate.label)
+					.join(", ")}`,
+			);
 			return action;
 		},
 		/** Page through the view until it reports every line read, as an operator reading to the end. */
