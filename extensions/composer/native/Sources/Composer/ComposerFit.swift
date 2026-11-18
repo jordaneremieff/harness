@@ -69,6 +69,10 @@ struct ComposerFit {
     private var awaiting: (attempt: Attempt, deadline: ContinuousClock.Instant)?
     var pending: Double? { inFlight?.to ?? awaiting?.attempt.to }
     var awaitsFrame: Bool { awaiting != nil }
+    var growsPane: Bool {
+        guard let attempt = inFlight ?? awaiting?.attempt else { return false }
+        return attempt.to > attempt.from
+    }
 
     func shrinkHeight(beforeRows: Int, afterRows: Int) -> Double? {
         guard afterRows > 0, afterRows < beforeRows else { return nil }

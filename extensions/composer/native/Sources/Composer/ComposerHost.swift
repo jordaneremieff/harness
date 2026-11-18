@@ -105,6 +105,7 @@ final class ComposerHost {
             overlay.anchor.refresh()
             publishMetrics()
             resizeToFit()
+            publishExtensions()
         }
         terminal.onHangUp = { [weak self] in self?.close(terminalGone: true) }
         terminal.onTerminate = { [weak self] in self?.close() }
@@ -119,7 +120,10 @@ final class ComposerHost {
         peerMonitor = Task {
             while !Task.isCancelled {
                 guard ComposerDraftStore.alive(configuration.pid) else { piEnded(); return }
-                if fitStartup != nil || fit.awaitsFrame { resizeToFit() }
+                if fitStartup != nil || fit.awaitsFrame {
+                    resizeToFit()
+                    publishExtensions()
+                }
                 try? await Task.sleep(for: .milliseconds(200))
             }
         }
@@ -474,6 +478,7 @@ final class ComposerHost {
                 throw composerRefusal("Invalid layout height.")
             }
             resizeToFit(reportedLayout: true)
+            if fit.growsPane, let needed = fit.needed { overlay.grow(to: needed) }
             lastGrowthAbove = overlay.appliedGrowth
             publishExtensions()
             return ["above": lastGrowthAbove]
@@ -520,6 +525,7 @@ final class ComposerHost {
                 catch { return }
                 reportedVisibility = shown
                 resizeToFit()
+                publishExtensions()
             }
         }
     }
@@ -561,7 +567,7 @@ final class ComposerHost {
             return
         }
         overlay.clearPrediction()
-        if placement != nil, let needed = fit.needed, needed > frame, fit.predictedShrinkHeight == nil {
+        if placement != nil, let needed = fit.needed, fit.growsPane {
             overlay.grow(to: needed)
         } else if let pane = placement, fit.predictedShrinkHeight != nil {
             overlay.grow(to: nil)
