@@ -299,6 +299,7 @@
 			if (html.get(el) === body) return;
 			api.setRenderedHTML(el, body);
 			if (el.dataset.type === "table") frameTable(el);
+			if (el.querySelector("figure.code")) api.highlightCode?.(el);
 			html.set(el, body);
 		}
 		function ensureBlockElement(block: ReaderMappedBlock) {

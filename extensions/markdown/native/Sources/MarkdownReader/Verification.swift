@@ -2033,6 +2033,8 @@ struct Context {
       const s = getComputedStyle(e), r = e.getBoundingClientRect();
       if (s.visibility === 'hidden' && r.width > 1 && getComputedStyle(e.parentElement).visibility !== 'hidden') out.push('a hidden bar control takes room: ' + label(e) + ' ' + Math.round(r.width));
     }
+    const outline = document.getElementById('outline'), outlineBox = shown(outline);
+    if (outlineBox && getComputedStyle(outline).position !== 'absolute' && outlineBox.top < barBox.bottom - 0.5) out.push('the docked outline reaches behind the bar');
     const floating = document.querySelectorAll('[popover]:popover-open, dialog[open], #askcard[data-open], #seltools[data-open], .context-menu, #toast:not([hidden]), #linkcard:not([hidden]), #jumps > *, #notices > *');
     for (const e of floating) {
       const r = shown(e);

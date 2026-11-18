@@ -33,6 +33,10 @@ The page uses the [Catppuccin](https://github.com/catppuccin/catppuccin) palette
 dark appearance and Latte in light, with colours assigned by its style guide. Latte text colours
 that fall below 4.5:1 on a page surface are darkened for legibility; `web/styles/tokens.css`
 marks them. The native paper colour matches the base of each flavour.
+Code blocks whose language label the page knows, such as TypeScript, Swift, JSON, shell, Python,
+YAML, CSS, HTML, SQL, Rust, Go and diff, take the style guide's syntax colours. `web/app/ui/highlight.ts`
+wraps the existing text in spans, so the visible text and its source offsets stay unchanged; other
+labels stay plain. Headings follow the guide's rainbow sequence from red to lavender.
 The first mouse click reaches the page without activating the application.
 A standalone window uses the same page with transparent title-bar chrome.
 

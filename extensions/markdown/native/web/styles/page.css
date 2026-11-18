@@ -5,7 +5,6 @@
     font: 15px/1.5 var(--font);
     color: var(--ink);
     background: var(--paper);
-    -webkit-font-smoothing: antialiased;
     overflow: hidden;
   }
   button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: default; }
@@ -51,7 +50,8 @@
     border-right: 1px solid var(--line);
     display: flex;
     flex-direction: column;
-    padding-top: var(--bar-h);
+    /* The outline starts below the bar, so no panel edge runs behind the bar's title. */
+    margin-top: var(--bar-h);
   }
   #app[data-outline="closed"] .outline { visibility: hidden; border: 0; }
 
@@ -69,7 +69,7 @@
   @container app (width < 860px) {
     .shell, #app[data-outline="closed"] .shell { grid-template-columns: 0 minmax(0, 1fr); }
     .outline {
-      position: absolute; z-index: 8; top: var(--bar-h); bottom: 0; left: 0; padding-top: 6px;
+      position: absolute; z-index: 8; top: var(--bar-h); bottom: 0; left: 0; margin-top: 0; padding-top: 6px;
       width: min(320px, 86cqw);
       box-shadow: var(--shadow-l);
       border-right: 0;

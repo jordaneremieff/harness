@@ -23,11 +23,12 @@
     --line: light-dark(#ccd0da, #363a4f);              /* surface 0 */
     --line-strong: light-dark(#bcc0cc, #494d64);       /* surface 1 */
 
-    /* Text tiers. The faintest tier reads at 4.5:1 on every surface above. */
-    --heading: light-dark(#4c4f69, #cad3f5);           /* text */
-    --ink: light-dark(#4c4f69, #cad3f5);               /* text */
-    --ink-2: light-dark(#545770, #b8c0e0);             /* between text and subtext 1 / subtext 1 */
-    --ink-3: light-dark(#5c5f77, #a5adcb);             /* subtext 1 / subtext 0 */
+    /* Text tiers. The faintest tier reads at 4.5:1 on every surface above. Dark body text and headings
+       are Macchiato text mixed with 30 and 45 percent white, for 11:1 and 12:1 on the page. */
+    --heading: light-dark(#4c4f69, #e2e7fa);           /* text / text, brighter */
+    --ink: light-dark(#4c4f69, #dae0f8);               /* text / text, brighter */
+    --ink-2: light-dark(#545770, #cad3f5);             /* between text and subtext 1 / text */
+    --ink-3: light-dark(#5c5f77, #b8c0e0);             /* subtext 1 */
 
     /* Meaning. Accent: links, primary actions, the current section. Agent: anything the agent does. */
     --accent: light-dark(#1e66f5, #8aadf4);            /* blue */
@@ -60,7 +61,20 @@
     --syn-num: light-dark(#fe640b, #f5a97f);           /* peach */
     --syn-com: light-dark(#7c7f93, #939ab7);           /* overlay 2 */
     --syn-type: light-dark(#df8e1d, #eed49f);          /* yellow */
-    --syn-fn: light-dark(#1e66f5, #8aadf4);            /* blue */
+    --syn-fn: light-dark(#1e66f5, #8aadf4);            /* blue: functions, properties */
+    --syn-var: light-dark(#e64553, #ee99a0);           /* maroon: shell variables */
+    --syn-meta: light-dark(#209fb5, #7dc4e4);          /* sapphire: diff headers */
+
+    /* Markdown structure: headings in the style guide's rainbow sequence (red, peach, yellow, green,
+       sapphire, lavender), lavender list markers, and links that turn sky on hover. */
+    --h1: light-dark(#d20f39, #ed8796);
+    --h2: light-dark(#da601e, #f5a97f);                /* legible in Latte */
+    --h3: light-dark(#b37b34, #eed49f);                /* legible in Latte */
+    --h4: light-dark(#2b711c, #a6da95);                /* legible in Latte */
+    --h5: light-dark(#38738b, #7dc4e4);                /* legible in Latte */
+    --h6: light-dark(#5b65a4, #b7bdf8);                /* legible in Latte */
+    --list-marker: light-dark(#7287fd, #b7bdf8);
+    --link-hover: light-dark(#2f719b, #91d7e3);        /* legible in Latte */
 
     /* The selection strip, context menu and hover help stay dark in both themes. */
     --toolbar-bg: light-dark(#4c4f69, #181926);        /* text / crust */
