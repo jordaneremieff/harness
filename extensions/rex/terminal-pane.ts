@@ -9,6 +9,8 @@ export interface PaneRequest { version: 1; origin: TerminalOrigin | null; argv: 
 type Direction = "horizontal" | "vertical";
 export interface PaneResizeRequest { version: 1; receipt: PaneReceipt; share: number }
 export interface PaneResizeResult { version: 1; outcome: "resized" | "stale" | "unavailable" | "uncertain"; detail: string }
+export interface PaneFocusRequest { version: 1; receipt: PaneReceipt }
+export interface PaneFocusResult { version: 1; outcome: "focused" | "stale" | "unavailable" | "uncertain"; detail: string }
 export interface PaneReceipt { server: string; hostId: string; instanceId: string; sessionId: string; windowId: string; anchorId: string; blockId: string; direction: Direction }
 export interface PaneResult { version: 1; outcome: "created" | "stale" | "unavailable" | "uncertain"; detail: string; receipt?: PaneReceipt }
 const LIMIT = 16384;
@@ -86,6 +88,26 @@ if not resized or type(resized.revision) ~= "number" then
 end
 return {outcome="resized", detail="Rex confirmed the split resize."}
 `;
+// Focus never switches the session's tab: an anchor in a window that the session does not show stays unfocused.
+const focusScript = `${identityScript}
+local view = rex.call("session.view", {session_id=a.sessionId})
+if placement(view, a.anchorId) ~= a.windowId or placement(view, a.blockId) ~= a.windowId then
+  return {outcome="stale", detail="The terminal blocks are no longer in the receipt window."}
+end
+if view.active_window_id ~= a.windowId then
+  return {outcome="unavailable", detail="The session does not show the receipt window."}
+end
+for _, w in ipairs(view.windows or {}) do
+  if w.window_id == a.windowId and w.focused_block_id == a.anchorId then
+    return {outcome="focused", detail="The anchor terminal already has focus."}
+  end
+end
+local focused = rex.call("session.focus_block", {session_id=a.sessionId, block_id=a.anchorId})
+if not focused or type(focused.revision) ~= "number" then
+  return {outcome="uncertain", detail="Rex did not confirm the focus. Do not retry automatically."}
+end
+return {outcome="focused", detail="Rex focused the anchor terminal."}
+`;
 const runChild: Runner = (executable, args, options) => new Promise((done) => {
 	execFile(executable, [...args], { ...options, encoding: "utf8", killSignal: "SIGKILL" }, (error, stdout, stderr) => {
 		if (!error) return done({ code: 0, stdout, stderr });
@@ -109,6 +131,14 @@ export function parseResizeRequest(input: string): PaneResizeRequest {
 	const receipt = readReceipt(value.receipt);
 	if (!receipt) throw new Error("Pane resize requires an exact split receipt.");
 	return { version: 1, receipt, share: value.share };
+}
+export function parseFocusRequest(input: string): PaneFocusRequest {
+	if (Buffer.byteLength(input) > LIMIT) throw new Error("Pane request exceeds 16384 bytes.");
+	const value = JSON.parse(input) as Partial<PaneFocusRequest>;
+	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => key !== "version" && key !== "receipt") || value.version !== 1) throw new Error("Invalid pane focus request.");
+	const receipt = readReceipt(value.receipt);
+	if (!receipt) throw new Error("Pane focus requires an exact split receipt.");
+	return { version: 1, receipt };
 }
 function matchesOrigin(env: Readonly<NodeJS.ProcessEnv>, server: string, session: string, block: string): boolean {
 	return env.REX_SERVER === server && env.REX_SESSION === session && env.REX_BLOCK === block;
@@ -161,9 +191,28 @@ export async function resizePane(request: PaneResizeRequest, env: Readonly<NodeJ
 	} catch { /* An unconfirmed mutation is not safe to repeat. */ }
 	return response("uncertain", "Rex resize is unconfirmed. Do not retry automatically.");
 }
+export async function focusPane(request: PaneFocusRequest, env: Readonly<NodeJS.ProcessEnv> = process.env, run: Runner = runChild): Promise<PaneFocusResult> {
+	const { receipt } = parseFocusRequest(JSON.stringify(request));
+	const response = (outcome: PaneFocusResult["outcome"], detail: string): PaneFocusResult => ({ version: 1, outcome, detail });
+	if (!matchesOrigin(env, receipt.server, receipt.sessionId, receipt.anchorId)) return response("stale", "The inherited terminal differs from the receipt anchor.");
+	try {
+		const child = await runRex(run, receipt.server, receipt.sessionId, focusScript, receipt);
+		if (child.failure === "missing") return response("unavailable", "The trusted Rex program is missing.");
+		if (!child.failure && child.code === 0 && Buffer.byteLength(child.stdout) <= 32768) {
+			const { outcome, detail } = JSON.parse(child.stdout) as PaneFocusResult;
+			if (["focused", "stale", "unavailable", "uncertain"].includes(outcome) && validText(detail, 256) && detail.length && !/[\p{Cc}\p{Cf}]/u.test(detail)) return response(outcome, detail);
+		}
+	} catch { /* An unconfirmed focus change is not safe to repeat. */ }
+	return response("uncertain", "Rex focus is unconfirmed. Do not retry automatically.");
+}
+const operations = {
+	split: (input: string) => splitPane(parsePaneRequest(input)),
+	resize: (input: string) => resizePane(parseResizeRequest(input)),
+	focus: (input: string) => focusPane(parseFocusRequest(input)),
+};
 async function main(): Promise<void> {
 	const operation = process.argv[2];
-	if (process.argv.length !== 3 || (operation !== "split" && operation !== "resize")) throw new Error("Use terminal-pane.ts split or resize with one JSON request on stdin.");
+	if (process.argv.length !== 3 || (operation !== "split" && operation !== "resize" && operation !== "focus")) throw new Error("Use terminal-pane.ts split, resize or focus with one JSON request on stdin.");
 	const chunks: Buffer[] = [];
 	let size = 0;
 	for await (const chunk of process.stdin) {
@@ -172,7 +221,7 @@ async function main(): Promise<void> {
 		chunks.push(Buffer.from(chunk));
 	}
 	const input = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
-	process.stdout.write(`${JSON.stringify(await (operation === "split" ? splitPane(parsePaneRequest(input)) : resizePane(parseResizeRequest(input))))}\n`);
+	process.stdout.write(`${JSON.stringify(await operations[operation](input))}\n`);
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 	void main().catch((error) => { process.stderr.write(`${String(error instanceof Error ? error.message : error).replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 256)}\n`); process.exitCode = 1; });

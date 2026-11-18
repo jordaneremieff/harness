@@ -26,6 +26,12 @@ export class ComposerEditor extends CustomEditor {
 	private readonly emit: (event: ComposerEvent) => void;
 	private readonly base?: EditorComponent;
 	private readonly remember?: (text: string) => void;
+	/**
+	 * Pi's TUI sets `focused` on the component that receives terminal input. The editor loses it
+	 * whenever a dialog, selector, extension view or focusing overlay takes the input, and Pi
+	 * gives it back when that closes.
+	 */
+	onFocusChange?: (focused: boolean) => void;
 	constructor(ui: TUI, theme: EditorTheme, keys: KeybindingsManager, emit: (event: ComposerEvent) => void, base?: EditorComponent, remember?: (text: string) => void) {
 		super(ui, theme, keys);
 		this.ui = ui;
@@ -33,6 +39,18 @@ export class ComposerEditor extends CustomEditor {
 		this.emit = emit;
 		this.base = base;
 		this.remember = remember;
+		// The base editor declares `focused` as an instance field, which a prototype accessor cannot observe.
+		let focused = this.focused;
+		Object.defineProperty(this, "focused", {
+			configurable: true,
+			enumerable: true,
+			get: () => focused,
+			set: (value: boolean) => {
+				if (value === focused) return;
+				focused = value;
+				this.onFocusChange?.(value);
+			},
+		});
 		if (base) {
 			base.onChange = (text) => { this.onChange?.(text); };
 			base.onSubmit = (text) => { this.onSubmit?.(text); };

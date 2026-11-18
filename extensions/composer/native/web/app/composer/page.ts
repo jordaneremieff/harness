@@ -7,6 +7,7 @@
 		connection: string;
 		notice?: string;
 		state?: string;
+		command?: string;
 	}
 	interface StatusView {
 		connectionLabel: string;
@@ -551,6 +552,11 @@
 		if (isRecord(value.waiting)) return "waiting";
 		return typeof value.phase === "string" ? value.phase : undefined;
 	}
+	function waitingCommand(value: unknown): string | undefined {
+		if (!isRecord(value) || !isRecord(value.waiting)) return undefined;
+		const command = value.waiting.command;
+		return typeof command === "string" && command && command.length <= 64 && !/[\p{Cc}\p{Cf}\s]/u.test(command) ? command : undefined;
+	}
 
 	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The switch validates one envelope type per branch.
 	function receive(value: unknown): boolean {
@@ -587,7 +593,7 @@
 				if (typeof connection !== "string" || !connections.has(connection)) return false;
 				const state = isRecord(value.state) ? value.state : {};
 				phaseSince = typeof state.since === "number" ? state.since : undefined;
-				takeStatus({ connection, state: phaseOf(value.state), notice: typeof value.notice === "string" ? value.notice : undefined });
+				takeStatus({ connection, state: phaseOf(value.state), command: waitingCommand(value.state), notice: typeof value.notice === "string" ? value.notice : undefined });
 				controls?.sync(state, connection);
 				paintMetrics(connection === "connected" ? state : {});
 				paintElapsed();
@@ -714,7 +720,6 @@
 		button.addEventListener("pointerdown", captureSelection, true);
 	get("dismiss-notice").append(icon("close"));
 	get("dismiss-notice").addEventListener("click", () => { hideNotice(); focusInput(); });
-	returnButton.prepend(icon("terminal"));
 	get("add").append(icon("plus"));
 	const chevron = icon("chevron");
 	chevron.classList.add("chevron");

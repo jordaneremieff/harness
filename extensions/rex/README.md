@@ -159,7 +159,11 @@ The fixed `terminal-pane.ts resize` operation accepts that receipt and a share f
 It checks both blocks in the receipt window. Rex selects the innermost split with that ordered
 block pair and direction. The adapter makes one attempt and never retries an unconfirmed resize.
 
-Composer uses the adapter to open below Pi and resize its confirmed split. Markdown uses it for explicit Read actions. It supplies only its configured
+The fixed `terminal-pane.ts focus` operation accepts that receipt and gives Rex focus to the
+receipt's anchor block. It acts only while the session shows the receipt window and never
+switches windows. The adapter makes one attempt and never retries an unconfirmed focus change.
+
+Composer uses the adapter to open below Pi, resize its confirmed split, and focus Pi's pane before it hands Pi the keyboard. Markdown uses it for explicit Read actions. It supplies only its configured
 native reader and a pinned open request; document text never supplies a terminal program.
 The split's program receives the [pane stacking feed](#pane-stacking-feed) under the same
 conditions as a pane that `rex_terminal` creates.

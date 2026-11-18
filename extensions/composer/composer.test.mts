@@ -54,6 +54,8 @@ function host(env: ComposerEnvironment, initial = "") {
 					editor.onAction("app.message.followUp", () => onFollowUp());
 					editor.onAction("app.message.dequeue", () => onDequeue());
 					editor.setText(text);
+					// Pi focuses an installed editor unless an extension dialog holds the slot.
+					editor.focused = true;
 				}
 			},
 			notify(message: string) { notices.push(message); },
@@ -64,7 +66,7 @@ function host(env: ComposerEnvironment, initial = "") {
 		events: bus,
 		on(event: string, handler: (event: object, ctx: ExtensionContext) => unknown) { handlers.set(event, handler); },
 		registerCommand(name: string, spec: { handler: typeof compose }) { assert.equal(name, "composer"); compose = spec.handler; },
-		getThinkingLevel: () => thinking, getSessionName: () => undefined, getCommands: () => [{ name: "composer" }],
+		getThinkingLevel: () => thinking, getSessionName: () => undefined, getCommands: () => [{ name: "composer", source: "extension" }, { name: "stash", source: "extension" }, { name: "review", source: "prompt" }, { name: "skill:harness", source: "skill" }],
 		setModel: async () => true, setThinkingLevel: (level: string) => { thinking = level === "off" ? level : "low"; },
 	} as unknown as ExtensionAPI;
 	registerComposer(pi, env);
@@ -480,6 +482,105 @@ test("resize waits for the split receipt and keeps only the latest queued size",
 	const latest = (await Promise.all(waiting)).find(entry => entry.share !== superseded.share);
 	assert.equal(latest?.response.applied, true);
 	assert.deepEqual(shares, [0.3, latest?.share]);
+});
+
+test("reports Pi's terminal as waiting while anything else holds the editor's focus", { timeout: 6000 }, async t => {
+	const files = await setup(t);
+	const pi = host(files.env);
+	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
+	await pi.command();
+	const ask = client(await consume(files.launch()));
+	let cursor = (await ask("/hello", { pid: 100, draft: { text: "" } })).sequence;
+	const waiting = async () => {
+		const result = await ask("/events", { after: cursor });
+		cursor = result.sequence;
+		return result.state?.waiting;
+	};
+	pi.event("ui_prompt_start", { kind: "custom" });
+	await pi.event("agent_start");
+	assert.equal(await waiting(), undefined, "a prompt that leaves the editor focused does not wait");
+	pi.editor().focused = false;
+	assert.deepEqual(await waiting(), { kind: "custom" });
+	pi.event("ui_prompt_end", {});
+	assert.deepEqual(await waiting(), { kind: "view" }, "a built-in selector also holds the input");
+	pi.event("ui_prompt_start", { kind: "select", title: "Choose a stash" });
+	assert.deepEqual(await waiting(), { kind: "select", title: "Choose a stash" });
+	pi.editor().focused = true;
+	assert.equal(await waiting(), undefined);
+	pi.event("ui_prompt_end", {});
+});
+
+test("marks a view that opens soon after the composer sends a command as that command's answer", { timeout: 6000 }, async t => {
+	const files = await setup(t);
+	const pi = host(files.env);
+	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
+	await pi.command();
+	const ask = client(await consume(files.launch()));
+	let cursor = (await ask("/hello", { pid: 100, draft: { text: "" } })).sequence;
+	const waiting = async () => {
+		const result = await ask("/events", { after: cursor });
+		cursor = result.sequence;
+		return result.state?.waiting;
+	};
+	let opens = true;
+	pi.onSubmit(() => { if (opens) pi.editor().focused = false; });
+	const send = (text: string) => ask("/submit", { id: randomUUID(), behavior: "send", text });
+	assert.equal((await send("/stash recent")).outcome, "accepted");
+	assert.deepEqual(await waiting(), { kind: "view", command: "stash" }, "Pi opened the view before the handler returned");
+	pi.event("ui_prompt_start", { kind: "custom" });
+	assert.deepEqual(await waiting(), { kind: "custom", command: "stash" });
+	pi.event("ui_prompt_end", {});
+	pi.editor().focused = true;
+	assert.equal(await waiting(), undefined);
+	pi.editor().focused = false;
+	assert.deepEqual(await waiting(), { kind: "view" }, "one command answers one view");
+	pi.editor().focused = true;
+	assert.equal(await waiting(), undefined);
+	opens = false;
+	for (const text of ["/review this", "/skill:harness", "plain text"]) {
+		await send(text);
+		pi.editor().focused = false;
+		assert.deepEqual(await waiting(), { kind: "view" }, `${text} goes to the model`);
+		pi.editor().focused = true;
+		assert.equal(await waiting(), undefined);
+	}
+	await send("/model");
+	await ask("/draft", { generation: 1, text: "next message" });
+	pi.editor().focused = false;
+	assert.deepEqual(await waiting(), { kind: "view" }, "typing after the command ends its claim on a view");
+	pi.editor().focused = true;
+	assert.equal(await waiting(), undefined);
+});
+
+test("terminal focus asks Rex for Pi's pane only through a confirmed receipt", { timeout: 6000 }, async t => {
+	const files = await setup(t);
+	const receipt = { direction: "vertical" };
+	const focused: unknown[] = [];
+	let withReceipt = false;
+	let launch = "";
+	const pi = host({ ...files.env, async launch(file) { launch = await file(); return withReceipt ? { receipt } : undefined; }, async focus(target) {
+		focused.push(target);
+		return { focused: true };
+	} });
+	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
+	await pi.command();
+	let ask = client(await consume(launch));
+	await ask("/hello", { pid: 100, draft: { text: "" } });
+	assert.equal((await ask("/terminal", { extra: true })).status, 409);
+	const missing = await ask("/terminal");
+	assert.equal((missing as { focused?: boolean }).focused, false);
+	assert.match(missing.message ?? "", /receipt/u);
+	assert.deepEqual(focused, []);
+	await pi.command("close");
+	withReceipt = true;
+	await pi.command();
+	ask = client(await consume(launch));
+	await ask("/hello", { pid: 100, draft: { text: "" } });
+	assert.equal((await ask("/terminal") as { focused?: boolean }).focused, true);
+	assert.deepEqual(focused, [receipt]);
+	await ask("/visibility", { visible: false });
+	assert.match((await ask("/terminal")).message ?? "", /not visible/u);
+	assert.equal(focused.length, 1);
 });
 
 test("the folder label is home-relative only for paths inside the home directory", () => {

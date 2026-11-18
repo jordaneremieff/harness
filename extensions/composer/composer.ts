@@ -27,9 +27,11 @@ const retained = Symbol.for("harness.composer");
 const processState = globalThis as typeof globalThis & { [retained]?: RetainedComposer };
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const UUID = /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/iu;
-const PATHS = new Set(["/draft", "/submit", "/abort", "/close", "/visibility", "/complete", "/applyCompletion", "/models", "/setModel", "/setThinking", "/dequeue", "/resize"]);
+const PATHS = new Set(["/draft", "/submit", "/abort", "/close", "/visibility", "/complete", "/applyCompletion", "/models", "/setModel", "/setThinking", "/dequeue", "/resize", "/terminal"]);
 const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const HISTORY_BYTES = 256 * 1024;
+/** A view that opens this soon after the composer sends a command answers that command. */
+const COMMAND_VIEW_MS = 5000;
 const PRESENCE_EVENT = "harness:composer:presence";
 const PRESENCE_REQUEST = "harness:composer:presence-request";
 function assistantCost(message: Message): number {
@@ -80,11 +82,14 @@ const INITIAL_SHARE = 0.2;
 const validShare = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0.1 && value <= 0.4;
 type LaunchResult = { receipt?: unknown; uncertain?: string };
 type ResizeResult = { applied: boolean; message?: string };
+type FocusResult = { focused: boolean; message?: string };
 const refused = (message: string): ResizeResult => ({ applied: false, message });
 export interface ComposerEnvironment {
 	agentDir: string;
 	launch(file: () => Promise<string>, cwd: string, signal: AbortSignal): Promise<LaunchResult | undefined>;
 	resize?(receipt: unknown, share: number, signal: AbortSignal): Promise<ResizeResult>;
+	/** Give Rex focus to Pi's own pane, so keys that the terminal receives reach Pi. */
+	focus?(receipt: unknown, signal: AbortSignal): Promise<FocusResult>;
 	checkApp?(notify: (message: string, error?: boolean) => void, explicit?: boolean): Promise<string | undefined>;
 	alive(pid: number): boolean;
 	helloMs?: number;
@@ -117,6 +122,14 @@ async function resizeComposer(receipt: unknown, share: number, signal: AbortSign
 	} catch { /* No acknowledgement of the resize. */ }
 	return refused("Composer pane resize is unconfirmed. Pi did not retry.");
 }
+async function focusPiPane(receipt: unknown, signal: AbortSignal): Promise<FocusResult> {
+	try {
+		const result = object(await adapter("terminal-pane.ts", "focus", 7000, signal, JSON.stringify({ version: 1, receipt })));
+		if (result.version === 1 && result.outcome === "focused") return { focused: true };
+		if (result.version === 1 && typeof result.detail === "string") return { focused: false, message: oneLine(new Error(result.detail)) };
+	} catch { /* No acknowledgement of the focus change. */ }
+	return { focused: false, message: "Pi pane focus is unconfirmed. Pi did not retry." };
+}
 function environment(): ComposerEnvironment {
 	const agentDir = getAgentDir();
 	const app = new ComposerApp();
@@ -126,6 +139,7 @@ function environment(): ComposerEnvironment {
 		auto: () => process.platform === "darwin" && Boolean(process.env.REX_BLOCK) && mode === "auto",
 		alive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } },
 		resize: resizeComposer,
+		focus: focusPiPane,
 		async checkApp(notify, explicit) {
 			if (process.platform !== "darwin") return "The composer requires macOS.";
 			return app.check(appPath, notify, explicit);
@@ -166,6 +180,9 @@ class Connection {
 	private visible = false;
 	private displayed = false;
 	private restoring = false;
+	private prompt?: { kind: string; title?: string };
+	private command?: { name: string; at: number };
+	private waitingCommand?: string;
 
 	private readonly pi: ExtensionAPI;
 	private readonly ctx: ExtensionContext;
@@ -241,12 +258,46 @@ class Connection {
 			this.restoring = true;
 			try { for (const text of this.history) editor.addToHistory(text); }
 			finally { this.restoring = false; }
+			editor.onFocusChange = () => this.refreshWaiting();
 			this.editor = editor;
 			return editor;
 		};
 		this.ctx.ui.setEditorComponent(this.factory);
 		if (!this.editor) throw new Error("Pi did not install the composer editor.");
+		this.refreshWaiting();
 		return this.editor;
+	}
+	/**
+	 * Pi's terminal needs the keyboard while anything else holds the editor's focus: an extension
+	 * dialog or view, a built-in selector, or a focusing overlay. Prompt events add the kind and
+	 * title that Pi reports for extension prompts.
+	 */
+	private refreshWaiting(): void {
+		const editor = this.editor;
+		const taken = !this.ended && editor !== undefined && this.ctx.ui.getEditorComponent() === this.factory && !editor.focused;
+		if (!taken) this.waitingCommand = undefined;
+		else if (this.state.waiting === undefined) {
+			const command = this.command;
+			this.command = undefined;
+			this.waitingCommand = command && Date.now() - command.at <= COMMAND_VIEW_MS ? command.name : undefined;
+		}
+		const prompt = this.prompt;
+		this.update({ waiting: taken ? { kind: prompt?.kind ?? "view", ...(prompt?.title ? { title: prompt.title } : {}), ...(this.waitingCommand ? { command: this.waitingCommand } : {}) } : undefined });
+	}
+	/** A slash command that Pi or an extension handles itself; prompt templates and skills go to the model. */
+	private composerCommand(text: string): { name: string; at: number } | undefined {
+		const name = /^\/([^\s/]+)/u.exec(text.trim())?.[1];
+		if (!name) return undefined;
+		const entry = this.pi.getCommands().find(command => command.name === name);
+		return !entry || entry.source === "extension" ? { name, at: Date.now() } : undefined;
+	}
+	promptStarted(kind: string, title?: string): void {
+		this.prompt = { kind, ...(title ? { title } : {}) };
+		this.refreshWaiting();
+	}
+	promptEnded(): void {
+		this.prompt = undefined;
+		this.refreshWaiting();
 	}
 	private hello(body: JsonObject): JsonObject {
 		if (this.ended) throw new Error("The composer runtime is closing.");
@@ -311,13 +362,15 @@ class Connection {
 		if (!handler) throw new Error("Pi's submission handler is not available.");
 		const previous = editor.getExpandedText();
 		const busy = !this.ctx.isIdle() || this.state.phase !== "idle";
+		// Pi can open a command's view before the handler returns.
+		this.command = behavior === "send" ? this.composerCommand(text) : undefined;
 		try {
 			// Reset the report baseline so Pi can put back the exact submitted text.
 			editor.acceptDraft("");
 			if (behavior === "followUp") editor.setSubmissionText(text);
 			const running = behavior === "send" ? handler(text) : (handler as () => void)();
 			void Promise.resolve(running).catch(error => { if (!this.ended) this.bridge.emit({ type: "notice", level: "error", text: oneLine(error) }); });
-		} catch (error) { editor.acceptDraft(previous); throw error; }
+		} catch (error) { this.command = undefined; editor.acceptDraft(previous); throw error; }
 		if (busy) this.trackSubmission(behavior, text.trim());
 	}
 	private trackSubmission(behavior: "send" | "followUp", text: string): void {
@@ -353,6 +406,8 @@ class Connection {
 		const text = draft(body.text);
 		if (generation > this.generation) {
 			this.generation = generation;
+			// Text typed after a command means a later view no longer answers it.
+			if (text.trim()) this.command = undefined;
 			if (this.forwarding || editor.getExpandedText() === this.baseline) {
 				editor.acceptDraft(text);
 				if (!this.forwarding) this.baseline = editor.getExpandedText();
@@ -425,6 +480,15 @@ class Connection {
 			if (!this.resizing) void this.drainResize();
 		});
 	}
+	private async focusTerminal(body: JsonObject, signal: AbortSignal): Promise<JsonObject> {
+		if (Object.keys(body).some(key => key !== "composer")) throw new Error("Terminal focus takes no arguments.");
+		if (!this.forwarding) return { focused: false, message: "The composer is not visible." };
+		await this.split?.catch(() => undefined);
+		const receipt = this.record.receipt;
+		if (signal.aborted || this.ended || !this.forwarding) return { focused: false, message: "The composer is not visible." };
+		if (!receipt || !this.env.focus) return { focused: false, message: "No confirmed composer pane receipt is available." };
+		return this.env.focus(receipt, signal);
+	}
 	private async drainResize(): Promise<void> {
 		this.resizing = true;
 		while (this.pendingResize) {
@@ -438,6 +502,7 @@ class Connection {
 	private async request(path: string, body: JsonObject, signal: AbortSignal): Promise<JsonObject> {
 		if (path === "/submit") return this.submit(body);
 		if (path === "/resize") return this.resize(body, signal);
+		if (path === "/terminal") return this.focusTerminal(body, signal);
 		const editor = this.editorForRequest();
 		switch (path) {
 			case "/draft": return this.acceptDraft(editor, body);
@@ -596,6 +661,6 @@ export function registerComposer(pi: ExtensionAPI, env = environment()): void {
 	pi.on("session_tree", () => connection?.refreshCost());
 	pi.on("turn_end", () => connection?.refreshContext());
 	pi.on("session_info_changed", ({ name }, ctx) => connection?.update({ session: { id: ctx.sessionManager.getSessionId(), name } }));
-	pi.on("ui_prompt_start", ({ kind, title }) => connection?.update({ waiting: { kind, title } }));
-	pi.on("ui_prompt_end", () => connection?.update({ waiting: undefined }));
+	pi.on("ui_prompt_start", ({ kind, title }) => connection?.promptStarted(kind, title));
+	pi.on("ui_prompt_end", () => connection?.promptEnded());
 }

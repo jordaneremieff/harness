@@ -55,6 +55,8 @@ final class ComposerHost {
     private var viewportDelivery: Task<Bool, Never>?
     private var shrinkFrom: (frame: CGRect, rows: Int)?
     private var resizeJob: Task<Void, Never>?
+    private var handoff = ComposerHandoff()
+    private var settleJob: Task<Void, Never>?
 
     init(configuration: ComposerConfiguration, launchFile: URL, stateDirectory: URL, terminal: PaneTerminal) throws {
         self.configuration = configuration
@@ -202,6 +204,53 @@ final class ComposerHost {
         placed()
     }
 
+    private var hasKeyboard: Bool { overlay.window.isVisible && overlay.window.isKeyWindow }
+
+    /// The keyboard follows a view that Pi opens in its terminal in answer to the composer's own
+    /// command, and comes back when that view closes. Pi can close one view and open the next at
+    /// once, so a close waits briefly before the composer takes the keyboard back.
+    private func followWaiting() {
+        guard let waiting = state?["waiting"] as? [String: Any] else {
+            guard handoff.waiting, settleJob == nil else { return }
+            settleJob = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(200))
+                guard let self, !Task.isCancelled else { return }
+                settleJob = nil
+                guard state?["waiting"] == nil, !closing else { return }
+                if handoff.update(waiting: false, answersComposer: false, composerHasKeyboard: hasKeyboard) == .reclaim { reclaimKeyboard() }
+            }
+            return
+        }
+        settleJob?.cancel()
+        settleJob = nil
+        let move = handoff.update(waiting: true, answersComposer: waiting["command"] is String, composerHasKeyboard: hasKeyboard)
+        guard move == .release else { return }
+        // Rex focuses Pi's pane before the composer lets go, so no key reaches another pane.
+        Task { [weak self] in
+            guard let self else { return }
+            let reply = try? await request("/terminal")
+            guard reply?["focused"] as? Bool == true, state?["waiting"] != nil, hasKeyboard, !closing else { return }
+            Self.perf.debug("handoff.release")
+            overlay.releaseFocus()
+        }
+    }
+
+    /// Takes the keyboard back only while the operator works in the terminal application.
+    private func reclaimKeyboard() {
+        guard overlay.window.isVisible, !overlay.window.isKeyWindow, !closing,
+              case .placed(let pane) = overlay.anchor.status,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pane.host else { return }
+        Self.perf.debug("handoff.reclaim")
+        focus()
+    }
+
+    /// The operator gives the keyboard to Pi's pane, whatever pane Rex focused before.
+    private func releaseKeyboard() {
+        handoff.operatorReleased()
+        overlay.releaseFocus()
+        Task { [weak self] in _ = try? await self?.request("/terminal") }
+    }
+
     private func post(_ type: String, _ fields: [String: Any] = [:]) {
         if ready { Task { await page.send(type, fields) } }
     }
@@ -289,6 +338,7 @@ final class ComposerHost {
                 if first { wantsFocus = true }
                 showWhenReady()
                 placed()
+                followWaiting()
                 first = false
                 if generation != next.generation { scheduleMirror() }
                 detached = (try? await poll(next.link, after: next.sequence)) ?? false
@@ -369,6 +419,7 @@ final class ComposerHost {
             if state?["version"] as? Int != next["version"] as? Int {
                 updateState(next)
                 await publishStatus()
+                followWaiting()
             }
             if result["reset"] as? Bool != true {
                 for event in events {
@@ -511,7 +562,7 @@ final class ComposerHost {
         case "close":
             if let value = fields["text"] as? String { setDraft(value) }
             close()
-        case "release": overlay.releaseFocus()
+        case "release": releaseKeyboard()
         case "sendKey":
             guard let value = fields["value"] as? String, value == "return" || value == "command" else {
                 throw composerRefusal("The send key is invalid.")

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { parsePaneRequest, parseResizeRequest, resizePane, splitPane, type PaneRequest, type PaneResizeRequest } from "./terminal-pane.ts";
+import { focusPane, parseFocusRequest, parsePaneRequest, parseResizeRequest, resizePane, splitPane, type PaneFocusRequest, type PaneRequest, type PaneResizeRequest } from "./terminal-pane.ts";
 import { trustedRexExecutable, type Runner } from "./terminal-origin.ts";
 
 const exact = { server: "unix:///private/rex.sock", hostId: "11111111-1111-1111-1111-111111111111", instanceId: "22222222-2222-2222-2222-222222222222", sessionId: "session:33333333-3333-3333-3333-333333333333", blockId: "block:44444444-4444-4444-4444-444444444444" };
@@ -185,6 +185,47 @@ test("resize rejects bad receipts and shares, and does not retry uncertain effec
 				: { code: 0, stdout: JSON.stringify({ outcome, detail: "The split is unavailable." }), stderr: "" };
 		};
 		assert.equal((await resizePane(request, env, run)).outcome, outcome);
+		assert.equal(calls, 1);
+	}
+});
+
+test("focus moves Rex focus to the receipt anchor only in the window the session shows", async () => {
+	let calls = 0;
+	const request: PaneFocusRequest = { version: 1, receipt: { ...receipt, direction: "vertical" } };
+	const run: Runner = async (executable, args, options) => {
+		calls++;
+		assert.equal(executable, trustedRexExecutable());
+		assert.ok(args.includes(`--server=${exact.server}`));
+		assert.equal(args[args.indexOf("--session") + 1], exact.sessionId);
+		assert.equal(options.timeout, 5000);
+		assert.deepEqual(JSON.parse(args[args.indexOf("--args") + 1]), request.receipt);
+		const script = args[args.indexOf("-e") + 1];
+		assert.match(script, /s\.host_id ~= a\.hostId or s\.instance_id ~= a\.instanceId/u);
+		assert.match(script, /placement\(view, a\.anchorId\) ~= a\.windowId or placement\(view, a\.blockId\) ~= a\.windowId/u);
+		assert.match(script, /view\.active_window_id ~= a\.windowId/u);
+		assert.match(script, /"session\.focus_block", \{session_id=a\.sessionId, block_id=a\.anchorId\}/u);
+		return { code: 0, stdout: JSON.stringify({ outcome: "focused", detail: "Focused." }), stderr: "" };
+	};
+	assert.equal((await focusPane(request, env, run)).outcome, "focused");
+	assert.equal((await focusPane(request, { ...env, REX_BLOCK: receipt.blockId }, run)).outcome, "stale");
+	assert.equal(calls, 1);
+});
+
+test("focus rejects bad receipts and extra fields, and does not retry uncertain effects", async () => {
+	const request: PaneFocusRequest = { version: 1, receipt };
+	assert.deepEqual(parseFocusRequest(JSON.stringify(request)), request);
+	for (const invalid of [{ version: 2 }, { share: 0.5 }, { receipt: { ...receipt, anchorId: "block:other" } }, { receipt: { ...receipt, blockId: receipt.anchorId } }, { receipt: undefined }]) {
+		assert.throws(() => parseFocusRequest(JSON.stringify({ ...request, ...invalid })));
+	}
+	for (const outcome of ["stale", "unavailable", "uncertain"] as const) {
+		let calls = 0;
+		const run: Runner = async () => {
+			calls++;
+			return outcome === "uncertain"
+				? { code: 0, stdout: "not json", stderr: "" }
+				: { code: 0, stdout: JSON.stringify({ outcome, detail: "The session shows another window." }), stderr: "" };
+		};
+		assert.equal((await focusPane(request, env, run)).outcome, outcome);
 		assert.equal(calls, 1);
 	}
 });

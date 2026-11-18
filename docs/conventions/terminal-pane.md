@@ -122,6 +122,28 @@ not that a client rendered it. `stale` means the inherited anchor, server identi
 membership changed. `unavailable` means the required terminal service is unavailable before
 mutation. `uncertain` means no resize acknowledgement; do not retry automatically.
 
+## Focus the anchor of a confirmed split
+
+Invoke `node <package>/extensions/rex/terminal-pane.ts focus` with one bounded JSON record:
+
+```ts
+{ version: 1; receipt: PaneReceipt }
+```
+
+Pass the receipt from a `created` result unchanged. The adapter checks the inherited anchor,
+server host and instance, and both blocks' membership in the receipt window, as resize does.
+It then gives Rex focus to the receipt's anchor block, so typing that Rex receives reaches the
+invoking terminal rather than another pane of the window. It acts only while the session shows
+the receipt window: focus never switches the session to another window. When the anchor already
+has focus, the adapter changes nothing. It makes one attempt with the split operation's deadlines
+and output bounds. Rex focus does not activate the terminal application; the caller's own
+program decides when to hand the keyboard to it.
+
+The result is `{ version: 1, outcome, detail }`. `focused` means the anchor had focus or Rex
+acknowledged the change. `stale` means the inherited anchor, server identity or window membership
+changed. `unavailable` means the session shows another window or the required terminal service is
+unavailable; nothing changed. `uncertain` means no acknowledgement; do not retry automatically.
+
 ## Consumers
 
 The Markdown command's deliberate Read action uses the default placement with its own native
@@ -130,4 +152,6 @@ Browse-only selection and publication do not invoke the adapter.
 
 The composer extension's `/composer` command opens Composer.app with a private launch file in
 a split below Pi labelled `Composer`. An authenticated request establishes app acceptance.
-Once visible, the composer asks Pi to resize the split through its confirmed receipt.
+Once visible, the composer asks Pi to resize the split through its confirmed receipt. Before
+the composer hands the keyboard to the terminal, it asks Pi to focus Pi's own pane through the
+same receipt.

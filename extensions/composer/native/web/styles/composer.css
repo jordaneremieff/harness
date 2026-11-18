@@ -117,8 +117,9 @@ svg.i {
 #dismiss-notice { margin-inline-start: auto; }
 .status-state { color: var(--mark); font-weight: 600; }
 .run-time { flex: none; color: var(--ink-2); }
+.run-strip .return { flex: none; min-height: 0; height: 18px; padding: 0 6px; font-size: inherit; }
 .context, .status-info { display: flex; align-items: center; }
-.status-icon { display: grid; place-items: center; flex: none; width: 9px; color: var(--warn); }
+.status-icon { display: grid; place-items: center; flex: none; min-width: 9px; color: var(--warn); }
 .status-icon .i { width: 15px; height: 15px; }
 .status-icon[data-icon="working"] { color: var(--mark); }
 .status-icon[data-icon="working"]::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: breathe 1.6s ease-in-out infinite; }

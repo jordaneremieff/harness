@@ -9,9 +9,10 @@ interface Context { sendKey: string; connection: string; state?: string; hasDraf
 const scope = {} as { composer: { logic: {
     keyDecision(key: Key, context: Context): { kind: string; behavior?: string };
     actionFor(state: string, options: Partial<Context>): { kind: string; label: string; disabled: boolean };
+    statusView(status: { connection: string; state?: string; command?: string }): { stateLabel: string; waiting: boolean };
 } } };
 runInNewContext(stripTypeScriptTypes(readFileSync(new URL("./logic.ts", import.meta.url), "utf8")), scope);
-const { keyDecision, actionFor } = scope.composer.logic;
+const { keyDecision, actionFor, statusView } = scope.composer.logic;
 const choose = (key: Partial<Key> = {}, context: Partial<Context> = {}) =>
     keyDecision({ key: "Enter", ...key }, { sendKey: "return", connection: "connected", hasDraft: true, ...context });
 
@@ -46,4 +47,11 @@ test("the working action stops Pi without discarding the draft", () => {
     assert.equal(actionFor("working", { connection: "connected" }).kind, "stop");
     assert.equal(actionFor("working", { connection: "connected", hasDraft: true }).label, "Stop");
     assert.equal(actionFor("idle", { connection: "reconnecting", hasDraft: true }).disabled, true);
+});
+
+test("a view names the composer's command; other terminal input asks for an answer", () => {
+    assert.equal(statusView({ connection: "connected", state: "waiting", command: "stash" }).stateLabel, "/stash is open in the terminal");
+    assert.equal(statusView({ connection: "connected", state: "waiting" }).stateLabel, "Pi needs an answer in the terminal");
+    assert.equal(statusView({ connection: "connected", state: "idle", command: "stash" }).stateLabel, "");
+    assert.equal(actionFor("waiting", { connection: "connected", hasDraft: true }).disabled, true);
 });

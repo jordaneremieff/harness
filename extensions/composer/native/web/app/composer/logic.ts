@@ -10,6 +10,8 @@
 	interface ComposerStatus {
 		connection: string;
 		state?: string;
+		/** The composer's command whose view holds Pi's terminal, when Pi reports one. */
+		command?: string;
 	}
 	interface StatusView {
 		connectionLabel: string;
@@ -62,10 +64,14 @@
   const connectionLabels: Record<string, string> = { connecting: "Connecting…", reconnecting: "Reconnecting to Pi…", ended: "Pi ended" };
   const stateLabels: Record<string, string> = { waiting: "Pi needs an answer in the terminal", compacting: "Compacting", working: "Working" };
   function isWorking(state?: string): boolean { return state === "working" || state === "compacting"; }
+  function stateLabel(status: ComposerStatus): string {
+    if (status.state === "waiting" && status.command) return `/${status.command} is open in the terminal`;
+    return stateLabels[status.state ?? ""] ?? "";
+  }
   function statusView(status?: ComposerStatus): StatusView {
     return {
       connectionLabel: connectionLabels[status?.connection ?? "connecting"] ?? "",
-      stateLabel: status?.connection === "connected" ? stateLabels[status.state ?? ""] ?? "" : "",
+      stateLabel: status?.connection === "connected" ? stateLabel(status) : "",
       waiting: status?.state === "waiting",
       working: isWorking(status?.state),
     };
