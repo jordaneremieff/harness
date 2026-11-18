@@ -9,10 +9,11 @@ const notes = {
 	file: { usage: "/markdown file <path>", description: "Capture and read a UTF-8 Markdown file without editing it. Resolve relative paths from the session directory; expand a leading ~. Quote a path with spaces." },
 	window: { usage: "/markdown window [new | edit <id> | edit file <path> | copy <id> | file <path> | <id>]", description: "Use a separate Mac window, without a Rex pane. No argument reads the latest retained response. This form is explicit; pane failures never select it." },
 	id: { usage: "/markdown <id or unique prefix>", description: "Read a stored document by ID. Copy an ID from Published; a unique prefix needs at least six characters, including md-." },
+	update: { usage: "/markdown update", description: "Build and install the reader app from this harness now, in the background. Pi does this by itself at startup when the installed app is missing or older than this harness." },
 } as const;
 type Topic = keyof typeof notes;
 const topics = Object.keys(notes) as Topic[];
-export const MARKDOWN_USAGE = "Usage: /markdown new | recent | published | edit <id> | edit file <path> | copy <id> | <id> | file <path> | window [new|edit|copy|file|<id>] | help [command]";
+export const MARKDOWN_USAGE = "Usage: /markdown new | recent | published | edit <id> | edit file <path> | copy <id> | <id> | file <path> | window [new|edit|copy|file|<id>] | update | help [command]";
 
 export function markdownHelp(topic = ""): string {
 	if (!topic) return ["/markdown reads the latest retained assistant response on this branch beside this conversation in the same Rex tab.", ...topics.map((key) => `${notes[key].usage}\n  ${notes[key].description}`), `/markdown help <${topics.join("|")}> shows one command's usage.`].join("\n");
@@ -46,7 +47,7 @@ export function markdownCompletions(prefix: string): AutocompleteItem[] | null {
 	const inputs = inputCompletions(prefix);
 	if (inputs) return inputs;
 	const options: AutocompleteItem[] = [
-		...(["new", "recent", "published", "edit", "copy", "file", "window"] as const).map((name) => ({ value: `${name}${["edit", "copy", "file", "window"].includes(name) ? " " : ""}`, label: name === "edit" || name === "copy" ? `${name} <id>` : name === "file" ? "file <path>" : name === "window" ? "window [command]" : name, description: notes[name].description })),
+		...(["new", "recent", "published", "edit", "copy", "file", "window", "update"] as const).map((name) => ({ value: `${name}${["edit", "copy", "file", "window"].includes(name) ? " " : ""}`, label: name === "edit" || name === "copy" ? `${name} <id>` : name === "file" ? "file <path>" : name === "window" ? "window [command]" : name, description: notes[name].description })),
 		{ value: "help", label: "help [command]", description: "Show complete usage or one command's notes." },
 	];
 	const items = options.filter((item) => item.value.startsWith(prefix));

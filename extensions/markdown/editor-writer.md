@@ -13,6 +13,9 @@ The installed bundle names the supported writer in
 {"editorWriter":{"version":1,"node":"<absolute Node executable>","helper":"editor-writer/editor-helper.mjs"}}
 ```
 
+The installer records the Node that runs it by the PATH link that resolves to it, such as a
+package manager's stable link, rather than by a versioned installation directory.
+
 The application selects those trusted installation paths, sends one UTF-8 JSON
 value on stdin, and reads one JSON receipt on stdout. Requests never select an
 executable, shell command or reference parser. The reference parser is the

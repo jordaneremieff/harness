@@ -9,7 +9,13 @@
 // <agent dir>/markdown-reader/Markdown Reader.app. The agent directory is PI_CODING_AGENT_DIR or
 // ~/.pi/agent. The bundle carries build.json, which openers read to tell a
 // missing or incompatible build from a usable one. build.json also records the `markdown.dir`
-// setting as `store`, the store folder that the app's library shows by default.
+// setting as `store`, the store folder that the app's library shows by default, and the Git
+// commit of the source checkout, which tells an older build from a newer one.
+//
+// An install holds `install.lock` beside the app, so two installs never interleave; a second
+// install exits with status 75 and leaves the app unchanged. Swift build output goes to
+// `build-cache` beside the app; the source checkout keeps none. The cache serves one checkout at
+// a time and starts again empty when an install builds from another checkout.
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
@@ -28,7 +34,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { createRequire, stripTypeScriptTypes } from "node:module";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EDITOR_OPEN, PANE_MODE, PANE_OPEN } from "../pane-command.ts";
 import { readSettings } from "../settings.ts";
@@ -50,6 +56,32 @@ function settingValues(env: NodeJS.ProcessEnv = process.env): { app: string; dir
 	const configured = env.PI_CODING_AGENT_DIR?.trim();
 	const agentDir = configured ? resolve(configured.replace(/^~(?=$|\/)/, homedir())) : join(homedir(), ".pi", "agent");
 	return readSettings({ agentDir, env }).values;
+}
+
+/** The SwiftPM scratch directory of an install, beside the app. */
+export function buildCache(destination: string): string {
+	return join(dirname(destination), "build-cache");
+}
+
+/**
+ * Gives the build cache to one source checkout. SwiftPM can reuse stale objects when one scratch
+ * directory serves several package roots, so a cache that another checkout used is removed first.
+ * Builds from the same checkout stay incremental. Returns true when the cache was reset.
+ */
+export function prepareBuildCache(cache: string, root: string = packageDir): boolean {
+	const marker = join(cache, ".source-root");
+	const source = realpathSync(root);
+	let previous: string | undefined;
+	try {
+		previous = readFileSync(marker, "utf8");
+	} catch {
+		previous = undefined;
+	}
+	if (previous === source) return false;
+	rmSync(cache, { recursive: true, force: true });
+	mkdirSync(cache, { recursive: true });
+	writeFileSync(marker, source);
+	return true;
 }
 
 /** Digest of the files that define the build: manifest, lockfile, sources, licence notices and the embedded helper. */
@@ -74,6 +106,124 @@ export function sourceDigest(root: string = packageDir): string {
 		hash.update("\0");
 	}
 	return `sha256:${hash.digest("hex")}`;
+}
+
+/** The checkout state of the build inputs: the commit, and whether any input differs from it. */
+export interface SourceRecord {
+	commit: string;
+	modified: boolean;
+}
+
+export type GitRunner = (cwd: string, args: string[]) => string | undefined;
+
+const runGit: GitRunner = (cwd, args) => {
+	const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
+	return result.status === 0 ? result.stdout.trim() : undefined;
+};
+
+/**
+ * The Git commit of the checkout that holds the build inputs, and whether any input has
+ * uncommitted or untracked changes. Undefined outside a Git work tree.
+ */
+export function sourceRecord(root: string = packageDir, git: GitRunner = runGit): SourceRecord | undefined {
+	const commit = git(root, ["rev-parse", "--verify", "HEAD"]);
+	if (!commit || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(commit)) return undefined;
+	const inputs = [".", "../pane-command.ts", "../../../package-lock.json", "../../rex/terminal-origin.ts", ...EDITOR_WRITER_SOURCES.map((name) => `../${name}`)];
+	const status = git(root, ["status", "--porcelain", "--untracked-files=all", "--", ...inputs]);
+	if (status === undefined) return undefined;
+	return { commit, modified: status.length > 0 };
+}
+
+/**
+ * A Node executable path that survives Node upgrades: the first absolute PATH entry whose `node`
+ * resolves to the running executable, such as a package manager's stable link. Without one, the
+ * running executable itself.
+ */
+export function stableNode(execPath: string = process.execPath, searchPath: string = process.env.PATH ?? ""): string {
+	let running: string;
+	try {
+		running = realpathSync(execPath);
+	} catch {
+		return resolve(execPath);
+	}
+	for (const directory of searchPath.split(delimiter)) {
+		if (!isAbsolute(directory)) continue;
+		const candidate = join(directory, "node");
+		try {
+			if (realpathSync(candidate) === running) return candidate;
+		} catch {
+			// This PATH entry has no node.
+		}
+	}
+	return resolve(execPath);
+}
+
+/** Exit status of an install that found another install running. */
+export const INSTALL_BUSY = 75;
+/** A lock older than this belongs to no running install, even when its process ID is in use again. */
+const LOCK_LIFETIME_MS = 60 * 60 * 1000;
+
+function processAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/** The process that holds an install lock, while it still runs; otherwise undefined. */
+export function lockHolder(parent: string, alive: (pid: number) => boolean = processAlive, now: number = Date.now()): { pid: number; startedAt: string } | undefined {
+	let holder: unknown;
+	try {
+		holder = JSON.parse(readFileSync(join(parent, "install.lock"), "utf8"));
+	} catch {
+		return undefined;
+	}
+	if (!holder || typeof holder !== "object") return undefined;
+	const { pid, startedAt } = holder as { pid?: unknown; startedAt?: unknown };
+	if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0 || typeof startedAt !== "string") return undefined;
+	const started = Date.parse(startedAt);
+	if (!Number.isFinite(started) || now - started > LOCK_LIFETIME_MS) return undefined;
+	return alive(pid) ? { pid, startedAt } : undefined;
+}
+
+/**
+ * Takes the install lock in the app's parent directory and returns its release, or returns
+ * undefined while another install holds it. A lock whose process has ended is taken over.
+ */
+export function lockInstall(parent: string, alive: (pid: number) => boolean = processAlive): (() => void) | undefined {
+	const path = join(parent, "install.lock");
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			writeFileSync(path, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, { flag: "wx", mode: 0o600 });
+			return () => rmSync(path, { force: true });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
+		if (lockHolder(parent, alive)) return undefined;
+		rmSync(path, { force: true });
+	}
+	return undefined;
+}
+
+/**
+ * Removes what an interrupted install left beside the app: staging folders, and bundles moved
+ * aside while the app is present. A moved-aside bundle stays while the app is missing, so that
+ * installBundle can restore it. Call only while holding the install lock.
+ */
+export function removeAbandoned(parent: string, destination: string): string[] {
+	const removed: string[] = [];
+	const present = existsSync(destination);
+	for (const entry of readdirSync(parent, { withFileTypes: true })) {
+		if (!entry.isDirectory()) continue;
+		const staging = /^\.tmp-[a-f0-9]{12}$/u.test(entry.name);
+		const movedAside = present && /^\.old-[a-f0-9]{12}$/u.test(entry.name);
+		if (!staging && !movedAside) continue;
+		rmSync(join(parent, entry.name), { recursive: true, force: true });
+		removed.push(entry.name);
+	}
+	return removed;
 }
 
 function infoPlist(digest: string): string {
@@ -211,10 +361,10 @@ const installedNodeModules = join(packageDir, "..", "..", "..", "node_modules");
 
 /**
  * build.json's editorWriter record: the writer contract version, the absolute Node executable that
- * the installer runs under, and the fixed bundled helper path. No content-supplied executable or
- * helper path exists.
+ * the installer runs under, by its upgrade-stable path, and the fixed bundled helper path. No
+ * content-supplied executable or helper path exists.
  */
-export function editorWriterMetadata(node: string = process.execPath): { version: 1; node: string; helper: string } {
+export function editorWriterMetadata(node: string = stableNode()): { version: 1; node: string; helper: string } {
 	return { version: 1, node: resolve(node), helper: EDITOR_WRITER_HELPER };
 }
 
@@ -407,19 +557,39 @@ function main(): void {
 	const { app: destination, dir: store } = settingValues();
 	const webSourceDir = join(packageDir, "web");
 	assertWebSource(webSourceDir);
+	const parent = dirname(destination);
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	const release = lockInstall(parent);
+	if (!release) {
+		const holder = lockHolder(parent);
+		console.error(`Another Markdown Reader install is running${holder ? ` (process ${holder.pid})` : ""}. The installed app is unchanged.`);
+		process.exit(INSTALL_BUSY);
+	}
+	try {
+		for (const name of removeAbandoned(parent, destination)) console.log(`Removed ${name}, left by an interrupted install.`);
+		install(destination, store, webSourceDir);
+	} finally {
+		release();
+	}
+}
+
+function install(destination: string, store: string, webSourceDir: string): void {
 	const digest = sourceDigest();
+	const source = sourceRecord();
 	const swiftVersion =
 		run("swift", ["--version"])
 			.split("\n")
 			.find((line) => line.includes("Swift version"))
 			?.trim() ?? "unknown";
-	console.log(`Building Markdown Reader (${digest.slice(0, 19)}) with ${swiftVersion}`);
-	run("swift", ["build", "-c", "release", "--product", "MarkdownReader"]);
-	run("swift", ["build", "-c", "release", "--product", "markdown-core"]);
-	const binPath = run("swift", ["build", "-c", "release", "--show-bin-path"]).trim();
+	const cache = buildCache(destination);
+	if (prepareBuildCache(cache)) console.log(`Build cache ${cache} now serves ${packageDir}.`);
+	const described = source ? `, commit ${source.commit.slice(0, 12)}${source.modified ? " with local changes" : ""}` : "";
+	console.log(`Building Markdown Reader (${digest.slice(0, 19)}${described}) with ${swiftVersion}`);
+	run("swift", ["build", "-c", "release", "--product", "MarkdownReader", "--scratch-path", cache]);
+	run("swift", ["build", "-c", "release", "--product", "markdown-core", "--scratch-path", cache]);
+	const binPath = run("swift", ["build", "-c", "release", "--show-bin-path", "--scratch-path", cache]).trim();
 
 	const parent = dirname(destination);
-	mkdirSync(parent, { recursive: true, mode: 0o700 });
 	const staging = join(parent, `.tmp-${randomBytes(6).toString("hex")}`);
 	const bundle = join(staging, APP_NAME);
 	const contents = join(bundle, "Contents");
@@ -446,6 +616,7 @@ function main(): void {
 			editorOpen: EDITOR_OPEN,
 			live: 2,
 			sourceDigest: digest,
+			...(source ? { source } : {}),
 			builtAt: new Date().toISOString(),
 			swift: swiftVersion,
 			store,
@@ -460,14 +631,20 @@ function main(): void {
 	} finally {
 		rmSync(staging, { recursive: true, force: true });
 	}
+	removeAbandoned(parent, destination);
 	console.log(`Installed ${destination}`);
 	console.log(`Build contract ${BUILD_CONTRACT}, source ${digest}`);
-	const running = spawnSync("/usr/bin/pgrep", ["-f", `${destination}/Contents/MacOS/MarkdownReader`], {
-		encoding: "utf8",
-	});
-	if (running.status === 0) {
-		console.log("A Markdown Reader instance is running. It keeps its old code until you quit it.");
+	const running = runningReaders(destination);
+	if (running > 0) {
+		console.log(`${running === 1 ? "A Markdown Reader instance is" : `${running} Markdown Reader instances are`} running. Each keeps its old code until you quit it.`);
 	}
+}
+
+/** The number of running reader processes of the app at this path, whichever build they started from. */
+export function runningReaders(destination: string): number {
+	const pattern = `${destination}/Contents/MacOS/MarkdownReader`.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+	const running = spawnSync("/usr/bin/pgrep", ["-f", pattern], { encoding: "utf8" });
+	return running.status === 0 ? running.stdout.split("\n").filter((line) => /^\d+$/u.test(line.trim())).length : 0;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main();

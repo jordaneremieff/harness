@@ -6,7 +6,7 @@ import { markdownCompletions, markdownHelp } from "./commands.ts";
 test("every option has individual help in the supported completion description field", () => {
 	const items = markdownCompletions("");
 	assert.ok(items);
-	assert.deepEqual(items.map((item) => item.value.trim()), ["new", "recent", "published", "edit", "copy", "file", "window", "help"]);
+	assert.deepEqual(items.map((item) => item.value.trim()), ["new", "recent", "published", "edit", "copy", "file", "window", "update", "help"]);
 	assert.equal(new Set(items.map((item) => item.description)).size, items.length);
 	for (const item of items) assert.ok(item.description && item.description.length > 20);
 	assert.deepEqual(markdownCompletions("pub")?.map((item) => item.value), ["published"]);

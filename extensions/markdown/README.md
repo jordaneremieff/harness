@@ -137,12 +137,26 @@ Limits: source 2 MiB UTF-8; title 200 Unicode code points on one line (joined em
 - `/markdown <id or unique prefix>` opens a stored document. Prefixes require at least six characters.
 - `/markdown file <path>` captures an explicit local file encoded as UTF-8 and opens its snapshot. Paths resolve against the session working directory; a leading `~` names the home directory. Double quotes around the whole path are optional.
 - `/markdown window` deliberately reads the latest response in a separate Mac window, including outside Rex. `/markdown window file <path>` and `/markdown window <id or unique prefix>` use the same selection rules. `window new`, `window edit <id>`, `window edit file <path>` and `window copy <id>` explicitly choose a separate editor window. No pane failure selects this form automatically.
-- `/markdown help` describes every form. `/markdown help new`, `recent`, `published`, `edit`, `copy`, `file`, `id` or `window` shows that form's usage and individual notes.
+- `/markdown update` builds and installs the reader app from this harness now, in the background, whatever app is installed. See [Keeping the reader app current](#keeping-the-reader-app-current).
+- `/markdown help` describes every form. `/markdown help new`, `recent`, `published`, `edit`, `copy`, `file`, `id`, `window` or `update` shows that form's usage and individual notes.
 - Any other argument answers with the complete command usage.
 
 The Markdown destination uses the shared operator frame. Browsing does not create a reader pane. Enter or the Read control opens the selected item beside this conversation; `l` reads the latest response, `n` selects Recent responses, and `p` selects Published. `/` filters the list. `w` starts New, `e` edits the selected published document or opens a response with Edit a Copy, and `c` opens a published document as a separate copy. The footer and More menu use the same actions as the keys. Read stays the default action. Selection and preview never reveal an app.
 
 Stored snapshots remain openable by ID after the producer exits; the reader app owns snapshot browsing through its library and recents. Argument completion uses Pi's description field for each option. File and ID forms show usage without inserting a fabricated path or document ID; help topics complete individually. The shortcut appears in Pi's shortcut inventory. Print, JSON and RPC read calls save but never launch the GUI. Editor actions require the local interactive surface and refuse in those headless modes. The outcome uses the host's notification channel when the host has one. The command writes no session message or stdout output.
+
+## Keeping the reader app current
+
+The reader app is a separately built program, so a harness update leaves it as it was. In an interactive Pi session on macOS, each start and each `/reload` compares the installed app's `build.json` with the reader sources that this harness loaded. The check does not delay startup.
+
+- An app built from these sources stays as it is.
+- A missing or unreadable app, an app whose build records no source commit, and an app built from an earlier commit of this checkout are replaced without asking: Pi runs `native/build.mts` as a separate process. The footer shows the update while it runs. Notices name its process and log, then report the outcome and how many open readers still run the previous build.
+- An app built from a later commit, or from local changes at this same commit, stays installed without a notice: it is a newer build than this harness.
+- When the order is unknown, the app stays installed and a notice names `/markdown update`. That covers a recorded commit that this checkout does not contain, a harness with uncommitted reader changes, and a harness outside Git.
+
+Order comes from Git ancestry between the commit that `build.json` records and the commit of the loaded checkout. `/markdown update` installs from this harness whatever the installed app is, unless an install is already running. Only interactive terminal sessions check; print, JSON and RPC modes never check or build on their own. An update outlives the session that started it; only that session's notices and footer status stop. Running readers are never stopped: each keeps its build until it is closed.
+
+The update keeps its files beside the app: `update.log` holds the output of the latest automatic or `/markdown update` run, and `update-failure.json` records the source digest of a failed run. Startup does not retry that digest; `/markdown update` does, and a successful install removes the record. The build itself holds `install.lock` and compiles in `build-cache` there (see [Build and checks](native/README.md#build-and-checks)). A trial that must leave the live app alone sets `PI_MARKDOWN_APP` to its own path; its check, build, cache and records then stay beside that path.
 
 ## Attached Agent terminal
 

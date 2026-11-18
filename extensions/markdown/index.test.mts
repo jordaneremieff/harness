@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createEventBus, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
-import markdown, { ordinaryLifecycle, ordinaryOperations } from "./index.ts";
+import markdown, { ordinaryLifecycle, ordinaryOperations, readerUpdates } from "./index.ts";
+import type { checkReader } from "./reader-update.ts";
+
+type CheckReader = typeof checkReader;
 import { MarkdownStore } from "./store.ts";
 
 for (const event of ["session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"]) {
@@ -86,7 +89,7 @@ test("headless commands notify without session messages or stdout and resolve bo
 		assert.equal(notify.mock.calls.at(-1)?.arguments[1], "info");
 		for (const word of ["Recent", "md-xyz"]) {
 			await handler(word, context("json"));
-			assert.deepEqual(notify.mock.calls.at(-1)?.arguments, ["Usage: /markdown new | recent | published | edit <id> | edit file <path> | copy <id> | <id> | file <path> | window [new|edit|copy|file|<id>] | help [command]", "error"]);
+			assert.deepEqual(notify.mock.calls.at(-1)?.arguments, ["Usage: /markdown new | recent | published | edit <id> | edit file <path> | copy <id> | <id> | file <path> | window [new|edit|copy|file|<id>] | update | help [command]", "error"]);
 		}
 		for (const argument of ["window", `window ${published.document.id}`]) {
 			await handler(argument, context("json"));
@@ -139,4 +142,45 @@ test("the file command reads a path under the home directory written with a lead
 		for (const [key, value] of environment) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+test("only an interactive start or reload on macOS checks the reader app, and an ended session hears nothing", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "markdown-reader-start-"));
+	const environment = { PI_MARKDOWN_DIR: process.env.PI_MARKDOWN_DIR, PI_MARKDOWN_APP: process.env.PI_MARKDOWN_APP, PI_HARNESS_FILE: process.env.PI_HARNESS_FILE };
+	process.env.PI_MARKDOWN_DIR = join(root, "store");
+	process.env.PI_MARKDOWN_APP = join(root, "Reader.app");
+	process.env.PI_HARNESS_FILE = join(root, "harness.json");
+	t.after(async () => {
+		for (const [key, value] of Object.entries(environment)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+		await rm(root, { recursive: true, force: true });
+	});
+	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => void>();
+	const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => { handlers.set(name, handler); } } as unknown as Pick<ExtensionAPI, "on">;
+	const checks: Parameters<CheckReader>[0][] = [];
+	const check: CheckReader = async (options) => { checks.push(options); return { state: "current" }; };
+	const updates: Parameters<CheckReader>[0][] = [];
+	const update = readerUpdates(pi, check, async (options) => { updates.push(options); });
+	const notify = t.mock.fn();
+	const setStatus = t.mock.fn();
+	const context = (mode: string) => ({ mode, ui: { notify, setStatus } }) as unknown as ExtensionContext;
+	const start = handlers.get("session_start");
+	assert.ok(start);
+	for (const [reason, mode] of [["new", "tui"], ["resume", "tui"], ["fork", "tui"], ["startup", "json"], ["startup", "rpc"], ["reload", "print"]]) start({ reason }, context(mode));
+	assert.equal(checks.length, 0);
+	start({ reason: "startup" }, context("tui"));
+	start({ reason: "reload" }, context("tui"));
+	assert.equal(checks.length, process.platform === "darwin" ? 2 : 0);
+	await update(context("rpc"));
+	assert.equal(updates.length, 1);
+	assert.equal(updates[0].app, join(root, "Reader.app"));
+	assert.equal(updates[0].store, join(root, "store"));
+	updates[0].reporter.notify("Visible");
+	updates[0].reporter.status("Markdown reader: updating");
+	assert.equal(updates[0].reporter.active(), true);
+	handlers.get("session_shutdown")?.({ reason: "quit" }, context("tui"));
+	updates[0].reporter.notify("After the session ended");
+	updates[0].reporter.status(undefined);
+	assert.equal(updates[0].reporter.active(), false);
+	assert.deepEqual(notify.mock.calls.map((call) => call.arguments), [["Visible", "info"]]);
+	assert.deepEqual(setStatus.mock.calls.map((call) => call.arguments), [["markdown-update", "Markdown reader: updating"]]);
 });

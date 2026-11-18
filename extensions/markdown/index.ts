@@ -16,6 +16,7 @@ import { MARKDOWN_USAGE, markdownHelp, markdownCompletions } from "./commands.ts
 import { ordinaryLive } from "./live-host.ts";
 import { createLiveTool } from "./live-tool.ts";
 import type { LiveConfig } from "./live-protocol.ts";
+import { checkReader, updateNow, type UpdateReporter } from "./reader-update.ts";
 type Connection = () => Promise<LiveConfig | undefined>;
 export { markdownCompletions } from "./commands.ts";
 
@@ -111,6 +112,30 @@ export function ordinaryOperations(ctx: ExtensionContext, lifecycle: () => Abort
 function notice(ctx: ExtensionContext, text: string, error = false): void {
 	ctx.ui.notify(text, error ? "error" : "info");
 }
+/**
+ * Keeps the reader app in step with the loaded harness. Each interactive start or reload on macOS
+ * checks the installed app once; /markdown update installs on request. An update runs on after
+ * this session ends; only this session's notices and footer status stop.
+ */
+export function readerUpdates(pi: Pick<ExtensionAPI, "on">, check: typeof checkReader = checkReader, update: typeof updateNow = updateNow): (ctx: ExtensionContext) => Promise<void> {
+	const session = new AbortController();
+	pi.on("session_shutdown", () => session.abort());
+	const reporter = (ctx: ExtensionContext): UpdateReporter => ({
+		notify: (text, error) => { if (!session.signal.aborted) notice(ctx, text, error); },
+		status: (text) => { if (!session.signal.aborted) ctx.ui.setStatus("markdown-update", text); },
+		active: () => !session.signal.aborted,
+	});
+	pi.on("session_start", (event, ctx) => {
+		if ((event.reason !== "startup" && event.reason !== "reload") || ctx.mode !== "tui" || process.platform !== "darwin") return;
+		const settings = localSettings();
+		const report = reporter(ctx);
+		void check({ app: settings.app, store: settings.dir, reporter: report }).catch((error) => report.notify(`The Markdown reader app check failed: ${clean(error)}`, true));
+	});
+	return (ctx) => {
+		const settings = localSettings();
+		return update({ app: settings.app, store: settings.dir, reporter: reporter(ctx) });
+	};
+}
 /** A leading `~` names the home directory, as in a shell path. */
 const expandHome = (path: string) => path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
 async function openFile(ctx: ExtensionContext, path: string, signal: AbortSignal, presentation: Presentation, connection?: Connection): Promise<string> {
@@ -168,6 +193,7 @@ function readPresentation(value: string): { value: string; presentation: Present
 export default function markdown(pi: ExtensionAPI): void {
 	const states = new Map<string, MarkdownViewState>();
 	const lifecycle = ordinaryLifecycle(pi);
+	const updateReader = readerUpdates(pi);
 	const live = ordinaryLive(pi, lifecycle);
 	const connectionFor = (ctx: ExtensionContext, presentation: Presentation = "pane"): Connection | undefined => ctx.mode === "tui" && presentation === "pane" ? () => live.connection(ctx) : undefined;
 	const stopSettings = publishSettings(pi.events, { agentDir: getAgentDir() });
@@ -198,6 +224,7 @@ export default function markdown(pi: ExtensionAPI): void {
 		try {
 			const input = args.trim();
 			if (input === "help" || input.startsWith("help ")) { notice(ctx, markdownHelp(input.slice(4).trim())); return; }
+			if (input === "update") { await updateReader(ctx); return; }
 			const { value, presentation } = readPresentation(input);
 			const connection = connectionFor(ctx, presentation);
 			const operations = ordinaryOperations(ctx, lifecycle, presentation, connection);
@@ -209,7 +236,7 @@ export default function markdown(pi: ExtensionAPI): void {
 			if (!signal.aborted) notice(ctx, result);
 		} catch (error) { if (!signal.aborted) notice(ctx, clean(error), true); }
 	};
-	pi.registerCommand("markdown", { description: "Read or write beside this conversation; use new, edit, copy, recent, published, file, window or help", getArgumentCompletions: markdownCompletions, handler: action });
+	pi.registerCommand("markdown", { description: "Read or write beside this conversation; use new, edit, copy, recent, published, file, window, update or help", getArgumentCompletions: markdownCompletions, handler: action });
 	pi.registerShortcut("ctrl+alt+r", { description: "Read the latest assistant response in Markdown", handler: (ctx) => action("", ctx) });
 	pi.registerTool(createPublishTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app, connection: live.connection, panes: async (ctx) => (await live.find(ctx))?.list().length ?? 0 }));
 	pi.registerTool(createReadTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app, connection: live.connection }));

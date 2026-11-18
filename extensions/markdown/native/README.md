@@ -167,8 +167,23 @@ node extensions/markdown/native/build.mts test
 ```
 
 The build assembles and ad-hoc signs `Markdown Reader.app`. `PI_MARKDOWN_APP` selects an
-explicit install destination. The build manifest records protocol capabilities and a digest
-of the bundled source. Building does not update a running process.
+explicit install destination. The build manifest records protocol capabilities, a digest
+of the bundled source and, in a Git checkout, the commit of that source with whether any
+input has uncommitted or untracked changes (`source`). The editor writer's Node is the PATH
+link that resolves to the Node running the build, such as a package manager's stable link,
+so a Node upgrade keeps the writer available.
+
+An install compiles in `build-cache` beside the destination; the checkout keeps no build
+output. The cache serves one checkout at a time: SwiftPM can reuse stale objects when one
+scratch directory serves several package roots, so an install from another checkout first
+empties it. Installs from the same checkout build incrementally. The `test` command still
+builds in the package's own `.build`. An install holds `install.lock` beside the
+destination for its whole run. A second install meanwhile exits with status 75 and changes
+nothing; a lock whose process ended, or that is older than an hour, passes to the next
+install. Under the lock, an install removes staging folders and moved-aside bundles that an
+interrupted install left beside the app. Building does not update a running process. The
+Markdown extension runs this build by itself when the installed app is missing or older than
+the loaded harness; see [Keeping the reader app current](../README.md#keeping-the-reader-app-current).
 
 Check modes use private pasteboard and in-memory reading state:
 
