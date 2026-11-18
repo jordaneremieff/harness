@@ -18,6 +18,9 @@ interface Pending {
 	delivered: boolean;
 	cancelled: boolean;
 }
+type Apply = Extract<LiveAction, { op: "apply" }>;
+export type AnchorIdentity = { key: string; refreshed: boolean };
+type EditReceipt = { fingerprint: string; pending: Pending; anchor?: AnchorIdentity };
 const failure = (status: "closed" | "uncertain", message: string): LiveResult => ({ status, message });
 function boundedText(text: string): { text: string; truncated: boolean } {
 	let end = Math.min(text.length, 65536);
@@ -39,7 +42,7 @@ export class LiveBridge {
 	private readonly versions = new Map<string, 1 | 2>();
 	private readonly documents = new Set<string>();
 	private readonly pending = new Map<string, Pending>();
-	private readonly edits = new Map<string, { fingerprint: string; pending: Pending }>();
+	private readonly edits = new Map<string, EditReceipt>();
 	private readonly prompts = new Map<string, { handle: string; fingerprint: string; promise: Promise<LivePromptReceipt>; result?: LivePromptReceipt }>();
 	private readonly wakes = new Map<string, () => void>();
 	private readonly states = new Map<string, Map<string, LiveState>>();
@@ -97,20 +100,28 @@ export class LiveBridge {
 		if (this.closed || this.bindings.get(binding.workspace)?.document !== binding.document) throw new Error("The live Markdown document closed or changed.");
 		return handle;
 	}
-	async execute(handle: string, input: LiveAction, signal?: AbortSignal): Promise<LiveResult> {
+	resolvedEdit(handle: string, operationId: string, key: string): { action: Apply; refreshed: boolean } | undefined {
+		const prior = this.edits.get(operationId);
+		if (!prior) return;
+		const action = prior.pending.command;
+		if (action.op !== "apply" || liveHandle(action) !== handle || prior.anchor?.key !== key) throw new Error("The operation ID already names a different live edit.");
+		const { baseGeneration, baseDigest, edits } = action;
+		return { action: { op: "apply", operationId, baseGeneration, baseDigest, edits }, refreshed: prior.anchor.refreshed };
+	}
+	async execute(handle: string, input: LiveAction, signal?: AbortSignal, anchor?: AnchorIdentity): Promise<LiveResult> {
 		const action = readLiveAction(input);
 		const binding = this.list().find((row) => row.handle === handle);
 		if (!binding) return failure("closed", "The exact live document is no longer connected. Do not replace it with a stored document.");
 		if ((action.op === "claim" || action.op === "release") && binding.live !== 2) return { status: "error", message: "This exact pane does not support claims. Claim and release require live: 2." };
 		signal?.throwIfAborted();
-		let pending = action.op === "apply" ? this.priorEdit(handle, action) : undefined;
+		let pending = action.op === "apply" ? this.priorEdit(handle, action, anchor) : undefined;
 		if (!pending) {
 			if (this.pending.size >= 16) throw new Error("The live Markdown command queue is full.");
 			let resolve!: (result: LiveResult) => void;
 			const promise = new Promise<LiveResult>((done) => { resolve = done; });
 			pending = { command: { ...readLiveBinding(binding), ...action, requestId: randomUUID() }, promise, resolve, delivered: false, cancelled: false };
 			this.pending.set(pending.command.requestId, pending);
-			if (action.op === "apply") this.edits.set(action.operationId, { fingerprint: JSON.stringify({ handle, action }), pending });
+			if (action.op === "apply") this.edits.set(action.operationId, { fingerprint: JSON.stringify({ handle, action }), pending, anchor });
 			this.wakes.get(handle)?.();
 		}
 		if (pending.result) return pending.result;
@@ -118,12 +129,12 @@ export class LiveBridge {
 		this.wakes.get(handle)?.();
 		return this.wait(pending, signal);
 	}
-	private priorEdit(handle: string, action: Extract<LiveAction, { op: "apply" }>): Pending | undefined {
+	private priorEdit(handle: string, action: Apply, anchor?: AnchorIdentity): Pending | undefined {
 		const prior = this.edits.get(action.operationId);
-		if (prior && prior.fingerprint !== JSON.stringify({ handle, action })) throw new Error("The operation ID already names a different live edit.");
+		if (prior && (prior.anchor?.key !== anchor?.key || prior.fingerprint !== JSON.stringify({ handle, action }))) throw new Error("The operation ID already names a different live edit.");
 		if (!prior && this.edits.size >= 128) throw new Error("The live edit receipt limit is reached. Existing receipts remain valid.");
 		const pending = prior?.pending;
-		return pending?.result && pending.result.status !== "applied" ? undefined : pending;
+		return pending?.result && pending.result.status !== "applied" && !(anchor && pending.result.status === "stale") ? undefined : pending;
 	}
 	private wait(selected: Pending, signal?: AbortSignal): Promise<LiveResult> {
 		return new Promise<LiveResult>((resolve) => {
@@ -250,7 +261,7 @@ export class LiveBridge {
 		if (!prior || (prior.result?.status === "uncertain" && prior.result.retryable)) {
 			if (!prior && this.prompts.size >= 128) return rejected("The live prompt receipt limit is reached; this request was not submitted.");
 			const operationId = body.operationId;
-			const text = `This question (${operationId}) comes from the live Markdown pane ${handle}. Answer the person directly in your final message; the Ask card shows that text. Do not open another pane or send the person to chat for this answer. Use markdown_live for any document context you need. Read this exact unsaved buffer before edits. Apply changes through markdown_live with the same handle, base generation/digest and a stable operationId. Do not substitute markdown_read, markdown_publish, file writes or a new pane for live edits.\n\n${body.text}`;
+			const text = `This question (${operationId}) comes from the live Markdown pane ${handle}. Answer in your final message; the Ask card shows it. Use markdown_live with this handle to read context or apply {find, replace} edits. Do not substitute a stored document, file write or new pane.\n\n${body.text}`;
 			const promise = Promise.resolve().then(() => this.route.submit(text, operationId)).catch((): LivePromptReceipt => ({
 				status: "uncertain", retryable: this.route.retryFailedSubmission === true,
 				message: this.route.retryFailedSubmission ? "Admission is unconfirmed. Retry the same request ID to reconcile it." : "Admission is unconfirmed and this route cannot safely resubmit. Check the conversation before another request.",
