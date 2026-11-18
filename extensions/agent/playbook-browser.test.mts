@@ -112,6 +112,11 @@ it("marks a choice that waits for the next run, an unreadable saved name and cat
 	assert.match(pending.text(), /Chosen · applies from the next run/u);
 	assert.equal(pending.view.actions().some((action) => action.id === "use"), false);
 
+	const unsent = browser({ state: { saved: "maker", origin: "you chose it", unsent: true, note: "The last run did not receive it." } });
+	await settle(() => /uses maker/u.test(unsent.text()), "the saved choice");
+	assert.match(unsent.text(), /Chosen · the last run did not receive it/u);
+	assert.match(unsent.text(), /The last run did not receive it\./u);
+
 	const broken = browser({
 		state: { saved: "gone" },
 		catalog: () => ({ ...catalog, diagnostics: ["bad.md: line 1: expected # bad."] }),

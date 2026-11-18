@@ -29,6 +29,8 @@ function badge(choice: Selection, catalog?: PlaybookCatalog): string | undefined
 	return applies(catalog, choice.name) ? choice.name : `${choice.name} unavailable`;
 }
 
+const UNSENT = "The last run did not receive it: another extension replaced the whole system prompt before this section was added.";
+
 function named(name: string | null | undefined): string {
 	return name ? `the ${name} playbook` : "no playbook";
 }
@@ -40,6 +42,8 @@ function named(name: string | null | undefined): string {
 export class OrdinaryPlaybook {
 	private running?: { name: string | null; badge: string | undefined };
 	private shown?: string;
+	/** The playbook whose text the last run prepared but could not send, because the prompt was replaced. */
+	private unsent?: string;
 	private readonly pi: Pick<ExtensionAPI, "appendEntry">;
 	private readonly catalog: (initialize?: boolean) => PlaybookCatalog;
 	private readonly publish: (ctx: ExtensionContext, badge: string | undefined) => void;
@@ -59,6 +63,11 @@ export class OrdinaryPlaybook {
 		return this.shown;
 	}
 
+	/** Marks a badge whose playbook the last run could not send. */
+	private sent(badge: string | undefined, name: string | null): string | undefined {
+		return badge !== undefined && name !== null && name === this.unsent ? `${badge} not sent` : badge;
+	}
+
 	private show(ctx: ExtensionContext, saved: string | undefined): void {
 		const running = this.running;
 		this.shown = running === undefined || running.badge === saved ? saved : `${running.badge ?? "off"} \u2192 ${saved ?? "off"}`;
@@ -70,15 +79,16 @@ export class OrdinaryPlaybook {
 		const choice = branchPlaybook(ctx.sessionManager.getBranch());
 		const running = this.running !== undefined && this.running.name !== choice.name ? { running: this.running.name } : {};
 		if (choice.origin === "unsupported") return { saved: undefined, note: "The saved choice has an unsupported form. Choose a playbook or off to replace it.", ...running };
-		return { saved: choice.name, ...(choice.origin === "operator" ? { origin: "you chose it" } : {}), ...running };
+		const unsent = choice.name !== null && choice.name === this.unsent ? { note: UNSENT, unsent: true } : {};
+		return { saved: choice.name, ...(choice.origin === "operator" ? { origin: "you chose it" } : {}), ...running, ...unsent };
 	}
 
 	status(ctx: ExtensionContext): string {
 		const choice = branchPlaybook(ctx.sessionManager.getBranch());
 		const catalog = choice.name === null ? undefined : this.catalog();
-		this.show(ctx, badge(choice, catalog));
+		this.show(ctx, this.sent(badge(choice, catalog), choice.name));
 		if (choice.origin === "unsupported") return "This session: unknown playbook (unsupported saved selection). Choose a playbook or off to replace it.";
-		const unavailable = choice.name !== null && !applies(catalog, choice.name) ? " Its file supplies no instructions now; see /agent playbook." : "";
+		const unavailable = choice.name !== null && !applies(catalog, choice.name) ? " Its file supplies no instructions now; see /agent playbook." : choice.name !== null && choice.name === this.unsent ? ` ${UNSENT}` : "";
 		const pending = this.running !== undefined && this.running.name !== choice.name ? ` The current run keeps ${named(this.running.name)}.` : "";
 		return `This session: ${named(choice.name)}.${unavailable}${pending}`;
 	}
@@ -92,12 +102,18 @@ export class OrdinaryPlaybook {
 		return `This session now uses ${named(choice.name)}.${pending}`;
 	}
 
-	start(ctx: ExtensionContext, catalog: PlaybookCatalog): string | undefined {
+	/**
+	 * Prepares the run's playbook text. `replaced` is true when an earlier handler has already
+	 * replaced the whole system prompt: Pi then sends that text alone, without this section.
+	 */
+	start(ctx: ExtensionContext, catalog: PlaybookCatalog, replaced = false): string | undefined {
 		const selected = branchPlaybook(ctx.sessionManager.getBranch());
-		const shown = badge(selected, catalog);
+		const text = renderPlaybook(catalog, selected.name);
+		this.unsent = text !== undefined && replaced && selected.name !== null ? selected.name : undefined;
+		const shown = this.sent(badge(selected, catalog), selected.name);
 		this.running = { name: selected.name, badge: shown };
 		this.show(ctx, shown);
-		return renderPlaybook(catalog, selected.name);
+		return text;
 	}
 
 	restore(ctx: ExtensionContext): void {

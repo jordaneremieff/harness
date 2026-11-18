@@ -1060,7 +1060,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	pi.on("session_tree", (_event, ctx) => { resetThreadNotices(); ordinaryPlaybook.restore(ctx); });
 	pi.on("before_agent_start", async (event, ctx) => {
 		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
-		const playbook = ordinaryPlaybook.start(ctx, currentCatalog);
+		// A prompt that an earlier handler replaced is sent as it is, without the sections added here.
+		const playbook = ordinaryPlaybook.start(ctx, currentCatalog, event.systemPromptOptions.forceSystemPrompt !== undefined);
 		if (playbook === undefined) delete event.systemPromptOptions.sections["agent-playbook"];
 		else event.systemPromptOptions.sections["agent-playbook"] = playbook;
 		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd), "prompt");

@@ -18,6 +18,8 @@ export interface PlaybookTargetState {
 	readonly running?: string | null;
 	/** Why the state is unknown or incomplete. */
 	readonly note?: string;
+	/** True when the last run prepared the saved playbook but could not send it to the model. */
+	readonly unsent?: boolean;
 }
 
 /** The owner routes of one bound target: this session or one agent. */
@@ -219,6 +221,7 @@ export class PlaybookBrowser implements View {
 	private standing(row: Row): { text: string; tone: "success" | "muted" | "warning" } | undefined {
 		const saved = this.isSaved(row);
 		const running = this.isRunning(row);
+		if (saved && this.state?.unsent) return { text: "Chosen · the last run did not receive it", tone: "warning" };
 		if (saved && this.state?.running !== undefined) return { text: "Chosen · applies from the next run", tone: "success" };
 		if (saved) return { text: `In use${this.state?.origin ? ` · ${this.state.origin}` : ""}`, tone: "success" };
 		if (running) return { text: "The run in progress uses it", tone: "muted" };

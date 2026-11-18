@@ -1687,6 +1687,13 @@ ends. A saved name whose file supplies no instructions reads
 `agents [architect unavailable]`; an unsupported saved form reads
 `agents [unknown]`. The dashboard heading shows the same text.
 
+Pi sends a prompt that a `before_agent_start` handler replaced (by returning
+`systemPrompt`) as it is, without the sections that later handlers add. When an
+earlier handler has replaced the prompt, the run cannot send the playbook: the
+cell reads `agents [architect not sent]` and the Playbooks view says so until
+a run sends it. Ask the owner of that handler to add its text through
+`systemPromptOptions.sections` instead.
+
 ## Agent collaboration and placement
 
 Place mutations hold one exclusive book lock. Every existing lock refuses

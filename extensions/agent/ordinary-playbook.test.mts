@@ -34,6 +34,21 @@ it("shows only a chosen playbook in the agent cell and marks a choice that waits
 	assert.equal(shown.at(-1), "off \u2192 maker");
 });
 
+it("marks a playbook as not sent when an earlier handler replaced the whole prompt, until a run sends it", () => {
+	const { ctx, shown, ready, controller } = fixture();
+	controller.set("maker", ctx);
+	assert.match(controller.start(ctx, ready, true) ?? "", /Make the changes/u);
+	assert.equal(shown.at(-1), "maker not sent");
+	controller.restore(ctx);
+	assert.equal(shown.at(-1), "maker not sent", "the mark stays after the run");
+	assert.match(controller.status(ctx), /did not receive it: another extension replaced the whole system prompt/u);
+	assert.equal(controller.state(ctx).unsent, true);
+	controller.start(ctx, ready);
+	controller.restore(ctx);
+	assert.equal(shown.at(-1), "maker");
+	assert.equal(controller.state(ctx).unsent, undefined);
+});
+
 it("flags a saved playbook whose file no longer supplies instructions and an unsupported saved form", () => {
 	const { ctx, shown, controller, setCatalog, sessionManager } = fixture();
 	controller.set("maker", ctx);
