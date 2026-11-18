@@ -38,6 +38,8 @@ for (const method of ["profile-read", "profile-update", "profile-list", "resolve
 operations["task-submit"] = { request: "task-submit/1.1.0", response: "task-submit/1.4.0" };
 for (const method of ["spawn", "resolve-agent", "place"]) operations[method] = { request: `${method}/2.0.0`, response: `${method}/2.0.0` };
 operations.configure = { request: "configure/1.3.0", response: "configure/1.3.0" };
+// Optional operations preserve legacy reads and controls without playbook semantics.
+for (const method of ["playbook-create", "playbook-configure", "playbook-read"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 operations.compact = { request: "compact/2.0.0", response: "compact/2.0.0" };
 for (const method of ["run-scope", "run-stop", "request-cancel"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 operations.submit = { request: "submit/1.7.0", response: "submit/1.4.0" };
@@ -79,6 +81,8 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 
 /** Separate interfaces refuse reload only when their own current contract changes. */
 export const MANAGER_CONTRACT = "manager/7.0.0";
+/** Optional in-process capability; a retained older manager/binding still serves legacy calls. */
+export const PLAYBOOK_CONTROL_CONTRACT = "agent-playbooks/1";
 export const CONTROL_BINDING_CONTRACT = `native-controls/3.0.0;durable=${durableVersion}`;
 export const PRIMARY_DELIVERY_CONTRACT = "primary-delivery/4.0.0";
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { projectSelectedStatus, projectStorageStatus, reduceCompactStatus, validateStatusDetail } from "./status-overview.ts";
-import { StatusOutputSchema, StatusToolInputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { projectSelectedStatus, projectStorageStatus, reduceCompactStatus, SELECTED_STATUS_BYTE_LIMIT, validateStatusDetail } from "./status-overview.ts";
+import { PlaybookStatusToolOutputSchema, StatusOutputSchema, StatusToolInputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
 
 function row(index = 1) {
@@ -64,6 +64,43 @@ it("qualifies cold and ordinary-primary observations without inferring live prog
 	assert.equal(primary.conversation.availability, "unknown");
 	assert.equal(primary.conversation.context, "unknown");
 	assert.doesNotMatch(JSON.stringify(primary), /Retained body/u);
+});
+
+it("fits selected playbook metadata inside the byte budget without displacing the base row", () => {
+	const playbook = { name: "maker", origin: "creator", actor: "storage:2" };
+	const makeSource = (storageId: string) => ({ conversation: row(), storageId });
+	const source = makeSource("");
+	const baseBytes = bytes(projectSelectedStatus(source));
+	const enriched = projectSelectedStatus({ ...source, playbook });
+	assert.ok(enriched.format === "compact");
+	assert.deepEqual(enriched.playbook, playbook);
+	structuredObservation(PlaybookStatusToolOutputSchema, enriched);
+	const exact = makeSource("x".repeat(SELECTED_STATUS_BYTE_LIMIT - bytes(enriched)));
+	assert.equal(bytes(projectSelectedStatus(exact, playbook)), SELECTED_STATUS_BYTE_LIMIT);
+	const crowded = makeSource(`${exact.storageId}x`);
+	const base = projectSelectedStatus(crowded);
+	assert.ok(base.format === "compact");
+	assert.equal(bytes(base), baseBytes + crowded.storageId.length);
+	assert.deepEqual(projectSelectedStatus(crowded, playbook), base);
+	assert.deepEqual(projectSelectedStatus({ ...crowded, playbook }), base);
+	structuredObservation(PlaybookStatusToolOutputSchema, base);
+});
+
+it("keeps unavailable playbook evidence absent and leaves selected status refusals unchanged", () => {
+	const source = { conversation: row() };
+	const clear = { name: null, origin: "operator" };
+	const base = projectSelectedStatus(source);
+	assert.ok(base.format === "compact");
+	assert.deepEqual(projectSelectedStatus(source, clear), { ...base, playbook: clear });
+	for (const unavailable of [undefined, null, { name: null, origin: "unknown" }, { ...clear, actor: "x".repeat(257) }]) {
+		assert.deepEqual(projectSelectedStatus(source, unavailable), base);
+	}
+	for (const invalidSource of [{ conversation: {} }, { ...source, storageId: "x".repeat(SELECTED_STATUS_BYTE_LIMIT) }]) {
+		const refused = projectSelectedStatus(invalidSource);
+		assert.ok(refused.format === "refused");
+		assert.deepEqual(projectSelectedStatus(invalidSource, clear), refused);
+		structuredObservation(PlaybookStatusToolOutputSchema, refused);
+	}
 });
 
 it("preserves every storage-page identity and exact backend coverage without changing its scope", () => {

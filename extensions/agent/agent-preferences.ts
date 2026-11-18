@@ -1,5 +1,6 @@
 import { str, num, nul, lit, union, arr, opt, obj } from "@earendil-works/pi-schema";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import { matchesSchema } from "./schema-check.ts";
@@ -247,7 +248,7 @@ export function renderPreferenceStatus(snapshot: PreferenceSnapshot): string[] {
 
 /** Compact current facts, with explicit omitted coverage rather than silent clipping. */
 export function renderAgentPreferences(snapshot: PreferenceSnapshot): string {
-	const lines = ["Operator machine configuration for agent delegation. Catalog check results are local evidence.", `Source: ${JSON.stringify(snapshot.source.path)}; ${snapshot.source.status}; digest ${snapshot.source.digest ?? "none"}.`];
+	const lines = [`For help dividing work, briefing agents, supervision and operator status reports, read the Agent delegation guide at ${fileURLToPath(new URL("./delegation.md", import.meta.url))}.`, "Operator machine configuration for agent delegation. Catalog check results are local evidence.", `Source: ${JSON.stringify(snapshot.source.path)}; ${snapshot.source.status}; digest ${snapshot.source.digest ?? "none"}.`];
 	if (snapshot.source.status === "unavailable" || snapshot.source.status === "invalid") lines.push(`Machine document is ${snapshot.source.status}. Previous preference text is not current. Invalid fields use safe defaults; valid environment settings remain available.`);
 	lines.push(...preferenceLines(snapshot.document));
 	for (const fact of snapshot.diagnostics) lines.push(`Diagnostic ${JSON.stringify(fact.field)}: ${JSON.stringify(fact.message)}`);
@@ -255,13 +256,13 @@ export function renderAgentPreferences(snapshot: PreferenceSnapshot): string {
 }
 
 function preferenceLines(document: AgentPreferences | undefined): string[] {
-	const lines = ["Delegate with preset; omit model and preset to use preferences.defaultPreset on creation. Name model only when a direction or task requires an override; receipts record it. Explicit fields override preset fields. Creation never inherits parent execution settings. Configure retains target values. Exclusions are advisory unless preferences.enforceRoster is true for creation. Context budgets are planning preferences, not enforced capacity. Quota substitution requires a deliberate choice, never automatic fallback."];
+	const lines: string[] = [];
 	const preferences = document?.preferences;
 	lines.push(`Default preset: ${preferences?.defaultPreset ?? "none"}; enforceRoster: ${preferences?.enforceRoster ?? false}.`);
 	for (const value of preferences?.excludedModels ?? []) lines.push(`Excluded model preference: ${JSON.stringify(value)}`);
 	for (const value of preferences?.excludedProviders ?? []) lines.push(`Excluded provider preference: ${JSON.stringify(value)}`);
 	for (const [key, value] of Object.entries(preferences?.contextBudgetTokens ?? {})) lines.push(`Planning context budget: ${JSON.stringify(key)} ${value} tokens`);
-	if (preferences?.quotaSubstitutionOrder) lines.push(`Quota substitution order: ${JSON.stringify(preferences.quotaSubstitutionOrder)}`);
+	if (preferences?.quotaSubstitutionOrder) lines.push(`Quota substitution order: ${JSON.stringify(preferences.quotaSubstitutionOrder)}; deliberate selection, never automatic fallback.`);
 	if (preferences?.reportingNotes !== undefined) lines.push(`Reporting notes: ${JSON.stringify(preferences.reportingNotes)}`);
 	for (const [key, value] of Object.entries(document?.presets ?? {})) {
 		const { role: _role, ...settings } = value;

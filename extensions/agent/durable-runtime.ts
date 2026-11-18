@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { configurationModel } from "./configuration.ts";
 import { readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, parsePreferenceSnapshot, type ExecutionSelection, type ExecutionFields } from "./agent-preferences.ts";
 import { defineDocFamily, GenerationTask, hook } from "@earendil-works/pi-durable";
 
@@ -21,6 +22,7 @@ import { projectCatalogAttention } from "./catalog-attention.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import type { HostRuntime } from "./host-process.ts";
 import { DurableHost, readTaskGraph } from "./durable-host.ts";
+import type { NativePlaybookCreation } from "./durable-playbook.ts";
 import { onStoredCommit } from "./commit-observation.ts";
 import { stopForeignReferences } from "./run-control.ts";
 import { createDurableServices, type DurableServices, type CreateDurableServicesOptions } from "./durable-services.ts";
@@ -54,8 +56,8 @@ import { RequestRouteState } from "./request-route-state.ts";
 import { withProfileHints, withIntentClaims } from "./catalog-view.ts";
 import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
 
-const ADMITTING_METHODS: ReadonlySet<string> = new Set(["task-submit", "profile-update", "resolve-agent", "submit", "report", "rewind", "command", "compact", "spawn", "place", "reset", "timer-schedule", "collaboration-mutate", "passive-submit"]);
-const FOREIGN_OBSERVATION_METHODS: ReadonlySet<string> = new Set(["inspect", "status", "snapshot", "dashboard", "profile-read"]);
+const ADMITTING_METHODS: ReadonlySet<string> = new Set(["task-submit", "profile-update", "resolve-agent", "submit", "report", "rewind", "command", "compact", "spawn", "place", "reset", "timer-schedule", "collaboration-mutate", "passive-submit", "playbook-configure"]);
+const FOREIGN_OBSERVATION_METHODS: ReadonlySet<string> = new Set(["inspect", "status", "snapshot", "dashboard", "profile-read", "playbook-read"]);
 /** Coalesce a burst of native commits into one catalog view publication. */
 const PUBLISH_COALESCE_MS = 250;
 /** A release decision waits this long for the delivery driver's scheduled pass before it refuses on a stale summary. */
@@ -110,7 +112,7 @@ export function modelChoices(services: Pick<DurableServices, "services">): Stati
 }
 
 /** Constructed only after the process claims the storage writer. */
-export async function createDurableRuntime(metadata: HostMetadata, options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {}): Promise<HostRuntime> {
+export async function createDurableRuntime(metadata: HostMetadata, options: Pick<CreateDurableServicesOptions, "modelRuntime"> & { playbookCreation?: NativePlaybookCreation } = {}): Promise<HostRuntime> {
 	const controller = new AbortController();
 	let services = await bootstrap(metadata, controller, true, options);
 	let host: DurableHost;
@@ -433,6 +435,11 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		}
 		if (method === "status" && input.view === "storage-page") return readStoragePage(input, context);
 		const params = await resolveSelectors(input, method.startsWith("collaboration-"));
+		if (method === "configure" && params.playbook !== undefined) {
+			params.ownerId = params.senderIdentity;
+			params.origin = "model";
+			return dispatchResolved("playbook-configure", params, context);
+		}
 		return dispatchResolved(method, params, context);
 	};
 	const restoreDispatch = publishAgentControlDispatch(dispatch);
@@ -459,6 +466,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		});
 		try {
 			await services.install(opened.harness);
+			if (options.playbookCreation !== undefined) await opened.initializePlaybook(options.playbookCreation, metadata.agentDir, BACKGROUND_CONTEXT);
 			host = opened;
 			opened.setForeignStop(async (references, context) => {
 				const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
@@ -606,7 +614,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		const conversation = await host.conversation(params.senderIdentity);
 		const agent = await conversation.agent(BACKGROUND_CONTEXT);
 		const key = createHash("sha256").update(JSON.stringify([method, requestId])).digest("hex");
-		const inputKey = createHash("sha256").update(JSON.stringify([params.handle, params.area, params.cwd, params.name, params.topic, params.prompt, params.preset, params.model, params.thinkingLevel, params.role, params.checkInMinutes])).digest("hex");
+		const inputKey = createHash("sha256").update(JSON.stringify([params.handle, params.area, params.cwd, params.name, params.topic, params.prompt, params.preset, params.model, params.thinkingLevel, params.role, params.checkInMinutes, ...(params.playbook === undefined ? [] : [params.playbook])])).digest("hex");
 		const retained = await host.harness.snapshot(ExecutionSelectionDoc, conversation.id, key, BACKGROUND_CONTEXT);
 		if (retained?.input !== undefined && retained.input !== inputKey) throw new Error("Creation request ID belongs to different inputs");
 		const selection = retained?.selection;
@@ -650,6 +658,23 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		const outcome = await host.request("configure", params) as { after?: { thinkingLevel?: string }; [key: string]: unknown };
 		return { ...outcome, selection: effectiveExecutionSelection(selection, outcome.after?.thinkingLevel) };
 	}
+	function playbookPresetOverrides(selection: ExecutionSelection) {
+		const chosen = (field: "model" | "thinkingLevel") => selection.origins[field] === "explicit" || selection.origins[field] === "preset";
+		const { model, thinkingLevel } = selection.values;
+		return {
+			...(chosen("model") && model !== undefined ? { model: configurationModel(model) } : {}),
+			...(chosen("thinkingLevel") && isThinkingLevel(thinkingLevel) ? { thinkingLevel } : {}),
+		};
+	}
+	async function configurePlaybookRequest(params: Record<string, unknown>, requestId: string): Promise<unknown> {
+		params.requestId ??= requestId;
+		params.model = configuredModel(params.model);
+		return host.configurePlaybook(params, BACKGROUND_CONTEXT, (patch, before, preset) => {
+			const snapshot = params.preferenceSnapshot === undefined ? readAgentPreferences(metadata.agentDir, services.services.modelRuntime) : parsePreferenceSnapshot(params.preferenceSnapshot);
+			const selection = resolveExecutionPreset(snapshot, { preset, model: patch.model ? `${patch.model.provider}/${patch.model.modelId}` : undefined, thinkingLevel: patch.thinkingLevel ?? undefined }, { model: before.model ?? undefined, thinkingLevel: before.thinkingLevel ?? undefined });
+			return { selection, params: { ...patch, ...playbookPresetOverrides(selection) } };
+		});
+	}
 	async function executeRequest(method: string, input: unknown, requestId: string, signal?: AbortSignal): Promise<unknown> {
 		const params = controlParams(input);
 		validateControlRecipient(method, params);
@@ -663,7 +688,11 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			case "list": return params.global === true ? discover(params) : host.request(method, params);
 			case "profile-list": return discover(params, true);
 			case "attach": return attach(params);
-			case "configure": return configureRequest(params, requestId);
+			case "configure": {
+				if (params.playbook !== undefined) throw new Error("Use playbook-configure for a playbook selection");
+				return configureRequest(params, requestId);
+			}
+			case "playbook-configure": return configurePlaybookRequest(params, requestId);
 			case "command": params.invocationId ??= requestId; return runCommand(params);
 			case "models": return modelChoices(services);
 			case "status": return { ...await host.request(method, params) as Record<string, unknown>, inventory: services.inventory, pid: process.pid, storageId: metadata.storageId };

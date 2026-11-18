@@ -27,6 +27,9 @@ import {
 	type PreferenceSnapshot,
 } from "./agent-preferences.ts";
 import { ordinaryReportedUsage } from "./agent-usage.ts";
+import { readPlaybookCatalog } from "./playbook-catalog.ts";
+import { OrdinaryPlaybook } from "./ordinary-playbook.ts";
+import { PlaybookParameter, playbookParameter } from "./playbook.ts";
 import { appendProviderBlockReceipt, ProviderBlockNotes, renderProviderBlockSection } from "./provider-block-notes.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { CollaborationParams, validateCollaborationAction } from "./collaboration-contract.ts";
@@ -43,6 +46,7 @@ import {
 	type AgentControlToolName,
 } from "./control-guidance.ts";
 import { dashboardPreferences } from "./dashboard-preferences.ts";
+import { PLAYBOOK_CONTROL_CONTRACT } from "./version-contract.ts";
 import { readableControlText, projectReportReceipt } from "./control-result.ts";
 import { projectSelectedStatus, validateStatusDetail } from "./status-overview.ts";
 import { fitStorageStatusPage } from "./storage-page-fit.ts";
@@ -62,7 +66,7 @@ import type { IndependentCommandLaunch } from "./independent-launch.ts";
 import { AgentManager, MANAGER_PROTOCOL, type AgentCaller } from "./manager.ts";
 import {
 	InspectToolOutputSchema,
-	StatusToolOutputSchema,
+	PlaybookStatusToolOutputSchema,
 	StatusToolInputSchema,
 	structuredObservation,
 } from "./observation-schema.ts";
@@ -152,6 +156,7 @@ const send = obj(
 const spawn = obj(
 	{
 		handle: opt(HandleSchema),
+		playbook: PlaybookParameter,
 		preset: PresetParameter,
 		role: opt(str({ maxLength: 2000, description: "Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role." })),
 		cwd: opt(str()),
@@ -199,6 +204,7 @@ const compact = obj(
 const configure = obj(
 	{
 		sessionId: id,
+		playbook: PlaybookParameter,
 		preset: PresetParameter,
 		name: opt(str({ maxLength: 256 })),
 		model: opt(str({ maxLength: 512, description: MODEL_SELECTION_GUIDANCE })),
@@ -231,7 +237,7 @@ const observationSchemas: Partial<Record<AgentControlToolName, Schema>> = {
 	agent_steer: DispatchOutputSchema,
 	agent_list: ProfiledListOutputSchema,
 	agent_profile: ProfileOutputSchema,
-	agent_status: StatusToolOutputSchema,
+	agent_status: PlaybookStatusToolOutputSchema,
 	agent_inspect: InspectToolOutputSchema,
 };
 const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
@@ -341,6 +347,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		if (query === null || typeof query !== "object" || typeof (query as { provide?: unknown }).provide !== "function") throw new Error("Independent launch discovery requires provide()");
 		(query as { provide: (launch: IndependentCommandLaunch) => void }).provide((input) => getManager().launchIndependent(input));
 	});
+	const catalog = (initialize = false) => readPlaybookCatalog(settingsAgentDir, { initialize });
+	const ordinaryPlaybook = new OrdinaryPlaybook(pi, catalog);
+	let currentCatalog = catalog();
+	let playbookSchema = playbookParameter(currentCatalog).schema;
 	let registrationPreferences = readAgentPreferences();
 	let currentPreferences = registrationPreferences;
 	const continuity = new OrdinaryContinuity({
@@ -352,14 +362,31 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	const refreshPreferences = (ctx?: ExtensionContext): PreferenceSnapshot => {
 		const snapshot = readAgentPreferences(undefined, ctx ? caller(ctx, pi).preferenceCatalog : undefined);
 		currentPreferences = snapshot;
-		if (presetInventory(snapshot) !== presetInventory(registrationPreferences)) {
+		currentCatalog = catalog();
+		const nextPlaybookSchema = playbookParameter(currentCatalog).schema;
+		if (presetInventory(snapshot) !== presetInventory(registrationPreferences) || nextPlaybookSchema.description !== playbookSchema.description) {
+			playbookSchema = nextPlaybookSchema;
 			registrationPreferences = snapshot;
 			for (const refresh of refreshRegistrations.values()) refresh(snapshot);
 		}
 		return snapshot;
 	};
-	const control = (method: string, input: Record<string, unknown>, ctx: ExtensionContext) =>
-		getManager().control(method, input, caller(ctx, pi));
+	const managerFor = (input: Record<string, unknown>): AgentManager => {
+		const manager = getManager();
+		if (input.playbook !== undefined && manager.playbookControlContract !== PLAYBOOK_CONTROL_CONTRACT) throw new Error("The retained agent manager does not support playbook changes. No change was made.");
+		return manager;
+	};
+	const control = async (method: string, input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) => {
+		const manager = managerFor(input);
+		if (method === "playbook-read" && manager.playbookControlContract !== PLAYBOOK_CONTROL_CONTRACT) return undefined;
+		return manager.control(method, input, caller(ctx, pi), signal ? { signal } : undefined);
+	};
+	const prepareInput = (name: AgentControlToolName, input: Record<string, unknown>, ctx: ExtensionContext, callId: string) => {
+		if (input.playbook !== undefined) managerFor(input);
+		refreshPreferences(ctx);
+		const playbookOnly = name === "agent_configure" && input.playbook !== undefined && Object.keys(input).every((key) => ["playbook", "sessionId", "trust"].includes(key));
+		return playbookOnly ? { admitted: input, admissionCaller: undefined } : admitExecutionInput(pi, ctx, name, callId, input);
+	};
 	const register = (
 		name: AgentControlToolName,
 		description: string,
@@ -376,16 +403,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			description,
 			promptSnippet: guidance.snippet,
 			promptGuidelines: [...(guidance.guidelines ?? [])],
-			parameters: presetAware ? { ...parameters, properties: { ...(parameters.properties as Record<string, Schema>), preset: presetParameter(snapshot).schema } } : parameters,
+			parameters: presetAware ? { ...parameters, properties: { ...(parameters.properties as Record<string, Schema>), preset: presetParameter(snapshot).schema, ...(name === "agent_place" ? {} : { playbook: playbookSchema }) } } : parameters,
 			outputSchema: schema ?? unknown(),
 			...(exposure === "direct" ? {} : { exposure }),
 			async execute(callId, input: Static<typeof parameters>, _signal, _update, ctx) {
-				let admitted = input;
-				let admissionCaller: AgentCaller | undefined;
-				if (presetAware) {
-					refreshPreferences(ctx);
-					({ admitted, admissionCaller } = admitExecutionInput(pi, ctx, name, callId, admitted));
-				}
+				const { admitted, admissionCaller } = presetAware ? prepareInput(name, input, ctx, callId) : { admitted: input, admissionCaller: undefined };
 				const value = await execute(admitted, ctx, callId, admissionCaller);
 				const projected = name === "agent_send" && admitted.mode === "report" ? projectReportReceipt(value) : value;
 				const output = result(projected, schema);
@@ -468,8 +490,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			const selection = validateFleetSelection(input);
 			const selfId = !sessionId ? ctx?.sessionManager?.getSessionId() : undefined;
 			const reportedUsage = view === "fleet" && ctx?.sessionManager?.getEntries ? ordinaryReportedUsage(ctx.sessionManager.getEntries()) : undefined;
-			const value = await getManager().status(sessionId, view, selfId ? { id: selfId, cwd: ctx.cwd, reportedUsage } : undefined, selection);
-			return sessionId !== undefined && input.detail !== true ? projectSelectedStatus(value) : value;
+			const value = await getManager().status(sessionId, view, selfId ? { id: selfId, cwd: ctx.cwd, reportedUsage } : undefined, selection, { playbook: true });
+			if (sessionId === undefined || input.detail === true) return value;
+			return projectSelectedStatus(value);
 		},
 	);
 	register(
@@ -555,9 +578,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_configure",
-		"Change an idle Durable agent's name, exact model, or reasoning level. No task starts. Active work refuses configuration.",
+		"Change a Durable agent's name, exact model, reasoning level, or playbook. A playbook-only change from its owner applies on its next request, even while busy. Other changes require an idle target. No task starts.",
 		configure,
-		(input, ctx, callId) => control("configure", { ...input, requestId: `configure:${ctx.sessionManager.getSessionId()}:${callId}` }, ctx),
+		(input, ctx, callId, admissionCaller) => getManager().control("configure", { ...input, ...(input.playbook === undefined ? {} : { origin: "model" }), requestId: `configure:${ctx.sessionManager.getSessionId()}:${callId}` }, admissionCaller ?? caller(ctx, pi)),
 	);
 	register(
 		"agent_command",
@@ -674,7 +697,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			description: "Show agent state",
 			args: [{ name: "session", optional: true, complete: "session" }],
 			help: `Without a session, show bounded native conversation state. ${sessionHelp}`,
-			run: async (args) => asText(await getManager().status(args[0])),
+			run: async (args) => asText(await getManager().status(args[0], undefined, undefined, {}, { playbook: true })),
 		},
 		...["send", "steer"].map(
 			(name): AgentCommandAction => ({
@@ -918,9 +941,13 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				readAgentTimerRows({ control: (method, input) => control(method, input, ctx), label: agentLabel }, id),
 			schedule: async (input, ctx) =>
 				scheduleAgentInput({ control: (method, params) => control(method, params, ctx), label: agentLabel }, input),
-			control: (method, input, ctx, signal) => getManager().control(method, input, caller(ctx, pi), signal ? { signal } : undefined),
-			newAgent: async ({ prompt, preset, cwd }, ctx, onCreated) => {
-				const created = (await getManager().spawn({ prompt, preset, cwd, origin: "operator" }, caller(ctx, pi), onCreated)) as { sessionId: string; cwd?: string; status?: { name?: string } };
+			control,
+			playbookAgentDir: settingsAgentDir,
+			playbooks: (_ctx, initialize) => catalog(initialize),
+			currentPlaybook: (ctx) => ordinaryPlaybook.status(ctx),
+			setPlaybook: (name, ctx) => ordinaryPlaybook.set(name, ctx),
+			newAgent: async ({ prompt, preset, cwd, playbook }, ctx, onCreated) => {
+				const created = (await managerFor({ playbook }).spawn({ prompt, preset, cwd, ...(playbook === undefined ? {} : { playbook }), origin: "operator" }, caller(ctx, pi), onCreated)) as { sessionId: string; cwd?: string; status?: { name?: string } };
 				const label = created.status?.name ?? (prompt === undefined ? shortIdentity(created.sessionId) : excerpt(prompt));
 				const place = basename(created.cwd ?? ctx.cwd);
 				return outcome(prompt === undefined ? `Created idle agent “${label}” in ${place}` : `Started agent “${label}” in ${place}`, created.sessionId);
@@ -959,6 +986,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		resetThreadNotices();
 		selfCompaction.clear();
 		refreshPreferences(ctx);
+		ordinaryPlaybook.restore(ctx);
 		const sessionId = ctx.sessionManager.getSessionId();
 		primaries.get(sessionId)?.abort();
 		const abort = new AbortController();
@@ -1020,9 +1048,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		threadNoticeSnapshots = projection.snapshots;
 		return { messages: projection.messages };
 	});
-	pi.on("session_tree", resetThreadNotices);
+	pi.on("session_tree", (_event, ctx) => { resetThreadNotices(); ordinaryPlaybook.restore(ctx); });
 	pi.on("before_agent_start", async (event, ctx) => {
 		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
+		const playbook = ordinaryPlaybook.start(ctx, currentCatalog);
+		if (playbook === undefined) delete event.systemPromptOptions.sections["agent-playbook"];
+		else event.systemPromptOptions.sections["agent-playbook"] = playbook;
 		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd), "prompt");
 		const blocks = renderProviderBlockSection(providerBlocks, Date.now());
 		if (blocks !== undefined) event.systemPromptOptions.sections["agent-provider-blocks"] = blocks;
@@ -1040,6 +1071,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
 	pi.on("agent_settled", (_event, ctx) => {
+		ordinaryPlaybook.restore(ctx);
 		selfCompaction.clear();
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});

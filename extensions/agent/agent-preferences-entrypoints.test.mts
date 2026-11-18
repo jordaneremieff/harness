@@ -32,8 +32,10 @@ type RegisteredTool = { name: string; parameters: Schema; execute(id: string, in
 it("ordinary and native callers share machine preferences and receive advisory substitution guidance",  async (t) => {
 	const directory = realpathSync(mkdtempSync(join(tmpdir(), "ordinary-presets-")));
 	const root = join(directory, "sessions"); mkdirSync(root);
-	const previous = { agent: process.env.PI_AGENT_DIR, sessions: process.env.PI_AGENT_SESSIONS_DIR };
+	const previous = { agent: process.env.PI_AGENT_DIR, sessions: process.env.PI_AGENT_SESSIONS_DIR, playbooks: process.env.PI_AGENT_PLAYBOOKS_DIR };
 	process.env.PI_AGENT_DIR = directory; process.env.PI_AGENT_SESSIONS_DIR = root;
+	const playbooks = join(directory, "playbooks"); process.env.PI_AGENT_PLAYBOOKS_DIR = playbooks;
+	t.after(() => { if (previous.playbooks === undefined) delete process.env.PI_AGENT_PLAYBOOKS_DIR; else process.env.PI_AGENT_PLAYBOOKS_DIR = previous.playbooks; });
 	const manager = new AgentManager({ root, agentDir: directory, packageDir: directory });
 	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[Symbol.for("pi.extension.agent.owners")];
 	owners.managers.set(root, manager);
@@ -69,7 +71,15 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	assert.equal(matchesSchema(send.parameters, { sessionId: "target", message: "hello", preset: "review" }), false);
 	writeFileSync(join(directory, "harness.json"), JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x" }, alternate: { model: "other/model-y" } }, preferences: { excludedProviders: ["acme"], quotaSubstitutionOrder: ["alternate", "review"], reportingNotes: "Current note" } })));
 	assert.ok(beforeStart);
+	mkdirSync(playbooks); writeFileSync(join(playbooks, "review.md"), "# review\n\nReview a design.\n\nPRIVATE_PLAYBOOK_BODY\n");
 	const first: StartEvent = { systemPromptOptions: { sections: {} } }; await beforeStart(first, ctx);
+	for (const key of ["agent_spawn", "agent_configure"]) {
+		const tool = tools.get(key); assert.ok(tool);
+		const inventory = JSON.stringify((tool.parameters.properties as Record<string, Schema>).playbook);
+		assert.match(inventory, /review: Review a design\..*Diagnostics: 1/u);
+		assert.doesNotMatch(inventory, /PRIVATE_PLAYBOOK_BODY/u);
+	}
+	assert.equal(first.systemPromptOptions.sections["agent-playbook"], undefined);
 	assert.match(first.systemPromptOptions.sections["agent-preferences"], /Current note/u);
 	await spawn.execute("shared-document", { preset: "review" }, undefined, undefined, ctx);
 	const admitted = seen.at(-1); assert.ok(admitted);
@@ -126,6 +136,13 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	const next: StartEvent = { systemPromptOptions: { sections: {} } }; await beforeStart(next, ctx);
 	assert.match(next.systemPromptOptions.sections["agent-preferences"], /Machine document is invalid/u);
 	assert.doesNotMatch(next.systemPromptOptions.sections["agent-preferences"], /Current note/u);
+	// A released manager retained through extension reload supports legacy calls only.
+	Object.defineProperty(manager, "playbookControlContract", { value: undefined });
+	const before = { calls: seen.length, entries: entries.length };
+	await assert.rejects(spawn.execute("legacy-spawn", { preset: "review", playbook: "review" }, undefined, undefined, ctx), /does not support playbook/u);
+	const configure = tools.get("agent_configure"); assert.ok(configure);
+	await assert.rejects(configure.execute("legacy-configure", { sessionId: "target", name: "unchanged", playbook: "off" }, undefined, undefined, ctx), /does not support playbook/u);
+	assert.deepEqual({ calls: seen.length, entries: entries.length }, before);
 });
 
 it("native local creation uses the common default, override, and refusal precedence without caller inheritance", async (t) => {

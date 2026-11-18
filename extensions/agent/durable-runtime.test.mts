@@ -32,6 +32,35 @@ afterEach(async () => { await cold.close(); });
 const observeDurableStorage: ReturnType<typeof createColdObservationCache>["observe"] = (...args) => cold.observe(...args);
 import { childCatalogRecord, killHost, markerFixture, runtimeFixture, trackHost, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { publishFixtureMarker } from "./testdata/durable-runtime/signal.ts";
+import { machineConfig } from "./settings-fixture.mts";
+
+it("replays native mixed playbook configure after preset edits and deletion", { timeout: 30000 }, async (t) => {
+	const f = runtimeFixture(t, { withAgentExtension: true });
+	const config = join(f.agentDir, "harness.json");
+	const fixtureModel = `${f.metadata.model.provider}/${f.metadata.model.modelId}`;
+	writeFileSync(config, JSON.stringify(machineConfig({ presets: { review: { model: fixtureModel, thinkingLevel: "high" } } })));
+	const host = await acquireHost(f.metadata, { env: f.env("request") });
+	trackHost(t, host.pid);
+	t.after(() => host.close());
+	const request = { sessionId: f.metadata.storageId, ownerId: f.ownerId, origin: "model", requestId: "first-mixed", preset: "review", playbook: "maker", name: "Initial" };
+	const first = await host.request("playbook-configure", request) as { outcome: string; selection?: { values: { model?: string } }; playbook: unknown };
+	assert.equal(first.outcome, "applied");
+	assert.equal(first.selection?.values.model, fixtureModel);
+	assert.deepEqual(first.playbook, { name: "maker", origin: "creator", actor: f.ownerId });
+	const { preset: _preset, ...patch } = request;
+	await host.request("playbook-configure", { ...patch, requestId: "later", playbook: "architect", name: "Later" });
+	for (const presets of [{ review: { model: "absent/absent" } }, {}]) {
+		writeFileSync(config, JSON.stringify(machineConfig({ presets })));
+		assert.deepEqual(await host.request("playbook-configure", request), first);
+	}
+	await assert.rejects(host.request("playbook-configure", { ...request, requestId: "new-after-removal" }), /Cannot resolve preset/u);
+	await assert.rejects(host.request("playbook-configure", { ...request, origin: "operator", ownerId: "different-operator" }), /different configuration inputs/u);
+	await assert.rejects(host.request("playbook-configure", { ...request, name: "Changed input" }), /different configuration inputs/u);
+	await assert.rejects(host.request("playbook-configure", { ...request, ownerId: f.metadata.storageId }), /own playbook/u);
+	assert.deepEqual(await host.request("playbook-read", { sessionId: f.metadata.storageId }), { name: "architect", origin: "creator", actor: f.ownerId });
+	const profile = await host.request("profile-read", { sessionId: f.metadata.storageId }) as { name: string };
+	assert.equal(profile.name, "Later");
+});
 
 it("native codemode follows the own-storage status page through real runtime dispatch", { timeout: 60000 }, async t => {
 	const f = runtimeFixture(t, { withAgentExtension: true, withCodemode: true });

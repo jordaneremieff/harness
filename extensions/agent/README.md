@@ -100,7 +100,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; an unavailable endpoint preserves the attachment error and proves no global host absence. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
 | `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. An explicit model is applied first; a failed configuration returns its failure instead of a status snapshot. |
-| `agent_configure` | Change an idle conversation's name, exact model, or reasoning level. |
+| `agent_configure` | Change a conversation's playbook. Name, model, preset and reasoning changes require an idle agent. |
 | `agent_profile` | Read a complete bounded profile, or update role and expertise with `expectedRevision`. Reads start no host. A conflict returns the current profile without a change. |
 | `agent_intent` | Publish or clear the invoking session's intent claim. Native conversations persist their own claim without an ordinary primary. Claims are not locks or authority. |
 | `agent_fork` | Create an idle native fork at an entry or current leaf. |
@@ -465,7 +465,7 @@ results remain unchanged. Status totals mark partial costs with a trailing `+`, 
 `$0.25+`: at least that amount is known; some data was not fully readable.
 
 `/agent` exposes `new`, `list`, `status`, `send`, `steer`, `abort`, `attach`,
-`fork`, `compact`, `inspect`, `rewind`, `configure`, `profile`, `command`, `place`, `places`,
+`fork`, `compact`, `inspect`, `rewind`, `configure`, `playbook`, `profile`, `command`, `place`, `places`,
 `unbind`, `reset`, `schedule`, `timers`, and `timer-cancel`. `help` shows action
 syntax. Tab completes actions, canonical identities, and retained `@handle`
 addresses without executing them. Completion searches retained role hints too.
@@ -492,8 +492,8 @@ A blank configure name clears the stored name. Spawn and configure accept
 `max`. Native attach accepts the same levels alongside an explicit model.
 An exact `provider/model` is validated against the configured catalog, and the
 requested reasoning level is clamped by Pi to the model's supported levels.
-Configuration requires an idle conversation, starts no task, and changes no
-global defaults. A mutation result carries a compact status:
+Except for a playbook-only change, configuration requires an idle conversation.
+Configuration starts no task and changes no global defaults. A mutation result carries a compact status:
 identity, conversation, name, cwd, busy state, model, and the capability limits
 that matter. The full status stays available through `agent_status` with
 `detail: true`. If the
@@ -4447,6 +4447,76 @@ the error, then use `agent_attach` to reset the manager's retry budget and retry
 This reset does not remove diagnostic records or release another writer's lease.
 Intentional disconnects and unmarked storage do not relaunch.
 
+## Playbooks
+
+A playbook sets defaults for **who does the work**. It does not change the model,
+reasoning level, tools, role or permissions. A task-specific instruction takes
+precedence. With no playbook, decide per task. The [delegation guide](delegation.md)
+covers briefs, supervision, acceptance and operator status reports with or without a playbook.
+
+- `/agent playbook` shows this branch's choice and the local catalog. `/agent playbook maker`
+  selects a playbook. `/agent playbook off` clears it. Use Tab or `/agent help playbook`
+  for names and summaries. Help and completion do not install files.
+- `/agent playbook @editor architect` selects a playbook for an agent. Use its
+  exact `@handle` or canonical ID. Omit `architect` to see its choice. In the attached
+  agent terminal a command without a target refers to the selected conversation.
+  The dashboard also offers playbooks when creating or configuring an agent.
+- `agent_spawn({playbook:"maker", ...})` chooses a new agent's playbook before its
+  first prompt. A new agent does not inherit its creator's choice. Handle reuse does
+  not set a playbook. Use `agent_configure({sessionId, playbook:"off"})` to clear it.
+  Only the creating owner or the operator sets a native agent's choice. No tool
+  changes the caller's own playbook. Selected `agent_status` reports the choice and
+  origin when known. A reader without selection support does not establish that it is off.
+
+An ordinary session reads the chosen text before each run, including a fresh run
+from an agent reply. Its tool rounds keep that text. A command during a run saves the
+next choice; the receipt and footer distinguish the current run. Selections belong to
+branch ancestry, survive compaction and resume, and follow only copied history on a fork.
+In `/tree`, choosing a question restores its parent so you can edit that question.
+A playbook change after the preceding answer can therefore belong to that branch, even
+when the answer is the last visible message. A new session starts unset. Pi does not flush command-only entries in a new session
+before its first conversation message. A nonpersisting session does not survive exit.
+
+A native conversation reads the text before **each model request**. A playbook-only
+change does not wake the agent and can affect the next tool round of an active task;
+it does not change an already prepared request. Compaction, reset and host retirement
+preserve the selection, separately from profile and execution settings. A removed or
+invalid file leaves the saved name in place, but supplies no instructions. Repair the
+file to apply it at the next run or request. Older running hosts may not apply the
+playbook; an acknowledgement is not evidence of adoption by a provider.
+
+### Edit and recover the catalog
+
+`agent.playbooksDir` (or `PI_AGENT_PLAYBOOKS_DIR`) selects the directory; the default
+is `<agentDir>/playbooks`. The package ships `orchestrator` (save owner turns),
+`architect` (reserve context for design and iteration), and `maker` (do the main work
+and checks). The first explicit catalog use or named selection seeds an absent
+catalog. An existing directory, even an empty one, is never seeded. Package updates
+do not replace its contents. A playbook name may also be a preset name; the catalog
+warns, and the two fields remain independent.
+
+To add one, create a regular UTF-8 `<name>.md`: `# <name>` on line one, a blank line,
+a one-line summary, another blank line, then its instructions. Use a lowercase slug
+starting with a letter, with digits and single internal hyphens if needed (at most 48
+characters). `off` is reserved. The summary limit is 160 characters; the file limit is
+16 KiB. A bad file has its own diagnostic. An incomplete directory inventory does not
+authorise a selection. Use `/agent playbook` to find the directory and diagnostics.
+
+For a new installation the configured leaf is a **relative symbolic link** to its
+private sibling `<leaf>-data`, e.g. `playbooks → playbooks-data`. The seed publishes
+that link only after writing and syncing all the files. Copy the link **and** its
+backing directory together, or copy the files into an ordinary directory at the
+configured path. A backing directory without its link is not reseeded. After confirming
+no publisher is active, inspect the backing directory, preserve its files and restore
+the relative link to the verified directory, or choose another catalog path.
+
+`/agent playbook --import maker` compares the bundled starter with the installed
+file. Accept **that file** in the interactive comparison, or cancel to keep your
+copy. A replacement retains the displaced file in a recovery directory named in
+the receipt. If interrupted, inspect the catalog diagnostics and that directory
+before clearing a stale lock. Preserve both versions; do not blindly repeat a
+replacement or overwrite a later save. Outside the interactive UI the preview is read-only.
+
 ## Execution presets and delegation preferences
 
 The agent section of the optional `<agentDir>/harness.json` machine document
@@ -4666,6 +4736,7 @@ facts. No new command is required.
 | idleMinutes | `PI_AGENT_IDLE_MINUTES` | number | 5 | min 0; max 35791 | Idle host retirement interval in minutes; zero disables. |
 | checkInMinutes | `PI_AGENT_CHECK_IN_MINUTES` | number | 0 | min 0; max 35791 | Automatic owner check-in interval for model tasks in minutes; zero, the default, arms none. |
 | presets | `PI_AGENT_PRESETS` | json | {} | none | Named execution presets with exact model identities and optional creation fields. |
+| playbooksDir | `PI_AGENT_PLAYBOOKS_DIR` | path | &lt;agentDir&gt;/playbooks | none | Private directory for editable playbook Markdown files. |
 | preferences | `PI_AGENT_PREFERENCES` | json | {} | none | Delegation preferences, default preset, exclusions, planning budgets, and reporting guidance. |
 <!-- harness:settings:end -->
 

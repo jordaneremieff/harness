@@ -14,9 +14,9 @@ import { LiveDoc, UsageDoc, type ConversationId, type EntryId, type SubmissionId
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { LiveObservationService } from "./live-observation.ts";
 import { AgentManager } from "./manager.ts";
-import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, InspectToolOutputSchema, ResultOutputSchema, ResultToolOutputSchema, observationSchema, ListRowSchema, NativeListOutputSchema, StatusOutputSchema, StatusToolOutputSchema, nativeStructuredObservation, observationDiagnostic, structuredObservation, ToolOverviewRowSchema } from "./observation-schema.ts";
+import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, InspectToolOutputSchema, ResultOutputSchema, ResultToolOutputSchema, observationSchema, ListRowSchema, NativeListOutputSchema, StatusOutputSchema, StatusToolOutputSchema, PlaybookStatusToolOutputSchema, nativeStructuredObservation, observationDiagnostic, structuredObservation, ToolOverviewRowSchema } from "./observation-schema.ts";
 import { page as rosterPage } from "./dashboard-test-fixture.mts";
-import { buildStatusOverview } from "./status-overview.ts";
+import { buildStatusOverview, projectSelectedStatus } from "./status-overview.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { boundCatalogView } from "./catalog-view.ts";
 import { readConversationList, readConversationStatus, readDashboard, readInspection } from "./durable-observation.ts";
@@ -517,6 +517,18 @@ const validStatusVariants: Record<string, Record<string, unknown>> = {
 	"plural cold": { conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, ...coldEnvelope },
 	"plural cold with created agents and awareness": { conversations: [minimalConversation], coverage: { complete: true, returned: 1, scanned: 1, next: null }, ...coldEnvelope, createdAgents, awareness: minimalAwareness },
 };
+
+it("adds the selection only to the local tool's selected status schema", () => {
+	const playbook = { name: "maker", origin: "creator", actor: "owner" };
+	const selected = { conversation: minimalConversation, ...liveEnvelope };
+	for (const value of [selected, projectSelectedStatus(selected)]) {
+		const enriched = { ...value, playbook };
+		assert.deepEqual(structuredObservation(PlaybookStatusToolOutputSchema, enriched), enriched);
+		assert.throws(() => structuredObservation(StatusToolOutputSchema, enriched), /does not match its schema/u);
+	}
+	assert.throws(() => structuredObservation(PlaybookStatusToolOutputSchema, { playbook }), /does not match its schema/u);
+	assert.throws(() => structuredObservation(PlaybookStatusToolOutputSchema, { ...validStatusVariants["plural live"], playbook }), /does not match its schema/u);
+});
 
 it("accepts every status variant and keeps each one unchanged through the JSON round trip", () => {
 	for (const [name, value] of Object.entries(validStatusVariants)) {

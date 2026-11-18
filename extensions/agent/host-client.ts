@@ -30,6 +30,7 @@ import {
 	type HostPaths,
 	type HostReady,
 	type HostHello,
+	type PlaybookCreation,
 } from "./host-protocol.ts";
 import { HOST_CONTRACT, type RuntimeContract } from "./version-contract.ts";
 import { isObservationFrame, type ObservationFrame } from "./live-frames.ts";
@@ -76,6 +77,8 @@ export interface HostLaunchOptions {
 	readonly runner?: string;
 	/** Arguments between the runner entry and the metadata argument. */
 	readonly runnerArgs?: readonly string[];
+	/** A named new root commits this selection before serving requests. */
+	readonly playbookCreation?: PlaybookCreation;
 	/** Extra child environment; merged over the current environment. */
 	readonly env?: Readonly<Record<string, string | undefined>>;
 	/** Bound for spawn, readiness, connect, and handshake. Default 30000 ms. */
@@ -358,7 +361,8 @@ function startOwnedLaunch(metadata: HostMetadata, options: HostLaunchOptions, de
 	// Node reports a missing cwd as `spawn <executable> ENOENT`, which names the wrong path.
 	if (!statSync(metadata.cwd, { throwIfNoEntry: false })?.isDirectory()) throw new HostError(`The agent's working directory no longer exists: ${metadata.cwd}`, "invalid");
 	if (!statSync(process.execPath, { throwIfNoEntry: false })?.isFile()) throw new HostError(`The running Node executable is no longer available: ${process.execPath}. Restart Pi, then retry the agent control.`, "invalid");
-	const child = spawn(process.execPath, [runner, ...(options.runnerArgs ?? []), JSON.stringify(metadata)], {
+	const extra = options.playbookCreation === undefined ? [] : [JSON.stringify(options.playbookCreation)];
+	const child = spawn(process.execPath, [runner, ...(options.runnerArgs ?? []), JSON.stringify(metadata), ...extra], {
 		cwd: metadata.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...options.env },
 	});
 	let resolveExit!: (outcome: OwnedHostExit) => void;
@@ -1051,7 +1055,9 @@ function connectLink(metadata: HostMetadata, link: Link, options: HostLaunchOpti
 export async function acquireHost(metadata: HostMetadata, options: HostLaunchOptions = {}): Promise<HostConnection> {
 	const parsed = parseHostMetadata(metadata);
 	const link = await acquireLink(parsed, options);
-	return connectLink(parsed, link, options, "acquire");
+	// A recovery launch reopens storage; only the original launch carries creation input.
+	const { playbookCreation: _creation, ...recoveryOptions } = options;
+	return connectLink(parsed, link, recoveryOptions, "acquire");
 }
 
 /** Attach to a running host and fail when none is live. */

@@ -29,6 +29,9 @@ import { createCheckIn } from "./durable-checkins.ts";
 import { cleanupRequestContexts, recordRequestContext, RequestContextDoc, type RequestContext } from "./request-context.ts";
 import { requestHasOpenWork } from "./open-work.ts";
 import { ProfileDoc, refreshManagedInstructions } from "./profile.ts";
+import { AgentDoc, InboxDoc } from "@earendil-works/pi-durable";
+import { effectiveExecutionSelection, type ExecutionSelection } from "./agent-preferences.ts";
+import { NativePlaybookRequest, nativePlaybookSelection, playbookRequestKey, writeNativePlaybook, type NativePlaybook, type PlaybookActor } from "./durable-playbook.ts";
 import { existsSync } from "node:fs";
 import type { PrimaryIntentClaim } from "./effort-presence.ts";
 import type { PrimaryRepositoryState } from "./primary-channel.ts";
@@ -1059,6 +1062,86 @@ export async function configureConversation(
 	const applied = await applyConfiguration(conversation, patch, resolved.effectiveLevel, expectedBlock?.blockId, context);
 	const after = await readConfigurationState(harness, conversation, context);
 	return configurationResult(options.sessionId, before, patch, after, resolved, applied, fileExists);
+}
+
+export type PlaybookConfigurationResult = ConfigurationResult & { playbook?: NativePlaybook; playbookEffective?: "next-prepare"; selection?: ExecutionSelection };
+export type ResolvePlaybookExecution = (params: DurableConfigureParams, before: ConfigurationState, preset?: string) => { params: DurableConfigureParams; selection: ExecutionSelection };
+
+function assertPlaybookActor(actor: PlaybookActor, target: string, creator: string | null): void {
+	if (actor.origin === "model" && (actor.identity === target || actor.identity !== creator))
+		throw new Error("Only the operator or this conversation's creating owner can change its playbook; a model cannot change its own playbook");
+}
+
+async function assertPlaybookPatchIdle(tx: Tx, id: ConversationId, sessionId: string): Promise<void> {
+	const inbox = await tx.doc(InboxDoc, id);
+	if (inbox.items.length > 0) throw new DurableConversationBusyError(id, sessionId);
+	for (const status of ["pending", "running", "waiting", "sleeping", "completing"] as const) {
+		const page = await tx.scanTasks({ conversationId: id, background: false, status }, 1);
+		if (page.items.length > 0) throw new DurableConversationBusyError(id, sessionId);
+	}
+}
+
+async function playbookConfigurationState(tx: Tx, id: ConversationId, name: string | null, fallback: Awaited<ReturnType<Conversation["agent"]>>): Promise<ConfigurationState> {
+	const agent = await tx.doc(AgentDoc, id);
+	const model = agent.model ?? fallback.model;
+	return { name: name ?? "", model: model ? `${model.provider}/${model.modelId}` : null, thinkingLevel: agent.thinkingLevel ?? fallback.thinkingLevel };
+}
+
+async function applyPlaybookExecutionPatch(tx: Tx, id: ConversationId, patch: ConfigurationPatch, resolved: ResolvedConfiguration): Promise<void> {
+	if (patch.model !== undefined || resolved.effectiveLevel !== undefined) {
+		const block = await readProviderBlock(tx, id);
+		await configureProviderRecovery(tx, id, {
+			...(patch.model === undefined ? {} : { model: configurationModel(patch.model) }),
+			...(resolved.effectiveLevel === undefined ? {} : { thinkingLevel: resolved.effectiveLevel }),
+		}, block?.blockId);
+	}
+	if (patch.name !== undefined) {
+		(await tx.doc(AgentMetaDoc, id)).name = patch.name;
+		await refreshManagedInstructions(tx, id);
+	}
+}
+
+function preparePlaybookExecution(
+	params: DurableConfigureParams, before: ConfigurationState, models: DurableConfigureOptions["models"],
+	mixed: boolean, executionInput?: ReturnType<ResolvePlaybookExecution>,
+) {
+	const patch = mixed ? configurationPatch(executionInput?.params ?? params) : {};
+	const resolved = mixed ? resolveConfiguration(patch, before, models) : {};
+	const selection = executionInput === undefined ? {} : { selection: effectiveExecutionSelection(executionInput.selection, resolved.effectiveLevel ?? before.thinkingLevel ?? undefined) };
+	return { patch, resolved, selection };
+}
+
+export async function configureNativePlaybook(
+	conversation: Conversation, options: DurableConfigureOptions, params: DurableConfigureParams,
+	playbook: { name: string; actor: PlaybookActor; requestId: string; agentDir: string; preset?: string }, context: Context, resolveExecution?: ResolvePlaybookExecution,
+): Promise<PlaybookConfigurationResult> {
+	const execution = params.model !== undefined || params.thinkingLevel !== undefined || playbook.preset !== undefined;
+	const mixed = execution || params.name !== undefined;
+	const fallback = await conversation.agent(context);
+	const fileExists = options.storagePath !== undefined && existsSync(options.storagePath);
+	const digest = JSON.stringify({ actor: playbook.actor.identity, origin: playbook.actor.origin, playbook: playbook.name, preset: playbook.preset, name: params.name, model: params.model, thinkingLevel: params.thinkingLevel });
+	return conversation.commit(async (tx) => {
+		const meta = await tx.doc(AgentMetaDoc, conversation.id);
+		assertPlaybookActor(playbook.actor, options.sessionId, meta.owner);
+		const receipt = await tx.doc(NativePlaybookRequest, conversation.id, playbookRequestKey(playbook.requestId), null);
+		if (receipt.outcome !== undefined) {
+			if (receipt.digest !== digest) throw new Error("Playbook request ID belongs to different configuration inputs");
+			return JSON.parse(receipt.outcome) as PlaybookConfigurationResult;
+		}
+		if (mixed) await assertPlaybookPatchIdle(tx, conversation.id, options.sessionId);
+		const before = await playbookConfigurationState(tx, conversation.id, meta.name, fallback);
+		const executionInput = execution ? resolveExecution?.(params, before, playbook.preset) : undefined;
+		const { patch, resolved, selection } = preparePlaybookExecution(params, before, options.models, mixed, executionInput);
+		if (resolved.error !== undefined) return { ...configurationResult(options.sessionId, before, patch, before, resolved, undefined, fileExists), ...selection };
+		const value = nativePlaybookSelection(playbook.agentDir, playbook.name, playbook.actor, true);
+		await applyPlaybookExecutionPatch(tx, conversation.id, patch, resolved);
+		await writeNativePlaybook(tx, conversation.id, value);
+		const after = { name: patch.name ?? before.name, model: patch.model ?? before.model, thinkingLevel: resolved.effectiveLevel ?? before.thinkingLevel };
+		const outcome: PlaybookConfigurationResult = { ...configurationResult(options.sessionId, before, patch, after, resolved, { writes: true }, fileExists), playbook: value, playbookEffective: "next-prepare", ...selection };
+		receipt.digest = digest;
+		receipt.outcome = JSON.stringify(outcome);
+		return outcome;
+	}, context);
 }
 
 export async function writeConversationName(conversation: Conversation, name: string | null, context: Context): Promise<void> {

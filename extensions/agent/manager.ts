@@ -31,14 +31,18 @@ import { createPrimaryLocationResolver, type PrimaryLocationResolver } from "./e
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
 import { acquireHost, connectHost, HostBusyEndpointUnavailableError, HostEndpointUnavailableError, type HostConnection, type HostObservationListener } from "./host-client.ts";
-import { HostError, hostPaths, hostRequestVersionError, type HostMetadata } from "./host-protocol.ts";
+import { matchesSchema } from "./schema-check.ts";
+import { PlaybookSelectionSchema } from "./observation-schema.ts";
+import { readPlaybookCatalog } from "./playbook-catalog.ts";
+import { requirePlaybook } from "./playbook.ts";
+import { HostError, hostPaths, hostRequestVersionError, parsePlaybookCreation, type HostMetadata, type PlaybookCreation } from "./host-protocol.ts";
 import { observeClaim, type ClaimObservation } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
 import type { AgentConversationPage, AgentConversationSummary, AgentPriorityPage, AgentPrioritySummary } from "./dashboard-types.ts";
 import type { ConversationSnapshotPage } from "./durable-observation.ts";
 import type { HostObservationScope } from "./host-client.ts";
 
-import { HOST_CONTRACT, MANAGER_CONTRACT, operationContractMismatch, type RuntimeContract } from "./version-contract.ts";
+import { HOST_CONTRACT, MANAGER_CONTRACT, PLAYBOOK_CONTROL_CONTRACT, operationContractMismatch, type RuntimeContract } from "./version-contract.ts";
 import { collaborationStorage, validateCollaborationTextLimits } from "./collaboration-contract.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
 
@@ -81,6 +85,7 @@ interface AgentSpawnInput {
 	preferenceSnapshot?: PreferenceSnapshot;
 	handle?: string;
 	role?: string;
+	playbook?: string;
 	cwd?: string;
 	model?: string;
 	thinkingLevel?: string;
@@ -252,6 +257,7 @@ function publishedRows(view: CatalogView, observedAt: string, { claim, publicati
 
 export class AgentManager {
 	readonly managerProtocol = MANAGER_PROTOCOL;
+	readonly playbookControlContract = PLAYBOOK_CONTROL_CONTRACT;
 	private coldObservations = createColdObservationCache();
 	private coldReleased = false;
 	private coldRelease: Promise<void> = Promise.resolve();
@@ -359,7 +365,7 @@ export class AgentManager {
 		this.failures = new BoundedMap(options.failureLimit ?? DEFAULT_FAILURE_LIMIT);
 	}
 
-	private async connection(record: CatalogRecord, primary?: PrimaryClient, launch = true): Promise<HostConnection> {
+	private async connection(record: CatalogRecord, primary?: PrimaryClient, launch = true, playbookCreation?: PlaybookCreation): Promise<HostConnection> {
 		if (this.shuttingDown) throw new Error("Agent manager is closed");
 		const existing = this.clients.get(record.storageId);
 		if (existing && !existing.closed) return existing;
@@ -367,12 +373,12 @@ export class AgentManager {
 		if (pending) {
 			if (!launch || !this.attaching.has(record.storageId)) return pending;
 			try { return await pending; }
-			catch { return this.connection(record, primary); }
+			catch { return this.connection(record, primary, true, playbookCreation); }
 		}
 		if (!launch) this.attaching.add(record.storageId);
 		const acquire = launch ? this.options.acquire ?? acquireHost : this.options.connect ?? connectHost;
 		const metadata = hostMetadata(record, this.options.packageDir);
-		const open = Promise.resolve().then(() => acquire(metadata, MANAGED_LINK))
+		const open = Promise.resolve().then(() => acquire(metadata, playbookCreation === undefined ? MANAGED_LINK : { ...MANAGED_LINK, playbookCreation }))
 			.then((client) => this.adoptClient(record, client, primary))
 			.finally(() => { this.opening.delete(record.storageId); this.attaching.delete(record.storageId); });
 		this.opening.set(record.storageId, open);
@@ -430,6 +436,7 @@ export class AgentManager {
 
 	private async observePeer(client: HostConnection, method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
 		try {
+			if (method === "playbook-read" && hostRequestVersionError(method, client.runtimeContract)) return undefined;
 			const value = await client.request(method, params, signal === undefined ? undefined : { signal });
 			if (method === "list") return structuredObservation(NativeListOutputSchema, value);
 			return method === "status" || method === "inspect" ? structuredObservation(observationSchema(method), value) : value;
@@ -452,6 +459,16 @@ export class AgentManager {
 			if (this.shuttingDown) throw new Error("Agent manager is closed");
 			return cold.observe(record, method, params);
 		})(), signal);
+	}
+
+	private async observePlaybook(record: CatalogRecord, sessionId: string, signal?: AbortSignal): Promise<unknown> {
+		try {
+			const selection = await this.observe(record, "playbook-read", { sessionId }, undefined, signal);
+			return matchesSchema(PlaybookSelectionSchema, selection) ? selection : undefined;
+		} catch {
+			signal?.throwIfAborted();
+			return undefined;
+		}
 	}
 
 	/** Resolve one retained native target without guessing an ordinary primary or copying its catalog. */
@@ -506,6 +523,7 @@ export class AgentManager {
 		try { return { record: this.catalog.read(handleStorageId(handle, this.catalog.root)), created: false }; }
 		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 		const metadata = await this.creationMetadata(input, caller);
+		if (input.playbook !== undefined) requirePlaybook(readPlaybookCatalog(this.options.agentDir, { initialize: true }), input.playbook);
 		return this.catalog.createHandled(metadata, handle, input.role ?? "");
 	}
 
@@ -527,6 +545,42 @@ export class AgentManager {
 		return { selected, retained, created };
 	}
 
+	private async creationPlaybookReceipt(client: HostConnection, sessionId: string, ownerId: string, origin: AgentSpawnInput["origin"], requestId: string, playbook?: string, missingOk = false): Promise<unknown> {
+		const error = hostRequestVersionError("playbook-create", client.runtimeContract);
+		if (error) {
+			if (playbook !== undefined && !missingOk) throw error;
+			return undefined;
+		}
+		const receipt = await client.request("playbook-create", { sessionId, ownerId, origin: origin ?? "operator", requestId, ...(playbook === undefined ? {} : { playbook }), ...(missingOk ? { missingOk } : {}), replayOnly: true });
+		if (missingOk && receipt === null) return undefined;
+		if (playbook !== undefined && (!matchesSchema(PlaybookSelectionSchema, receipt) || receipt.name !== playbook || receipt.actor !== ownerId))
+			throw new Error("The host has no matching playbook creation receipt; no prompt was submitted");
+		return receipt;
+	}
+
+	private async handlePlaybook(client: HostConnection, sessionId: string, playbook: string): Promise<unknown> {
+		const error = hostRequestVersionError("playbook-read", client.runtimeContract);
+		if (error) throw error;
+		const selection = await client.request("playbook-read", { sessionId });
+		if (!matchesSchema(PlaybookSelectionSchema, selection) || record(selection).name !== playbook) throw new Error("The retained handle does not have the requested playbook; use authorised configure to change it");
+		return selection;
+	}
+
+	private async checkHandleReplay(record: CatalogRecord, caller: AgentCaller, input: AgentSpawnInput, replayKey?: string): Promise<void> {
+		if (replayKey === undefined) return;
+		const live = await this.observationConnection(record);
+		if (live) await this.creationPlaybookReceipt(live, record.storageId, caller.id, input.origin, replayKey, undefined, true);
+	}
+
+	private async selectHandlePlaybook(client: HostConnection, id: string, caller: AgentCaller, input: AgentSpawnInput, requestId: string, created: boolean, replayKey?: string): Promise<unknown> {
+		if (replayKey !== undefined) {
+			const replay = await this.creationPlaybookReceipt(client, id, caller.id, input.origin, replayKey, input.playbook, true);
+			if (replay !== undefined && replay !== null) return replay;
+		}
+		if (input.playbook === undefined) return undefined;
+		return created ? this.creationPlaybookReceipt(client, id, caller.id, input.origin, requestId, input.playbook) : this.handlePlaybook(client, id, input.playbook);
+	}
+
 	private async spawnHandled(input: AgentSpawnInput & { handle: string }, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
 		const handle = handleSlug(input.handle);
 		const { selected, retained, created } = await this.selectedHandle(input, caller, handle);
@@ -535,17 +589,22 @@ export class AgentManager {
 		const id = retained.storageId;
 		if (input.cwd !== undefined && retained.cwd !== realpathSync(resolve(caller.cwd, input.cwd))) throw new Error("The retained handle has a different cwd; creation defaults cannot change it");
 		const row: AgentConversationSummary = { id, storageId: id, cwd: retained.cwd, name: retained.name, model: { ...retained.model, thinkingLevel: retained.thinkingLevel }, modifiedAt: Date.parse(retained.createdAt), owner: "unknown", state: "starting", cost: 0, partial: false };
-		onCreated?.(row);
-		if (!created && input.prompt === undefined) return { ...await this.retainedHandle(retained, handle) as object, selection: input.selection };
-		const client = await this.connection(retained);
+		const replayKey = !created && retained.ownerId === caller.id ? input.requestId : undefined;
+		if (!created && input.prompt === undefined && input.playbook === undefined) {
+			await this.checkHandleReplay(retained, caller, input, replayKey);
+			onCreated?.(row);
+			return { ...await this.retainedHandle(retained, handle) as object, selection: input.selection };
+		}
+		const requestId = input.requestId ?? randomUUID();
+		const client = await this.connectSpawn(retained, created, caller, input, requestId);
+		const playbook = await this.selectHandlePlaybook(client, id, caller, input, requestId, created, replayKey);
 		const profile = await client.request("profile-read", { sessionId: id }) as AgentProfile;
 		if (profile.handle !== `@${handle}`) throw new Error("Handle address belongs to a different retained agent");
-		const requestId = input.requestId ?? randomUUID();
-		const prompt = input.prompt;
-		const admission = prompt === undefined ? undefined : await this.admission(caller.id, id, requestId, undefined, () => client.request("task-submit", { sessionId: id, message: prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) }));
+		onCreated?.(row);
+		const admission = await this.submitSpawnPrompt(client, id, caller, input, requestId, "followUp");
 		const result = admission === undefined ? undefined : await this.sentWorkResult(caller.id, id, admission, requestId);
 		this.rosterChanged();
-		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, selection: input.selection, ...(created ? this.spawnThinking(input, retained) : {}), ...(admission === undefined ? {} : { admission, result }) };
+		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, selection: input.selection, ...(playbook === undefined ? {} : { playbook }), ...(created ? this.spawnThinking(input, retained) : {}), ...(admission === undefined ? {} : { admission, result }) };
 	}
 
 	private async creationMetadata(input: AgentSpawnInput, caller: AgentCaller): Promise<Omit<HostMetadata, "storageId" | "storagePath">> {
@@ -574,7 +633,16 @@ export class AgentManager {
 	}
 
 	async spawn(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void, beforeCreate?: (storageId: string) => void): Promise<unknown> {
+		if (input.playbook !== undefined) {
+			const requestId = input.requestId ?? randomUUID();
+			parsePlaybookCreation({ ownerId: caller.id, origin: input.origin ?? "operator", requestId, playbook: input.playbook });
+			input = { ...input, requestId };
+		}
 		if (input.handle !== undefined) return this.spawnHandled({ ...input, handle: input.handle }, caller, onCreated);
+		return this.spawnIndependent(input, caller, onCreated, beforeCreate);
+	}
+
+	private async spawnIndependent(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void, beforeCreate?: (storageId: string) => void): Promise<unknown> {
 		if (input.role !== undefined) profileText(input.role, "role");
 		const previous = input.requestId === undefined ? undefined : this.catalog.readRequest(caller.id, input.requestId);
 		if (previous && ((input.cwd !== undefined && realpathSync(resolve(caller.cwd, input.cwd)) !== previous.cwd) || input.name !== previous.name)) throw new Error("Spawn request ID already belongs to different agent configuration");
@@ -582,6 +650,7 @@ export class AgentManager {
 		input = selected;
 		const metadata = previous ?? await this.creationMetadata(input, caller);
 		const { cwd, model, thinkingLevel } = metadata;
+		if (!previous && input.playbook !== undefined) requirePlaybook(readPlaybookCatalog(this.options.agentDir, { initialize: true }), input.playbook);
 		const selection = input.selection?.thinking ? selected.selection : effectiveExecutionSelection(selected.selection, thinkingLevel);
 		input = { ...selected, selection };
 		await caller.retainExecutionSelection?.(selection);
@@ -613,10 +682,26 @@ export class AgentManager {
 		if (update.outcome !== "applied") throw new Error("The new agent's role changed before its creation role was saved; read agent_profile before retrying");
 	}
 
+	private connectSpawn(record: CatalogRecord, created: boolean, caller: AgentCaller, input: AgentSpawnInput, requestId: string): Promise<HostConnection> {
+		const creation = created && input.playbook !== undefined ? parsePlaybookCreation({ ownerId: caller.id, origin: input.origin ?? "operator", requestId, playbook: input.playbook }) : undefined;
+		return this.connection(record, undefined, true, creation);
+	}
+
+	private submitSpawnPrompt(client: HostConnection, sessionId: string, caller: AgentCaller, input: AgentSpawnInput, requestId: string, whenBusy?: "followUp"): Promise<unknown> | undefined {
+		const message = input.prompt;
+		if (message === undefined) return undefined;
+		const origin = input.origin ?? "operator";
+		return this.admission(caller.id, sessionId, requestId, undefined, () => client.request("task-submit", {
+			sessionId, message, requestId, requester: caller.id, origin, ...(whenBusy === undefined ? {} : { whenBusy }),
+			checkInMinutes: checkInMinutes(input.checkInMinutes, origin, this.options.agentDir),
+		}));
+	}
+
 	private async performSpawn(record: CatalogRecord, created: boolean, row: AgentConversationSummary, input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
 		this.launchRows.set(record.storageId, row);
 		try {
-			const opening = this.connection(record);
+			const requestId = input.requestId ?? randomUUID();
+			const opening = this.connectSpawn(record, created, caller, input, requestId);
 			onCreated?.(row);
 			this.rosterChanged();
 			let client: HostConnection;
@@ -624,11 +709,11 @@ export class AgentManager {
 			catch (error) { if (created) this.catalog.discardUnopened(record); throw error; }
 			const versionError = input.prompt === undefined ? undefined : hostRequestVersionError("task-submit", client.runtimeContract);
 			if (versionError) throw versionError;
-			const requestId = input.requestId ?? randomUUID();
+			const playbook = input.playbook !== undefined || (!created && input.requestId !== undefined)
+				? await this.creationPlaybookReceipt(client, record.storageId, caller.id, input.origin, requestId, input.playbook) : undefined;
 			await this.saveSpawnRole(client, record.storageId, created, input.role, requestId, caller.id);
-			const prompt = input.prompt;
-			const admission = prompt === undefined ? undefined : await this.admission(caller.id, record.storageId, requestId, undefined, () => client.request("task-submit", { sessionId: record.storageId, message: prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) }));
-			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...this.spawnThinking(input, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: await this.sentWorkResult(caller.id, record.storageId, admission, requestId) }) };
+			const admission = await this.submitSpawnPrompt(client, record.storageId, caller, input, requestId);
+			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...(playbook === undefined ? {} : { playbook }), ...this.spawnThinking(input, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: await this.sentWorkResult(caller.id, record.storageId, admission, requestId) }) };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
 			this.launchRows.set(record.storageId, { ...row, owner: "here" });
 			this.rosterChanged();
@@ -640,6 +725,18 @@ export class AgentManager {
 		}
 	}
 
+	private nativeControlParams(method: string, input: Record<string, unknown>, sessionId: string, record: CatalogRecord, callerId: string): Record<string, unknown> {
+		const params: Record<string, unknown> = { ...input, sessionId, ownerId: callerId };
+		if (method === "task-submit") { params.requester = callerId; params.origin ??= "operator"; params.requestId ??= randomUUID(); }
+		if (method === "profile-update") { params.senderIdentity = callerId; params.requestId ??= randomUUID(); }
+		if (method !== "configure" || input.playbook === undefined) return params;
+		if (input.origin !== undefined && input.origin !== "model" && input.origin !== "operator") throw new Error("Invalid playbook configure origin");
+		params.origin = input.origin ?? "model";
+		if (params.origin === "model" && record.ownerId !== callerId && sessionId === record.storageId) throw new Error("Only the target's creating owner or the operator can configure its playbook");
+		params.requestId ??= randomUUID();
+		return params;
+	}
+
 	/**
 	 * `options.signal` withdraws the caller's wait for the answer: the client settles at once and a late
 	 * answer is dropped. The host still runs an admitted request; nothing is rolled back or replayed.
@@ -647,6 +744,7 @@ export class AgentManager {
 	 * fails instead of starting one.
 	 */
 	async control(method: string, input: Record<string, unknown>, caller: AgentCaller, options?: { readonly signal?: AbortSignal; readonly launch?: boolean }): Promise<unknown> {
+		if (method === "playbook-create" || method === "playbook-configure") throw new Error("Use the public Agent controls for playbook mutations");
 		const selector = String(input.sessionId ?? "");
 		const sessionId = await this.resolveTarget(selector);
 		if (typeof input.replyTo === "string") input = { ...input, replyTo: await this.resolveTarget(input.replyTo) };
@@ -658,10 +756,9 @@ export class AgentManager {
 			if (!readPrimaryEndpointDescriptor(this.options.root, sessionId).info) throw new Error("The exact native target is not retained and no ordinary primary is registered");
 			return this.primaryControl(method, input, sessionId, caller);
 		}
-		const params: Record<string, unknown> = { ...input, sessionId, ownerId: caller.id };
-		if (method === "task-submit") { params.requester = caller.id; params.origin ??= "operator"; params.requestId ??= randomUUID(); }
-		if (method === "profile-update") { params.senderIdentity = caller.id; params.requestId ??= randomUUID(); }
-		if (method === "inspect" || method === "status" || method === "snapshot" || method === "dashboard" || method === "profile-read") return this.observe(record, method, params, undefined, options?.signal);
+		if (method === "playbook-read") return this.observePlaybook(record, sessionId, options?.signal);
+		const params = this.nativeControlParams(method, input, sessionId, record, caller.id);
+		if (["inspect", "status", "snapshot", "dashboard", "profile-read"].includes(method)) return this.observe(record, method, params, undefined, options?.signal);
 		if (method === "attach") {
 			this.crashes.delete(record.storageId);
 			this.recoveryErrors.delete(record.storageId);
@@ -685,6 +782,7 @@ export class AgentManager {
 	}
 
 	private requestedOperation(method: string, params: Record<string, unknown>): string {
+		if (method === "configure" && params.playbook !== undefined) return "playbook-configure";
 		if (method === "submit") return "task-submit";
 		if (method === "report") return "submit";
 		if (method === "attach") return params.model === undefined ? "status" : "configure";
@@ -710,7 +808,7 @@ export class AgentManager {
 	/** Only the plain forwarded request carries the caller's withdrawal; task submission keeps its own admission path. */
 	private forwardControl(client: HostConnection, method: string, requested: string, params: Record<string, unknown>, caller: AgentCaller, signal: AbortSignal | undefined): Promise<unknown> {
 		if (requested === "task-submit") return this.admission(caller.id, String(params.sessionId), String(params.requestId), params.replyTo, () => client.request(requested, { ...params, requester: caller.id, origin: params.origin ?? "operator" }));
-		return client.request(method, params, signal ? { signal } : undefined);
+		return client.request(requested === "playbook-configure" ? requested : method, params, signal ? { signal } : undefined);
 	}
 
 	private async controlClient(client: HostConnection, method: string, params: Record<string, unknown>, caller: AgentCaller, signal?: AbortSignal): Promise<unknown> {
@@ -1003,7 +1101,21 @@ export class AgentManager {
 		return this.control("collaboration-mutate", { ...input, sessionId, senderIdentity: caller.id, origin: input.origin ?? "model", requestId: input.requestId ?? randomUUID() }, caller);
 	}
 
-	async status(sessionId?: string | StorageStatusPageInput, view?: "fleet", caller?: AgentCaller, selection: FleetSelection = {}): Promise<unknown> {
+	private async selectedStatus(selector: string, includePlaybook?: boolean): Promise<unknown> {
+		const sessionId = await this.resolveTarget(selector);
+		let record: CatalogRecord;
+		try { record = this.nativeTarget(sessionId); }
+		catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			return this.observePrimary(sessionId, { view: "status" });
+		}
+		const status = await this.observe(record, "status", { sessionId });
+		if (!includePlaybook || status === null || typeof status !== "object" || !Object.hasOwn(status, "conversation")) return status;
+		const playbook = await this.observePlaybook(record, sessionId);
+		return playbook === undefined ? status : { ...status, playbook };
+	}
+
+	async status(sessionId?: string | StorageStatusPageInput, view?: "fleet", caller?: AgentCaller, selection: FleetSelection = {}, options?: { readonly playbook?: boolean }): Promise<unknown> {
 		if (typeof sessionId === "object") {
 			const input = storageStatusPageInput(sessionId);
 			if (view !== undefined || Object.keys(selection).length !== 0) throw new Error("Storage status does not accept fleet selectors");
@@ -1013,16 +1125,7 @@ export class AgentManager {
 		if (view === "fleet") {
 			return readFleetStatus(this.catalog, { ...selection, ...(caller ? { effort: { callerId: caller.id, callerUsage: caller.reportedUsage } } : {}) });
 		}
-		if (sessionId) {
-			sessionId = await this.resolveTarget(sessionId);
-			let record: CatalogRecord;
-			try { record = this.nativeTarget(sessionId); }
-			catch (error) {
-				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-				return this.observePrimary(sessionId, { view: "status" });
-			}
-			return this.observe(record, "status", { sessionId });
-		}
+		if (sessionId) return this.selectedStatus(sessionId, options?.playbook);
 		const page = await this.dashboardPage({ ownerId: caller?.id });
 		const failures = [
 			[...this.failures.entries].map(([storageId, error]) => ({ storageId, error })),

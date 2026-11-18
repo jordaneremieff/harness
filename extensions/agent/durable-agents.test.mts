@@ -33,6 +33,9 @@ import { declareOpenWork, openWorkStatus } from "./open-work.ts";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { compile, obj } from "@earendil-works/pi-schema";
 import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution } from "./durable-agents.ts";
+import { runtimeFixture, trackHost } from "./durable-runtime-fixture.mts";
+import { acquireHost, connectHost } from "./host-client.ts";
+import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerAgentExtension from "./index.ts";
 import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
@@ -946,6 +949,50 @@ it("returns retained native creation facts without revalidating a later catalog"
 	assert.match(outcome.text, /requested max; effective off/u);
 	assert.equal((await harness.snapshot(TestChildren, root.id, context))?.children.length, 1);
 	assert.ok(catalogReads > 0);
+});
+
+it("replays the original foreign playbook spawn receipt through the native tool", { timeout: 30000 }, async (t) => {
+	const fixture = runtimeFixture(t, { withAgentExtension: true });
+	const source = await acquireHost(fixture.metadata, { env: fixture.env("request") });
+	trackHost(t, source.pid);
+	t.after(() => source.close());
+	const dispatches: string[] = [];
+	const route = createRoute();
+	const registry = Durable.createRegistry();
+	const extension = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts", dispatch: async (method, args) => {
+		dispatches.push(method);
+		return source.request(method, JSON.parse(JSON.stringify(args)), { requestId: String(args.requestId) });
+	} }).create({ onClose() {}, durable: Durable, storageId: fixture.metadata.storageId, cwd: fixture.cwd, agentDir: fixture.agentDir, services: testServices });
+	registry.install({ ...extension, tools: extension.tools?.map((tool) => tool.name !== "agent_spawn" ? tool : {
+		...tool, execute: async (args, api, ctx) => {
+			const first = await tool.execute(args, api, ctx);
+			assert.equal(first.isError, undefined, JSON.stringify(first.output));
+			const id = (first.details as { sessionId: string }).sessionId;
+			assert.deepEqual((first.details as { playbook: unknown }).playbook, { name: "maker", origin: "creator", actor: fixture.metadata.storageId });
+			const target = await connectHost(hostMetadata(new AgentCatalog(fixture.root).read(id)));
+			trackHost(t, target.pid);
+			try {
+				await target.request("playbook-configure", { sessionId: id, playbook: "off", ownerId: fixture.metadata.storageId, origin: "model", requestId: "later-playbook" });
+				assert.deepEqual(await tool.execute(args, api, ctx), first);
+				assert.ok(args !== null && typeof args === "object" && !Array.isArray(args));
+				for (const changed of [{ ...args, playbook: "architect" }, { ...args, handle: "other" }]) {
+					const refused = await tool.execute(changed, api, ctx);
+					assert.equal(refused.isError, true);
+					assert.match(JSON.stringify(refused.output), /different inputs/u);
+				}
+				assert.deepEqual(await target.request("playbook-read", { sessionId: id }), { name: null, origin: "creator", actor: fixture.metadata.storageId });
+			} finally { await target.close(); }
+			return first;
+		},
+	}) });
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_spawn", args: { cwd: fixture.childCwd, playbook: "maker" } });
+	await say(root, "Create a foreign worker");
+	const outcome = (await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_spawn");
+	assert.ok(outcome && !outcome.isError, outcome?.text);
+	assert.deepEqual(dispatches, ["spawn"]);
+	assert.equal((await harness.snapshot(TestChildren, root.id, context))?.children.length, 1);
 });
 
 it("refuses an absent native spawn model before child or reporter creation", async (t) => {

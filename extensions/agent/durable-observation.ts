@@ -2498,6 +2498,12 @@ export class DurableObservation {
 	 * parsing are identical to `DurableHost.request`; write methods reject.
 	 */
 	async request(method: string, params?: RequestParams, context: Context = BACKGROUND_CONTEXT): Promise<unknown> {
+			if (method === "playbook-read") {
+				if (this.absent) return undefined;
+				const { NativePlaybookDoc, projectNativePlaybook } = await import("./durable-playbook.ts");
+				const conversation = await this.target(params, context);
+				return projectNativePlaybook(await this.harness.snapshot(NativePlaybookDoc, conversation.id, context));
+			}
 			if (method === "profile-read") {
 				const { readProfile } = await import("./profile.ts");
 				const conversation = await this.target(params, context);

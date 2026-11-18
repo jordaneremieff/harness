@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { playbookName } from "./playbook-files.ts";
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
 export const CONFIGURATION_LIMITS = { name: 256, model: 512, sessionId: 256 } as const;
@@ -71,7 +72,7 @@ export function configurationModel(value: unknown): ConfigurationModel {
 }
 
 export function configurationPlaybook(value: unknown): string {
-	if (typeof value !== "string" || value.length > 48 || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(value)) {
+	if (typeof value !== "string" || (value !== "off" && !playbookName(value))) {
 		throw new Error("Use a playbook name (lowercase letters, digits and single hyphens) or off.");
 	}
 	return value;
