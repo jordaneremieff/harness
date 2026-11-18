@@ -1,207 +1,204 @@
-# Operator views contract
+# Operator views convention
 
-This package-level contract gives an operator one interaction model for an
-extension's browsing and forms in two hosts: ordinary Pi, below the native
-transcript and editor, and the standalone attached Agent terminal. Each owner
-keeps its operations, its store, its approvals, and its validation. A host never
-parses an owner's output, imports an owner's source, or runs an owner's closures
-outside the owner's own process.
+This written convention gives the operator one interaction model for an
+extension's browsing views and forms in two hosts: ordinary Pi, in the editor
+slot below the native transcript, and the standalone attached Agent terminal.
+It is not shared code. Each extension implements the views it owns with its own
+code, on Pi's public `@earendil-works/pi-tui` components, and no runtime module
+is shared across extensions. Each owner keeps its operations, its store, its
+approvals, and its validation. A host imports only an owner's advertised
+presentation module; it never parses an owner's output or runs an owner's
+operations outside the owner's own process.
 
-The shared presentation lives in `operator-ui/`. It has two public entries.
-`operator-ui/registration.ts` carries the factory-time primitives: announcing
-destinations, opening the frame, the loading view, and the view type
-contracts. `operator-ui/index.ts` carries the presentation itself: the frame,
-controls, building blocks and readers. Extensions import from those two files
-only, and `scripts/check-slices.mts` names the extensions that may. The package
-owns no operation, store, approval, model catalogue, or trust decision.
+## Building blocks
 
-## Interaction model
+An extension builds its views from Pi's components where they fit:
 
-An owner builds its content as `OperatorView` objects mounted in a
-`NavigationFrame`:
+- `SelectList` for lists and for the More menu;
+- `Input` and `Editor` for text fields;
+- `Markdown` for Markdown;
+- `truncateToWidth`, `visibleWidth`, `wrapTextWithAnsi`, and `sliceByColumn`
+  for width;
+- `matchesKey` and `Key` for keys.
 
-- **View.** A view renders exactly the rows it is given, consumes only the
-  keys and pointer events it owns, returns its actions from `actions()`, the
-  keys it handles itself in its current focus from `keys()`, and whether a
-  text field has focus from `editing()`. The frame re-reads all three at
-  every render and every invocation, so a stale render cannot run a
-  replaced action.
-- **Host.** Each mounted view receives a `ViewHost`: the theme, the bound
-  `target` (the session or conversation every effect of the view acts on;
-  it never changes), an `AbortSignal` that aborts when the view is left,
-  `notify`, `push` for a nested view with its own signal, `back`, and
-  `close(then)`. Late answers check the signal and are dropped.
-- **Actions.** An `Action` label names its effect; `key` is the key that
-  runs it (a pi-tui key id such as `enter` or `ctrl+o`, or one printable
-  character) and `short` is its footer wording when the label is long.
-  Selection, focus, and hover never run an action; its key, a click on its
-  footer control, or the More menu runs it, through the same function. A
-  disabled action stays listed with its reason.
-- **Footer.** The frame's last row is the key footer, the primary command
-  surface: each control reads `<key> <label>`, key in the accent colour and
-  label quieter. The view's own keys come first, then primary actions that
-  have a key, then frame controls (Expand on Pi's `app.tools.expand` key in
-  ordinary Pi), then `x more`, then the Escape control last, labelled with
-  what Escape does now (`clear`, `list`, `cancel`, `back`, `close`). One key
-  never means two things in one focus: an action whose key the view's current
-  hints claim moves into More without that key, and the hint keeps the key.
-  A click on a control runs what its key runs; a control with several keys
-  (`↑↓ select`, `pgup/pgdn read`) has one target per key; gaps do nothing.
-  When the row is short, controls leave by priority into More, which lists
-  every control the row does not show, one entry per key of a multi-key
-  control, and every action without a key, each with its key. Basic
-  navigation, More and the way out stay on the row. While a text field has
-  focus every plain key is text, so the row's More control shows the More
-  chord (`ctrl+n`) instead of `x`: the chord opens and closes More from any
-  focus whenever the row has hidden entries, and typing `x` stays text.
-  Footer hosts that draw the row themselves pass the editing state to
-  `Footer.render` and route the chord themselves.
-- **Header.** The tab row (or the destination's title), the bound target,
-  and in a nested view a muted trail. It holds no commands.
-- **Frame.** Destinations sit in one tab row; each keeps its own views,
-  query, selection, and reading position while the frame is open. Escape
-  closes the More menu, then lets the view leave an edit, then runs the
-  view's action whose key is `escape` (a Cancel), then leaves a nested
-  view, then leaves the frame. Tab moves through the view's regions, then
-  the tab row when the frame shows tabs. A frame embedded in a larger view
-  gives its host the same order, with the tab row only when it holds more
-  than one destination, and hands focus on after it. One destination's
-  failure costs only its own view.
-- **Building blocks.** `Browser` (search, scopes, list, and detail, with the
-  detail as its own view below `SPLIT_MIN_WIDTH`; item actions push through
-  `Browser.push`, which opens from the visible detail while one is open, and
-  the detail re-resolves its record by key on every render and action, so a
-  refreshed record shows its current state and a removed record explains
-  itself instead of acting on another), `ListView`, `ReaderView`, `Form`
-  (staged fields with one owner call on the labelled submit: Enter moves to
-  the next field and submits from the last, the newline keys break lines in
-  a multi-line field, Tab moves between fields, and Cancel and Escape run
-  the same cancel and send nothing; the body scrolls to keep the focused
-  field's caret or highlighted choice visible, with the heading fixed at
-  the top and the hint, pending and error rows at the bottom; the wheel
-  moves the body until the next key press reveals the caret again, and a
-  choice list keeps its own scroll until a key that moves the highlight, a
-  click or a filter change moves it), `LoadingView`, `TextField`,
-  `TextArea`, `Footer` with its `Control` records, the key helpers
-  (`keyText`, `keysText`, `keyMatches`, `keyInput`, which encodes the whole
-  key syntax Pi accepts, including modified chords, so every displayed
-  binding has a working click equivalent, or a notice naming the key when
-  the terminal has no encoding for it), and `HitMap` (region-local click
-  coordinates from the last render only).
+A view inside `ctx.ui.custom` renders a bounded number of rows itself. Pi's
+`ScrollView` scrolls only inside Pi's root layout, so a reader in a view keeps
+its own offset. The rest of a view (its title row, key row, More menu, Escape
+order, and pointer routing) is the extension's own small code, written to the
+rules below.
 
-Programmatic `TextField` values are single-line text, not terminal input.
-Replacement removes terminal escape sequences and non-whitespace control
-characters before insertion. Native Input removes line breaks and expands tabs.
-Printable text and ordinary spaces remain unchanged, and the cursor follows the
-replacement.
+## View shape
 
-Input rules hold everywhere: while a text field has focus it takes every
-printable key, and the footer then lists only the keys that work there.
-Without a focused text field, the keys the focused view's current hints
-claim are the view's binding and reach the view first; only unclaimed keys
-run an owner's action, then `x` for More, then the view's own remaining
-keys. `/` moves to a list's search field. PageUp and PageDown read. A
-pointer event reported for another terminal size acts on nothing, and a
-disallowed or modified gesture changes no focus. An owner that shows an
-artifact for approval shows the complete artifact in the review view
-before its effect-labelled final action.
-
-## Ordinary destinations
-
-An owner announces its ordinary destinations as data on the public `pi.events`
-bus with `publishOperatorViews`:
+Each side declares these types in its own code. The Agent terminal hosts
+owner views through this shape, so it changes only together with every owner
+that advertises a panel.
 
 ```ts
-interface OperatorViewPublication {
-  version: 2;
-  /** Resolved path of the announcing extension entrypoint (fileURLToPath(import.meta.url)). */
-  owner: string;
-  views: Array<{
-    /** Stable identity inside the owner, for example "stash". */
-    id: string;
-    /** Plain label, at most 24 characters. */
-    label: string;
-    /** The owner's registered command that opens this destination, before any collision suffix. */
-    command: { name: string; args?: string };
-    /** Sort position among the frame's tabs; lower first. */
-    order?: number;
-    /** Trusted in-process content, bound to the current context when the view opens. */
-    view: (ctx: ExtensionContext, host: ViewHost) => OperatorView;
-  }>;
+type NoticeKind = "info" | "success" | "warning" | "error" | "pending";
+
+/** The session or conversation a view acts on, as the operator recognises it. */
+interface ViewTarget {
+  readonly id: string;
+  readonly label: string;
+}
+
+interface Action {
+  readonly id: string;
+  /** Names the effect. */
+  readonly label: string;
+  readonly description?: string;
+  /** Why the action cannot run now. It stays listed and explains itself. */
+  readonly disabled?: string;
+  /** A pi-tui key id such as "enter" or "ctrl+o", or one printable character. */
+  readonly key?: string;
+  /** Key-row wording when the label is long. */
+  readonly short?: string;
+  /** On the key row while it fits; other actions are listed in More. */
+  readonly primary?: boolean;
+  readonly tone?: "accent" | "danger";
+  run(): void;
+}
+
+/** Keys the view handles itself in its current focus, shown before its actions. */
+interface KeyHint {
+  readonly keys: readonly string[];
+  readonly label: string;
+  /** Lower numbers stay on a short row longer; 0 never leaves it. */
+  readonly priority?: number;
+}
+
+interface ViewHost {
+  readonly theme: Theme;
+  /** Every effect of the view acts on this target; it never changes. */
+  readonly target: ViewTarget;
+  /** Aborted when the view is left. */
+  readonly signal: AbortSignal;
+  requestRender(): void;
+  notify(text: string, kind?: NoticeKind): void;
+  /** Open a nested view with its own host and signal. */
+  push(open: (host: ViewHost) => View): void;
+  /** Leave this view; the first view leaves the host. */
+  back(): void;
+  /** Return to the conversation, then run `then`. */
+  close(then?: () => unknown): void;
+}
+
+interface View {
+  readonly title: string;
+  focused?: boolean;
+  render(width: number, height: number): string[];
+  /** True when the key was consumed. */
+  handleInput(data: string): boolean;
+  handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
+  actions?(): readonly Action[];
+  keys?(): readonly KeyHint[];
+  /** True while a text field has focus. */
+  editing?(): boolean;
+  /** Leave an edit or a region; false lets the host continue the Escape order. */
+  escape?(): boolean;
+  /** Move focus to the next or previous region; false at the edge. */
+  focusNext?(backward: boolean): boolean;
+  focusEdge?(backward: boolean): void;
+  invalidate?(): void;
+  dispose?(): void;
 }
 ```
 
-- `OPERATOR_VIEW_PUBLISH` (`harness:operator-view:publish`) carries the
-  publication; `OPERATOR_VIEW_REQUEST` (`harness:operator-view:request`)
-  carries `{ version: 2 }`.
-- The publisher subscribes to requests and emits once at factory setup; a
-  consumer (`collectOperatorViews`) subscribes to publications, then emits one
-  request. Pi's bus calls a synchronous handler immediately, so both load
-  orders meet. A publication replaces that owner's earlier views as a unit.
-  A malformed entry, including one without a `view` function, is dropped,
-  never adapted. Only version `2` is defined.
-- `resolveOwner` binds a destination to its owner's current registration:
-  the inventory entry whose `sourceInfo.path` is the announced `owner` (also
-  through a resolved real path) and whose name without Pi's `:<n>` collision
-  suffix is `command.name`. No owner match, or more than one, leaves the
-  destination listed as unavailable with the reason; it never picks a suffix
-  by position.
-- A destination is a harmless open: opening shows content and performs no
-  owner effect. Commands that start work, such as `/evo`, are not
-  destinations; they stay in command search.
+- **View.** A view renders exactly the rows it is given and consumes only the
+  keys and pointer events it owns. The host reads `actions()`, `keys()`, and
+  `editing()` again at every render and every invocation, so a stale render
+  cannot run a replaced action.
+- **Host.** Late answers check the view's signal and are dropped. A nested view
+  gets its own signal, so its late answers cannot reach the view beneath it.
+- **Actions.** Selection, focus, and hover never run an action. Its key, a
+  click on its key-row control, or its More entry runs it, through the same
+  function. A disabled action stays listed with its reason.
 
-`openOperatorFrame(pi, ctx, { owner, id })` opens the ordinary frame at one
-destination in the editor slot, below the native transcript; the editor's
-draft returns when the frame closes. The frame shows the opened destination
-alone, under its title; with `{ tabs: true }` and no start, it shows every
-published destination as a tab, starting at the first (the statusline's
-`/dashboard`). The frame resolves its destinations when it opens and again
-when a publication changes, not on every paint. If a frame is already open in
-the session, `OPERATOR_FRAME_OPEN`
-(`harness:operator-frame:open`) navigates that frame instead of opening
-another. `dispatchCommand` sends a command line only after it re-reads the
-exact registration identity; the statusline Commands view runs commands
-through it, and a changed or missing registration is refused.
+## Interaction rules
 
-Each owner's own command opens its destination directly through
-`openOperatorFrame`. A destination without a command of its own names
-another command of its owner that opens it, as the statusline's Model view
-names `/dashboard`. Pi's status footer carries no control or menu for
-these destinations.
+- **One view per command.** A command opens its own view alone under its
+  title, with no tabs for other owners' views.
+- **Title row.** The view's title and the bound target. A nested view adds a
+  muted trail row. Neither row holds commands.
+- **Key row.** The last row is the primary command surface. Each control reads
+  `<key> <label>`, the key in the accent colour and the label quieter. The
+  view's own keys come first, then primary actions that have a key, then host
+  controls such as Expand on Pi's `app.tools.expand` key, then `x more`, then
+  the Escape control last, labelled with what Escape does now (`clear`,
+  `list`, `cancel`, `back`, `close`).
+- **One key, one meaning.** One key never means two things in one focus: an
+  action whose key the view's current hints claim moves into More without that
+  key, and the hint keeps the key.
+- **Clicks.** A click on a control runs what its key runs. A control with
+  several keys (`↑↓ select`, `pgup/pgdn read`) has one target per key; gaps do
+  nothing. Only completed left clicks and wheel turns without modifiers act,
+  and only at the size last drawn; presses and drags stay native text
+  selection.
+- **More.** When the row is short, controls leave it by priority into More,
+  which lists every control the row does not show, one entry per key of a
+  multi-key control, and every action without a key, each with its key. Basic
+  navigation, More, and the way out stay on the row. `x` opens More. While a
+  text field has focus every printable key is text, so the row shows `ctrl+n`
+  for More, and `ctrl+n` opens and closes it from any focus.
+- **Escape order.** Escape closes More, then lets the view leave an edit, then
+  runs the view's action whose key is `escape` (a Cancel), then leaves a nested
+  view, then leaves the view.
+- **Focus and reading.** Tab moves through the view's regions. `/` moves to a
+  list's search field. PageUp and PageDown read. In fullscreen mode a view in
+  the editor slot sets `capturesViewportInput`, so Pi gives these keys to the
+  view instead of the transcript; a focused overlay receives them already.
+- **Text input.** While a text field has focus it takes every printable key,
+  and the row lists only the keys that work there. Without a focused text
+  field, keys of the view's current hints reach the view first; only unclaimed
+  keys run an action, then `x` opens More, then the view's remaining keys.
+- **Failure.** A view that fails while drawing or answering costs only itself:
+  its host shows the reason in its place.
+- **Approval.** An owner that shows an artifact for approval shows the complete
+  artifact in the review view before its effect-labelled final action.
 
-Publishers: stash (Stashes), clipboard (Clipboard), markdown (Markdown), policy
-(Policy), pillars (Pillars), statusline (Commands, Model, Statuses). The frame collects the
-publications each time it opens.
+### Browsers and forms
 
-### Loading a view
+- **Browser.** Search, scopes, a list, and the selected item's detail. The
+  detail sits beside the list at 90 columns or more and opens as its own nested
+  view below that, from Right or Enter when no action takes Enter. Item actions
+  open nested views from the visible detail, so Cancel returns to the same
+  record. The detail re-resolves its record by key on every render and action,
+  so a refreshed record shows its current state and a removed record explains
+  itself instead of acting on another.
+- **Form.** Staged fields with one owner call on the effect-labelled submit.
+  Enter moves to the next field and submits from the last; the newline keys
+  break lines in a multi-line field; Tab moves between fields. Cancel and
+  Escape run the same cancel and send nothing. A validation problem or an owner
+  refusal keeps every staged field and shows the reason.
+- **Programmatic text.** A value set into a text field by code is single-line
+  text, not terminal input: terminal escape sequences and non-whitespace
+  control characters are removed before insertion, and the cursor follows the
+  inserted text.
 
-A published view returns at once: the factory's `view` function builds a
-`LoadingView` and starts the owner's import and read inside its load callback.
-The implementation module, not the factory, owns everything the view renders.
+## Ordinary Pi
 
-```ts
-view: (ctx, host) =>
-  new LoadingView("Stashes", host, async () => {
-    const module = await import("./operator-view.ts");
-    state ??= module.createStashViewState();
-    return module.stashView(host, operations(ctx), state);
-  })
-```
+Each owner's command opens its own view with `ctx.ui.custom` in the editor slot
+below the native transcript. The editor's draft returns when the view closes,
+and a close continuation runs after Pi restores the editor, so a command whose
+own UI opens next, or text placed in the editor, sees the real editor.
 
-- A published view is synchronous. The frame mounts the loading view and
-  renders `Reading…` until the loaded view replaces it in place.
-- State belongs to the extension instance, not the loading view, so a query
-  and a selection survive closing and reopening the destination.
-- The loading view drops a late result when its host signal aborted, and shows
-  a load failure in place with the way to retry.
-- No renderer or selection handler starts an import. Presentation imports run
-  at open time or command time, never from a render path. The narrowly scoped
-  [client-local reveal](#client-local-reveal) adapter is imported by its explicit
-  action, not while the view opens.
-- A factory that publishes a view imports only `operator-ui/registration.ts`,
-  so evaluating its entrypoint does not evaluate the frame and its building
-  blocks. A view implementation may import `operator-ui/index.ts` when it
-  loads.
+- Opening is a harmless read: it shows content and performs no owner effect.
+  Commands that start work, such as `/evo`, are not views.
+- A view does not need a command of its own. The statusline's Model view opens
+  from the footer's model and level segments. Pi's footer carries no other
+  navigation.
+- A second open request while the owner's view opens or shows changes nothing.
+  A session shutdown closes an open view.
+- Presentation code loads when the view opens, not when the extension factory
+  runs. No render path or selection handler starts an import.
+- State that should survive closing and reopening, such as a query and a
+  selection, belongs to the extension instance, not to the view.
+
+Owners: stash (`/stash`), clipboard (`/clipboard`), markdown
+(`/markdown recent` and `/markdown published`), pillars (`/pillars browse`),
+policy (`/policy`), and statusline (`/commands`, `/statuses`, and the Model
+view). The agent extension
+draws its own dashboard and hosts owner views in the attached terminal.
 
 ## Attached panels
 
@@ -240,7 +237,7 @@ interface OperatorPanelModule {
   readonly version: 2;
   /** Short destination label, plain text. */
   readonly title: string;
-  open(host: PanelHost): OperatorView;
+  open(host: PanelHost): View;
 }
 
 interface PanelHost extends ViewHost {
@@ -253,13 +250,14 @@ interface PanelHost extends ViewHost {
 }
 ```
 
-`readPanelModule` accepts a module export only in this shape; any other value
-is refused, never adapted. The module imports only presentation code from its
-own slice, `operator-ui/index.ts`, and public Pi or pi-tui types at evaluation.
-An explicit action may lazily import the owner-local adapter specified under
-[Client-local reveal](#client-local-reveal). Evaluating it
-registers nothing, starts no host, opens no store, emits no event, and reads no
-settings or credentials. It is trusted local code, not a sandbox.
+The host accepts a module export only in this shape: a function that returns
+version `2`, a non-empty title, and an `open` function. Any other value is
+refused, never adapted. The module imports only presentation code from its own
+slice and public Pi or pi-tui packages at evaluation. An explicit action may
+lazily import the owner-local adapter specified under
+[Client-local reveal](#client-local-reveal). Evaluating the module registers
+nothing, starts no host, opens no store, emits no event, and reads no settings
+or credentials. It is trusted local code, not a sandbox.
 
 ### Client
 
@@ -273,9 +271,9 @@ unit when the selection changes, and a late answer for an earlier selection is
 dropped.
 
 The agent's **Owner views** action (key `o`, listed in More) opens the loaded
-modules as destinations of the work view's inspector frame, beside or in
-place of the conversation. The work view draws the inspector's key footer on
-its own last row while the inspector has focus:
+modules as destinations of the work view's inspector, beside or in place of
+the conversation. The work view draws the inspector's key row on its own last
+row while the inspector has focus:
 
 - Each view's requests carry the conversation captured when it opened and the
   descriptor's command, with a fresh `invocationId` and `origin: "operator"`.
@@ -353,15 +351,13 @@ than inventing a transfer path.
 
 ## Verification
 
-`operator-ui/*.test.mts` tests the frame, controls, list, reader, forms,
-browser, loading view, publication handshake, owner resolution, guarded
-dispatch, and module shape checks. It also tests the registration entry's
-module boundary and a destination that loads behind a loading view: a first
-open, a repeated open, a close during the load, and a failed load. The Agent
-slice tests descriptor admission
-(refused entry, absent command, unloaded source), the command result shape,
-origin propagation, module loading through the real resolver (missing module,
-throwing export, wrong shape, source replacement), and the binding of requests
-to the captured target. Each owner tests its request union, its text route
-without data, and that importing its panel module registers and emits nothing.
-No slice test imports another slice's source.
+Each owner tests its own views against these rules: its key row and More, the
+Escape order, its browser and forms, its request union, its text route without
+data, and that importing its panel module registers and emits nothing. The
+Agent slice tests descriptor admission (refused entry, absent command, unloaded
+source), the command result shape, origin propagation, module loading through
+the real resolver (missing module, throwing export, wrong shape, source
+replacement), and the binding of requests to the captured target. No slice
+test imports another slice's source. `scripts/check-slices.mts` refuses a
+slice import that reaches another slice or leaves the slice for a repository
+module, apart from the exceptions it names.

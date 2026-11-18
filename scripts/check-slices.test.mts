@@ -1268,30 +1268,13 @@ test("allows only the agent public transport entrypoint", async () => {
 		assert.equal(auditSliceImports(root, join(root, file), analyseSource(join(root, file), `import "${specifier}";`)).length, allowed ? 0 : 1);
 });
 
-test("allows only the operator-ui public entrypoint, and only for its consumers", async () => {
+test("refuses a repository module shared across extensions for every slice", async () => {
 	const { auditSliceImports } = await import("./check-slices.mts");
 	const root = "/repo";
-	for (const [file, specifier, allowed] of [
-		["extensions/stash/operator-view.ts", "../../operator-ui/index.ts", true],
-		["extensions/statusline/index.ts", "../../operator-ui/index.ts", true],
-		["extensions/agent/work-view.ts", "../../operator-ui/index.ts", true],
-		["extensions/stash/operator-view.ts", "../../operator-ui/frame.ts", false],
-		["extensions/brave/index.ts", "../../operator-ui/index.ts", false],
+	for (const [file, specifier] of [
+		["extensions/stash/operator-view.ts", "../../operator-ui/index.ts"],
+		["extensions/agent/work-view.ts", "../../operator-ui/index.ts"],
+		["extensions/statusline/index.ts", "../../shared/views.ts"],
 	] as const)
-		assert.equal(auditSliceImports(root, join(root, file), analyseSource(join(root, file), `import "${specifier}";`)).length, allowed ? 0 : 1);
-});
-
-test("operator-ui imports nothing outside its own directory", async () => {
-	const { auditOperatorUiImports } = await import("./check-slices.mts");
-	const root = "/repo";
-	const file = join(root, "operator-ui", "frame.ts");
-	for (const [specifier, allowed] of [
-		["./view.ts", true],
-		["@earendil-works/pi-tui", true],
-		["node:fs", true],
-		["../extensions/stash/panel.ts", false],
-		["../transport/index.ts", false],
-		["/repo/extensions/agent/index.ts", false],
-	] as const)
-		assert.equal(auditOperatorUiImports(root, file, analyseSource(file, `import "${specifier}";`)).length, allowed ? 0 : 1, specifier);
+		assert.equal(auditSliceImports(root, join(root, file), analyseSource(join(root, file), `import "${specifier}";`)).length, 1, specifier);
 });

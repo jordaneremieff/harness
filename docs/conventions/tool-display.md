@@ -140,7 +140,7 @@ display: { version: 1, entry: "./display.ts", export: "toolDisplay" }
 This contract covers tool cards only: inert presentation of retained tool calls
 and results. An owner browser that the attached terminal can open over the
 conversation is a different role with its own request route; it is the
-[operator panels](operator-panels.md) contract, advertised beside `display` as
+[operator views](operator-panels.md#attached-panels) convention, advertised beside `display` as
 `panel`. A display module never executes and a panel module never renders tool
 cards.
 

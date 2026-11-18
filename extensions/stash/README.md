@@ -18,7 +18,7 @@ The agent distills an effort into a durable Markdown handover. The extension own
 | `stash_edit` | tool | Correct or amend the saved body with revision-checked exact replacements; preserve the title, metadata, and lifecycle. |
 | `stash_complete` | tool | Close an open or active effort with a required concrete outcome. |
 | `stash_rotate` | tool | Archive a stale open or closed effort so it no longer appears in listings or pickup; the file moves to the store's dot-hidden `.trash` directory and remains recoverable. |
-| `/stash` | command | Browse and pick up efforts in the shared browsing frame (TUI) or an RPC selection dialog. |
+| `/stash` | command | Browse and pick up efforts in the Stashes view (TUI) or an RPC selection dialog. |
 | `ctrl+alt+s` | shortcut | Open the same view directly in TUI mode without submitting or replacing the editor draft. |
 | `/stash new <hint>` | command | Admit independent Durable creation from the current context snapshot and hint; find the artifact through normal discovery. |
 | `/stash get <id>` | command | Pick up a stash by full id or unique prefix. |
@@ -1044,24 +1044,27 @@ and lifecycle changes; nothing ever deletes continuity data automatically.
 
 ## Browser behavior
 
-Bare `/stash` and `ctrl+alt+s` open the Stashes view in the shared browsing
-frame below the native transcript (`docs/conventions/operator-panels.md`),
-including while the agent works. The editor draft stays in place and returns
-when the frame closes, and opening does not stop the agent. Opening, reading,
-searching, and selecting do not pick up, create, close, release, reopen, or
-rotate an artifact; each of those is its own action, shown in the footer with
-its key. A second open while the frame is open navigates that frame instead of
-opening another. The
+Bare `/stash` and `ctrl+alt+s` open the Stashes view below the native
+transcript, including while the agent works. The view follows the operator
+views convention (`docs/conventions/operator-panels.md`) with this extension's
+own frame. The editor draft stays in place and returns when the view closes,
+and opening does not stop the agent. Opening, reading, searching, and selecting
+do not pick up, create, close, release, reopen, or rotate an artifact; each of
+those is its own action, shown in the key row with its key. A second open while
+the view opens or shows changes nothing, and a session shutdown closes it. The
 shortcut does nothing outside TUI mode; direct commands keep their existing
-mode behavior. The command shows Stashes on its own. Because this extension
-publishes it as an operator view, `/dashboard` also shows it as a tab.
+mode behavior.
 
-The footer at the bottom lists each control as its key and its short label. A
+The key row at the bottom lists each control as its key and its short label. A
 click on a control runs the same action as its key. The keys of this view are
 `enter` for pick up or reopen, `a` for a note, `o` to close an active stash,
 `c` to copy the resume command, `h` for help, and `r` to refresh. `/`
 focuses the search field. `x` opens the list of every other action, such as
-release and rotate. Escape closes the browser or goes back from a nested view.
+release and rotate; while a text field has focus, `ctrl+n` opens it. Escape
+closes More, then leaves the search field or the detail, then cancels a form,
+then goes back from a nested view, then closes the browser. PageUp and PageDown
+read the detail beside the list, and the expand key gives the view most of the
+window.
 
 The view has two scopes. **Recent** loads metadata for the newest 200
 artifacts; it reads no bodies. The selected row's body is read on demand, and
@@ -1104,8 +1107,8 @@ unchanged; a lifecycle effect rereads it the same way, so the shown preview and
 its actions always follow the store. The query, scope, and selection survive leaving and
 reopening the view within the session.
 
-The view (`operator-view.ts`) and the reads it shows (`browser-views.ts`) are
-shared by two hosts. Ordinary `/stash` binds them to direct store operations.
+The view (`operator-view.ts`) and the reads it shows (`browser-views.ts`) serve
+two hosts. Ordinary `/stash` binds them to direct store operations.
 The attached Agent terminal opens them through `operator-panel.ts`, a
 presentation-only module that routes every read and effect through the host's
 `stash` contribution command (see the Durable section above), with the same
@@ -1124,7 +1127,9 @@ forms.
 - `list-result.ts`: explicit native output schema and byte-bounded recent records derived from displayed rows.
 - `read-result.ts`: bounded terminal-safe artifact text with its complete-file digest on both tool entrypoints.
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.
-- `operator-view.ts`: the Stashes view in the shared browsing frame, with its lifecycle forms, over the operations it is given.
+- `frame.ts`: the view shape of the operator views convention and the ordinary frame: title row, nested views, outcome line, key row, More menu, Escape order and pointer routing, opened in the editor slot.
+- `view-parts.ts`: the scrolling reader and the staged form on Pi's editor.
+- `operator-view.ts`: the Stashes view (search, scopes, list and detail on Pi's input, list and Markdown components) with its lifecycle forms, over the operations it is given.
 - `browser-views.ts`: the recent and archive reads and the on-demand preview read, shared by both hosts.
 - `panel-protocol.ts`: the native route's request union and answer readers.
 - `operator-panel.ts`: the attached-terminal module over `operator-view.ts` and the request route.

@@ -95,8 +95,9 @@
   sibling-formatted output, reproduce sibling-owned types or lifecycle states,
   hardcode sibling evidence markers or tool sets, depend on sibling mutable state,
   or establish an undocumented sibling protocol. Cross-extension behaviour uses
-  public Pi surfaces or an explicit package-level contract owned outside either
-  extension and justified by current consumers. Tests for one extension must not
+  public Pi surfaces or a written convention in `docs/conventions/`, justified by
+  current consumers, that each extension implements with its own code. No runtime
+  module is shared across extensions. Tests for one extension must not
   assert another extension's private implementation or display format. Generic Pi
   event analysis must not recognise one sibling extension's private vocabulary. Do not create a shared abstraction solely to remove small
   duplication. Keep retained tests colocated as `*.test.mts`; each extension has its own README.
