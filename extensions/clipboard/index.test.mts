@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { TuiMouseEvent } from "@earendil-works/pi-tui";
-import type { NavigationFrame } from "../../operator-ui/index.ts";
+import type { Frame } from "./frame.ts";
 import registerClipboard from "./index.ts";
 import type { SearchPage } from "./search.ts";
 import { appendEntry, makeEntry } from "./store.ts";
@@ -91,47 +91,61 @@ function registry(): {
 	tools: Registry<Tool>;
 	commands: Registry<MockCommand>;
 	contributions: EmittedContribution[];
-	emitted: Array<{ event: string; value: unknown }>;
-	request(event: string, value: unknown): void;
+	shutdown(): void;
 } {
 	const tools = new Registry<Tool>();
 	const commands = new Registry<MockCommand>();
 	const contributions: EmittedContribution[] = [];
-	const emitted: Array<{ event: string; value: unknown }> = [];
+	let shutdown = () => {};
 	const handlers = new Map<string, Array<(value: unknown) => void>>();
 	const pi = {
 		registerTool: (tool: Tool) => tools.set(tool.name, tool),
 		registerCommand: (name: string, command: MockCommand) => commands.set(name, command),
-		on: () => {},
+		on: (event: string, handler: () => void) => {
+			if (event === "session_shutdown") shutdown = handler;
+		},
 		events: {
-			on: (event: string, handler: (value: unknown) => void) => { handlers.set(event, [...(handlers.get(event) ?? []), handler]); return () => {}; },
+			on: (event: string, handler: (value: unknown) => void) => {
+				handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+				return () => {};
+			},
 			emit: (event: string, value: unknown) => {
-				emitted.push({ event, value });
 				if (event === "durable:contribution") contributions.push(value as EmittedContribution);
 				for (const handler of handlers.get(event) ?? []) handler(value);
 			},
 		},
-		getCommands: () => [{ name: "clipboard", source: "extension", sourceInfo: { path: fileURLToPath(new URL("./index.ts", import.meta.url)), source: "local", scope: "user", origin: "top-level" } }],
 	};
 	registerClipboard(pi as unknown as ExtensionAPI);
-	return { tools, commands, contributions, emitted, request: (event, value) => { for (const handler of handlers.get(event) ?? []) handler(value); } };
+	return { tools, commands, contributions, shutdown };
 }
 
 const execute = (tool: Tool, params: Record<string, unknown>) =>
 	tool.execute("call", params, new AbortController().signal, undefined, {});
 
 /** Click the footer control drawn as `label`, at the position the last render gave it. */
-function clickFooter(frame: NavigationFrame, label: string, width = 160): void {
+function clickFooter(frame: Frame, label: string, width = 160): void {
 	const lines = frame.render(width);
 	const row = stripVTControlCharacters(lines.at(-1) ?? "");
 	const at = row.indexOf(label);
 	assert.ok(at >= 0, `no footer control ${label} in: ${row}`);
-	const event: TuiMouseEvent = { type: "click", button: "left", x: at, y: lines.length - 1, screenX: at, screenY: lines.length - 1, width, height: lines.length, shift: false, alt: false, ctrl: false };
+	const event: TuiMouseEvent = {
+		type: "click",
+		button: "left",
+		x: at,
+		y: lines.length - 1,
+		screenX: at,
+		screenY: lines.length - 1,
+		width,
+		height: lines.length,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	};
 	assert.ok(frame.handleMouse(event)?.handled, `${label} is clickable`);
 }
 
 /** Wait for the exact record to be read, check the footer, then restore by its key or its control. */
-async function restoreFrom(frame: NavigationFrame, route: "key" | "click"): Promise<void> {
+async function restoreFrom(frame: Frame, route: "key" | "click"): Promise<void> {
 	const screen = () => frame.render(160).join("\n");
 	for (let attempt = 0; attempt < 400; attempt++) {
 		const restore = frame.viewActions.find((action) => action.label === "Restore");
@@ -141,10 +155,12 @@ async function restoreFrom(frame: NavigationFrame, route: "key" | "click"): Prom
 	}
 	const lines = frame.render(160);
 	const row = stripVTControlCharacters(lines.at(-1) ?? "");
-	for (const control of ["enter restore", "r refresh", "esc close"]) assert.ok(row.includes(control), `${control} in: ${row}`);
+	for (const control of ["enter restore", "r refresh", "esc close"])
+		assert.ok(row.includes(control), `${control} in: ${row}`);
 	if (route === "key") frame.handleInput("\r");
 	else clickFooter(frame, "enter restore");
-	for (let attempt = 0; attempt < 400 && !/Restored/.test(screen()); attempt++) await new Promise((settled) => setTimeout(settled, 5));
+	for (let attempt = 0; attempt < 400 && !/Restored/.test(screen()); attempt++)
+		await new Promise((settled) => setTimeout(settled, 5));
 	assert.match(screen(), /Restored/, "the frame shows the restore outcome");
 }
 
@@ -216,20 +232,6 @@ describe("clipboard entrypoint", () => {
 		assert.equal(contributions[0]?.source, fileURLToPath(new URL("./index.ts", import.meta.url)));
 	});
 
-	it("publishes the clipboard view at setup and on request, bound to this module", () => {
-		const { emitted, request } = registry();
-		const publications = () => emitted.filter((item) => item.event === "harness:operator-view:publish").map((item) => item.value as { version: number; owner: string; views: Array<Record<string, unknown>> });
-		const [first] = publications();
-		assert.equal(first?.version, 2);
-		assert.equal(first?.owner, fileURLToPath(new URL("./index.ts", import.meta.url)), "the publication names its owner module so the frame binds to this registration");
-		assert.deepEqual(first?.views.map(({ view: _view, ...rest }) => rest), [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" }, order: 20 }]);
-		assert.equal(typeof first?.views[0]?.view, "function", "ordinary Pi shows the view in the frame");
-		request("harness:operator-view:request", { version: 2 });
-		assert.equal(publications().length, 2);
-		request("harness:operator-view:request", { version: 1 });
-		assert.equal(publications().length, 2, "another version is ignored");
-	});
-
 	it("restores a listed stable id after later writes shift list order", async () => {
 		const { tools } = registry();
 		const copy = tools.get("clipboard_copy");
@@ -264,11 +266,19 @@ describe("clipboard entrypoint", () => {
 		const before = await recordIds();
 		const result = await execute(tools.get("clipboard_restore"), { id });
 		assert.match(result.content[0].text, new RegExp(`Restored ${id} to clipboard`));
-		assert.equal(await readFile(clipboardFile, "utf8"), full, "the clipboard holds the exact full content, not the preview bound");
+		assert.equal(
+			await readFile(clipboardFile, "utf8"),
+			full,
+			"the clipboard holds the exact full content, not the preview bound",
+		);
 		const after = await recordIds();
 		assert.equal(after.length, before.length, "the archive record count is unchanged");
 		assert.deepEqual(after, before, "the archive holds the same ids as before the restore");
-		assert.equal((result.details as { archiveError?: string }).archiveError, undefined, "no archive outcome is reported");
+		assert.equal(
+			(result.details as { archiveError?: string }).archiveError,
+			undefined,
+			"no archive outcome is reported",
+		);
 	});
 
 	it("copies without an archive record when archive is false", async () => {
@@ -281,7 +291,11 @@ describe("clipboard entrypoint", () => {
 			return count;
 		};
 		const before = await lines();
-		const result = await execute(tools.get("clipboard_copy"), { content: "one-time body", label: "private", archive: false });
+		const result = await execute(tools.get("clipboard_copy"), {
+			content: "one-time body",
+			label: "private",
+			archive: false,
+		});
 		assert.equal(await readFile(clipboardFile, "utf8"), "one-time body");
 		assert.equal(await lines(), before, "the archive is unchanged");
 		assert.match(result.content[0].text, /Not added to clipboard history/);
@@ -374,7 +388,10 @@ describe("clipboard entrypoint", () => {
 		const get = registry().tools.get("clipboard_get");
 		const id = "source-bound-pages";
 		const date = "2026-01-02";
-		assert.equal(await appendEntry(archiveDir, makeEntry("🙂\x1bAAAA tail", undefined, new Date(`${date}T12:00:00Z`), id)), null);
+		assert.equal(
+			await appendEntry(archiveDir, makeEntry("🙂\x1bAAAA tail", undefined, new Date(`${date}T12:00:00Z`), id)),
+			null,
+		);
 		const first = await execute(get, { id, date, max_chars: 2 });
 		const sourceId = first.details.sourceId;
 		assert.ok(first.content[0].text.includes(`date "${date}", offset 2 and sourceId "${sourceId}"`));
@@ -384,7 +401,10 @@ describe("clipboard entrypoint", () => {
 		const jump = await execute(get, { id, date, offset: 7 });
 		assert.match(jump.content[0].text, /tail/);
 		assert.equal(jump.details.sourceId, sourceId);
-		assert.equal(await appendEntry(archiveDir, makeEntry("🙂\x1bxxxx tail", undefined, new Date(`${date}T12:00:00Z`), id)), null);
+		assert.equal(
+			await appendEntry(archiveDir, makeEntry("🙂\x1bxxxx tail", undefined, new Date(`${date}T12:00:00Z`), id)),
+			null,
+		);
 		await assert.rejects(execute(get, { id, date, offset: 2, sourceId }), /content changed/);
 		await assert.rejects(execute(get, { id, date, sourceId }), /content changed/);
 		const fresh = await execute(get, { id, date });
@@ -454,6 +474,42 @@ describe("clipboard entrypoint", () => {
 		assert.deepEqual(after.details.ids, before.details.ids);
 	});
 
+	it("opens one dedicated view and closes it on shutdown", async () => {
+		const { commands, shutdown } = registry();
+		const { promise: shown, resolve: show } = Promise.withResolvers<Frame>();
+		let opens = 0;
+		const ctx = {
+			hasUI: true,
+			mode: "tui",
+			cwd: root,
+			sessionManager: { getSessionId: () => "session-1" },
+			ui: {
+				custom: (factory: PanelFactory) =>
+					new Promise<void>((done) => {
+						opens++;
+						const frame = factory(
+							{ terminal: { rows: 40, columns: 120 }, requestRender: () => {} },
+							theme,
+							{ getKeys: () => [] },
+							done,
+						) as unknown as Frame;
+						show(frame);
+					}),
+			},
+		} as unknown as ClipboardCommandCtx;
+		const command = commands.get("clipboard");
+		const run = command.handler("", ctx);
+		await command.handler("", ctx);
+		const frame = await shown;
+		assert.match(stripVTControlCharacters(frame.render(120)[0] ?? ""), /Clipboard.*This session/u);
+		assert.equal(frame.capturesViewportInput, true);
+		assert.equal(opens, 1);
+		shutdown();
+		await run;
+		await command.handler("", ctx);
+		assert.equal(opens, 1);
+	});
+
 	it("restores the full archived entry from a bounded browser preview", async () => {
 		const { tools, commands } = registry();
 		const full = `${"preview ".repeat(5000)}FULL_TAIL`;
@@ -469,7 +525,12 @@ describe("clipboard entrypoint", () => {
 				notify: (message: string) => notifications.push(message),
 				custom: async (factory: PanelFactory) =>
 					new Promise((resolve) => {
-						const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, theme, { getKeys: () => [] }, resolve) as unknown as NavigationFrame;
+						const frame = factory(
+							{ terminal: { rows: 40, columns: 120 }, requestRender: () => {} },
+							theme,
+							{ getKeys: () => [] },
+							resolve,
+						) as unknown as Frame;
 						const screen = () => frame.render(120).join("\n");
 						void (async () => {
 							const restoreOf = () => frame.viewActions.find((action) => action.label === "Restore");
@@ -480,9 +541,13 @@ describe("clipboard entrypoint", () => {
 							assert.match(screen(), /\d+ lines · \d+ characters/);
 							assert.ok(screen().includes("preview preview"), "the exact record was read before Restore");
 							const restoreAction = restoreOf();
-							assert.ok(restoreAction && restoreAction.disabled === undefined, "Restore is available once the exact record is read");
+							assert.ok(
+								restoreAction && restoreAction.disabled === undefined,
+								"Restore is available once the exact record is read",
+							);
 							restoreAction.run();
-							for (let attempt = 0; attempt < 400 && !/Restored/.test(screen()); attempt++) await new Promise((settled) => setTimeout(settled, 5));
+							for (let attempt = 0; attempt < 400 && !/Restored/.test(screen()); attempt++)
+								await new Promise((settled) => setTimeout(settled, 5));
 							frameText = screen();
 							frame.close();
 						})();
@@ -501,7 +566,8 @@ describe("clipboard entrypoint", () => {
 		await execute(tools.get("clipboard_copy"), { content, label: "footer-restore" });
 		const archived = async () => {
 			let total = 0;
-			for (const name of await readdir(archiveDir)) total += (await readFile(join(archiveDir, name), "utf8")).split("\n").filter(Boolean).length;
+			for (const name of await readdir(archiveDir))
+				total += (await readFile(join(archiveDir, name), "utf8")).split("\n").filter(Boolean).length;
 			return total;
 		};
 		const before = await archived();
@@ -528,7 +594,12 @@ describe("clipboard entrypoint", () => {
 					notify: () => {},
 					custom: async (factory: PanelFactory) =>
 						new Promise((resolve) => {
-							const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, theme, { getKeys: () => [] }, resolve) as unknown as NavigationFrame;
+							const frame = factory(
+								{ terminal: { rows: 40, columns: 120 }, requestRender: () => {} },
+								theme,
+								{ getKeys: () => [] },
+								resolve,
+							) as unknown as Frame;
 							void restoreFrom(frame, route).then(() => frame.close());
 						}),
 				},
@@ -536,7 +607,11 @@ describe("clipboard entrypoint", () => {
 			return commands.get("clipboard").handler("", ctx as unknown as ClipboardCommandCtx);
 		};
 		await run("key");
-		assert.equal(await readFile(clipboardFile, "utf8"), content, "a restore writes the exact full content to the clipboard");
+		assert.equal(
+			await readFile(clipboardFile, "utf8"),
+			content,
+			"a restore writes the exact full content to the clipboard",
+		);
 		assert.equal(await archived(), before, "Enter restores and appends no archive record");
 		assert.deepEqual(await recordIds(), idsBefore, "the archive holds the same records as before the restore");
 		await run("click");

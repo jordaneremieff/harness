@@ -15,7 +15,7 @@ the payload contains no execution functions. The renderers live in `display.ts`,
 | `clipboard_list` | tool | List recent entries or search full archived text, with bounded continuation and stable ids. |
 | `clipboard_get` | tool | Read one archived entry by stable id, in bounded pages. |
 | `clipboard_restore` | tool | Copy one archived entry back to the clipboard; it adds no archive entry. |
-| `/clipboard` | command | Browse recent entries or search the archive, preview, and restore in the shared browsing frame. |
+| `/clipboard` | command | Browse recent entries or search the archive, preview, and restore in its own view. |
 
 Each tool is one operation; there is no action multiplexer, and the model-facing
 API has no transient index addressing — stable ids are the only entry handle.
@@ -254,19 +254,17 @@ The extension provides no entry-level deletion. Daily-file removal avoids rewrit
 
 ## Browser behavior
 
-`/clipboard` opens the Clipboard view in the shared browsing frame below the
-native transcript (`docs/conventions/operator-panels.md`), in TUI mode. RPC
-receives a notification that directs the caller to `clipboard_list`, rather
-than attempting a terminal-only component. The command shows Clipboard on its
-own. Because this extension publishes it as an operator view, `/dashboard` also
-shows it as a tab. The view module loads when the destination opens; until it
-is ready the frame shows a reading placeholder.
+`/clipboard` opens Clipboard below the transcript in TUI mode. The view follows
+the [operator panel convention](../../docs/conventions/operator-panels.md). RPC
+receives a notification that directs the caller to `clipboard_list`.
 
 The footer at the bottom lists each control as its key and its short label. A
 click on a control runs the same action as its key. The keys of this view are
 `enter` to restore and `r` to refresh. `/` focuses the search field. `x` opens
-the list of every other action, such as Search archive and Continue. Escape
-closes the browser or goes back from a nested view.
+the list of every other action, such as Search archive and Continue. Use `ctrl+n` for More while the search
+field has focus. Tab moves through search, scopes, the list, and the detail.
+PageUp and PageDown read the detail; below 90 columns, Right opens it as a
+separate view. Escape closes More, clears and leaves search, or goes back.
 
 The view has two scopes. **Recent** lists the newest 200 entries; the search
 field filters them by label, id, and excerpt. **Archive** runs the same literal
@@ -382,7 +380,7 @@ the diagnostic has more than one line.
 - `store.ts`: local settings read, private append-only archive, and stable-id resolution.
 - `search.ts`: bounded literal discovery, candidate validation, and stateless continuation.
 - `pb.ts`: no-shell `pbcopy` and `pbpaste` wrappers.
-- `operator-view.ts`: the Clipboard view in the shared browsing frame, over the operations it is given.
+- `operator-view.ts`: the Clipboard view over the operations it is given.
 - `browser-operations.ts`: the archive reads and the restore behind the view, shared by both hosts.
 - `panel-protocol.ts`: the native route's request union and answer readers.
 - `operator-panel.ts`: the attached-terminal module over `operator-view.ts` and the request route.

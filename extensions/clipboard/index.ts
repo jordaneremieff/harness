@@ -1,4 +1,4 @@
-/** macOS clipboard tools, stable history retrieval, and the /clipboard view in the shared browsing frame. */
+/** macOS clipboard tools, stable history retrieval, and the /clipboard view below the transcript. */
 
 import type { Static } from "@earendil-works/pi-schema";
 import { fileURLToPath } from "node:url";
@@ -29,13 +29,12 @@ import {
 	RESTORE_SNIPPET,
 	RestoreParams,
 } from "./operations.ts";
-import { LoadingView, openOperatorFrame, publishOperatorViews, type OperatorView, type ViewHost } from "../../operator-ui/registration.ts";
+import type { Frame } from "./frame.ts";
 import { toolDisplay } from "./display.ts";
 import type { ClipboardOperations, ClipboardViewState } from "./operator-view.ts";
 import { readEntries, resolveClipboardDir } from "./store.ts";
 import { safeLine } from "./text.ts";
 
-const OWNER = fileURLToPath(import.meta.url);
 const storeDir = () => resolveClipboardDir(process.env, getAgentDir());
 const errorText = (error: unknown) => safeLine(error instanceof Error ? error.message : String(error));
 
@@ -65,21 +64,39 @@ async function notifyRecent(ctx: ExtensionContext): Promise<void> {
 
 export default function (pi: ExtensionAPI) {
 	let viewState: ClipboardViewState | undefined;
-	let operations: ClipboardOperations | undefined;
-	/** The archive reader and its view load when the destination opens, not when this factory runs. */
-	const loadView = async (host: ViewHost): Promise<OperatorView> => {
-		const [archive, module] = await Promise.all([import("./browser-operations.ts"), import("./operator-view.ts")]);
-		operations ??= archiveOperations(archive);
-		viewState ??= module.createClipboardViewState();
-		return module.clipboardView(host, operations, viewState);
-	};
-	publishOperatorViews(pi, {
-		version: 2,
-		owner: OWNER,
-		views: [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" }, order: 20, view: (_ctx, host) => new LoadingView("Clipboard", host, () => loadView(host)) }],
-	});
+	let frame: Frame | undefined;
+	let opening = false;
+	let closed = false;
+	async function openBrowser(ctx: ExtensionContext): Promise<void> {
+		if (opening || closed) return;
+		opening = true;
+		try {
+			const [{ openFrame }, module, archive] = await Promise.all([
+				import("./frame.ts"),
+				import("./operator-view.ts"),
+				import("./browser-operations.ts"),
+			]);
+			if (closed) return;
+			viewState ??= module.createClipboardViewState();
+			const state = viewState;
+			const operations = archiveOperations(archive);
+			await openFrame(
+				ctx,
+				(host) => module.clipboardView(host, operations, state),
+				(current) => {
+					frame = current;
+				},
+			);
+		} finally {
+			opening = false;
+		}
+	}
 	const stopSettings = publishSettings(pi.events, { agentDir: getAgentDir() });
-	pi.on("session_shutdown", () => stopSettings());
+	pi.on("session_shutdown", () => {
+		closed = true;
+		frame?.close();
+		stopSettings();
+	});
 	pi.events.emit(
 		"durable:contribution",
 		clipboardContribution(fileURLToPath(import.meta.url), pi.events, stopSettings),
@@ -161,7 +178,7 @@ export default function (pi: ExtensionAPI) {
 				await notifyRecent(ctx);
 				return;
 			}
-			await openOperatorFrame(pi, ctx, { owner: OWNER, id: "clipboard" });
+			await openBrowser(ctx);
 		},
 	});
 

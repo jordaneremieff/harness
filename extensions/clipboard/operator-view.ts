@@ -1,12 +1,13 @@
 /**
- * The clipboard history view in the shared browsing frame. Ordinary Pi binds its operations to
+ * The clipboard history view under its own title. Ordinary Pi binds its operations to
  * the archive directly; the attached terminal binds them to the `clipboard` command route. The
  * view owns no store: it reads through the operations it is given and never writes except through
  * the labelled Restore action.
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { type Action, age, Browser, type OperatorView, plainLine, type ViewHost } from "../../operator-ui/index.ts";
+import { type Action, age, type View, plainLine, type ViewHost } from "./frame.ts";
+import { Browser } from "./browser.ts";
 import { restoredNotice, type RestoreOutcome } from "./browser-operations.ts";
 import type { SearchPage } from "./search.ts";
 import type { ClipboardEntry } from "./store.ts";
@@ -32,7 +33,11 @@ export function createClipboardViewState(): ClipboardViewState {
 	return { scope: "recent", query: "" };
 }
 
-type Read<T> = { state: "idle" } | { state: "pending" } | { state: "ready"; value: T } | { state: "failed"; error: string };
+type Read<T> =
+	| { state: "idle" }
+	| { state: "pending" }
+	| { state: "ready"; value: T }
+	| { state: "failed"; error: string };
 
 const identity = (entry: Pick<ClipboardEntry, "id" | "archiveDate">) => `${entry.archiveDate ?? ""}\u0000${entry.id}`;
 const message = (error: unknown) => safeLine(error instanceof Error ? error.message : String(error));
@@ -53,7 +58,9 @@ function matchEntry(match: SearchPage["matches"][number]): ClipboardEntry {
 
 function coverageText(page: SearchPage): string {
 	const detail = `${page.scan.records} records scanned; ${page.scan.malformed} malformed and ${page.scan.oversized} oversized skipped`;
-	return page.hasMore ? `Partial scan (${page.stop}) · Continue reads more · ${detail}` : `End of the archive scan · ${detail}`;
+	return page.hasMore
+		? `Partial scan (${page.stop}) · Continue reads more · ${detail}`
+		: `End of the archive scan · ${detail}`;
 }
 
 function localTime(value: string): string {
@@ -129,7 +136,11 @@ class ClipboardView {
 		if (this.state.scope === "archive") return this.archive;
 		const loaded = this.recent.state === "ready" ? this.recent.value.entries : [];
 		const query = this.state.query.toLocaleLowerCase();
-		return query ? loaded.filter((entry) => `${entry.id}\n${entry.label ?? ""}\n${entry.preview}`.toLocaleLowerCase().includes(query)) : loaded;
+		return query
+			? loaded.filter((entry) =>
+					`${entry.id}\n${entry.label ?? ""}\n${entry.preview}`.toLocaleLowerCase().includes(query),
+				)
+			: loaded;
 	}
 
 	private refreshItems(): void {
@@ -260,10 +271,18 @@ class ClipboardView {
 			"",
 		].filter((line, index) => line || index === 3);
 		const preview = this.previews.get(identity(entry));
-		if (!preview || preview.state === "pending" || preview.state === "idle") return [...head, "Reading the exact record…"].join("\n");
-		if (preview.state === "failed") return [...head, `The record could not be read: ${preview.error}`, "Restore stays unavailable until it reads."].join("\n");
+		if (!preview || preview.state === "pending" || preview.state === "idle")
+			return [...head, "Reading the exact record…"].join("\n");
+		if (preview.state === "failed")
+			return [
+				...head,
+				`The record could not be read: ${preview.error}`,
+				"Restore stays unavailable until it reads.",
+			].join("\n");
 		const body = sanitizeTerminalText(preview.value.content).text;
-		const more = preview.value.contentTruncated ? `\n\n… preview shows the first part; Restore writes the complete record.` : "";
+		const more = preview.value.contentTruncated
+			? `\n\n… preview shows the first part; Restore writes the complete record.`
+			: "";
 		return `${head.join("\n")}${body}${more}`;
 	}
 
@@ -292,10 +311,31 @@ class ClipboardView {
 			},
 		];
 		if (this.state.scope === "archive") {
-			actions.push({ id: "search", label: "Search archive", disabled: this.state.query.trim() ? undefined : "Type text to search for", run: () => void this.search(false) });
-			actions.push({ id: "continue", label: "Continue", disabled: this.cursor && !this.stale ? undefined : "The scan has no further page", run: () => void this.search(true) });
+			actions.push({
+				id: "search",
+				label: "Search archive",
+				disabled: this.state.query.trim() ? undefined : "Type text to search for",
+				run: () => void this.search(false),
+			});
+			actions.push({
+				id: "continue",
+				label: "Continue",
+				disabled: this.cursor && !this.stale ? undefined : "The scan has no further page",
+				run: () => void this.search(true),
+			});
 		}
-		actions.push({ id: "refresh", label: "Refresh", key: "r", short: "refresh", primary: true, description: this.state.scope === "archive" ? "Run the search again and reread the selected record" : "Read recent entries again and reread the selected record", run: () => void this.refresh() });
+		actions.push({
+			id: "refresh",
+			label: "Refresh",
+			key: "r",
+			short: "refresh",
+			primary: true,
+			description:
+				this.state.scope === "archive"
+					? "Run the search again and reread the selected record"
+					: "Read recent entries again and reread the selected record",
+			run: () => void this.refresh(),
+		});
 		return actions;
 	}
 
@@ -328,21 +368,30 @@ class ClipboardView {
 	private status(): string {
 		if (this.state.scope === "archive") return this.archiveStatus;
 		if (this.recent.state === "pending" || this.recent.state === "idle") return "Reading recent entries…";
-		if (this.recent.state === "failed") return `Recent entries could not be read; Refresh retries: ${this.recent.error}`;
+		if (this.recent.state === "failed")
+			return `Recent entries could not be read; Refresh retries: ${this.recent.error}`;
 		const shown = this.items().length;
 		const total = this.recent.value.entries.length;
 		const more = this.recent.value.hasMore ? "+" : "";
-		return this.state.query ? `${shown} of ${total}${more} recent entries match` : `${total}${more} recent entries · newest first`;
+		return this.state.query
+			? `${shown} of ${total}${more} recent entries match`
+			: `${total}${more} recent entries · newest first`;
 	}
 
 	private empty(): string {
-		if (this.state.scope === "archive") return this.searched ? "No archive record matches." : "Search the archive for text you copied earlier.";
-		if (this.recent.state !== "ready") return this.recent.state === "failed" ? "Unavailable: the history could not be read." : "Reading…";
+		if (this.state.scope === "archive")
+			return this.searched ? "No archive record matches." : "Search the archive for text you copied earlier.";
+		if (this.recent.state !== "ready")
+			return this.recent.state === "failed" ? "Unavailable: the history could not be read." : "Reading…";
 		return this.state.query ? "No recent entry matches the filter." : "Clipboard history is empty.";
 	}
 }
 
 /** Open the clipboard view inside a frame. */
-export function clipboardView(host: ViewHost, ops: ClipboardOperations, state: ClipboardViewState = createClipboardViewState()): OperatorView {
+export function clipboardView(
+	host: ViewHost,
+	ops: ClipboardOperations,
+	state: ClipboardViewState = createClipboardViewState(),
+): View {
 	return new ClipboardView(host, ops, state).browser;
 }

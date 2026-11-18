@@ -4,13 +4,17 @@
  * is the same one ordinary Pi mounts. Evaluating this module registers nothing and opens no store.
  */
 
-import type { JsonValue, OperatorPanelModule, PanelHost } from "../../operator-ui/index.ts";
+import type { JsonValue, OperatorPanelModule, PanelHost } from "./frame.ts";
 import { type ClipboardOperations, clipboardView } from "./operator-view.ts";
 import { type ClipboardPanelRequest, readPanelAnswer } from "./panel-protocol.ts";
 
 function operations(host: PanelHost): ClipboardOperations {
-	const ask = async (request: ClipboardPanelRequest, signal: AbortSignal) => readPanelAnswer(request, (await host.request(request as JsonValue, signal)).data);
-	const key = (entry: { id: string; archiveDate?: string }) => ({ id: entry.id, ...(entry.archiveDate === undefined ? {} : { archiveDate: entry.archiveDate }) });
+	const ask = async (request: ClipboardPanelRequest, signal: AbortSignal) =>
+		readPanelAnswer(request, (await host.request(request as JsonValue, signal)).data);
+	const key = (entry: { id: string; archiveDate?: string }) => ({
+		id: entry.id,
+		...(entry.archiveDate === undefined ? {} : { archiveDate: entry.archiveDate }),
+	});
 	return {
 		recent: async (signal) => {
 			const answer = await ask({ op: "recent" }, signal);

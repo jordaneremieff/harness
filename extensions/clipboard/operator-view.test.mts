@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import type { Browser, OperatorView, ViewHost } from "../../operator-ui/index.ts";
+import type { Browser } from "./browser.ts";
+import type { View, ViewHost } from "./frame.ts";
 import { loadRecentEntries, PREVIEW_CONTENT_CHARS, readExactEntry, searchArchive } from "./browser-operations.ts";
 import { appendEntry, makeEntry, type ClipboardEntry } from "./store.ts";
 import { clipboardView, createClipboardViewState, type ClipboardOperations } from "./operator-view.ts";
@@ -49,19 +50,25 @@ function viewHost(): ViewHost {
 	};
 }
 
-function screenOf(view: OperatorView, width = 120, height = 30): string {
+function screenOf(view: View, width = 120, height = 30): string {
 	return (view.render(width, height) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
 }
 
 /** Run one labelled action, as its footer control would. */
-function act(view: OperatorView, label: string): void {
+function act(view: View, label: string): void {
 	const action = view.actions?.().find((candidate) => candidate.label === label);
-	assert.ok(action, `no ${label}: ${view.actions?.().map((candidate) => candidate.label).join(", ")}`);
+	assert.ok(
+		action,
+		`no ${label}: ${view
+			.actions?.()
+			.map((candidate) => candidate.label)
+			.join(", ")}`,
+	);
 	assert.equal(action.disabled, undefined, `${label} is unavailable: ${action.disabled}`);
 	action.run();
 }
 
-const typeInto = (view: OperatorView, text: string) => {
+const typeInto = (view: View, text: string) => {
 	for (const character of text) view.handleInput(character);
 };
 
@@ -131,7 +138,10 @@ test("a query change from either scope invalidates the archive, and a late old s
 	assert.ok(!stale.includes("alpha body text one"), "the late old search installs no results for the new query");
 	assert.match(stale, /Query changed · press Enter or choose Search archive/, "the archive asks for the new query");
 	assert.equal(view.actions?.().find((action) => action.label === "Restore")?.disabled, "Select an entry first");
-	assert.equal(view.actions?.().find((action) => action.label === "Continue")?.disabled, "The scan has no further page");
+	assert.equal(
+		view.actions?.().find((action) => action.label === "Continue")?.disabled,
+		"The scan has no further page",
+	);
 	view.handleInput("/");
 	view.handleInput("\r");
 	assert.ok(await waitFor(() => /End of the archive scan/.test(screenOf(view))), "the new query searches the archive");
@@ -139,9 +149,15 @@ test("a query change from either scope invalidates the archive, and a late old s
 	extendQuery(view, "s");
 	assert.equal(view.query, "betas", "an edit after a completed search reaches the view");
 	assert.match(screenOf(view), /Query changed · press Enter or choose Search archive/);
-	assert.equal(view.actions?.().find((action) => action.label === "Restore")?.disabled, "The archive results are stale; search again first");
+	assert.equal(
+		view.actions?.().find((action) => action.label === "Restore")?.disabled,
+		"The archive results are stale; search again first",
+	);
 	view.handleInput("\r");
-	assert.ok(await waitFor(() => (searches.at(-1)?.query === "betas" && /End of the archive scan/.test(screenOf(view)))), "the edited query searches again");
+	assert.ok(
+		await waitFor(() => searches.at(-1)?.query === "betas" && /End of the archive scan/.test(screenOf(view))),
+		"the edited query searches again",
+	);
 });
 
 test("Refresh retries the selected record's failed read, and Restore stays unavailable until it succeeds", async () => {
@@ -174,7 +190,10 @@ test("Refresh retries the selected record's failed read, and Restore stays unava
 		await waitFor(() => screenOf(view).includes("The record could not be read: transient read failure")),
 		"the failed read is shown",
 	);
-	assert.equal(view.actions?.().find((action) => action.label === "Restore")?.disabled, "The exact record has not been read yet");
+	assert.equal(
+		view.actions?.().find((action) => action.label === "Restore")?.disabled,
+		"The exact record has not been read yet",
+	);
 	const selected = view.selected;
 	assert.ok(selected);
 	act(view, "Refresh");
@@ -186,6 +205,13 @@ test("Refresh retries the selected record's failed read, and Restore stays unava
 	);
 	assert.ok(screenOf(view).includes("Entry "), "the exact record is read");
 	act(view, "Restore");
-	assert.ok(await waitFor(() => notices.some((notice) => notice.startsWith("Restored (1L/"))), "the restore receipt shows");
-	assert.deepEqual(restoreCalls, [{ id: selected.id, archiveDate: selected.archiveDate }], "restore resolves the same exact record");
+	assert.ok(
+		await waitFor(() => notices.some((notice) => notice.startsWith("Restored (1L/"))),
+		"the restore receipt shows",
+	);
+	assert.deepEqual(
+		restoreCalls,
+		[{ id: selected.id, archiveDate: selected.archiveDate }],
+		"restore resolves the same exact record",
+	);
 });

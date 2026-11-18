@@ -6,12 +6,16 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { clipboardContribution, type DurableCommandCall } from "./durable.ts";
-import type { JsonValue, PanelHost } from "../../operator-ui/index.ts";
+import type { JsonValue, PanelHost } from "./frame.ts";
 import { operatorPanel } from "./operator-panel.ts";
 import { readPanelAnswer, readPanelRequest } from "./panel-protocol.ts";
 import { appendEntry, makeEntry, readEntries } from "./store.ts";
 
-const theme = { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text } as unknown as PanelHost["theme"];
+const theme = {
+	fg: (_c: string, text: string) => text,
+	bg: (_c: string, text: string) => text,
+	bold: (text: string) => text,
+} as unknown as PanelHost["theme"];
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 let root: string;
@@ -24,28 +28,52 @@ before(async () => {
 	agentDir = join(root, "agent");
 	clipboardFile = join(root, "clipboard.txt");
 	const bin = join(root, "bin");
-	await mkdir(bin); await mkdir(agentDir);
+	await mkdir(bin);
+	await mkdir(agentDir);
 	await writeFile(join(bin, "pbcopy"), '#!/bin/sh\ncat > "$FAKE_CLIPBOARD_FILE"\n');
 	await chmod(join(bin, "pbcopy"), 0o755);
-	for (const key of ["PATH", "PI_CLIPBOARD_DIR", "FAKE_CLIPBOARD_FILE", "PI_HARNESS_FILE"]) saved[key] = process.env[key];
+	for (const key of ["PATH", "PI_CLIPBOARD_DIR", "FAKE_CLIPBOARD_FILE", "PI_HARNESS_FILE"])
+		saved[key] = process.env[key];
 	process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
 	process.env.PI_CLIPBOARD_DIR = join(root, "archive");
 	process.env.FAKE_CLIPBOARD_FILE = clipboardFile;
 	process.env.PI_HARNESS_FILE = join(root, "harness.json");
-	await appendEntry(join(root, "archive"), makeEntry("first body\nsecond line", "first", new Date("2026-03-04T05:06:07Z"), "entry-one"));
-	await appendEntry(join(root, "archive"), makeEntry("other body", "other", new Date("2026-03-04T06:06:07Z"), "entry-two"));
+	await appendEntry(
+		join(root, "archive"),
+		makeEntry("first body\nsecond line", "first", new Date("2026-03-04T05:06:07Z"), "entry-one"),
+	);
+	await appendEntry(
+		join(root, "archive"),
+		makeEntry("other body", "other", new Date("2026-03-04T06:06:07Z"), "entry-two"),
+	);
 });
 
 after(async () => {
-	for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+	for (const [key, value] of Object.entries(saved)) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
 	await rm(root, { recursive: true, force: true });
 });
 
 function command() {
 	const contribution = clipboardContribution("/owner/index.ts", { emit() {}, on: () => () => {} } as never, () => {});
-	assert.deepEqual(contribution.panel, { version: 1, entry: "./operator-panel.ts", export: "operatorPanel", command: "clipboard" });
+	assert.deepEqual(contribution.panel, {
+		version: 1,
+		entry: "./operator-panel.ts",
+		export: "operatorPanel",
+		command: "clipboard",
+	});
 	const run = contribution.commands[0].run;
-	return (data?: JsonValue, origin: "operator" | "model" = "operator") => run({ args: "", ...(data === undefined ? {} : { data }), origin, host: { agentDir } as never, context: {}, invocationId: "inv" } as DurableCommandCall);
+	return (data?: JsonValue, origin: "operator" | "model" = "operator") =>
+		run({
+			args: "",
+			...(data === undefined ? {} : { data }),
+			origin,
+			host: { agentDir } as never,
+			context: {},
+			invocationId: "inv",
+		} as DurableCommandCall);
 }
 
 describe("clipboard native browser route", () => {
@@ -59,11 +87,15 @@ describe("clipboard native browser route", () => {
 		assert.equal(typeof recent, "object");
 		const answer = readPanelAnswer({ op: "recent" }, (recent as { data: unknown }).data);
 		assert.equal(answer.op, "recent");
-		if (answer.op === "recent") assert.deepEqual(answer.entries.map((entry) => entry.id), ["entry-two", "entry-one"]);
-		const preview = await run({ op: "preview", id: "entry-one" }) as { text: string; data: unknown };
+		if (answer.op === "recent")
+			assert.deepEqual(
+				answer.entries.map((entry) => entry.id),
+				["entry-two", "entry-one"],
+			);
+		const preview = (await run({ op: "preview", id: "entry-one" })) as { text: string; data: unknown };
 		const previewAnswer = readPanelAnswer({ op: "preview", id: "entry-one" }, preview.data);
 		assert.ok(previewAnswer.op === "preview" && previewAnswer.entry.content === "first body\nsecond line");
-		const search = await run({ op: "search", query: "other" }) as { data: unknown };
+		const search = (await run({ op: "search", query: "other" })) as { data: unknown };
 		const searchAnswer = readPanelAnswer({ op: "search", query: "other" }, search.data);
 		assert.ok(searchAnswer.op === "search" && searchAnswer.page.matches.map((match) => match.id).includes("entry-two"));
 		await assert.rejects(run({ op: "steal" }), /not supported/);
@@ -74,14 +106,18 @@ describe("clipboard native browser route", () => {
 	it("restore rewrites the full exact record and adds no archive record", async () => {
 		const run = command();
 		const before = (await readEntries(join(root, "archive"), { limit: 10 })).map((entry) => entry.id);
-		const restored = await run({ op: "restore", id: "entry-one" }) as { text: string; data: unknown };
+		const restored = (await run({ op: "restore", id: "entry-one" })) as { text: string; data: unknown };
 		const answer = readPanelAnswer({ op: "restore", id: "entry-one" }, restored.data);
 		assert.ok(answer.op === "restore" && answer.ok === true);
-		assert.equal(await readFile(clipboardFile, "utf8"), "first body\nsecond line", "the clipboard holds the exact full content");
+		assert.equal(
+			await readFile(clipboardFile, "utf8"),
+			"first body\nsecond line",
+			"the clipboard holds the exact full content",
+		);
 		assert.match(restored.text, /restored entry-one/);
 		const after = (await readEntries(join(root, "archive"), { limit: 10 })).map((entry) => entry.id);
 		assert.deepEqual(after, before, "the archive holds the same records as before the restore");
-		const missing = await run({ op: "restore", id: "absent" }) as { text: string; data: unknown };
+		const missing = (await run({ op: "restore", id: "absent" })) as { text: string; data: unknown };
 		const failed = readPanelAnswer({ op: "restore", id: "absent" }, missing.data);
 		assert.ok(failed.op === "restore" && failed.ok === false && /no longer available/.test(failed.error));
 	});
@@ -130,17 +166,30 @@ describe("clipboard operator panel module", () => {
 		const view = module.open(f.host);
 		await settle();
 		const lines = view.render(100, 20).map(stripVTControlCharacters);
-		assert.ok(lines.some((line) => line.includes("other")), lines.join("\n"));
+		assert.ok(
+			lines.some((line) => line.includes("other")),
+			lines.join("\n"),
+		);
 		assert.deepEqual(requests[0], { op: "recent" });
-		assert.ok(requests.some((request) => (request as { op?: string }).op === "preview"), "selection reads the exact record through the host");
+		assert.ok(
+			requests.some((request) => (request as { op?: string }).op === "preview"),
+			"selection reads the exact record through the host",
+		);
 		assert.ok(!requests.some((request) => (request as { op?: string }).op === "restore"), "selection never restores");
 		const restore = view.actions?.().find((action) => action.label === "Restore");
 		assert.ok(restore && restore.disabled === undefined, "Restore is labelled and available once the record is read");
 		restore.run();
 		await settle();
-		assert.ok(f.notices.some((text) => /^Restored /.test(text)), f.notices.join("\n"));
-		const previewed = requests.find((request) => (request as { op?: string }).op === "preview") as { id?: string } | undefined;
-		const restored = requests.find((request) => (request as { op?: string }).op === "restore") as { id?: string } | undefined;
+		assert.ok(
+			f.notices.some((text) => /^Restored /.test(text)),
+			f.notices.join("\n"),
+		);
+		const previewed = requests.find((request) => (request as { op?: string }).op === "preview") as
+			| { id?: string }
+			| undefined;
+		const restored = requests.find((request) => (request as { op?: string }).op === "restore") as
+			| { id?: string }
+			| undefined;
 		assert.ok(previewed?.id && restored?.id === previewed.id, "Restore writes the record the operator read");
 		assert.ok(["first body\nsecond line", "other body"].includes(await readFile(clipboardFile, "utf8")));
 	});
@@ -171,7 +220,8 @@ describe("clipboard operator panel module", () => {
 		assert.ok(refresh, "Refresh stays reachable after the failure");
 		refresh.run();
 		assert.match(draw(), /Reading recent entries/, "a retry shows the read again");
-		for (let round = 0; round < 200 && !draw().includes("other"); round++) await new Promise((resolve) => setTimeout(resolve, 5));
+		for (let round = 0; round < 200 && !draw().includes("other"); round++)
+			await new Promise((resolve) => setTimeout(resolve, 5));
 		assert.ok(draw().includes("other"), draw());
 	});
 });
