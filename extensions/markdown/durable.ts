@@ -1,5 +1,7 @@
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
+import { createNativeBriefTool } from "./brief-tool.ts";
+import { writingOptions } from "./writing-config.ts";
 import { readSettings, publishSettings, type SettingsBus } from "./settings.ts";
 import { MarkdownStore } from "./store.ts";
 import { recentNative, readNative, type NativeSource } from "./native-responses.ts";
@@ -71,7 +73,9 @@ export function markdownContribution(source: string, bus: SettingsBus, stopFacto
 		create(host: MarkdownHost): Durable.Extension {
 			stopFactoryPublisher();
 			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));
-			const settings = readSettings({ agentDir: host.agentDir }).values;
+			const snapshot = readSettings({ agentDir: host.agentDir });
+			const settings = snapshot.values;
+			const writing = writingOptions(host.agentDir, snapshot);
 			const store = new MarkdownStore(settings.dir);
 			const live = nativeLive(host);
 			const connection = async (id: Durable.ConversationId, context: Context) => {
@@ -81,7 +85,7 @@ export function markdownContribution(source: string, bus: SettingsBus, stopFacto
 			};
 			return host.durable.defineExtension({
 				name: "markdown",
-				tools: [createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store, app: settings.app, connection, panes: async (conversation) => (await live.bridges.find(String(conversation)))?.list().length ?? 0 }), createNativeReadTool(host.durable, { store, app: settings.app, connection }), createNativeLiveTool(host.durable, (conversation) => live.bridges.find(conversation))],
+				tools: [createNativeBriefTool(host, writing), createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store, app: settings.app, writing, connection, panes: async (conversation) => (await live.bridges.find(String(conversation)))?.list().length ?? 0 }), createNativeReadTool(host.durable, { store, app: settings.app, connection }), createNativeLiveTool(host.durable, (conversation) => live.bridges.find(conversation))],
 				sections: [host.durable.section("markdown", () => NATIVE_PUBLISH_GUIDANCE)],
 			});
 		},

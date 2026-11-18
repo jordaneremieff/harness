@@ -62,11 +62,13 @@ test("headless commands notify without session messages or stdout and resolve bo
 		const messages = t.mock.fn();
 		const stdout = t.mock.method(console, "log", () => {});
 		const notify = t.mock.fn();
-		const pi = { events: createEventBus(), on: () => {}, registerShortcut: (_key: string, definition: { handler: typeof shortcut }) => { shortcut = definition.handler; }, registerTool: () => {}, sendMessage: messages,
+		const registered: string[] = [];
+		const pi = { events: createEventBus(), on: () => {}, registerShortcut: (_key: string, definition: { handler: typeof shortcut }) => { shortcut = definition.handler; }, registerTool: ({ name }: { name: string }) => registered.push(name), sendMessage: messages,
 			registerCommand: (_name: string, command: { handler: typeof handler }) => { handler = command.handler; },
 		} as unknown as ExtensionAPI;
 		markdown(pi);
 		assert.ok(handler);
+		assert.ok(registered.includes("markdown_brief"));
 		const source = { getLeafId: () => "response", getSessionId: () => "session", getCwd: () => root,
 			getEntry: () => ({ type: "message", id: "response", parentId: null, timestamp: new Date().toISOString(), message: fauxAssistantMessage("Exact retained response") }),
 		};

@@ -28,7 +28,7 @@ test("a native agent reads an exact revision and recovers from a stale update th
 	try {
 		const host: MarkdownHost = { durable: Durable, agentDir: root, cwd: root, storageId: "synthetic", harness, onClose: (callback) => disposers.push(callback) };
 		const extension = markdownContribution(fileURLToPath(new URL("./index.ts", import.meta.url)), createEventBus(), () => {}).create(host);
-		assert.deepEqual(extension.tools?.map((tool) => [tool.name, tool.replay]), [["markdown_publish", "safe"], ["markdown_read", "safe"], ["markdown_live", "safe"]]);
+		assert.deepEqual(extension.tools?.map((tool) => [tool.name, tool.replay]), [["markdown_brief", "safe"], ["markdown_publish", "safe"], ["markdown_read", "safe"], ["markdown_live", "safe"]]);
 		registry.install(extension);
 		const conversation = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 		const store = new MarkdownStore(process.env.PI_MARKDOWN_DIR);

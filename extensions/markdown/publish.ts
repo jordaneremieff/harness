@@ -3,7 +3,7 @@ import { basename, dirname, resolve } from "node:path";
 import { hostname } from "node:os";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
-import { arr, obj, str, opt, int, bool, lit, union, type Static } from "@earendil-works/pi-schema";
+import { arr, obj, str, opt, int, num, bool, lit, union, type Static } from "@earendil-works/pi-schema";
 import { toolDisplay } from "./display.ts";
 import type { Context } from "@earendil-works/chord/context";
 import { previousNative } from "./native-responses.ts";
@@ -13,6 +13,12 @@ import type { LiveConfig } from "./live-protocol.ts";
 import { previousOrdinary, responseSnapshotWrite, type ResponseSnapshot } from "./responses.ts";
 import { settings, type AgentPane } from "./settings.ts";
 import { digest, INSPECTION_FAILURES, LIMITS, type MarkdownStore, StoreError, validateInput, type AssetRecord, type ContentOrigin, type ErrorCode, type InspectionFailure, type PublicationPlan, type ReferenceInventory, type StoredDocument, type WriteInput, type WriteResult } from "./store.ts";
+
+import { checkWriting, describeFindings, type Finding } from "./checks.ts";
+import { RULE_IDS, describeRules } from "./check-rules.ts";
+import { buildBrief, formatBrief, type WritingBrief } from "./brief.ts";
+import { BRIEF_GUIDANCE, makeBrief, nativeBrief, ordinaryBriefMessages, WritingBriefSchema, type BriefBuilder } from "./brief-tool.ts";
+import { loadLexicon, WritingConfigError, type WritingOptions } from "./writing-config.ts";
 
 export const PublishParameters = obj({
 	title: opt(str({ minLength: 1, maxLength: 200, description: "One-line document title. Required with text or file." })),
@@ -30,12 +36,13 @@ export type PublishInput = Static<typeof PublishParameters>;
  * `kept` counts the retained images that a text update kept from the revision it edits.
  */
 export type ReferenceSummary = { state: "inspected" | "uninspected"; truncated: boolean; omitted: number; retained: number; embedded: number; external: number; unavailable: number; localLinks: number; reason?: InspectionFailure; unavailableItems?: { reference: string; reason: string }[]; kept?: { revision: number; images: number } };
-export type PublishOutcome = { ok: true; documentId: string; revision: number; digest: string; bytes: number; title: string; kind: "published" | "response"; created: boolean; replayed: boolean; selfContained?: boolean; references: ReferenceSummary; provenance: ContentOrigin; open: string; show?: string[]; paneInput?: string; showUnavailable?: string; panes?: number } | { ok: false; error: { code: ErrorCode; message: string; currentRevision?: number; currentDigest?: string } };
+export type PublishOutcome = { ok: true; documentId: string; revision: number; digest: string; bytes: number; title: string; kind: "published" | "response"; created: boolean; replayed: boolean; selfContained?: boolean; references: ReferenceSummary; provenance: ContentOrigin; open: string; show?: string[]; paneInput?: string; showUnavailable?: string; panes?: number; checks?: { findings: Finding[] } } | { ok: false; error: { code: ErrorCode | "checks"; findings?: Finding[]; brief?: WritingBrief; message: string; currentRevision?: number; currentDigest?: string } };
 const OriginSchema = obj({ kind: str(), capturedAt: str() }, { open: true });
 export const ReferenceSummarySchema = obj({ state: union([lit("inspected"), lit("uninspected")]), truncated: bool(), omitted: int(), retained: int(), embedded: int(), external: int(), unavailable: int(), localLinks: int(), reason: opt(union(INSPECTION_FAILURES.map((reason) => lit(reason)))), unavailableItems: opt(arr(obj({ reference: str(), reason: str() }))), kept: opt(obj({ revision: int(), images: int() })) });
+const FindingsSchema = arr(obj({ rule: union(RULE_IDS.map((rule) => lit(rule))), count: num(), limit: num(), examples: arr(obj({ line: int(), text: str() })) }));
 export const PublishOutcomeSchema = union([
-	obj({ ok: lit(true), documentId: str(), revision: int(), digest: str(), bytes: int(), title: str(), kind: union([lit("published"), lit("response")]), created: bool(), replayed: bool(), selfContained: opt(bool()), references: ReferenceSummarySchema, provenance: OriginSchema, open: str(), show: opt(arr(str())), paneInput: opt(str()), showUnavailable: opt(str()), panes: opt(int()) }),
-	obj({ ok: lit(false), error: obj({ code: union(["invalid", "too-large", "not-found", "conflict", "replay-conflict", "file-unreadable", "store-failure"].map((code) => lit(code))), message: str(), currentRevision: opt(int()), currentDigest: opt(str()) }) }),
+	obj({ ok: lit(true), documentId: str(), revision: int(), digest: str(), bytes: int(), title: str(), kind: union([lit("published"), lit("response")]), created: bool(), replayed: bool(), selfContained: opt(bool()), references: ReferenceSummarySchema, provenance: OriginSchema, open: str(), show: opt(arr(str())), paneInput: opt(str()), showUnavailable: opt(str()), panes: opt(int()), checks: opt(obj({ findings: FindingsSchema })) }),
+	obj({ ok: lit(false), error: obj({ code: union(["invalid", "too-large", "not-found", "conflict", "replay-conflict", "file-unreadable", "store-failure", "checks"].map((code) => lit(code))), message: str(), currentRevision: opt(int()), currentDigest: opt(str()), findings: opt(FindingsSchema), brief: opt(WritingBriefSchema) }) }),
 ]);
 const BUILD = "node extensions/markdown/native/build.mts";
 const INSPECTION_TEXT: Record<InspectionFailure, string> = {
@@ -60,11 +67,11 @@ const SHOW: Record<AgentPane, { description: string; guideline: string }> = {
 		guideline: "run its show command in a floating pane that stays in place, with no target so that it opens on your own tab",
 	},
 };
-export const publishDescription = (pane: AgentPane): string => `Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Publish material that is hard to read in a terminal: a reply with headings, a table, or three or more explained points, a reply longer than about ten lines, a document, a comparison, or a worker's findings. A plain answer of a few sentences stays in chat. To show a publication now, ${SHOW[pane].description} The native reader window then sits over that pane, with real selection, copying, find, links and scrolling. Do not take focus unless the operator asked to see it now. Then answer in chat in a few sentences and say what the pane holds; do not copy the pane into the chat. A report to another agent stays complete, because agents do not see panes. Use markdown_live to change a connected pane's actual buffer; reserve document/expectedRevision updates for stored publications rather than live collaboration. The operator can close a reader pane at any time. The result of an update says how many reader panes are still connected to this conversation; when none is, no pane of yours shows the update, so do not tell the operator that a pane shows it: show it in a new pane if the operator should read it now, or say that it is saved. To show a different document while a reader pane that you opened is still open, type the result's paneInput into that pane (:open, the document ID and Enter) instead of opening another pane: the pane keeps its place and saves the earlier document's reading position. Type into or close only reader panes that you opened yourself, never the operator's or another session's panes. To show a stored document again later, run the same command with that document's ID: the reader returns to the saved reading position. To show an earlier answer exactly, use response "previous" instead of retyping it. To explain something visually, write an SVG or PNG diagram beside a Markdown file, reference it with a relative image link, and publish the file: the revision keeps the image. Before you update a document whose current text you do not hold, read it with markdown_read; after a conflict, read the current revision that the conflict names. The operator can also open a published document from the Markdown view under Published, or with the result's open command in an ordinary Pi session. ${ASK_REPLY}`;
+export const publishDescription = (pane: AgentPane): string => `Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Configured writing checks return findings and can refuse new source; repair the sentence rather than swapping forms. ${BRIEF_GUIDANCE} Publish material that is hard to read in a terminal: a reply with headings, a table, or three or more explained points, a reply longer than about ten lines, a document, a comparison, or a worker's findings. A plain answer of a few sentences stays in chat. To show a publication now, ${SHOW[pane].description} The native reader window then sits over that pane, with real selection, copying, find, links and scrolling. Do not take focus unless the operator asked to see it now. Then answer in chat in a few sentences and say what the pane holds; do not copy the pane into the chat. A report to another agent stays complete, because agents do not see panes. Use markdown_live to change a connected pane's actual buffer; reserve document/expectedRevision updates for stored publications rather than live collaboration. The operator can close a reader pane at any time. The result of an update says how many reader panes are still connected to this conversation; when none is, no pane of yours shows the update, so do not tell the operator that a pane shows it: show it in a new pane if the operator should read it now, or say that it is saved. To show a different document while a reader pane that you opened is still open, type the result's paneInput into that pane (:open, the document ID and Enter) instead of opening another pane: the pane keeps its place and saves the earlier document's reading position. Type into or close only reader panes that you opened yourself, never the operator's or another session's panes. To show a stored document again later, run the same command with that document's ID: the reader returns to the saved reading position. To show an earlier answer exactly, use response "previous" instead of retyping it. To explain something visually, write an SVG or PNG diagram beside a Markdown file, reference it with a relative image link, and publish the file: the revision keeps the image. Before you update a document whose current text you do not hold, read it with markdown_read; after a conflict, read the current revision that the conflict names. The operator can also open a published document from the Markdown view under Published, or with the result's open command in an ordinary Pi session. ${ASK_REPLY}`;
 export { captureReferences, inspectReferences } from "./reference-capture.ts";
 export type { ReferenceRunner, InspectionOptions, ReferenceInspection, InspectionResult, KeptImages } from "./reference-capture.ts";
 import { boundedFile, captureReferences, inspectReferences, type InspectionOptions, type KeptImages } from "./reference-capture.ts";
-export type PublishOptions = InspectionOptions & { store: MarkdownStore; cwd: string; provenance?: Partial<ContentOrigin>; plan?: PublicationPlan; previousResponse?: () => Promise<ResponseSnapshot> };
+export type PublishOptions = InspectionOptions & { store: MarkdownStore; cwd: string; provenance?: Partial<ContentOrigin>; plan?: PublicationPlan; previousResponse?: () => Promise<ResponseSnapshot>; writing?: WritingOptions; brief?: BriefBuilder };
 /** Checks a publication's parameters and returns its title. */
 function validateParameters(value: PublishInput): string {
 	if (!value || typeof value !== "object" || typeof value.title !== "string") throw new StoreError("invalid", "A title and one source are required.");
@@ -78,33 +85,55 @@ function validateParameters(value: PublishInput): string {
 export function invocationDigest(params: PublishInput, cwd: string): string {
 	return digest(JSON.stringify({ title: params.title, ...(params.file === undefined ? { text: params.text } : { file: resolve(cwd, params.file) }), ...(params.document === undefined ? {} : { document: params.document, expectedRevision: params.expectedRevision }), ...(params.reuseKey === undefined ? {} : { reuseKey: params.reuseKey }) }));
 }
-export async function fileSnapshotInput(path: string, options: InspectionOptions & { cwd: string }): Promise<WriteInput> {
+async function readFileSource(path: string, cwd: string): Promise<{ resolved: string; source: string }> {
 	let resolved: string; let source: string;
 	try {
 		if (!path || /[\p{Cc}\ud800-\udfff]/u.test(path)) throw new Error("Invalid path");
-		resolved = await realpath(resolve(options.cwd, path));
+		resolved = await realpath(resolve(cwd, path));
 		source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode((await boundedFile(resolved, LIMITS.sourceBytes)).data);
 	} catch (error) { if (error instanceof StoreError && error.code === "too-large") throw error; throw new StoreError("file-unreadable", "Source file is unavailable, nonregular or not UTF-8."); }
+	return { resolved, source };
+}
+export async function fileSnapshotInput(path: string, options: InspectionOptions & { cwd: string }): Promise<WriteInput> {
+	const { resolved, source } = await readFileSource(path, options.cwd);
 	const captured = await captureReferences(await inspectReferences(source, options), dirname(resolved));
 	return { title: basename(resolved), source, contentOrigin: { kind: "file", path: resolved, cwd: options.cwd, capturedAt: new Date().toISOString() }, ...captured };
 }
-export async function preparePublication(params: PublishInput, options: PublishOptions): Promise<WriteInput> {
-	const title = validateParameters(params);
-	let input: WriteInput;
-	if (params.file !== undefined) input = await fileSnapshotInput(params.file, options);
-	else {
-		input = { title, source: params.text ?? "", contentOrigin: { kind: "tool", capturedAt: new Date().toISOString(), cwd: options.cwd } };
-		validateInput(input);
-		if (!input.source.trim()) throw new StoreError("invalid", "Publication source must not be empty.");
-		const kept = params.document && params.expectedRevision ? await keptImages(options.store, params.document, params.expectedRevision) : undefined;
-		Object.assign(input, await captureReferences(await inspectReferences(input.source, options), undefined, open, kept));
+class WritingRefusal extends Error {
+	readonly findings: Finding[];
+	readonly brief: WritingBrief;
+	constructor(findings: Finding[], brief: WritingBrief) {
+		super("I did not save the document. The passages below need changes.");
+		this.findings = findings;
+		this.brief = brief;
 	}
-	if (!input.source.trim()) throw new StoreError("invalid", "Publication source must not be empty.");
-	input.title = title;
-	input.contentOrigin = { ...options.provenance, ...input.contentOrigin, host: hostname() };
-	input.invocationDigest = invocationDigest(params, options.cwd);
+}
+async function checkSource(input: WriteInput, options: PublishOptions): Promise<Finding[]> {
+	const writing = options.writing ?? { mode: settings.fields.checks.default };
+	if (writing.mode === "off") return [];
+	const lexicon = await loadLexicon(writing);
+	const findings = checkWriting(input.source, writing.overrides, lexicon);
+	if (writing.mode === "block" && findings.length) {
+		const brief = await (options.brief ?? makeBrief(writing))(input.title, lexicon, true).catch(() => buildBrief({ title: input.title, checks: describeRules(writing.mode, writing.overrides) }));
+		throw new WritingRefusal(findings, brief);
+	}
+	return findings;
+}
+async function preparePublication(params: PublishInput, options: PublishOptions): Promise<{ input: WriteInput; findings: Finding[] }> {
+	const title = validateParameters(params);
+	const file = params.file === undefined ? undefined : await readFileSource(params.file, options.cwd);
+	const input: WriteInput = {
+		title, source: file?.source ?? params.text ?? "",
+		contentOrigin: { ...options.provenance, kind: file ? "file" : "tool", ...(file ? { path: file.resolved } : {}), cwd: options.cwd, capturedAt: new Date().toISOString(), host: hostname() },
+		invocationDigest: invocationDigest(params, options.cwd),
+	};
 	validateInput(input);
-	return input;
+	if (!input.source.trim()) throw new StoreError("invalid", "Publication source must not be empty.");
+	const findings = await checkSource(input, options);
+	const kept = !file && params.document && params.expectedRevision ? await keptImages(options.store, params.document, params.expectedRevision) : undefined;
+	Object.assign(input, await captureReferences(await inspectReferences(input.source, options), file ? dirname(file.resolved) : undefined, open, kept));
+	validateInput(input);
+	return { input, findings };
 }
 /**
  * A text update reads no image files, so an image reference that the edited revision retained
@@ -173,6 +202,8 @@ function partialText(summary: ReferenceSummary): string {
 	return `inventory partial${summary.omitted ? `: ${plural(summary.omitted, "reference")} not listed` : ""}${summary.truncated ? "; the parser stopped at its destination limit" : ""}`;
 }
 function failure(error: unknown): PublishOutcome {
+	if (error instanceof WritingRefusal) return { ok: false, error: { code: "checks", message: error.message, findings: error.findings, brief: error.brief } };
+	if (error instanceof WritingConfigError) return { ok: false, error: { code: "invalid", message: error.message.slice(0, 300) } };
 	if (!(error instanceof StoreError)) return { ok: false, error: { code: "store-failure", message: "Private document store is unavailable." } };
 	return { ok: false, error: { code: error.code, message: error.message.slice(0, 300), ...(error.currentRevision === undefined ? {} : { currentRevision: error.currentRevision }), ...(error.currentDigest === undefined ? {} : { currentDigest: error.currentDigest }) } };
 }
@@ -200,6 +231,9 @@ async function previousPlan(params: PublishInput, options: PublishOptions): Prom
 	if (options.plan && options.plan.inputDigest !== inputDigest) throw new StoreError("replay-conflict", "Request identity already names different input.");
 	return params.reuseKey === undefined ? options.plan : await options.store.reusePlan(params.reuseKey, inputDigest) ?? options.plan;
 }
+function withFindings(outcome: PublishOutcome, findings: Finding[], writing?: WritingOptions): PublishOutcome {
+	return outcome.ok && !outcome.replayed && writing?.mode === "warn" ? { ...outcome, checks: { findings } } : outcome;
+}
 export async function publish(params: PublishInput, options: PublishOptions): Promise<PublishOutcome> {
 	try {
 		if (params?.response !== undefined) return await snapshotPrevious(params, options);
@@ -207,7 +241,8 @@ export async function publish(params: PublishInput, options: PublishOptions): Pr
 		const plan = await previousPlan(params, options);
 		const saved = plan ? await savedPlan(options.store, plan) : undefined;
 		if (saved) return publicationOutcome(saved, options.store.root, options.app);
-		return await save(params, await preparePublication(params, options), { ...options, plan });
+		const { input, findings } = await preparePublication(params, options);
+		return withFindings(await save(params, input, { ...options, plan }), findings, options.writing);
 	} catch (error) { return failure(error); }
 }
 /**
@@ -217,7 +252,7 @@ export async function publish(params: PublishInput, options: PublishOptions): Pr
 export function publicationText(outcome: PublishOutcome): string {
 	if (!outcome.ok) return failureText(outcome.error);
 	const coverage = coverageText(outcome.references, outcome.provenance.kind);
-	return [savedText(outcome), ...(coverage ? [coverage] : []), nextText(outcome)].join("\n");
+	return [savedText(outcome), ...(coverage ? [coverage] : []), ...(outcome.checks?.findings.length ? ["The document has these writing problems:", ...describeFindings(outcome.checks.findings, false)] : []), nextText(outcome)].join("\n");
 }
 function savedText(outcome: Extract<PublishOutcome, { ok: true }>): string {
 	const identity = `${outcome.documentId} revision ${outcome.revision} (${outcome.bytes} bytes, ${outcome.digest})`;
@@ -235,15 +270,16 @@ function nextText(outcome: Extract<PublishOutcome, { ok: true }>): string {
 	return `${open}A reader pane that still shows ${outcome.documentId} follows this revision by itself; the operator can close a pane at any time. To show it elsewhere, ${input}run ${command} as the program of a new pane.`;
 }
 function failureText(error: Extract<PublishOutcome, { ok: false }>["error"]): string {
+	if (error.code === "checks" && error.findings) return [error.message, ...describeFindings(error.findings, true), ...(error.brief ? ["", formatBrief(error.brief)] : []), "Fix the passages and publish again."].join("\n");
 	const text = `Markdown publication failed (${error.code}): ${error.message}`;
 	if (error.code === "conflict" && error.currentRevision !== undefined) return `${text} Revision ${error.currentRevision} (${error.currentDigest ?? "digest unknown"}) is current. Read it with markdown_read (this document, revision ${error.currentRevision}), apply your change to that text, and publish again with expectedRevision ${error.currentRevision}. Text based on an older revision would undo its changes.`;
 	if (error.code === "replay-conflict") return `${text} This reuseKey already names other input; use a new reuseKey for new input.`;
 	return text;
 }
 /** The ordinary rule that makes publication part of the reply decision, not only of document work. */
-export const publishGuideline = (pane: AgentPane): string => `Before you send a reply with headings, a table, three or more explained points, or more than about ten lines, publish it with markdown_publish and ${SHOW[pane].guideline}; then answer in chat in a few sentences and say what the pane holds. ${ASK_REPLY}`;
+export const publishGuideline = (pane: AgentPane): string => `Before you send a reply with headings, a table, three or more explained points, or more than about ten lines, publish it with markdown_publish and ${SHOW[pane].guideline}; then answer in chat in a few sentences and say what the pane holds. ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
 /** Native hosts carry no per-tool guidelines, so the same decision travels as one section. */
-export const NATIVE_PUBLISH_GUIDANCE = `Use markdown_publish for material that is hard to read in a terminal: a reply with headings, a table, three or more explained points or more than about ten lines, a document, or findings and progress that the operator should see. Publication saves silently. To show it to the operator, run its show command in a floating pane that stays in place, with no target and without taking focus: it opens on the tab of the ordinary session that started your chain of agents. A report to another agent stays complete, because agents do not see panes. The operator can close a reader pane at any time: before you say that a pane shows an update, read the update result, which says whether a reader pane is still connected to your conversation. Use markdown_read to find a stored document and read an exact revision before you correct it. ${ASK_REPLY}`;
+export const NATIVE_PUBLISH_GUIDANCE = `Use markdown_publish for material that is hard to read in a terminal: a reply with headings, a table, three or more explained points or more than about ten lines, a document, or findings and progress that the operator should see. ${BRIEF_GUIDANCE} Publication saves silently. To show it to the operator, run its show command in a floating pane that stays in place, with no target and without taking focus: it opens on the tab of the ordinary session that started your chain of agents. A report to another agent stays complete, because agents do not see panes. The operator can close a reader pane at any time: before you say that a pane shows an update, read the update result, which says whether a reader pane is still connected to your conversation. Use markdown_read to find a stored document and read an exact revision before you correct it. ${ASK_REPLY}`;
 /**
  * Counts the reader panes connected to this conversation, when the show command carries the live
  * connection through which a pane reports itself. A pane leaves the count when it closes.
@@ -256,8 +292,9 @@ export async function withPanes(outcome: PublishOutcome, panes?: () => Promise<n
 export function createPublishTool(options: Omit<PublishOptions, "cwd"> & { cwd?: string; connection?: (context: ExtensionContext) => Promise<LiveConfig>; panes?: (context: ExtensionContext) => Promise<number | undefined>; pane?: AgentPane }): ToolDefinition<typeof PublishParameters, PublishOutcome> {
 	const presentation = toolDisplay().tools.find((tool) => tool.name === "markdown_publish");
 	const pane = options.pane ?? settings.fields.agentPane.default;
+	const writing = options.writing ?? { mode: settings.fields.checks.default };
 	return { ...presentation, name: "markdown_publish", label: "Markdown Publish", description: publishDescription(pane), promptSnippet: "Save an exact Markdown document for the native reader; its show command puts the reader over a terminal pane.", promptGuidelines: [publishGuideline(pane)], parameters: PublishParameters, outputSchema: PublishOutcomeSchema, async execute(_id, params, _signal, _update, context) {
-		let outcome = await publish(params as PublishInput, { ...options, cwd: context.cwd, provenance: { ...options.provenance, session: context.sessionManager.getSessionId(), ...(context.model ? { model: `${context.model.provider}/${context.model.id}` } : {}) }, previousResponse: async () => previousOrdinary(context.sessionManager) });
+		let outcome = await publish(params as PublishInput, { ...options, writing, brief: makeBrief(writing, () => ordinaryBriefMessages(context.sessionManager)), cwd: context.cwd, provenance: { ...options.provenance, session: context.sessionManager.getSessionId(), ...(context.model ? { model: `${context.model.provider}/${context.model.id}` } : {}) }, previousResponse: async () => previousOrdinary(context.sessionManager) });
 		const { connection, panes } = options;
 		if (outcome.ok) outcome = await withLiveShow(outcome, options.app, connection ? () => connection(context) : undefined, _signal);
 		outcome = await withPanes(outcome, panes ? () => panes(context) : undefined);
@@ -286,11 +323,12 @@ async function nativePublication(params: PublishInput, api: Durable.ToolExecutio
 	const saved = previous ? await savedPlan(options.store, previous) : undefined;
 	if (saved) return publicationOutcome(saved, options.store.root, options.app);
 	const agent = await api.agent(context);
-	const local = { ...options, cwd, provenance: { ...options.provenance, session: host.storageId, conversation: String(api.conversationId), ...(agent.model ? { model: `${agent.model.provider}/${agent.model.modelId}` } : {}) } };
-	const input = await preparePublication(params, local);
+	const writing = options.writing ?? { mode: settings.fields.checks.default };
+	const local = { ...options, writing, brief: nativeBrief(host, writing, api.conversationId, context), cwd, provenance: { ...options.provenance, session: host.storageId, conversation: String(api.conversationId), ...(agent.model ? { model: `${agent.model.provider}/${agent.model.modelId}` } : {}) } };
+	const { input, findings } = await preparePublication(params, local);
 	const candidate = await options.store.preparePlan(input, { document: params.document, expectedRevision: params.expectedRevision, reuseKey: params.reuseKey });
 	const plan = await api.memo("markdown.publication", previous ?? candidate, context);
-	return await save(params, input, { ...local, plan });
+	return withFindings(await save(params, input, { ...local, plan }), findings, writing);
 }
 function nativeResult(outcome: PublishOutcome) {
 	return { output: [{ type: "text" as const, text: publicationText(outcome) }], structuredOutput: outcome, details: outcome, isError: !outcome.ok };

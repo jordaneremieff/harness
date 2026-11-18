@@ -12,6 +12,8 @@ import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { captureReferences, inspectReferences, fileSnapshotInput, createNativePublishTool, createPublishTool, invocationDigest, NATIVE_PUBLISH_GUIDANCE, publish, publishDescription, publicationText, withPanes, type InspectionResult, type PublishOutcome, type PublishInput } from "./publish.ts";
+import type { WritingBrief } from "./brief.ts";
+import { createBriefTool, createNativeBriefTool } from "./brief-tool.ts";
 import { LIMITS, MarkdownStore, type PublicationPlan, type WriteResult } from "./store.ts";
 import { paneCommand, PANE_MODE, PANE_OPEN } from "./pane-command.ts";
 const scratch = tmpdir();
@@ -427,3 +429,84 @@ test("an update says whether a reader pane is still connected, so a closed pane 
 	assert.deepEqual(await withPanes({ ...base, show: base.show.slice(0, 5) }, async () => 0), { ...base, show: base.show.slice(0, 5) }, "a pane without the live connection reports nothing, so no count is claimed");
 	assert.deepEqual(await withPanes(base, async () => { throw new Error("unavailable"); }), base, "an unavailable count leaves the outcome unchanged");
 });
+
+
+test("ordinary publication checks text and file updates before saving and leaves saved reuse intact", () => fixture(async (root, store) => {
+	const manager = { getSessionId: () => "session", getLeafId: () => "u", getEntry: () => ({ type: "message", parentId: null, message: { role: "user", content: "Tell me whether the roof holds." } }) };
+	const ctx = { cwd: root, sessionManager: manager } as never;
+	const input = { title: "Roof", text: "The roof holds — the floor is dry.", reuseKey: "roof" };
+	const brief = await createBriefTool({ mode: "block" }).execute("brief", { title: "Roof" }, undefined, undefined, ctx);
+	assert.deepEqual((brief.structuredContent as WritingBrief)?.requests, ["Tell me whether the roof holds."]);
+	const block = createPublishTool({ store });
+	const refused = await block.execute("one", input, undefined, undefined, ctx);
+	assert.equal(refused.isError, true);
+	assert.ok(!refused.details?.ok);
+	assert.equal(refused.details?.error.code, "checks");
+	assert.deepEqual(refused.details?.error.brief, brief.structuredContent);
+	assert.deepEqual(refused.details?.error.findings?.map((finding) => finding.rule), ["dashes"]);
+	assert.match(refused.content[0]?.type === "text" ? refused.content[0].text : "", /did not save[\s\S]+Line 1:[\s\S]+Fix the passages and publish again\./u);
+	assert.equal(await store.identity(), undefined);
+	const warn = createPublishTool({ store, writing: { mode: "warn" } });
+	const saved = success((await warn.execute("two", input, undefined, undefined, ctx)).details);
+	assert.equal(saved.checks?.findings[0]?.rule, "dashes");
+	assert.equal((await store.get(saved.documentId)).source, input.text);
+	const replay = success((await block.execute("replay", input, undefined, undefined, ctx)).details);
+	assert.equal(replay.replayed, true);
+	assert.equal(replay.checks, undefined);
+	const file = join(root, "draft.md");
+	const source = "The roof holds\\nThe floor is dry.";
+	await writeFile(file, source);
+	const update = { title: "Roof", file, document: saved.documentId, expectedRevision: 1 };
+	const blockedUpdate = (await block.execute("update", update, undefined, undefined, ctx)).details;
+	assert.ok(!blockedUpdate?.ok);
+	assert.equal(blockedUpdate?.error.findings?.[0]?.rule, "escapedBreaks");
+	assert.equal((await store.get(saved.documentId)).document.revision, 1);
+	const invalid = await publish(update, { store, cwd: root, writing: { mode: "warn", issue: "harness.json: markdown.checksRules.rules.labelLines.limit" } });
+	assert.ok(!invalid.ok && invalid.error.code === "invalid");
+	assert.match(invalid.error.message, /labelLines\.limit/u);
+	const off = createPublishTool({ store, writing: { mode: "off", lexiconFile: join(root, "missing-words.txt") } });
+	const updated = success((await off.execute("off", update, undefined, undefined, ctx)).details);
+	assert.equal(updated.checks, undefined);
+	assert.equal(updated.revision, 2);
+	assert.equal(await readFile(file, "utf8"), source);
+}));
+
+for (const mode of ["block", "warn", "off"] as const) test(
+	`native publication applies ${mode} mode and supplies a branch brief`,
+	{ timeout: 30_000 },
+	() => fixture(async (root, store) => {
+		const models = createModels(); const faux = fauxProvider(); models.setProvider(faux.provider);
+		const registry = Durable.createRegistry();
+		let harness: Durable.Harness;
+		const host = { durable: Durable, cwd: root, harness: { conversation: (id: Durable.ConversationId, ctx: typeof context) => harness.conversation(id, ctx) } };
+		const brief = createNativeBriefTool(host, { mode });
+		const publish = createNativePublishTool(host, { store, writing: { mode } });
+		const results: unknown[] = [];
+		registry.install(Durable.defineExtension({ name: "markdown", tools: [
+			{ ...brief, async execute(params, api, ctx) { const result = await brief.execute(params as { title?: string }, api, ctx); results.push(result.structuredOutput); return result; } },
+			{ ...publish, async execute(params, api, ctx) { const result = await publish.execute(params as PublishInput, api, ctx); results.push(result.structuredOutput); return result; } },
+		] }));
+		harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
+		try {
+			const conversation = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+			faux.setResponses([
+				fauxAssistantMessage(fauxToolCall("markdown_brief", { title: "Roof" }), { stopReason: "toolUse" }),
+				fauxAssistantMessage(fauxToolCall("markdown_publish", { title: "Roof", text: "The roof holds — the floor is dry." }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("Done."),
+			]);
+			const task = await conversation.submit({ type: "input", content: "Tell me whether the roof holds." }, context);
+			assert.equal((await task.wait(context)).status, "done");
+			assert.deepEqual((results[0] as WritingBrief)?.requests, ["Tell me whether the roof holds."]);
+			const outcome = results[1] as PublishOutcome;
+			if (mode === "block") {
+				assert.ok(!outcome.ok && outcome.error.code === "checks");
+				assert.deepEqual(outcome.error.brief?.requests, ["Tell me whether the roof holds."]);
+				assert.equal(await store.identity(), undefined);
+			} else {
+				assert.ok(outcome.ok);
+				assert.equal(outcome.checks?.findings[0]?.rule, mode === "warn" ? "dashes" : undefined);
+				assert.equal((await store.get(outcome.documentId)).document.revision, 1);
+			}
+		} finally { await harness.close(context); }
+	}),
+);

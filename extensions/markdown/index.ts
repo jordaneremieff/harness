@@ -5,6 +5,8 @@ import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil
 import { registerComposer } from "./composer.ts";
 import type { Frame } from "./frame.ts";
 import { markdownContribution } from "./durable.ts";
+import { createBriefTool } from "./brief-tool.ts";
+import { writingOptions } from "./writing-config.ts";
 import { readSettings, publishSettings } from "./settings.ts";
 import { MarkdownStore } from "./store.ts";
 import { coverageText, createPublishTool, fileSnapshotInput, referenceSummary } from "./publish.ts";
@@ -385,8 +387,11 @@ export default function markdown(pi: ExtensionAPI): void {
 		description: "Read the latest assistant response in Markdown",
 		handler: (ctx) => action("", ctx),
 	});
+	const writing = writingOptions(getAgentDir(), readSettings({ agentDir: getAgentDir() }));
+	pi.registerTool(createBriefTool(writing));
 	pi.registerTool(
 		createPublishTool({
+			writing,
 			store: new MarkdownStore(localSettings().dir),
 			app: localSettings().app,
 			connection: live.connection,
