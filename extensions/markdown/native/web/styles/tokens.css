@@ -10,56 +10,61 @@
     --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
     --mono: ui-monospace, "SF Mono", Menlo, monospace;
 
-    /* Surfaces: the page is paper; the outline sits one step behind it; menus and cards are
-       raised. The dark paper sits near the lightness of common dark terminal themes, so a reader
-       pane reads as part of its terminal window rather than as a hole in it. */
-    --paper: light-dark(oklch(98.9% 0.003 268), oklch(23.4% 0.013 268));
-    --panel: light-dark(oklch(96.8% 0.005 268), oklch(21.2% 0.012 268));
-    --raised: light-dark(#fff, oklch(27.8% 0.016 268));
-    --sunk: light-dark(oklch(96.2% 0.006 268), oklch(26.4% 0.015 268));
-    --hover: light-dark(oklch(94.2% 0.007 268), oklch(30.4% 0.017 268));
-    --pressed: light-dark(oklch(91.8% 0.009 268), oklch(33.6% 0.019 268));
-    --line: light-dark(oklch(91.2% 0.007 268), oklch(32.2% 0.016 268));
-    --line-strong: light-dark(oklch(85% 0.009 268), oklch(39% 0.018 268));
+    /* Colours from Catppuccin (https://github.com/catppuccin/palette, MIT licence): Macchiato for dark,
+       Latte for light, assigned by the Catppuccin style guide. Latte text colours marked "legible" are
+       darker than the palette value so that they read at 4.5:1 on every surface; the guide puts
+       legibility first. */
+    --paper: light-dark(#eff1f5, #24273a);             /* base */
+    --panel: light-dark(#e6e9ef, #1e2030);             /* mantle: the outline, a secondary pane */
+    --raised: light-dark(#eff1f5, #1e2030);            /* menus, panels and cards */
+    --sunk: light-dark(#e6e9ef, #1e2030);              /* code, quotes, fields and table heads */
+    --hover: light-dark(#dce0e8, #363a4f);             /* crust / surface 0 */
+    --pressed: light-dark(#ccd0da, #494d64);           /* surface 0 / surface 1 */
+    --line: light-dark(#ccd0da, #363a4f);              /* surface 0 */
+    --line-strong: light-dark(#bcc0cc, #494d64);       /* surface 1 */
 
-    /* Text tiers. The faintest tier still reads at 5:1 on every surface above. */
-    --heading: light-dark(oklch(19% 0.02 268), oklch(96.6% 0.005 268));
-    --ink: light-dark(oklch(26% 0.016 268), oklch(89.5% 0.008 268));
-    --ink-2: light-dark(oklch(41% 0.015 268), oklch(79.5% 0.011 268));
-    --ink-3: light-dark(oklch(50% 0.013 268), oklch(70.5% 0.013 268));
+    /* Text tiers. The faintest tier reads at 4.5:1 on every surface above. */
+    --heading: light-dark(#4c4f69, #cad3f5);           /* text */
+    --ink: light-dark(#4c4f69, #cad3f5);               /* text */
+    --ink-2: light-dark(#545770, #b8c0e0);             /* between text and subtext 1 / subtext 1 */
+    --ink-3: light-dark(#5c5f77, #a5adcb);             /* subtext 1 / subtext 0 */
 
     /* Meaning. Accent: links, primary actions, the current section. Agent: anything the agent does. */
-    --accent: light-dark(oklch(52% 0.17 260), oklch(75% 0.12 256));
-    --accent-ink: light-dark(#fff, oklch(18% 0.03 262));
-    --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
-    --accent-text: light-dark(oklch(46% 0.16 260), oklch(82% 0.1 256));
-    --agent: light-dark(oklch(53% 0.21 300), oklch(75% 0.14 300));
-    --agent-soft: color-mix(in oklch, var(--agent) 13%, transparent);
-    --agent-text: light-dark(oklch(45% 0.19 300), oklch(82% 0.11 300));
-    --ok: light-dark(oklch(52% 0.13 152), oklch(76% 0.14 152));
-    --warn: light-dark(oklch(58% 0.14 68), oklch(80% 0.13 78));
-    --err: light-dark(oklch(54% 0.19 25), oklch(72% 0.16 25));
-    /* Inline code is warm and calm, so it marks code without reading as an error. */
-    --code-ink: light-dark(oklch(47% 0.12 40), oklch(85% 0.07 55));
-    --mark: light-dark(oklch(90% 0.13 95), oklch(52% 0.11 85));
-    --mark-current: light-dark(oklch(80% 0.17 75), oklch(68% 0.16 70));
+    --accent: light-dark(#1e66f5, #8aadf4);            /* blue */
+    --accent-ink: light-dark(#fff, #24273a);           /* on accent */
+    --accent-soft: color-mix(in oklch, var(--accent) 14%, transparent);
+    --accent-text: light-dark(#2c5fcb, #8aadf4);       /* blue, legible */
+    --agent: light-dark(#8839ef, #c6a0f6);             /* mauve */
+    --agent-soft: color-mix(in oklch, var(--agent) 14%, transparent);
+    --agent-text: light-dark(#823be2, #c6a0f6);        /* mauve, legible */
+    --ok: light-dark(#40a02b, #a6da95);                /* green */
+    --warn: light-dark(#df8e1d, #eed49f);              /* yellow */
+    --err: light-dark(#c5153e, #ed8796);               /* red, legible */
+    --code-ink: light-dark(#2b711c, #a6da95);          /* green, legible */
+    --selection: light-dark(rgb(124 127 147 / .28), rgb(147 154 183 / .28)); /* overlay 2 */
+    --caret: light-dark(#dc8a78, #f4dbd6);             /* rosewater */
+    --mark: light-dark(#b9d9de, #435b65);              /* teal over base: find matches */
+    --mark-ink: var(--heading);
+    --mark-current: light-dark(#d20f39, #ed8796);      /* red: the current match */
+    --mark-current-ink: light-dark(#eff1f5, #181926);
 
     /* Document kinds carry colour and a glyph, not a label. */
     --kind-response: var(--agent);
     --kind-published: var(--accent);
-    --kind-file: light-dark(oklch(52% 0.1 192), oklch(76% 0.1 190));
-    --kind-draft: light-dark(oklch(58% 0.14 62), oklch(80% 0.13 72));
+    --kind-file: light-dark(#179299, #8bd5ca);         /* teal */
+    --kind-draft: light-dark(#fe640b, #f5a97f);        /* peach */
 
-    /* Code colours. */
-    --syn-key: light-dark(oklch(50% 0.2 300), oklch(76% 0.13 300));
-    --syn-str: light-dark(oklch(50% 0.13 150), oklch(78% 0.13 150));
-    --syn-num: light-dark(oklch(56% 0.15 55), oklch(80% 0.12 60));
-    --syn-com: var(--ink-3);
-    --syn-type: light-dark(oklch(50% 0.11 200), oklch(78% 0.1 195));
-    --syn-fn: light-dark(oklch(50% 0.16 255), oklch(77% 0.11 250));
+    /* Code colours, as the style guide assigns them. */
+    --syn-key: light-dark(#8839ef, #c6a0f6);           /* mauve */
+    --syn-str: light-dark(#40a02b, #a6da95);           /* green */
+    --syn-num: light-dark(#fe640b, #f5a97f);           /* peach */
+    --syn-com: light-dark(#7c7f93, #939ab7);           /* overlay 2 */
+    --syn-type: light-dark(#df8e1d, #eed49f);          /* yellow */
+    --syn-fn: light-dark(#1e66f5, #8aadf4);            /* blue */
 
-    --toolbar-bg: light-dark(oklch(25% 0.02 266), oklch(30% 0.016 266));
-    --toolbar-ink: oklch(96% 0.005 262);
+    /* The selection strip, context menu and hover help stay dark in both themes. */
+    --toolbar-bg: light-dark(#4c4f69, #181926);        /* text / crust */
+    --toolbar-ink: light-dark(#eff1f5, #cad3f5);
 
     --r-s: 6px;
     --r: 9px;

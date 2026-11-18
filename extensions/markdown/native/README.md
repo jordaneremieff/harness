@@ -29,6 +29,10 @@ The page assets live in `web/` and ship at `Contents/Resources/web/`.
 The host uses `WKWebView` directly, not SwiftUI `WebView` or `WebPage`.
 Its non-persistent data store retains no browsing session. Background drawing and
 back/forward gestures are disabled. The native paper colour appears behind the page.
+The page uses the [Catppuccin](https://github.com/catppuccin/catppuccin) palette: Macchiato in
+dark appearance and Latte in light, with colours assigned by its style guide. Latte text colours
+that fall below 4.5:1 on a page surface are darkened for legibility; `web/styles/tokens.css`
+marks them. The native paper colour matches the base of each flavour.
 The first mouse click reaches the page without activating the application.
 A standalone window uses the same page with transparent title-bar chrome.
 

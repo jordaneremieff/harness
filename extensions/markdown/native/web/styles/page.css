@@ -12,7 +12,7 @@
   input, textarea { font: inherit; color: inherit; }
   svg.i { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  ::selection { background: color-mix(in oklch, var(--accent) 24%, transparent); }
+  ::selection { background: var(--selection); }
   * { scrollbar-width: thin; scrollbar-color: color-mix(in oklch, var(--ink-3) 40%, transparent) transparent; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   kbd { font: 500 11.5px/1 var(--font); color: var(--ink-3); letter-spacing: .02em; }

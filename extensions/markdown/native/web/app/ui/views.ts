@@ -474,59 +474,101 @@
 			const meta = controller.payload?.meta;
 			return meta?.kind === "draft" || meta?.capturedSource ? "base" : "previous";
 		}
-		function appendRevisions(revisions: { n: number; createdAt: unknown; current: boolean }[]) {
-			for (const revision of revisions) {
-				const b = item(
-					`Revision ${revision.n}${revision.current ? " · current" : ""}`,
-					"check",
-					() => {
-						void ctx.hostCommand("showRevision", { n: revision.n });
-					},
-					"",
-					{ role: "menuitemradio", "aria-checked": String(revision.current) },
-				);
-				b.append(el("span", { class: "meta" }, age(revision.createdAt)));
-				menu.append(b);
-			}
+		type Revision = { n: number; createdAt: unknown; current: boolean };
+		// The shown revision and the five newest, newest first; the check marks the shown one.
+		function revisionItems(revisions: Revision[]) {
+			const latest = Math.max(...revisions.map((revision) => revision.n));
+			return [...revisions]
+				.sort((a, b) => b.n - a.n)
+				.filter((revision, index) => index < 5 || revision.current)
+				.map((revision) => {
+					const b = item(
+						`Revision ${revision.n}`,
+						"check",
+						() => {
+							void ctx.hostCommand("showRevision", { n: revision.n });
+						},
+						"",
+						{ role: "menuitemradio", "aria-checked": String(revision.current) },
+					);
+					b.querySelector("svg")?.classList.add("tick");
+					const when = [revision.n === latest ? "latest" : "", age(revision.createdAt)].filter(Boolean).join(" · ");
+					if (when) b.append(el("span", { class: "meta" }, when));
+					return b;
+				});
+		}
+		function revisionFact(shown: unknown, revisions: Revision[]) {
+			if (typeof shown !== "number") return "";
+			return revisions.length > 1 ? `Revision ${shown} of ${Math.max(...revisions.map((r) => r.n))}` : `Revision ${shown}`;
+		}
+		function wordFact() {
+			const words = (controller.doc?.source.match(/\S+/gu) ?? []).length;
+			return `${words.toLocaleString("en-AU")} ${words === 1 ? "word" : "words"}`;
+		}
+		// What the document is, in one block: kind, revision, length and its ID on a line of its own.
+		function menuHead(meta: Record<string, unknown>, revisions: Revision[]) {
+			const shown = revisions.find((revision) => revision.current)?.n ?? meta.revision,
+				id = String(meta.shortId ?? meta.documentId ?? "");
+			const facts = [revisionFact(shown, revisions), wordFact()].filter(Boolean);
+			return el(
+				"div",
+				{ class: "menu-head" },
+				el("div", { class: "kind-name" }, kindName(String(meta.kind ?? "published"))),
+				el("div", { class: "facts" }, facts.join(" · ")),
+				...(id ? [el("div", { class: "doc-id" }, id)] : []),
+			);
+		}
+		function hasPassage() {
+			const selection = getSelection();
+			return !!selection && !selection.isCollapsed && !!selection.anchorNode && get("#doc").contains(selection.anchorNode);
+		}
+		const unavailable = (available: boolean): Record<string, string> => (available ? {} : { disabled: "" });
+		function exportItem(label: string, image: string, format: string, available: boolean) {
+			return item(
+				label,
+				image,
+				() => {
+					void ctx.hostCommand("export", { format });
+				},
+				"",
+				unavailable(available),
+			);
 		}
 		const views: ReaderViewsUI = {
+			// Grouped by use, most frequent first. Unavailable commands stay in place, disabled, and
+			// commands that ask for more input before they act end with an ellipsis.
 			menu() {
 				const meta = controller.payload?.meta ?? { capturedSource: false },
-					kind = String(meta.kind ?? "published");
+					revisions = (meta.revisions as Revision[] | undefined) ?? [],
+					stored = typeof meta.revision === "number";
 				menu.replaceChildren(
-					el("div", { class: "sec" }, `${kindName(kind)} · ${String(meta.shortId ?? meta.documentId ?? "")}`),
+					menuHead(meta, revisions),
 					item(controller.lock === "writing" ? "Done" : "Edit", "pen", () => ctx.command("toggleLock"), "⌘E"),
+					item(
+						"Review changes",
+						"compare",
+						() => views.show("review", { against: reviewAgainst() }),
+						"⌘D",
+						unavailable(reviewAgainst() === "base" || revisions.length > 1),
+					),
 				);
-				appendRevisions((meta.revisions as { n: number; createdAt: unknown; current: boolean }[]) ?? []);
+				if (revisions.length > 1)
+					menu.append(el("div", { class: "sep" }), el("div", { class: "sec" }, "Revisions"), ...revisionItems(revisions));
 				menu.append(
-					item("Review changes", "compare", () => views.show("review", { against: reviewAgainst() }), "⌘D"),
 					el("div", { class: "sep" }),
 					item("Copy Markdown", "copy", () => ctx.command("copyMarkdown"), "⇧⌘C"),
-					item("Copy passage with source", "quote", () => ctx.command("copyPassage"), "⌥⌘C"),
+					item("Copy passage with source", "quote", () => ctx.command("copyPassage"), "⌥⌘C", unavailable(hasPassage())),
+					el("div", { class: "sep" }),
 					el("div", { class: "sec" }, "Export"),
-				);
-				for (const [format, label] of [
-					["archive", "Revision archive"],
-					["sharing", "Sharing copy"],
-					["pdf", "Current page PDF"],
-				])
-					menu.append(
-						item(label, "export", () => {
-							void ctx.hostCommand("export", { format });
-						}),
-					);
-				menu.append(
+					exportItem("PDF…", "doc", "pdf", true),
+					exportItem("Markdown and images…", "image", "sharing", stored),
+					exportItem("Archive with records…", "archive", "archive", stored),
 					el("div", { class: "sep" }),
 					item("Details", "info", () => views.show("details"), "⌘I"),
 					item("Markdown source", "code", () => views.show("source")),
-					item("Text and appearance", "text", () => panel.showPopover()),
-					el(
-						"div",
-						{ class: "sec" },
-						`${(controller.doc?.source.match(/\S+/gu) ?? []).length.toLocaleString("en-AU")} words`,
-					),
+					item("Text and appearance…", "text", () => panel.showPopover()),
 					el("div", { class: "sep" }),
-					item("Open", "open", () => views.open(), "⌘O"),
+					item("Open…", "open", () => views.open(), "⌘O"),
 					item("New draft", "new", () => {
 						void ctx.hostCommand("newDraft");
 					}),

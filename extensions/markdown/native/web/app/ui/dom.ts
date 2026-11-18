@@ -32,6 +32,7 @@
 		clock: "M12 6v6l4 3 M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0",
 		compare: "M3 4h8v16H3z M13 4h8v16h-8z M5 9h4 M15 9h4 M5 13h4 M15 13h4",
 		export: "M12 15V3 M7 8l5-5 5 5 M5 13v8h14v-8",
+		archive: "M3 4h18v4H3z M5 8v12h14V8 M10 12h4",
 		terminal: "M3 5h18v14H3z m4 4 4 3-4 3 M13 15h4",
 		open: "M3 19V5h7l2 2h8v4 M3 19l3-8h16l-3 8z",
 		new: "M6 3h8l5 5v13H6z M12 10v7 M9 13.5h6",

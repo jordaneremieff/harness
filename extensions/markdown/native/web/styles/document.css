@@ -63,7 +63,7 @@
   .doc figure { margin:0; }.doc figcaption { margin-top:.5em;font-size:.85em;color:var(--ink-3);text-align:center; }
   .doc .img-ph { display:flex;align-items:center;gap:.6em;padding:.8em 1em;border-radius:10px;background:var(--sunk);color:var(--ink-2);font-size:.9em;box-shadow:inset 0 0 0 1px var(--line); }
   .doc sup a { font-size:.75em;text-decoration:none;padding:0 .1em; }.doc .footnotes { font-size:.88em;color:var(--ink-2);border-top:1px solid var(--line);padding-top:1em;margin-top:3em; }
-  .doc [data-role="block-editor"] { background:color-mix(in oklch,var(--sunk) 65%,transparent);box-shadow:0 0 0 6px color-mix(in oklch,var(--sunk) 65%,transparent);caret-color:var(--accent); }
+  .doc [data-role="block-editor"] { background:color-mix(in oklch,var(--sunk) 65%,transparent);box-shadow:0 0 0 6px color-mix(in oklch,var(--sunk) 65%,transparent);caret-color:var(--caret); }
   .doc [data-role="block-editor"] :is(.mark,.prefix) { color:var(--ink-3);font-size:.86em;font-weight:400; }
   .doc [data-role="block-editor"] .bold { font-weight:650; }.doc [data-role="block-editor"] .italic { font-style:italic; }
   .doc [data-role="block-editor"] .link { color:var(--accent-text); }.doc [data-role="block-editor"] .code { font-family:var(--mono);color:var(--code-ink);background:var(--sunk); }
@@ -81,8 +81,8 @@
   @container app (width < 600px) { #app[data-copy] .doc { --copy-space:60px; } }
   @container app (width < 560px) { .doc .agent-claimed { padding-top:8px; }.doc .agent-claimed::before { position:static;display:block;text-align:right;margin-bottom:4px; } }
 }
-::highlight(find) { background-color:var(--mark);color:var(--heading); }
+::highlight(find) { background-color:var(--mark);color:var(--mark-ink); }
 [data-repaint] { filter: opacity(0.999); }
-::highlight(find-current) { background-color:var(--mark-current);color:oklch(15% .02 60); }
+::highlight(find-current) { background-color:var(--mark-current);color:var(--mark-current-ink); }
 ::highlight(agent-claim) { background-color:var(--agent-soft); }
 ::highlight(passage) { background-color:var(--agent-soft);text-decoration:underline;text-decoration-color:color-mix(in oklch,var(--agent) 55%,transparent);text-decoration-thickness:1.5px;text-underline-offset:.2em; }
