@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -86,8 +86,31 @@ it("selects each agent field from injected environment, document, or default wit
 	assert.equal(selection.origins.model, "defaultPreset");
 	assert.deepEqual(
 		snapshot.records.map((record) => record.key),
-		["idleMinutes", "checkInMinutes", "presets", "preferences"],
+		["idleMinutes", "checkInMinutes", "presets", "playbooksDir", "preferences"],
 	);
+});
+
+it("resolves the playbook path from environment, file or agent directory without publishing a catalog", (t) => {
+	const agentDir = fixture(t);
+	writeFileSync(join(agentDir, "harness.json"), JSON.stringify({ version: 1, agent: { playbooksDir: "custom/catalog" } }));
+	const file = readSettings({ agentDir, env: {} });
+	assert.equal(file.values.playbooksDir, join(agentDir, "custom", "catalog"));
+	assert.equal(file.records.find(({ key }) => key === "playbooksDir")?.origin, "file");
+	const override = readSettings({ agentDir, env: { PI_AGENT_PLAYBOOKS_DIR: "other" } });
+	assert.equal(override.values.playbooksDir, join(agentDir, "other"));
+	assert.equal(override.records.find(({ key }) => key === "playbooksDir")?.origin, "env");
+	const invalid = readSettings({ agentDir, env: { PI_AGENT_PLAYBOOKS_DIR: "" } });
+	assert.equal(invalid.values.playbooksDir, join(agentDir, "playbooks"));
+	assert.equal(invalid.records.find(({ key }) => key === "playbooksDir")?.status, "invalid");
+	const events = bus();
+	let publication: unknown;
+	events.on("harness:settings:publish", (value) => { publication = value; });
+	const unsubscribe = publishSettings(events, { agentDir, env: {} });
+	unsubscribe();
+	const row = (publication as SettingsPublication).records.find(({ key }) => key === "playbooksDir");
+	assert.equal(row?.type, "path");
+	assert.equal(row?.value, file.values.playbooksDir);
+	assert.ok(!existsSync(join(agentDir, "custom")) && !existsSync(override.values.playbooksDir) && !existsSync(invalid.values.playbooksDir));
 });
 
 it("keeps valid structured settings and env presets usable beside invalid selected fields and documents", (t) => {
