@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRexBudget, type BudgetClock } from "./deadline.ts";
 import { validateRequest } from "./schema.ts";
-import { boundResult, paneStackingCommand, resultByteLimit, RexCore } from "./core.ts";
+import { boundResult, resultByteLimit, RexCore } from "./core.ts";
+import { paneStackingCommand } from "./pane-stacking.ts";
 import type { RexCallContext, RexResult } from "./core.ts";
 import { changeOwnership, initialOwnershipState, validateOwnershipState } from "./ownership.ts";
 import type { OwnershipState, OwnershipStore } from "./ownership.ts";
@@ -179,14 +180,14 @@ test("stacking offers use an unresolved absolute PATH executable and omit unavai
 	const helper = join(root, "helper.mts");
 	await writeFile(node, "executable", { mode: 0o700 });
 	await writeFile(helper, "helper");
-	const local = { endpoint: "unix:///local.sock", hostId: "local", instanceId: "instance", selection: "local" };
+	const local = "unix:///local.sock";
 	assert.deepEqual(paneStackingCommand(local, { PATH: `relative:${root}` }, "/missing/node", helper), [node, helper]);
 	assert.deepEqual(paneStackingCommand(local, { PATH: "/missing" }, process.execPath, helper), [process.execPath, helper]);
 	assert.equal(paneStackingCommand(local, {}, "/missing/node", helper), undefined);
 	assert.equal(paneStackingCommand(local, { PATH: root }, process.execPath, join(root, "missing.mts")), undefined);
 	assert.equal(paneStackingCommand(local, { PATH: root }, process.execPath, root), undefined);
 	for (const endpoint of ["tcp://remote:1234", "tcp://127.0.0.1:1234", "unix://remote/path"]) {
-		assert.equal(paneStackingCommand({ ...local, endpoint }, { PATH: root }, process.execPath, helper), undefined);
+		assert.equal(paneStackingCommand(endpoint, { PATH: root }, process.execPath, helper), undefined);
 	}
 });
 

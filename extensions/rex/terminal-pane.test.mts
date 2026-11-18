@@ -19,7 +19,11 @@ test("the fixed helper preserves literal argv and exact inherited IDs in one gua
 		assert.ok(args.includes(`--server=${exact.server}`));
 		assert.equal(args[args.indexOf("--session") + 1], exact.sessionId);
 		const payload = JSON.parse(args[args.indexOf("--args") + 1]);
-		assert.deepEqual(payload.argv, request().argv);
+		assert.deepEqual(payload.argv.slice(0, 1), ["/usr/bin/env"]);
+		const offer = JSON.parse(String(payload.argv[1]).replace(/^PI_PANE_STACKING=/u, "")) as string[];
+		assert.equal(offer.length, 2, "the program receives the pane stacking command of this Unix socket server");
+		assert.match(offer[1] ?? "", /\/pane-stacking\.mts$/u);
+		assert.deepEqual(payload.argv.slice(2), request().argv, "the program's own arguments stay literal");
 		assert.equal(payload.blockId, exact.blockId);
 		const script = args[args.indexOf("-e") + 1];
 		assert.match(script, /s\.host_id ~= a\.hostId/u);

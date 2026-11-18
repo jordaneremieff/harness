@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { paneStackingCommand, withPaneStacking } from "./pane-stacking.ts";
 import { parseOrigin, trustedRexExecutable, type Runner, type RunResult, type TerminalOrigin } from "./terminal-origin.ts";
 
 export interface PaneRequest { version: 1; origin: TerminalOrigin | null; argv: string[]; cwd: string }
@@ -73,9 +74,11 @@ export async function splitPane(request: PaneRequest, env: Readonly<NodeJS.Proce
 	if (env.REX_SERVER !== exact.server || env.REX_SESSION !== exact.sessionId || env.REX_BLOCK !== exact.blockId) return result("stale", "The inherited terminal differs from the captured origin. No pane was created.");
 	const childEnv = { ...process.env };
 	for (const key of Object.keys(childEnv)) if (key.startsWith("REX_")) delete childEnv[key];
+	// The program learns which content of the window lies over its pane from Rex's layout, as panes that rex_terminal creates do.
+	const argv = withPaneStacking(request.argv, paneStackingCommand(exact.server, env));
 	let child: RunResult;
 	try {
-		child = await run(trustedRexExecutable(), ["--autostart=false", "--color=never", "--timeout=3s", `--server=${exact.server}`, "do", "--session", exact.sessionId, "-e", splitScript, "--args", JSON.stringify({ ...exact, argv: request.argv, cwd: request.cwd }), "--json"], { timeout: 5000, maxBuffer: 32768, env: childEnv });
+		child = await run(trustedRexExecutable(), ["--autostart=false", "--color=never", "--timeout=3s", `--server=${exact.server}`, "do", "--session", exact.sessionId, "-e", splitScript, "--args", JSON.stringify({ ...exact, argv, cwd: request.cwd }), "--json"], { timeout: 5000, maxBuffer: 32768, env: childEnv });
 	} catch { return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically."); }
 	if (child.failure === "missing") return result("unavailable", "The trusted Rex program is missing. No pane was created.");
 	if (child.failure || child.code !== 0 || Buffer.byteLength(child.stdout) > 32768) return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically.");

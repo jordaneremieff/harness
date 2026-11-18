@@ -1,3 +1,7 @@
+import { accessSync, constants, statSync } from "node:fs";
+import { delimiter, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 export type PaneRect = [number, number, number, number];
 export type PaneStackingReport =
 	| { version: 1; pane: null }
@@ -68,4 +72,31 @@ export function paneStacking(view: unknown, blockId: string): PaneStackingReport
 		}
 	}
 	return { version: 1, pane: null };
+}
+
+/**
+ * The command that reports a pane's stacking, offered to a pane program that Rex starts on this machine. A Unix
+ * socket endpoint runs here; a network endpoint does not establish file access, so it gets no offer.
+ */
+export function paneStackingCommand(
+	endpoint: string,
+	env: Readonly<Record<string, string | undefined>>,
+	runtime = process.execPath,
+	helper = fileURLToPath(new URL("./pane-stacking.mts", import.meta.url)),
+): string[] | undefined {
+	if (!endpoint.startsWith("unix:///")) return undefined;
+	const available = (path: string, mode: number) => {
+		try { accessSync(path, mode); return statSync(path).isFile(); } catch { return false; }
+	};
+	if (!isAbsolute(helper) || !available(helper, constants.R_OK)) return undefined;
+	// Keep PATH entries unresolved so a package manager's stable launcher survives upgrades.
+	const directories = (env.PATH ?? "").split(delimiter).slice(0, 256);
+	const node = directories.filter(isAbsolute).map((directory) => join(directory, "node"))
+		.find((candidate) => available(candidate, constants.X_OK)) ?? runtime;
+	return isAbsolute(node) && available(node, constants.X_OK) ? [node, helper] : undefined;
+}
+
+/** A pane program's argument vector with the stacking offer in its environment, when there is one. */
+export function withPaneStacking(command: readonly string[], offer?: readonly string[]): string[] {
+	return offer ? ["/usr/bin/env", `PI_PANE_STACKING=${JSON.stringify(offer)}`, ...command] : [...command];
 }

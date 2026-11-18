@@ -1,6 +1,3 @@
-import { accessSync, constants, statSync } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
 	beginOwnership,
 	boundedText,
@@ -12,6 +9,7 @@ import {
 } from "./ownership.ts";
 import type { OwnershipRecord, OwnershipState, OwnershipStore, ResourceRef, ServerRef } from "./ownership.ts";
 import { createRexBudget, deadlineCoverage, RexStopped, type RexBudget, type BudgetPhase } from "./deadline.ts";
+import { paneStackingCommand, withPaneStacking } from "./pane-stacking.ts";
 import { CliTransport } from "./transport.ts";
 import type { CliResult, RexTransport } from "./transport.ts";
 
@@ -581,7 +579,7 @@ export class RexCore {
 		target: ResolvedTarget,
 		context: RexCallContext,
 	): Promise<RexResult> {
-		const offer = request.command ? paneStackingCommand(target.server, this.env) : undefined;
+		const offer = request.command ? paneStackingCommand(target.server.endpoint, this.env) : undefined;
 		const { method, args } = creationCall(request, target, offer);
 		const response = await this.effect(
 			request,
@@ -1631,27 +1629,6 @@ const FAILURE_STAYS_OPEN_MS = 4294967295;
 function exitOptions(keepOpen: boolean | undefined): Record<string, unknown> {
 	return keepOpen === false ? { on_completion: true, quick_exit_threshold_ms: FAILURE_STAYS_OPEN_MS } : { on_completion: false };
 }
-/** A Unix socket endpoint runs on this machine; network endpoints do not establish file access. */
-export function paneStackingCommand(
-	server: ServerRef,
-	env: Readonly<Record<string, string | undefined>>,
-	runtime = process.execPath,
-	helper = fileURLToPath(new URL("./pane-stacking.mts", import.meta.url)),
-): string[] | undefined {
-	if (!server.endpoint.startsWith("unix:///")) return undefined;
-	const available = (path: string, mode: number) => {
-		try { accessSync(path, mode); return statSync(path).isFile(); } catch { return false; }
-	};
-	if (!isAbsolute(helper) || !available(helper, constants.R_OK)) return undefined;
-	// Keep PATH entries unresolved so a package manager's stable launcher survives upgrades.
-	const directories = (env.PATH ?? "").split(delimiter).slice(0, 256);
-	const node = directories.filter(isAbsolute).map((directory) => join(directory, "node"))
-		.find((candidate) => available(candidate, constants.X_OK)) ?? runtime;
-	return isAbsolute(node) && available(node, constants.X_OK) ? [node, helper] : undefined;
-}
-function paneCommand(command: string[], offer?: string[]): string[] {
-	return offer ? ["/usr/bin/env", `PI_PANE_STACKING=${JSON.stringify(offer)}`, ...command] : command;
-}
 /** Refuses an option that the requested kind of pane does not accept. */
 function checkKindOptions(request: CreateRequest): void {
 	if (request.kind === "session" && request.focus !== undefined)
@@ -1672,7 +1649,7 @@ function createLayout(request: CreateRequest, offer?: string[]): Record<string, 
 			flavor: "com.superlogical.terminal.shell",
 			label: request.label,
 			options: {
-				...(request.command ? { command: paneCommand(request.command, offer) } : {}),
+				...(request.command ? { command: withPaneStacking(request.command, offer) } : {}),
 				...(request.cwd ? { cwd: request.cwd } : {}),
 				...(request.shell ? { shell: request.shell } : {}),
 				...(request.shell === "none" ? { login: false } : {}),

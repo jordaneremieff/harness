@@ -45,7 +45,10 @@ disables autostart, and checks host/instance identity on the same connection as 
 `session.new_split` call. It finds the verified terminal block in that session's window layout,
 then uses that full block ID as the explicit split anchor. The public Rex API owns splitting,
 startup and exit behaviour. The split sits on the right, takes half the anchor's space and does
-not take focus. Rex ends zoom in that tab as part of its defined split behaviour.
+not take focus. Rex ends zoom in that tab as part of its defined split behaviour. When the server
+is a local Unix socket and the stacking helper is available, the adapter starts the program with
+the [pane stacking](pane-stacking.md) offer in its environment, so a program that places its own
+window over the pane learns from Rex's layout which content lies above it.
 
 One creation attempt is the maximum. A post-create read checks that the new block and anchor
 occupy the same tab. Moving the conversation before creation follows its exact block, not a

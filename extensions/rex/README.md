@@ -151,6 +151,8 @@ Program acceptance and visibility remain separate from split creation.
 
 Markdown uses this contract for explicit Read actions. It supplies only its configured
 native reader and a pinned open request; document text never supplies a terminal program.
+The split's program receives the [pane stacking feed](#pane-stacking-feed) under the same
+conditions as a pane that `rex_terminal` creates.
 The helper maintains no pane registry and never reuses or types into existing panes.
 
 ## Select the right work
@@ -329,9 +331,12 @@ the ordinary session that created it, even when another session sends it work.
 
 ## Pane stacking feed
 
-A pane created with a `command` receives `PI_PANE_STACKING` only when the
+A pane created with a `command`, and the program of a
+[caller-anchored split](#caller-anchored-terminal-panes), receive `PI_PANE_STACKING` only when the
 selected server endpoint is a local Unix socket and both the Node executable
-and this slice's `pane-stacking.mts` helper are available. Network endpoints do
+and this slice's `pane-stacking.mts` helper are available. Without the offer such a program falls
+back to the terminal's accessibility hit test, which can count an empty container that the Rex
+window lays over its panes as covering content. Network endpoints do
 not establish shared local files, even for loopback addresses, so they receive
 no offer. Panes without a command remain unchanged. An absent offer leaves the
 original command unchanged.
