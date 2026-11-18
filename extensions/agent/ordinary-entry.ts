@@ -1045,6 +1045,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	pi.on("agent_settled", (_event, ctx) => { primaryRetentions.get(ctx.sessionManager.getSessionId())?.settled(); });
 	pi.on("session_shutdown", async (_event, ctx) => {
+		command.closePlaybookView();
 		resetThreadNotices();
 		disposeFactorySettings();
 		selfCompaction.clear();

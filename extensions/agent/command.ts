@@ -15,6 +15,8 @@ import type { ProfileDraft } from "./profile-dialog.ts";
 import type { TimerListRow, TimerMode } from "./durable-timers.ts";
 import type { AgentConversationPage, AgentConversationSummary, AgentObservationSources } from "./dashboard-types.ts";
 import { actionOutcomeText, agentDisplayName, outcomeSessionId } from "./action-outcome.ts";
+import type { PlaybookCatalog } from "./playbook-catalog.ts";
+import { PLAYBOOK_HELP, PlaybookViews, configureNativePlaybook, isPlaybookTarget, parsePlaybookCommand, playbookCatalogText, playbookCompletions, playbookSelectionText, readNativePlaybook, requirePlaybookReceipt } from "./playbook-ui.ts";
 
 interface DashboardRuntime {
 	readonly showAgentDashboard: typeof import("./dashboard.ts").showAgentDashboard;
@@ -61,8 +63,12 @@ export interface AgentViewWiring {
 	schedule(input: { sessionId: string; message: string; deliverAt: string; mode: TimerMode }, ctx: ExtensionContext): Promise<AgentActionOutcome>;
 	/** One native control with this session as the caller. `signal` withdraws the wait for the answer. */
 	control(method: string, input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal): Promise<unknown>;
-	newAgent(input: { prompt?: string; preset?: string; cwd?: string }, ctx: ExtensionContext, onCreated: (row: AgentConversationSummary) => void): Promise<AgentActionOutcome>;
+	newAgent(input: { prompt?: string; preset?: string; cwd?: string; playbook?: string }, ctx: ExtensionContext, onCreated: (row: AgentConversationSummary) => void): Promise<AgentActionOutcome>;
 	newDefaults(ctx: ExtensionContext): NewAgentDefaults;
+	playbooks?(ctx?: ExtensionContext, initialize?: boolean): PlaybookCatalog;
+	currentPlaybook?(ctx: ExtensionContext): string;
+	setPlaybook?(name: string, ctx: ExtensionContext): string;
+	playbookAgentDir?: string;
 }
 
 /** Actions whose form opens in the work view when a TUI command names a target without its other arguments. */
@@ -227,7 +233,7 @@ export function createAgentCommand(
 	toolDisplay?: ToolDisplayLookup,
 	taskTargets?: (ctx: ExtensionContext) => readonly string[],
 	readLineage?: (id: string, ctx: ExtensionContext) => Promise<unknown>,
-): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext, open?: { select?: string; action?: string }): Promise<void> } {
+): Omit<RegisteredCommand, "name" | "sourceInfo"> & { closePlaybookView(): void; openDashboard(ctx: ExtensionContext, open?: { select?: string; action?: string }): Promise<void> } {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) =>
 		`Unknown action "${plain(name).slice(0, 80)}". Use /agent help, or type /agent and a space to choose an action.`;
@@ -239,14 +245,52 @@ export function createAgentCommand(
 			...commands.map((action) => `  ${action.name}: ${action.description}`),
 			"Use /agent help <action> for syntax and details. Tab completes a choice without running it.",
 		].join("\n");
+	const views = new PlaybookViews();
+	const importPlaybook = async (name: string, ctx: ExtensionContext): Promise<undefined> => {
+		await views.show(ctx, async () => {
+			if (!wiring.playbookAgentDir) throw new Error("Playbook import is unavailable here.");
+			const { preparePlaybookComparison } = await import("./playbook-comparison.ts");
+			const { preview, open } = preparePlaybookComparison(wiring.playbookAgentDir, name);
+			return { title: `Review ${preview.name}.md`, target: { id: name, label: "Local playbooks" }, open, text: [
+				"Read-only preview. Apply requires the interactive comparison.",
+				"\nCurrent file", preview.currentText ?? "No installed file.", "\nBundled starter", preview.starterText,
+			].join("\n") };
+		});
+	};
+	const playbooksFor = (ctx: ExtensionContext) => wiring.playbooks?.bind(wiring, ctx);
 	const commands: AgentCommandAction[] = [
 		...actions,
+		{
+			name: "playbook", description: "Show, choose or import a playbook", args: [{ name: "name|off|target|--import", optional: true, rest: true }],
+			run: async (args, ctx) => {
+				const command = parsePlaybookCommand(args);
+				if (command.kind === "import") return importPlaybook(command.name, ctx);
+				const control = (method: string, input: Record<string, unknown>) => wiring.control(method, input, ctx);
+				if (command.kind === "set") {
+					if (command.target) return { text: await configureNativePlaybook(control, command.target, command.name) };
+					if (!wiring.setPlaybook) throw new Error("This session's playbook is not configurable here.");
+					return { text: wiring.setPlaybook(command.name, ctx) };
+				}
+				await views.show(ctx, async (signal) => {
+					const catalog = wiring.playbooks?.(ctx, !command.target);
+					const target = command.target ? { id: command.target, label: command.target } : undefined;
+					const current = target
+						? `${target.label}\n${playbookSelectionText(await readNativePlaybook((method, input) => wiring.control(method, input, ctx, signal), target.id), catalog)}`
+						: wiring.currentPlaybook?.(ctx) ?? "This session's playbook is unavailable.";
+					return { title: "Playbooks", target, text: `${current}\n\n${playbookCatalogText(catalog)}` };
+				});
+			},
+		},
 		{
 			name: "help",
 			description: "Show actions or help for one action",
 			args: [{ name: "action", optional: true, complete: "command" }],
-			run: async (args) => {
-				if (!args[0]) return overview();
+			run: async (args, ctx) => {
+				if (!args[0] || args[0] === "playbook") {
+					const guide = !args[0] ? `${overview()}\n\n${PLAYBOOK_HELP}` : PLAYBOOK_HELP;
+					await views.show(ctx, () => ({ title: "Agent help", text: `${guide}\n\n${playbookCatalogText(wiring.playbooks?.(ctx))}` }));
+					return;
+				}
 				const action = find(args[0]);
 				return action ? actionHelp(action) : unknown(args[0]);
 			},
@@ -295,11 +339,13 @@ export function createAgentCommand(
 		schedule: (input) => wiring.schedule({ sessionId: row.id, ...input }, ctx),
 		models: async () => ctx.modelRegistry.getAvailable().map((model) => ({ identity: `${model.provider}/${model.id}`, name: model.name })),
 		configure: async (patch): Promise<ActionResult> => {
-			const result = (await wiring.control("configure", { sessionId: row.id, ...patch }, ctx)) as { outcome?: string; reason?: unknown; error?: unknown };
+			const result = (await wiring.control("configure", { sessionId: row.id, ...patch, ...(patch.playbook === undefined ? {} : { origin: "operator" }) }, ctx)) as { outcome?: string; reason?: unknown; error?: unknown; playbook?: unknown };
 			const label = agentDisplayName(row);
 			if (result?.outcome === "failed") throw new Error(`Configuration failed for “${label}”${failureReason(result)}`);
-			return { text: `Updated configuration for “${label}”`, sessionId: row.id };
+			return { text: `Updated configuration for “${label}”${patch.playbook === undefined ? "" : ` · ${playbookSelectionText(requirePlaybookReceipt(result, patch.playbook))} from the next model request`}`, sessionId: row.id };
 		},
+		playbooks: playbooksFor(ctx),
+		playbook: (signal) => wiring.control("playbook-read", { sessionId: row.id }, ctx, signal),
 		commands: () => nativeCommands(row.id, ctx),
 		profile: (method, input) => wiring.control(method, input, ctx),
 		profileDrafts,
@@ -320,7 +366,7 @@ export function createAgentCommand(
 		});
 	};
 	const openDashboard = async (ctx: ExtensionContext, open: { select?: string; action?: string } = {}): Promise<void> => {
-		if (!ctx.hasUI || dashboardOpen) return;
+		if (!ctx.hasUI || dashboardOpen || views.showing) return;
 		dashboardOpen = true;
 		try {
 			const { showAgentDashboard, dashboardSessionState, readAgentBranch } = await loadDashboardRuntime();
@@ -341,11 +387,9 @@ export function createAgentCommand(
 					const result = await executeAgentAction(requireAction(mode === "steer" ? "steer" : "send"), [id, text], ctx);
 					return { text: actionOutcomeText(result) ?? "Message admitted", sessionId: id };
 				},
-				newAgent: async ({ prompt, preset, cwd, onCreated }) => {
-					const result = await wiring.newAgent({ prompt, preset, cwd }, ctx, onCreated);
-					return { text: result.text, sessionId: result.sessionId };
-				},
+				newAgent: ({ onCreated, ...input }) => wiring.newAgent(input, ctx, onCreated),
 				newDefaults: () => wiring.newDefaults(ctx),
+				playbooks: playbooksFor(ctx),
 				forms: formsHost(ctx, state),
 				panels: panels(ctx),
 			};
@@ -362,7 +406,8 @@ export function createAgentCommand(
 	};
 	/** Help, an action's result text, or a form in the work view when a TUI command names only its target. */
 	const dispatch = async (name: string, args: string[], ctx: ExtensionContext): Promise<string | undefined> => {
-		if (["--help", "-h"].includes(name)) return overview();
+		if (["--help", "-h"].includes(name)) name = "help";
+		if (name === "playbook" && args.length === 1 && ["--help", "-h"].includes(args[0])) [name, args] = ["help", ["playbook"]];
 		const action = find(name);
 		if (!action) return unknown(name);
 		if (ctx.mode === "tui" && opensForm(action, args)) {
@@ -373,6 +418,7 @@ export function createAgentCommand(
 	};
 	return {
 		openDashboard,
+		closePlaybookView: () => views.close(),
 		description: "Open the agent dashboard; add a space for a control action",
 		async getArgumentCompletions(prefix) {
 			const text = prefix.trimStart();
@@ -381,6 +427,15 @@ export function createAgentCommand(
 			const action = find(split[1]);
 			if (!action) return actionItems(text);
 			const rest = split[2];
+			if (action.name === "playbook") return playbookCompletions(rest, wiring.playbooks?.(), async () => {
+				const { rows } = await sources.list();
+				return rows.flatMap((row) => {
+					const handle = row.profile?.handle;
+					return [handle, row.id].flatMap((selector) => selector && isPlaybookTarget(selector) ? [{
+						value: `${selector} `, label: selector, description: `Agent target · ${sessionLabel(row)}`,
+					}] : []);
+				});
+			});
 			const argument = action.args[0];
 			if (!argument?.complete) return null;
 			const before = `${split[1]} `;
@@ -397,6 +452,7 @@ export function createAgentCommand(
 		async handler(input, ctx) {
 			const [name, ...args] = input.trim().split(/\s+/);
 			try {
+				if (dashboardOpen && (name === "playbook" || name === "help")) return;
 				if (!name) return await openDashboard(ctx);
 				const text = await dispatch(name, args, ctx);
 				if (text !== undefined) ctx.ui.notify(text, "info");

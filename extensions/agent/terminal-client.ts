@@ -16,6 +16,7 @@ import { KeybindingsManager, ProcessTerminal, TuiAltScreen, TUI_KEYBINDINGS, set
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { Action, ViewHost } from "./view-model.ts";
 import { type Choice, Form } from "./view-form.ts";
+import { ReaderView } from "./view-reader.ts";
 import { plainLine } from "./view-text.ts";
 import { AgentManager, type AgentCaller } from "./manager.ts";
 import { createAgentObservationSource, type AgentObservationSource } from "./agent-observation.ts";
@@ -36,6 +37,9 @@ import { isThinkingLevel, type ConfigurationPatch } from "./configuration.ts";
 import { cancelAgentTimer, readAgentTimerRows, resetAgentContext, scheduleAgentInput, type ResetTimerDeps } from "./durable-reset-timers.ts";
 import type { ActionResult, AgentFormHost } from "./agent-forms.ts";
 import type { ProfileDraft } from "./profile-dialog.ts";
+import { readPlaybookCatalog } from "./playbook-catalog.ts";
+import { PLAYBOOK_CONTROL_CONTRACT } from "./version-contract.ts";
+import { PLAYBOOK_HELP, configureNativePlaybook, parsePlaybookCommand, playbookCatalogText, playbookSelectionText, readNativePlaybook, requirePlaybookReceipt } from "./playbook-ui.ts";
 
 /** The placement that a receipt states: whether the input is in the recipient's context. Empty when the receipt states none. */
 export function placementText(receipt: unknown): string {
@@ -51,7 +55,7 @@ export function terminalAdmission(receipt: unknown, id: string, mode: "steer" | 
 }
 
 export type TerminalManager = Pick<AgentManager, "resolveTarget" | "control" | "snapshot" | "dashboardPage" | "observeLive" | "subscribeRoster" | "close"> &
-	Partial<Pick<AgentManager, "collaborate" | "spawn">>;
+	Partial<Pick<AgentManager, "collaborate" | "spawn" | "playbookControlContract">>;
 export interface UnconfirmedTerminalInput {
 	readonly text: string;
 	readonly mode: "steer" | "followUp";
@@ -74,6 +78,8 @@ export interface TerminalControllerOptions {
 	/** Test seam for the local display-module import; the default imports the advertised file. */
 	importModule?(url: string): Promise<Record<string, unknown>>;
 	creation?: TerminalCreation;
+	/** The terminal's Agent directory, independent of whether model discovery succeeded. */
+	agentDir?: string;
 }
 
 /**
@@ -87,6 +93,7 @@ export class TerminalController {
 	readonly manager: TerminalManager;
 	readonly caller: AgentCaller;
 	readonly creation?: TerminalCreation;
+	readonly agentDir?: string;
 	/** Owner renderers advertised by the selected conversation's live host. Replaced as a unit. */
 	display: DisplayModules = noDisplayModules;
 	/** Owner views advertised by the selected conversation's live host. Replaced as a unit. */
@@ -109,12 +116,27 @@ export class TerminalController {
 		this.remember = options.remember;
 		this.importModule = options.importModule;
 		this.creation = options.creation;
+		this.agentDir = options.agentDir ?? options.creation?.agentDir;
 		this.source = createAgentObservationSource({
 			list: (input) => this.manager.dashboardPage(input),
 			snapshot: (id, params) => this.manager.snapshot(id, params),
 			observeLive: (id, scope, listener, signal) => this.manager.observeLive(id, scope, listener, signal),
 			subscribeRoster: (listener) => this.manager.subscribeRoster(listener),
 		});
+	}
+
+	/** Old cached manager implementations must never receive a playbook mutation. */
+	playbookControl(method: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+		if (this.manager.playbookControlContract !== PLAYBOOK_CONTROL_CONTRACT) {
+			if (method === "playbook-read") return Promise.resolve(undefined);
+			return Promise.reject(new Error("Playbook controls require a matching Agent process. No change was made."));
+		}
+		return this.manager.control(method, input, this.caller, signal ? { signal } : undefined);
+	}
+
+	get playbooks() {
+		const dir = this.agentDir;
+		return dir === undefined ? undefined : () => readPlaybookCatalog(dir);
 	}
 
 	get selected(): string | undefined {
@@ -261,9 +283,10 @@ export class TerminalController {
 		const creation = this.creation;
 		const spawn = this.manager.spawn?.bind(this.manager);
 		if (!creation || !spawn) throw new Error("Creation needs the configured model catalogue; it is unavailable in this terminal.");
+		if (input.playbook && this.manager.playbookControlContract !== PLAYBOOK_CONTROL_CONTRACT) throw new Error("Playbook creation requires a matching Agent process. No conversation was created.");
 		const creator: AgentCaller = { ...this.caller, preferenceCatalog: creation.catalog, validateModel: (model, level) => creation.validateModel(model, level) };
 		const created = (await spawn(
-			{ ...(input.preset ? { preset: input.preset } : {}), ...(input.cwd ? { cwd: input.cwd } : {}), ...(input.trust === undefined ? {} : { trust: input.trust }), origin: "operator", requestId: input.requestId },
+			{ ...(input.preset ? { preset: input.preset } : {}), ...(input.playbook ? { playbook: input.playbook } : {}), ...(input.cwd ? { cwd: input.cwd } : {}), ...(input.trust === undefined ? {} : { trust: input.trust }), origin: "operator", requestId: input.requestId },
 			creator,
 			input.onCreated,
 		)) as { sessionId: string; cwd?: string };
@@ -398,10 +421,15 @@ export function terminalForms(controller: TerminalController, drafts: Map<string
 			// The native request takes the model as an object; the form stores the exact identity string.
 			const { model: identity, ...rest } = patch;
 			const split = identity?.indexOf("/") ?? -1;
-			const result = (await control("configure", { ...rest, ...(identity === undefined ? {} : { model: { provider: identity.slice(0, split), modelId: identity.slice(split + 1) } }) })) as { outcome?: string };
+			const fields = { ...rest, ...(identity === undefined ? {} : { model: { provider: identity.slice(0, split), modelId: identity.slice(split + 1) } }) };
+			const result = (await (patch.playbook === undefined
+				? control("configure", fields)
+				: controller.playbookControl("configure", { sessionId: target.id, ...fields, origin: "operator" }))) as { outcome?: string };
 			if (result?.outcome === "failed") throw new Error(`Configuration failed for “${label}”${failure(result)}`);
-			return outcome(`Updated configuration for “${label}”`);
+			return outcome(`Updated configuration for “${label}”${patch.playbook === undefined ? "" : ` · ${playbookSelectionText(requirePlaybookReceipt(result, patch.playbook))} from the next model request`}`);
 		},
+		playbooks: controller.playbooks,
+		playbook: (signal) => controller.playbookControl("playbook-read", { sessionId: target.id }, signal),
 		commands: async () => {
 			const status = (await control("status")) as { inventory?: { contributions?: Array<{ commands?: Array<{ name: string; description: string }> }> } };
 			if (!status.inventory) return undefined;
@@ -475,6 +503,7 @@ export class TerminalScreen implements Component {
 			submissionFailure: (input, error) => controller.failureReceipt(input.id, error),
 			newAgent: controller.creation && manager.spawn ? (input) => this.create(input) : undefined,
 			newDefaults: () => this.newDefaults(),
+			playbooks: controller.playbooks,
 			newUnavailable: "Creation needs the configured model catalogue, which this terminal could not load.",
 			forms: (target) => terminalForms(controller, this.drafts, target),
 			panels: async (target) => {
@@ -486,7 +515,7 @@ export class TerminalScreen implements Component {
 				controller.select(row?.id);
 				this.projectStatus(row);
 			},
-			command: (text) => this.command(text),
+			command: (text, target) => this.command(text, target),
 			extraActions: (target) => this.extraActions(target),
 			exitLabel: "Detach",
 		};
@@ -524,20 +553,68 @@ export class TerminalScreen implements Component {
 	}
 
 	/** The terminal's own composer routes; other slash and bang text stays a literal message. */
-	private async command(text: string): Promise<boolean> {
+	private async command(text: string, target: string): Promise<boolean> {
 		const words = text.trim().split(/\s+/);
 		if (text.trim() === "/quit") {
 			this.done();
 			return true;
 		}
 		if (words[0] !== "/agent") return false;
-		if (words[1] === "enter" && words[2]) {
-			const id = await this.controller.manager.resolveTarget(words[2]);
-			this.view.selectIdentity(id);
-		} else if (words[1] === "browse") this.view.openNamedAction("browse");
-		else if (words[1] === "new") this.view.openNamedAction("new");
-		else if (words[1] === "recover") this.recover(this.controller.selected);
+		switch (words[1]) {
+			case "enter":
+				if (!words[2]) throw new Error("Use /agent enter <agent ID or @handle>.");
+				this.view.selectIdentity(await this.controller.manager.resolveTarget(words[2]));
+				break;
+			case "browse": this.view.openNamedAction("browse"); break;
+			case "new": this.view.openNamedAction("new"); break;
+			case "recover": this.recover(target); break;
+			case "playbook":
+				if (words.length === 3 && ["--help", "-h"].includes(words[2])) this.openPlaybookHelp();
+				else await this.playbookCommand(words.slice(2), target);
+				break;
+			case "help":
+				if (words[2] === "playbook") this.openPlaybookHelp();
+				else this.view.openNamedAction("help");
+				break;
+			default: this.view.notify("Unknown /agent action here. Use /agent help for playbook controls, or ? for dashboard Help.", "warning");
+		}
 		return true;
+	}
+
+	private openPlaybookHelp(): void {
+		const dir = this.controller.agentDir;
+		const text = `${PLAYBOOK_HELP}\n\n${playbookCatalogText(dir ? readPlaybookCatalog(dir) : undefined)}`;
+		this.view.openViewAction("Playbooks", (host) => new ReaderView("Playbooks", host, () => text));
+	}
+
+	private async playbookCommand(args: string[], selected: string): Promise<void> {
+		const command = parsePlaybookCommand(args);
+		const { agentDir } = this.controller;
+		if (command.kind === "import") {
+			if (!agentDir) throw new Error("Playbook import is unavailable here.");
+			const { preparePlaybookComparison } = await import("./playbook-comparison.ts");
+			if (!this.disposed && this.view.selectedRow?.id === selected) {
+				const comparison = preparePlaybookComparison(agentDir, command.name);
+				this.view.openViewAction(`Review ${comparison.preview.name}.md`, comparison.open);
+			}
+			return;
+		}
+		const target = command.target ?? selected;
+		if (command.kind === "set") {
+			const text = await configureNativePlaybook((method, input) => this.controller.playbookControl(method, input), target, command.name);
+			if (!this.disposed) this.view.notify(text, "success");
+			return;
+		}
+		const catalog = agentDir ? readPlaybookCatalog(agentDir, { initialize: command.target === undefined }) : undefined;
+		this.view.openViewAction("Playbooks", (host) => {
+			let current = "Playbook: reading…";
+			void readNativePlaybook((method, input) => this.controller.playbookControl(method, input, host.signal), target).then((selection) => {
+				if (host.signal.aborted) return;
+				current = playbookSelectionText(selection, catalog);
+				host.requestRender();
+			});
+			return new ReaderView("Playbooks", host, () => `${target}\n${current}\n\n${playbookCatalogText(catalog)}`);
+		});
 	}
 
 	/** Review unconfirmed input of one target; recovery restores a draft and sends nothing. */
@@ -664,7 +741,7 @@ export async function runTerminal(args: string[]): Promise<void> {
 	const keys = terminalKeys();
 	setKeybindings(keys);
 	const manager = new AgentManager({ root: realpathSync(root), agentDir, packageDir: getPackageDir() });
-	const controller = new TerminalController({ manager, caller: { id: `terminal:${randomUUID()}`, cwd: process.cwd() }, remember: (id) => remembered.write(id), creation: await creationServices(agentDir) });
+	const controller = new TerminalController({ manager, caller: { id: `terminal:${randomUUID()}`, cwd: process.cwd() }, remember: (id) => remembered.write(id), agentDir, creation: await creationServices(agentDir) });
 	const terminal = new ProcessTerminal();
 	const tui = new TuiAltScreen(terminal);
 	let finish!: () => void;

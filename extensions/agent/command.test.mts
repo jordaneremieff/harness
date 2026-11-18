@@ -376,6 +376,7 @@ describe("agent command discovery and help", () => {
 				"schedule",
 				"timers",
 				"timer-cancel",
+				"playbook",
 				"help",
 			],
 		);

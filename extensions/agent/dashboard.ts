@@ -48,6 +48,8 @@ import { DashboardRelations, relationIdentity, type ReadRelationLineage } from "
 import { actionView, type ActionResult, type AgentFormHost } from "./agent-forms.ts";
 import { WorkView, type WorkSource } from "./agent-work-view.ts";
 import { createObservationPump, type ObservationClock, type ObservationPump } from "./observation-pump.ts";
+import type { PlaybookCatalog } from "./playbook-catalog.ts";
+import { PLAYBOOK_HELP, playbookCatalogText, playbookChoices } from "./playbook-ui.ts";
 
 export interface DashboardResult {
 	text: string;
@@ -59,6 +61,7 @@ export interface DashboardResult {
 export interface NewAgentInput {
 	prompt?: string;
 	preset?: string;
+	playbook?: string;
 	cwd?: string;
 	onCreated: (row: AgentConversationSummary) => void;
 }
@@ -90,6 +93,7 @@ export interface DashboardOperations {
 	submissionFailure?(input: { id: string; text: string; mode: "steer" | "followUp" }, error: unknown): string;
 	newAgent?(input: NewAgentInput): Promise<DashboardResult>;
 	newDefaults?(): NewAgentDefaults;
+	playbooks?(): PlaybookCatalog;
 	/** Why New is unavailable on this host, when it is. */
 	readonly newUnavailable?: string;
 	/** The forms host for one captured target. */
@@ -99,7 +103,7 @@ export interface DashboardOperations {
 	/** The selected conversation or its observed state changed; a host may read per-target display data. Reading never starts a host. */
 	observed?(row: AgentConversationSummary | undefined): void;
 	/** Composer text the host handles itself, such as the attached terminal's /agent routes. Returns true when handled. */
-	command?(text: string): boolean | Promise<boolean>;
+	command?(text: string, target: string): boolean | Promise<boolean>;
 	/** Host-specific secondary actions for the selected conversation. */
 	extraActions?(target: AgentConversationSummary): readonly Action[];
 	/** The way out of this view: "Close" in ordinary Pi, "Detach" in the attached terminal. */
@@ -129,7 +133,7 @@ const HELP = [
 	"",
 	"Selected agent",
 	"s stops current work, f switches the next message between a correction (steer) and new work (follow-up), r reconnects a stopped host.",
-	"c configures name, model and reasoning; k shows the live tasks. x lists fork, rewind, compact, reset, schedules, commands, profile and details.",
+	"c configures the session's playbook, and its name, model and reasoning when idle. k shows live tasks. x lists more actions.",
 	"w opens Work, as a click on the work count above the conversation does: each request the agent declared background work for,",
 	"its dependencies and its final report. Enter on a dependency reads its result; Enter on a final report reads all of it. Reading changes nothing.",
 	"Forms open beside the conversation and bind to the agent they opened for; selecting another agent closes them without sending anything.",
@@ -952,8 +956,14 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** Composer text the host routes itself, such as the attached terminal's /agent commands. */
 	private async handledCommand(console: AgentConsole, text: string): Promise<boolean> {
-		if (!this.operations.command || !(await this.operations.command(text))) return false;
-		if (console.state.draft === text) updateDraft(console.state, "");
+		if (!this.operations.command) return false;
+		const { draftRevision } = console.state;
+		try {
+			if (!(await this.operations.command(text, console.row.id))) return false;
+			if (console.state.draftRevision === draftRevision && console.state.draft === text) updateDraft(console.state, "");
+		} catch (error) {
+			this.show(plainLine(error instanceof Error ? error.message : String(error)).slice(0, 300), "error");
+		}
 		this.redraw();
 		return true;
 	}
@@ -1163,9 +1173,8 @@ export class AgentDashboard implements Component, Focusable {
 	}
 
 	private openHelp(): void {
-		const view = (host: ViewHost) =>
-			new ReaderView("Help", host, () => ["Machine execution preferences", ...this.machinePreferences, "", ...HELP].join("\n"));
-		this.openInspector("Help", view);
+		const text = ["Machine execution preferences", ...this.machinePreferences, "", ...HELP, "", PLAYBOOK_HELP, "", playbookCatalogText(this.operations.playbooks?.())].join("\n");
+		this.openInspector("Help", (host) => new ReaderView("Help", host, () => text));
 	}
 
 	private async openBrowsers(): Promise<void> {
@@ -1220,6 +1229,8 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		const defaults = this.newDefaults();
 		if (!defaults) return;
+		const catalog = this.operations.playbooks?.();
+		const playbooks = playbookChoices(catalog, { value: "", label: "None" });
 		this.closeInspector();
 		const open = (view: ViewHost) =>
 			new Form({
@@ -1229,6 +1240,7 @@ export class AgentDashboard implements Component, Focusable {
 				fields: [
 					{ kind: "area", id: "prompt", label: "Purpose", value: this.state.newTask, rows: 5, hint: "The first message. Leave it empty to create an idle conversation." },
 					...(defaults.presets.length ? [{ kind: "choice" as const, id: "preset", label: "Preset", value: defaults.preset, choices: defaults.presets, rows: Math.min(7, defaults.presets.length) }] : []),
+					...(catalog ? [{ kind: "choice" as const, id: "playbook", label: "Playbook", value: "", choices: playbooks, rows: 5, filter: true, hint: "Independent of the execution preset" }] : []),
 					{ kind: "text", id: "cwd", label: "Directory", value: defaults.cwd },
 				],
 				action: { label: "Start" },
@@ -1252,6 +1264,7 @@ export class AgentDashboard implements Component, Focusable {
 		const result = await newAgent({
 			prompt,
 			preset: values.preset || undefined,
+			...(values.playbook ? { playbook: values.playbook } : {}),
 			cwd: values.cwd || undefined,
 			onCreated: (row) => {
 				if (this.closed) return;
@@ -1419,7 +1432,7 @@ export class AgentDashboard implements Component, Focusable {
 			actions.push({ id: "attach", label: "Reconnect", key: "r", short: "reconnect", primary: attention, description: "Start the host; unfinished work resumes", run: () => this.openAction("attach") });
 		actions.push(...(this.operations.extraActions?.(row) ?? []));
 		actions.push({ id: "work", label: "Work", key: "w", short: "work", description: "Requests this agent declared background work for, their dependencies and final reports", run: () => this.openWork() });
-		actions.push({ id: "configure", label: "Configure", key: "c", short: "configure", disabled: working ? "Stop current work first; the owner configures idle agents only" : undefined, description: "Name, model and reasoning", run: () => this.openAction("configure") });
+		actions.push({ id: "configure", label: "Configure", key: "c", short: "configure", disabled: working && !this.operations.playbooks ? "Stop current work first; the owner configures idle agents only" : undefined, description: working ? "Playbook only during work" : "Playbook, name, model and reasoning", run: () => this.openAction("configure") });
 		actions.push({ id: "tasks", label: "Tasks", key: "k", short: "tasks", description: "The live tasks in this agent's storage", run: () => this.openTasks() });
 		return actions;
 	}

@@ -29,7 +29,9 @@ export interface InspectorOptions {
 	readonly title: string;
 	open(host: ViewHost): View;
 	/** Rows the inspector occupies on the next render. Read on every render. */
-	rows(): number;
+	rows(expanded: boolean): number;
+	/** Pi's Expand key in the editor slot. An embedded inspector leaves sizing to the work view. */
+	readonly expandKey?: string;
 	requestRender(): void;
 	/** Leave the inspector. The host restores its own focus, then runs `then` when given. */
 	close(then?: () => unknown): void;
@@ -72,6 +74,8 @@ export class Inspector implements Component, Focusable {
 	private readonly bar = new KeyRow();
 	private notice?: Notice;
 	private closed = false;
+	private expanded = false;
+	get capturesViewportInput(): boolean { return this.options.expandKey !== undefined; }
 	private bodyY = 1;
 	private bodyHeight = 1;
 	/** Size of the last render: a pointer event drawn for another size acts on nothing. */
@@ -165,7 +169,14 @@ export class Inspector implements Component, Focusable {
 
 	private actions(): readonly Action[] {
 		try {
-			return this.top()?.view.actions?.() ?? [];
+			const actions = this.top()?.view.actions?.() ?? [];
+			const key = this.options.expandKey;
+			if (!key) return actions;
+			return [...actions, {
+				id: "\u0000expand", label: this.expanded ? "Collapse" : "Expand", primary: true,
+				key: actions.some((action) => action.key === key) ? undefined : key,
+				run: () => { this.expanded = !this.expanded; this.options.requestRender(); },
+			}];
 		} catch (error) {
 			this.fail(error);
 			return [];
@@ -309,7 +320,7 @@ export class Inspector implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
-		const height = Math.max(4, Math.floor(this.options.rows()));
+		const height = Math.max(4, Math.floor(this.options.rows(this.expanded)));
 		this.size = { width, height };
 		this.hits.begin(width, height);
 		const header = this.renderHeader(width);

@@ -5,7 +5,7 @@
  * Ordinary Pi and the attached terminal supply the same host interface with their own routes.
  */
 
-import { type Choice, Form } from "./view-form.ts";
+import { type Choice, type FieldSpec, Form } from "./view-form.ts";
 import type { View, ViewHost } from "./view-model.ts";
 import { LoadingView, ReaderView } from "./view-reader.ts";
 import { plainLine } from "./view-text.ts";
@@ -20,6 +20,8 @@ import { THINKING_LEVELS, validateConfigurationPatch, type ConfigurationPatch } 
 import { profileText, readValue, type ProfileDraft } from "./profile-dialog.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { ProfileUpdateSchema, type AgentProfile } from "./profile-schema.ts";
+import type { PlaybookCatalog } from "./playbook-catalog.ts";
+import { playbookChoices, playbookSelection, playbookSelectionText } from "./playbook-ui.ts";
 
 export type ActionResult = string | AgentActionOutcome | undefined;
 
@@ -41,6 +43,8 @@ export interface AgentFormHost {
 	/** The models this target's host can use. A failure is shown in the form, never replaced by typing. */
 	models(): Promise<readonly ModelOption[]>;
 	configure(patch: ConfigurationPatch): Promise<ActionResult>;
+	playbooks?(): PlaybookCatalog;
+	playbook?(signal?: AbortSignal): Promise<unknown>;
 	/** Native commands the target's live host lists, or undefined when the name is typed. */
 	commands(): Promise<readonly Choice[] | undefined>;
 	profile(method: "profile-read" | "profile-update", input: Record<string, unknown>): Promise<unknown>;
@@ -132,28 +136,58 @@ function modelChoices(models: readonly ModelOption[], current: string): Choice[]
 /** Only changed fields enter the patch; an unchanged form is refused before any request. */
 function configurationPatch(host: AgentFormHost, values: Readonly<Record<string, string>>, current: string): ConfigurationPatch {
 	const patch: ConfigurationPatch = {};
-	if ((values.name ?? "") !== (host.row.name ?? "")) patch.name = values.name ?? "";
+	if (values.name !== undefined && values.name !== (host.row.name ?? "")) patch.name = values.name;
 	if (values.model && values.model !== current) patch.model = values.model;
-	if (values.thinkingLevel && values.thinkingLevel !== (host.row.model?.thinkingLevel ?? "")) patch.thinkingLevel = values.thinkingLevel as ConfigurationPatch["thinkingLevel"];
+	if (values.thinkingLevel && values.thinkingLevel !== (host.row.model?.thinkingLevel ?? "off")) patch.thinkingLevel = values.thinkingLevel as ConfigurationPatch["thinkingLevel"];
+	if (values.playbook) patch.playbook = values.playbook;
 	if (!Object.keys(patch).length) throw new Error("Nothing changed; edit a field or Cancel.");
-	return validateConfigurationPatch(patch);
+	return validateConfigurationPatch(patch, true);
+}
+
+function executionFields(host: AgentFormHost, current: string, choices: Choice[] | undefined): FieldSpec[] {
+	return [
+		{ kind: "text", id: "name", label: "Name", value: host.row.name ?? "", placeholder: "blank clears the name" },
+		...(choices ? [{ kind: "choice" as const, id: "model", label: "Model", value: current, choices, filter: true, rows: 7, hint: "Type to narrow the host's available models" }] : []),
+		{ kind: "choice", id: "thinkingLevel", label: "Reasoning", value: host.row.model?.thinkingLevel ?? "off", choices: THINKING_LEVELS.map((level) => ({ value: level, label: level })) },
+	];
+}
+
+async function configurationModels(host: AgentFormHost, allowPlaybook: boolean) {
+	if (host.row.state === "working") return undefined;
+	try {
+		return { models: await host.models(), error: undefined };
+	} catch (error) {
+		if (!allowPlaybook) throw error;
+		return { models: [], error: plainLine(String(error)).slice(0, 180) };
+	}
+}
+
+function configurationIntro(busy: boolean, details: string, modelError: string | undefined): string {
+	return [busy ? "Only the playbook changes during work." : "Changes apply together. Pi clamps reasoning to the model. If the agent starts work, execution changes are refused and your fields stay.", details, modelError].filter(Boolean).join(" ");
 }
 
 function configureView(host: AgentFormHost, view: ViewHost): View {
 	return new LoadingView("Configure", view, async () => {
-		const models = await host.models();
+		const busy = host.row.state === "working";
+		const catalog = host.playbooks?.();
+		const canChoosePlaybook = host.playbook !== undefined && catalog !== undefined;
+		const [selection, modelList] = await Promise.all([
+			host.playbook?.(view.signal).then(playbookSelection, () => undefined),
+			configurationModels(host, canChoosePlaybook),
+		]);
 		const current = host.row.model ? `${host.row.model.provider}/${host.row.model.modelId}` : "";
-		const choices = modelChoices(models, current);
+		const choices = modelChoices(modelList?.models ?? [], current);
+		const playbooks = playbookChoices(catalog, { value: "", label: "Keep current selection" });
+		playbooks.splice(1, 0, { value: "off", label: "Off", description: "Clear the playbook" });
+		const fields = busy ? [] : executionFields(host, current, modelList?.error ? undefined : choices);
+		if (canChoosePlaybook) fields.push({ kind: "choice", id: "playbook", label: "Playbook", value: "", choices: playbooks, rows: 5, filter: true });
+		const details = canChoosePlaybook ? playbookSelectionText(selection, catalog) : "";
 		return new Form({
 			title: "Configure",
 			heading: `Configure ${label(host)}`,
-			intro: "Name, model and reasoning apply together on Apply. Pi clamps reasoning to the model. The owner refuses a busy agent; your fields stay.",
-			fields: [
-				{ kind: "text", id: "name", label: "Name", value: host.row.name ?? "", placeholder: "blank clears the name" },
-				{ kind: "choice", id: "model", label: "Model", value: current, choices, filter: true, rows: 7, hint: "Type to narrow the host's available models" },
-				{ kind: "choice", id: "thinkingLevel", label: "Reasoning", value: host.row.model?.thinkingLevel ?? "off", choices: THINKING_LEVELS.map((level) => ({ value: level, label: level })) },
-			],
-			action: { label: "Apply" },
+			intro: configurationIntro(busy, details, modelList?.error),
+			fields,
+			action: { label: busy ? "Apply playbook" : "Apply" },
 			host: view,
 			submit: async (values) => finish(host, "configure", await host.configure(configurationPatch(host, values, current))),
 		});
@@ -394,6 +428,13 @@ function profileView(host: AgentFormHost, view: ViewHost): View {
 
 function detailsView(host: AgentFormHost, view: ViewHost): View {
 	let content = "Reading details…";
+	let playbook = host.playbook ? "Playbook: reading…" : "";
+	const catalog = host.playbooks?.();
+	void host.playbook?.(view.signal).then(playbookSelection, () => undefined).then((selection) => {
+		if (view.signal.aborted) return;
+		playbook = playbookSelectionText(selection, catalog);
+		view.requestRender();
+	});
 	host.status(view.signal).then(
 		(value) => {
 			if (view.signal.aborted) return;
@@ -407,7 +448,7 @@ function detailsView(host: AgentFormHost, view: ViewHost): View {
 		},
 	);
 	const id = host.row.id;
-	return new ReaderView("Details", view, () => `${label(host)}\nIdentity: ${id}\nDirectory: ${host.row.cwd}\n\n${content}`);
+	return new ReaderView("Details", view, () => `${label(host)}\nIdentity: ${id}\nDirectory: ${host.row.cwd}\n${playbook}\n\n${content}`);
 }
 
 /** Open one agent action as its inspector view. */

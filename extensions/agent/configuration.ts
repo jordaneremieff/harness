@@ -8,6 +8,7 @@ export interface ConfigurationPatch {
 	name?: string;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
+	playbook?: string;
 }
 export interface ConfigurationModel { provider: string; modelId: string }
 export interface ConfigurationCommand { sessionId: string; patch: ConfigurationPatch }
@@ -69,11 +70,19 @@ export function configurationModel(value: unknown): ConfigurationModel {
 	return { provider: text.slice(0, separator), modelId: text.slice(separator + 1) };
 }
 
+export function configurationPlaybook(value: unknown): string {
+	if (typeof value !== "string" || value.length > 48 || !/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(value)) {
+		throw new Error("Use a playbook name (lowercase letters, digits and single hyphens) or off.");
+	}
+	return value;
+}
+
 /** Undefined fields are absent; an empty or whitespace-only name explicitly clears the name. */
-export function validateConfigurationPatch(value: unknown): ConfigurationPatch {
+export function validateConfigurationPatch(value: unknown, allowPlaybook = false): ConfigurationPatch {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("configuration must be an object");
-	if (Object.keys(value).some((key) => !(fields as readonly string[]).includes(key))) {
-		throw new Error("unsupported configuration field; use name, model, or thinkingLevel");
+	const supported = allowPlaybook ? [...fields, "playbook"] : [...fields];
+	if (Object.keys(value).some((key) => !supported.includes(key))) {
+		throw new Error(`unsupported configuration field; use ${supported.join(", ")}`);
 	}
 	const input = value as Record<string, unknown>;
 	const patch: ConfigurationPatch = {};
@@ -86,7 +95,8 @@ export function validateConfigurationPatch(value: unknown): ConfigurationPatch {
 		if (!isThinkingLevel(input.thinkingLevel)) throw new Error(`thinkingLevel must be one of ${THINKING_LEVELS.join(", ")}`);
 		patch.thinkingLevel = input.thinkingLevel;
 	}
-	if (!Object.keys(patch).length) throw new Error("configuration requires at least one of name, model, or thinkingLevel");
+	if (allowPlaybook && Object.hasOwn(input, "playbook") && input.playbook !== undefined) patch.playbook = configurationPlaybook(input.playbook);
+	if (!Object.keys(patch).length) throw new Error(`configuration requires at least one of ${supported.join(", ")}`);
 	return patch;
 }
 
