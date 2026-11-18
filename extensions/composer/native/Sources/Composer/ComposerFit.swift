@@ -7,6 +7,8 @@ struct ComposerFit {
     private static let observationTimeout = Duration.seconds(2)
     private static let maxAttempts = 4
     private static let minimumMove = 2.0
+    // Allow for Rex rounding the actual frame below its predicted height.
+    private static let roundingMargin = 1.0
 
     struct Startup {
         private let fallback: ContinuousClock.Instant
@@ -212,7 +214,7 @@ struct ComposerFit {
 
     var goal: Double? {
         guard let needed, let slope, slope > 0, let latest else { return nil }
-        let target = max(ceil(needed), floor ?? 0)
+        let target = max(ceil(needed) + Self.roundingMargin, floor ?? 0)
         var desired = (target - offset) / slope
         if needed > latest.height, attempts > 0 || desired < share {
             // If the measured pane is short, grow from the observed point as well
