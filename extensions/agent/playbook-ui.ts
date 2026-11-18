@@ -137,6 +137,8 @@ export class PlaybookViews {
 			if (controller.signal.aborted) return;
 			if (ctx.mode !== "tui" || !ctx.hasUI) ctx.ui.notify(page.text, "info");
 			else await openPage(ctx, page, controller.signal);
+		} catch (error) {
+			if (!controller.signal.aborted) throw error;
 		} finally {
 			this.active = undefined;
 		}

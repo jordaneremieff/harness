@@ -634,6 +634,9 @@ its warning over the work view and the message field.
 | `/agent new` | Open New conversation. |
 | `/agent browse` | Open the selected conversation's owner views. |
 | `/agent recover` | Open Recover input for the selected conversation. |
+| `/agent playbook`, `/agent playbook [target] <name or off>` | Read the selection or change it for the selected or named agent. No message goes to the model. |
+| `/agent playbook --import <starter>` | Review a local starter before replacing or adding that file. |
+| `/agent help`, `/agent help playbook` | Open Help or the playbook command reference and local catalog. |
 | PageUp / PageDown | Read the conversation or the open thread; PageUp at the oldest loaded entry reads earlier entries. |
 | Ctrl+O / Ctrl+T | Expand tool output / show thinking. |
 
@@ -863,8 +866,8 @@ it needs attention; over the conversation `↑↓ scroll · end latest · enter
 message`; in the message field `enter send`, the newline keys and `esc done`.
 
 **x more** (`ctrl+n` while a text field has focus) lists every other action
-with its key: the delivery effect (`f`), Work (`w`), Configure (`c`, disabled
-with its reason while the agent works), Tasks (`k`), Owner views (`o`), Fork,
+with its key: the delivery effect (`f`), Work (`w`), Configure (`c`), Tasks
+(`k`), Owner views (`o`), Fork,
 Rewind, Compact, Reset context, Schedule message, Scheduled messages, Run
 command, Profile, Details, Stop and release host, host extras such as the
 terminal's Recover input (`u`), New conversation (`n`), Related or All (`v`),
@@ -888,9 +891,11 @@ agent and that view still own the screen: after another form opens, another
 agent is selected, or the view is left, the late answer opens nothing and
 states no failure.
 
-- **Configure** stages Name, Model and Reasoning, then Apply. Models come from
-  the host's model list, narrowed as you type; a current model the host does
-  not list stays choosable. An unchanged form is refused before any request.
+- **Configure** stages the playbook and, for an idle agent, Name, Model and
+  Reasoning. A working agent offers only the playbook field. **Keep current
+  selection** leaves it untouched; **Off** clears it. Models come from the
+  host's model list, narrowed as you type; a current model the host does not
+  list stays choosable. An unchanged form sends no configuration request.
 - **Fork** starts an idle branch from the latest committed entry or a chosen
   message; **Rewind** starts a corrected branch before a chosen message and
   needs the correction. Earlier messages pages back. The created branch opens
@@ -917,7 +922,8 @@ states no failure.
   `/agent profile <identity-or-@handle>` opens the same view; outside the
   interactive terminal it returns the full profile as text.
 - **Details** reads the host status for the captured target and keeps all
-  returned text.
+  returned text. It also shows the playbook and who set it, or says that the
+  host cannot report it.
 - **Stop**, **Stop and release host** and **Reconnect**
   state the effect and run on their labelled action.
 - **Tasks** shows the storage's live task graph. Open conversation selects the
@@ -949,7 +955,8 @@ states no failure.
 
 **New conversation** stages Purpose (the first message, literal text even when
 it looks like a flag; empty creates an idle conversation), Preset (the machine
-presets with resolved model and reasoning, the default first) and Directory.
+presets with resolved model and reasoning, the default first), Playbook (an
+independent choice, initially None), and Directory.
 Start creates the conversation and selects it with a Starting state before its
 host is ready; the conversation then follows the host's live output. A late
 completion never moves a selection the operator changed since: the created
@@ -960,7 +967,8 @@ form is described above. The unsent purpose survives closing the form.
 
 **Help** lists every key and pointer route, and starts with the machine
 execution preferences: the file path, document status, digest, diagnostics,
-enforcement setting, and every preset with its model.
+enforcement setting, and every preset with its model. It also lists the local
+playbooks and any catalog diagnostics.
 
 The work view draws its key row, More, forms, readers and inspector with the
 agent extension's own code on Pi's `pi-tui` components: forms use `Input` and
@@ -4511,8 +4519,11 @@ no publisher is active, inspect the backing directory, preserve its files and re
 the relative link to the verified directory, or choose another catalog path.
 
 `/agent playbook --import maker` compares the bundled starter with the installed
-file. Accept **that file** in the interactive comparison, or cancel to keep your
-copy. A replacement retains the displaced file in a recovery directory named in
+file. In ordinary Pi the review opens below the transcript. In the attached
+terminal it opens in the inspector. At 90 columns both files appear side by
+side. In a narrower review, `s` switches files. Scroll either file before you
+choose **Replace this file** or **Add this file**. Escape leaves both files as
+they were if you have not applied the import. A replacement retains the displaced file in a recovery directory named in
 the receipt. If interrupted, inspect the catalog diagnostics and that directory
 before clearing a stale lock. Preserve both versions; do not blindly repeat a
 replacement or overwrite a later save. Outside the interactive UI the preview is read-only.

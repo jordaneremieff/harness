@@ -8,10 +8,10 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { Inspector } from "./inspector.ts";
 import { createAgentCommand, type AgentViewWiring } from "./command.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
-import { theme } from "./dashboard-test-fixture.mts";
+import { deferred, theme } from "./dashboard-test-fixture.mts";
 import { preparePlaybookComparison } from "./playbook-comparison.ts";
 import { readPlaybookCatalog } from "./playbook-catalog.ts";
-import { parsePlaybookCommand, playbookSelectionText } from "./playbook-ui.ts";
+import { PlaybookViews, parsePlaybookCommand, playbookSelectionText } from "./playbook-ui.ts";
 
 const id = "c9b0d619-eab1-4d0f-8f96-d67273e491ba";
 
@@ -73,6 +73,29 @@ it("routes ordinary selection and exact target clear separately; help and comple
 	assert.ok(existsSync(file));
 	await command.handler("playbook --import maker", ctx);
 	assert.match(notices.at(-1) ?? "", /Read-only preview.*interactive comparison/s);
+});
+
+it("opens one editor-slot reader, uses the configured Expand key and closes it on shutdown", async () => {
+	const views = new PlaybookViews();
+	const ready = deferred<Inspector>();
+	const ctx = { mode: "tui", hasUI: true, sessionManager: { getSessionId: () => id }, ui: {
+		custom: (factory: (...args: unknown[]) => Inspector, options?: unknown) => {
+			assert.equal(options, undefined, "the transcript stays above the editor slot");
+			return new Promise<void>((done) => ready.resolve(factory({ terminal: { rows: 40 }, requestRender() {} }, theme, { getKeys: () => ["ctrl+e"] }, done)));
+		},
+	} } as unknown as ExtensionCommandContext;
+	const first = views.show(ctx, () => ({ title: "Playbooks", text: "Selected: maker" }));
+	await views.show(ctx, () => assert.fail("a second open must not read another target"));
+	const frame = await ready.promise;
+	try {
+		assert.equal(frame.capturesViewportInput, true);
+		const rows = frame.render(120);
+		assert.match(rows[0], /Playbooks.*This session/);
+		assert.match(rows.at(-1) ?? "", /ctrl\+e expand/);
+		frame.handleInput("\x05");
+		assert.ok(frame.render(120).length > rows.length);
+	} finally { views.close(); await first; }
+	assert.equal(views.showing, false);
 });
 
 it("reads both files at wide and narrow widths; Escape cancels and replacement binds the reviewed bytes", (t) => {
