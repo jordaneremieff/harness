@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -110,6 +111,49 @@ test("the thread digest returns a changed frame and stores nothing when a read f
 	const revised = await f.digest();
 	assert.equal(revised.frameRevision, 2);
 	assert.equal(revised.frame?.purpose, "Revised purpose");
+});
+
+function resultDigest(path: string, finalReport: boolean) {
+	const recipes = readFileSync(join(root, "extensions/agent/delegation/codemode.md"), "utf8");
+	const recipe = /\n## Save a result digest to a file\n[\s\S]*?```js\n([\s\S]*?)\n```/.exec(recipes)?.[1];
+	assert.ok(recipe, "file digest recipe");
+	const source = recipe.replace('"<output path>"', JSON.stringify(path)).replace("const finalReport = false;", `const finalReport = ${finalReport};`);
+	const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (...parameters: string[]) => (tools: object) => Promise<unknown>;
+	return new AsyncFunction("tools", parseCodemodeSource(source).code);
+}
+
+test("the file digest writes the exact requested result once and returns only its path and UTF-8 size", async () => {
+	for (const finalReport of [false, true]) {
+		const path = finalReport ? "out/final.md" : "out/answer.txt";
+		const parts = ["line 1\n", "é点🦜\n"];
+		const writes: unknown[] = [];
+		const offsets: number[] = [];
+		const receipt = await resultDigest(path, finalReport)({
+			agent_inspect: async (input: { view: string; finalReport?: boolean; offset?: number }) => {
+				assert.equal(input.view, "result");
+				assert.equal(input.finalReport, finalReport || undefined);
+				offsets.push(input.offset ?? 0);
+				const first = input.offset === undefined;
+				const text = parts[first ? 0 : 1], nextOffset = first ? parts[0].length : null;
+				return JSON.stringify(finalReport ? { status: "unanswered", finalReport: { text, nextOffset } } : { status: "done", answer: text, nextOffset });
+			},
+			write: async (input: unknown) => { writes.push(input); return "Saved"; },
+		});
+		const content = parts.join("");
+		assert.deepEqual(offsets, [0, parts[0].length]);
+		assert.deepEqual(writes, [{ path, content }]);
+		assert.deepEqual(receipt, { path, bytes: Buffer.byteLength(content, "utf8") });
+	}
+});
+
+test("the file digest never writes a partial or unavailable result", async () => {
+	const run = resultDigest("out/result.txt", false);
+	for (const incomplete of [{ status: "placed" }, { status: "done", answer: "part", nextOffset: 0 }]) {
+		const writes: unknown[] = [];
+		await assert.rejects(run({ agent_inspect: async () => incomplete, write: async (input: unknown) => { writes.push(input); } }), /not available|did not advance/);
+		assert.deepEqual(writes, []);
+	}
+	await assert.rejects(run({ agent_inspect: async () => ({ status: "done", answer: "" }), write: async () => { throw new Error("write failed"); } }), /write failed/);
 });
 
 test("maintained codemode recipes parse their options before their source", () => {

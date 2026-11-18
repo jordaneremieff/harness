@@ -17,7 +17,7 @@ for result references and thread positions.
 - Parallel dispatch
 - Fleet sweep
 - Thread digest
-- Answer as a Markdown document
+- Save a result digest to a file
 
 ## Thread hosted by a new agent
 
@@ -197,39 +197,39 @@ Notes:
   failed read stores nothing, and the next digest repeats from the old
   position.
 
-## Answer as a Markdown document
+## Save a result digest to a file
 
-Publish an agent's answer or declared final report exactly, for the operator
-to read in the Markdown reader, without retyping it. The script reads the
-result pages through `agent_inspect` and passes the joined text to
-`markdown_publish`; the answer never passes through your context.
+Use a caller-supplied output path for an agent's answer or declared final
+report. Pi's built-in `write` replaces the file. The digest stays out of the
+owner's context; the owner can show or publish the file with the tools of
+its session.
 
 ```js
 const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
 const sessionId = "<agent session>";
 const submissionId = 0; // the submissionId of the result reference
 const finalReport = false; // true for the retained final report of declared work
-const title = "<document title>";
+const path = "<output path>";
 
-let text = "";
+let content = "";
 let offset = 0;
 for (let page = 0; page < 600; page++) {
-  const read = asObject(await tools.agent_inspect({ sessionId, view: "result", submissionId, ...(finalReport ? { finalReport } : {}), ...(offset ? { offset } : {}) }));
-  const result = read.structuredContent ?? read.structuredOutput ?? read;
+  const result = asObject(await tools.agent_inspect({ sessionId, view: "result", submissionId, ...(finalReport ? { finalReport } : {}), ...(offset ? { offset } : {}) }));
   const part = finalReport ? result.finalReport : result;
-  if (result.status !== "done" || typeof part?.[finalReport ? "text" : "answer"] !== "string") return { stop: "no settled answer", status: result.status, reason: result.reason };
-  text += finalReport ? part.text : part.answer;
-  if (part.nextOffset == null) break;
+  const text = finalReport ? part?.text : part.answer;
+  if ((!finalReport && result.status !== "done") || typeof text !== "string") throw new Error("The requested result is not available.");
+  content += text;
+  if (part.nextOffset == null) {
+    let bytes = 0;
+    for (const char of content) {
+      const n = char.codePointAt(0);
+      bytes += n <= 0x7f ? 1 : n <= 0x7ff ? 2 : n <= 0xffff ? 3 : 4;
+    }
+    await tools.write({ path, content });
+    return { path, bytes };
+  }
+  if (!Number.isSafeInteger(part.nextOffset) || part.nextOffset <= offset) throw new Error("The result cursor did not advance.");
   offset = part.nextOffset;
 }
-const saved = asObject(await tools.markdown_publish({ title, text }));
-const receipt = saved.structuredContent ?? saved.structuredOutput ?? saved;
-return receipt.ok ? { documentId: receipt.documentId, revision: receipt.revision, bytes: receipt.bytes, show: receipt.show, paneInput: receipt.paneInput } : receipt;
+throw new Error("The result exceeds the page limit; no digest was written.");
 ```
-
-Notes:
-
-- The document is a publication of that text, not the agent's acceptance of
-  the work or yours. Its title and the answer's own words say what it is.
-- Publication saves silently. Show it to the operator with the receipt's
-  `show` command or `paneInput` only when the operator should read it now.

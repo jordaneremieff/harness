@@ -7,6 +7,27 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 
+test("the Agent guide keeps briefs, collaboration and supervision conditional", () => {
+	const guide = readFileSync(new URL("./delegation.md", import.meta.url), "utf8");
+	assert.match(guide, /^## Supervise without polling$/m);
+	const normalized = guide.replace(/\s+/g, " ");
+	const contracts: ReadonlyArray<readonly [string, RegExp]> = [
+		["task wins over selected defaults", /Follow explicit instructions for the task first. Otherwise use the selected playbook's defaults. With no playbook, choose by the task/],
+		["flexible collaboration", /Do not require a manager, thread, roster or worker count/],
+		["task frame", /coherent outcome.*Purpose, source pointers.*Granted authority and its source, restrictions.*Acceptance evidence, required checks, dependencies, end condition and result recipient/],
+		["inline assignment", /A direct task message is sufficient; no contract file or template is required/],
+		["relevant reuse and reply route", /Use a session whose expertise and ownership fit; preserve the current requester and reply route/],
+		["resolve known experts", /Resolve a known expert before creating another/],
+		["fresh session reasons", /Use a fresh session for unrelated work, independent judgment, conflicting ownership or unsuitable retained context/],
+		["same-owner corrections", /Keep corrections and repairs with the current owner when that still serves the task/],
+		["conditional threads", /Use a \[peer thread\]\([^)]*\) when changing shared facts, decisions or dependencies need a retained place. Otherwise, direct exchange is enough/],
+		["shared context and source", /Preserve the shared purpose, authority and source, restrictions, acceptance and who integrates/],
+		["peer discretion and admission", /Let contributors challenge the proposed method and exchange evidence directly.*admission receipt is not an agreement or proof of understanding/],
+		["no polling", /Do not keep a run open for their output or imitate a wait with status reads or sleeps/],
+	];
+	for (const [contract, pattern] of contracts) assert.match(normalized, pattern, contract);
+});
+
 test("thread-hosting recipe creates the thread in the new agent's storage and keeps its result reference", async () => {
 	const recipes = readFileSync(new URL("./delegation/codemode.md", import.meta.url), "utf8");
 	const source = recipes.match(/## Thread hosted by a new agent\n[\s\S]*?```js\n([\s\S]*?)\n```/)?.[1];

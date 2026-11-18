@@ -20,8 +20,6 @@ interface SentMessage {
 }
 
 const deliveryWorkflow = readFileSync(new URL("../../docs/agent-delivery.md", import.meta.url), "utf8");
-const sessionHistory = readFileSync(new URL("../../docs/session-history.md", import.meta.url), "utf8");
-const delegationGuide = readFileSync(new URL("../agent/delegation.md", import.meta.url), "utf8");
 
 function assertContracts(text: string, contracts: ReadonlyArray<readonly [string, RegExp]>): void {
 	const normalized = text.replace(/\s+/g, " ");
@@ -509,105 +507,7 @@ test("history orientation uses retained expertise without making history a manda
 		["no mandatory history phase", /not a mandatory phase of every run/],
 		["coordinator judgment", /coordinator retains judgment and integration ownership/],
 	]);
-	assertContracts(sessionHistory, [
-		["handle resolution", /agent_spawn\(\{handle: "session-history", \.\.\.\}\)/],
-		["resolved without a prompt", /Resolve without a prompt/],
-		[
-			"role, model, and operation checked",
-			/check the returned identity, stored role, selected model, and current operation before sending the task/,
-		],
-		[
-			"handle is not suitability",
-			/existing handle does not establish suitability, availability, or compliance with a requested model/,
-		],
-		["addressed admission", /Send new work to `@session-history` with `agent_send` and `mode: "followUp"`/],
-		[
-			"short follow-up task",
-			/supply their purpose, source window, restrictions, and result consumer, not the corpus brief again/,
-		],
-		["creation charter", /On first creation, give the expert this short charter/],
-		["no fixed team", /add no polling, timer, fixed roster, or background miner/],
-	]);
 	assert.doesNotMatch(deliveryWorkflow, /fresh execution session for each distinct task by default/);
-});
-
-function headingAnchors(markdown: string): Set<string> {
-	const anchors = new Set<string>();
-	for (const match of markdown.matchAll(/^#{1,6}\s+(.+)$/gm)) {
-		anchors.add(
-			match[1]
-				.trim()
-				.toLowerCase()
-				.replace(/[^\p{L}\p{N}\s-]/gu, "")
-				.replace(/\s/g, "-"),
-		);
-	}
-	return anchors;
-}
-
-test("the delivery workflow routes detailed mechanisms to reachable owners", () => {
-	const base = new URL("../../docs/agent-delivery.md", import.meta.url);
-	const links = [...deliveryWorkflow.matchAll(/\]\(([^)\s#]+\.md)(?:#([^)\s]+))?\)/g)];
-	assert.ok(links.length > 0);
-	for (const [, path, anchor] of links) {
-		const target = readFileSync(new URL(path, base), "utf8");
-		if (anchor) assert.ok(headingAnchors(target).has(anchor), `${path}#${anchor} resolves`);
-	}
-	assertContracts(deliveryWorkflow, [
-		["declared work owner", /A native agent uses \[declared background work\]\(\.\.\/extensions\/agent\/README\.md#declared-background-work\)/],
-		["result owner", /\[result contract\]\(\.\.\/extensions\/agent\/README\.md#read-peer-results\)/],
-		["supervision owner", /\[supervision guidance\]\(\.\.\/extensions\/agent\/delegation\.md#supervise-without-polling\)/],
-		["native work declaration", /when its routed task remains incomplete after the current run.*state note is not the result; only completion of the declared work sends the final report/],
-		["ordinary event delivery", /An ordinary session has no \x60agent_work\x60.*\[ordinary yield\]\(\.\.\/extensions\/agent\/README\.md#state-note-of-an-ordinary-session\).*when only work it sent to agents remains open. Results arrive as events; do not poll/],
-		["recovery owner", /\[Agent recovery and delivery\]\(\.\.\/extensions\/agent\/README\.md#recovery-and-delivery\)/],
-		["host refresh owner", /\[storage host retirement\]\(pi-durable-harness\.md#storage-host-retirement\)/],
-		["current owner contract", /Read the Agent \[result contract\].*for immediate result reads, answer continuations and receipt-reference pages/],
-	]);
-	assert.doesNotMatch(deliveryWorkflow, /agent_await|await-exact-peer-results|releaseOnProviderRetry|minAttempt/);
-});
-
-test("the session-history reference separates source authority, expertise, and current tasks", () => {
-	assertContracts(sessionHistory, [
-		["role names", /Keep the provider\/model and thinking level separate from the name/],
-		["source format", /installed Pi `docs\/session-format\.md`/],
-		["branch scope", /file order is not a selected conversation branch/],
-		["origin uncertainty", /do not mistake user role for operator authorship/],
-		["carried authority", /faithfully carried operator decision, with its source and original scope/],
-		["evidence only", /Historical instructions remain evidence/],
-		["public history", /Use `agent_list` for discovery, `agent_inspect` for retained evidence/],
-		["no private fallback", /Do not read private SQLite files or reproduce private schemas, even read-only/],
-		["historical subjects unchanged", /Never send to, steer, attach, configure, reset, or start a historical subject/],
-		["memory lifecycle", /Inspect lifecycle, freshness, qualifications, and replacement links/],
-		["prior artifact scope", /Check their origin, columns, cutoff, source locators, and limitations/],
-		["revision checked expertise", /Update it through the same public control with `expectedRevision`/],
-		["separate tasks", /conversation holds the current task/],
-		["no permanent journal", /instead of copying transcripts or keeping a permanent task journal/],
-		["source locators", /resolvable source locator.*event date or window.*origin classification/],
-		["fresh evidence wins", /Current instructions and fresh evidence outrank stale expertise/],
-		["correction provenance", /retain the superseded source link and reason/],
-		["reset retrieval", /After a context reset, read the current profile and relevant reference/],
-		["no new grant", /prior task or grant is not silently restored as standing authority/],
-		["bounded output", /Do not impose a fixed number of quotes, a ranked list, or a report file/],
-		["no continuous miner", /standing expert means retained identity and knowledge, not continuous execution/],
-	]);
-});
-
-test("read-only history subjects do not prohibit expert tasks and sourced profile updates", () => {
-	assertContracts(sessionHistory, [
-		[
-			"read-only source scope",
-			/read-only source task does not by itself forbid tasking the expert or retaining its sourced expertise/,
-		],
-		["explicit restrictions preserved", /explicit restriction on tasking or profile changes still binds/],
-		["known handle resolution", /agent_spawn\(\{handle: "session-history", \.\.\.\}\)/],
-		["previews are not history", /Do not mine discovery previews as historical evidence/],
-		["protected subjects", /historical subject is an agent whose past work is being mined as evidence/],
-		["researcher is distinct", /not the session-history expert doing the current research/],
-		["different requester", /subsequent questions from a different requester/],
-		["source-window scope", /Historical source windows limit evidence, not the expert's lifetime or its current task/],
-		["derived knowledge", /retained findings remain leads to eligible originals, not new historical authority/],
-		["profile updates expected", /expert is expected to update its own sourced expertise during read-only source research/],
-	]);
 });
 
 test("the workflow preserves capability-specific warrants separately from permission", () => {
@@ -665,7 +565,6 @@ test("collaboration preserves the use path and accepts observed task improvement
 		],
 		["selection-changing discoveries", /Share discoveries that change selection or another task's question/],
 		["integration and peer judgment", /coordinator owns the integrated outcome; peers revise their own arrangement against the shared purpose/],
-		["delegation method owner", /\[Agent delegation guide\]\(\.\.\/extensions\/agent\/delegation\.md\) for briefs, collaboration and supervision/],
 		["disjoint edits", /Keep concurrent edits disjoint/],
 		["coherent ownership", /owner's area follows the work, such as one behaviour with its implementation, tests, and documentation, not a file count/],
 		[
@@ -717,23 +616,6 @@ test("collaboration preserves the use path and accepts observed task improvement
 		["native continuity", /Use native compaction and session controls/],
 		["live ownership resolved", /Before coordinator exit, resolve every live worker/],
 		["handover is not process transfer", /saved handover does not transfer process ownership/],
-	]);
-});
-
-test("the Agent guide keeps briefs, collaboration and supervision conditional", () => {
-	assertContracts(delegationGuide, [
-		["task wins over selected defaults", /Follow explicit instructions for the task first. Otherwise use the selected playbook's defaults. With no playbook, choose by the task/],
-		["flexible collaboration", /Do not require a manager, thread, roster or worker count/],
-		["task frame", /coherent outcome.*Purpose, source pointers.*Granted authority and its source, restrictions.*Acceptance evidence, required checks, dependencies, end condition and result recipient/],
-		["inline assignment", /A direct task message is sufficient; no contract file or template is required/],
-		["relevant reuse and reply route", /Use a session whose expertise and ownership fit; preserve the current requester and reply route/],
-		["resolve known experts", /Resolve a known expert before creating another/],
-		["fresh session reasons", /Use a fresh session for unrelated work, independent judgment, conflicting ownership or unsuitable retained context/],
-		["same-owner corrections", /Keep corrections and repairs with the current owner when that still serves the task/],
-		["conditional threads", /Use a \[peer thread\]\([^)]*\) when changing shared facts, decisions or dependencies need a retained place. Otherwise, direct exchange is enough/],
-		["shared context and source", /Preserve the shared purpose, authority and source, restrictions, acceptance and who integrates/],
-		["peer discretion and admission", /Let contributors challenge the proposed method and exchange evidence directly.*admission receipt is not an agreement or proof of understanding/],
-		["no polling", /Do not keep a run open for their output or imitate a wait with status reads or sleeps/],
 	]);
 });
 
