@@ -211,7 +211,7 @@ export default function markdown(pi: ExtensionAPI): void {
 	};
 	pi.registerCommand("markdown", { description: "Read or write beside this conversation; use new, edit, copy, recent, published, file, window or help", getArgumentCompletions: markdownCompletions, handler: action });
 	pi.registerShortcut("ctrl+alt+r", { description: "Read the latest assistant response in Markdown", handler: (ctx) => action("", ctx) });
-	pi.registerTool(createPublishTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app, connection: live.connection }));
+	pi.registerTool(createPublishTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app, connection: live.connection, panes: async (ctx) => (await live.find(ctx))?.list().length ?? 0 }));
 	pi.registerTool(createReadTool({ store: new MarkdownStore(localSettings().dir), app: localSettings().app, connection: live.connection }));
 	pi.registerTool(createLiveTool(live.find));
 	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());

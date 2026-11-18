@@ -81,7 +81,7 @@ export function markdownContribution(source: string, bus: SettingsBus, stopFacto
 			};
 			return host.durable.defineExtension({
 				name: "markdown",
-				tools: [createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store, app: settings.app, connection }), createNativeReadTool(host.durable, { store, app: settings.app, connection }), createNativeLiveTool(host.durable, (conversation) => live.bridges.find(conversation))],
+				tools: [createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store, app: settings.app, connection, panes: async (conversation) => (await live.bridges.find(String(conversation)))?.list().length ?? 0 }), createNativeReadTool(host.durable, { store, app: settings.app, connection }), createNativeLiveTool(host.durable, (conversation) => live.bridges.find(conversation))],
 				sections: [host.durable.section("markdown", () => NATIVE_PUBLISH_GUIDANCE)],
 			});
 		},

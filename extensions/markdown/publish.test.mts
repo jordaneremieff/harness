@@ -11,7 +11,7 @@ import * as Durable from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { captureReferences, inspectReferences, fileSnapshotInput, createNativePublishTool, createPublishTool, invocationDigest, NATIVE_PUBLISH_GUIDANCE, publish, publicationText, type InspectionResult, type PublishOutcome, type PublishInput } from "./publish.ts";
+import { captureReferences, inspectReferences, fileSnapshotInput, createNativePublishTool, createPublishTool, invocationDigest, NATIVE_PUBLISH_GUIDANCE, publish, publicationText, withPanes, type InspectionResult, type PublishOutcome, type PublishInput } from "./publish.ts";
 import { LIMITS, MarkdownStore, type PublicationPlan, type WriteResult } from "./store.ts";
 import { paneCommand, PANE_MODE, PANE_OPEN } from "./pane-command.ts";
 const scratch = tmpdir();
@@ -385,7 +385,7 @@ test("the show command runs the installed reader's pane mode only when the build
 	assert.equal(outcome.paneInput, `:open ${outcome.documentId}\r`);
 	assert.ok((result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(`\nTo show it now, type ":open ${outcome.documentId}" and Enter into a reader pane that you opened, or run ${JSON.stringify(outcome.show)} as the program of a new pane.`));
 	const update = await tool.execute("update", { title: "Shown", text: "# changed", document: outcome.documentId, expectedRevision: 1 }, undefined, undefined, context);
-	assert.ok((update.content[0]?.type === "text" ? update.content[0].text : "").endsWith(`\nA reader pane that shows ${outcome.documentId} follows this revision by itself. To show it elsewhere, type ":open ${outcome.documentId}" and Enter into a reader pane that you opened, or run ${JSON.stringify(outcome.show)} as the program of a new pane.`));
+	assert.ok((update.content[0]?.type === "text" ? update.content[0].text : "").endsWith(`\nA reader pane that still shows ${outcome.documentId} follows this revision by itself; the operator can close a pane at any time. To show it elsewhere, type ":open ${outcome.documentId}" and Enter into a reader pane that you opened, or run ${JSON.stringify(outcome.show)} as the program of a new pane.`));
 	const replay = await tool.execute("replay", { title: "Keyed", text: "# keyed", reuseKey: "shown" }, undefined, undefined, context);
 	const again = await tool.execute("again", { title: "Keyed", text: "# keyed", reuseKey: "shown" }, undefined, undefined, context);
 	assert.match(replay.content[0]?.type === "text" ? replay.content[0].text : "", /^Saved new document /u);
@@ -409,3 +409,17 @@ test("a response snapshot saves the earlier answer exactly, once per response", 
 		assert.equal(refused.ok ? "" : refused.error.code, "invalid");
 	}
 }));
+
+test("an update says whether a reader pane is still connected, so a closed pane is never reported as showing it", async () => {
+	const base = { ok: true as const, documentId: "md-0123456789abcdef0123", revision: 2, digest: `sha256:${"0".repeat(64)}`, bytes: 9, title: "Shown", kind: "published" as const, created: false, replayed: false, references: { state: "uninspected" as const, truncated: false, omitted: 0, retained: 0, embedded: 0, external: 0, unavailable: 0, localLinks: 0 }, provenance: { kind: "tool" as const, capturedAt: "2026-11-18T00:00:00.000Z" }, open: "/markdown md-0123456789abcdef0123", show: ["/app/MarkdownReader", "--pane", "--store", "/store", "md-0123456789abcdef0123", "--live", "/private/live.json"], paneInput: ":open md-0123456789abcdef0123\r" };
+	const command = JSON.stringify(base.show);
+	const closed = await withPanes(base, async () => 0);
+	assert.ok(closed.ok && closed.panes === 0);
+	assert.ok(publicationText(closed).endsWith(`\nNo reader pane is connected to this conversation now; the operator may have closed it. No pane of yours shows this revision. To show it now, run ${command} as the program of a new pane.`));
+	const open = await withPanes(base, async () => 1);
+	assert.match(publicationText(open), /\n1 reader pane is connected to this conversation\. A reader pane that still shows md-0123456789abcdef0123 follows this revision by itself; the operator can close a pane at any time\. To show it elsewhere, type ":open md-0123456789abcdef0123" and Enter into a reader pane that you opened, or run /u);
+	const created = await withPanes({ ...base, revision: 1, created: true }, async () => 0);
+	assert.ok(publicationText(created).endsWith(`\nTo show it now, run ${command} as the program of a new pane.`), "with no connected pane there is no pane to type into");
+	assert.deepEqual(await withPanes({ ...base, show: base.show.slice(0, 5) }, async () => 0), { ...base, show: base.show.slice(0, 5) }, "a pane without the live connection reports nothing, so no count is claimed");
+	assert.deepEqual(await withPanes(base, async () => { throw new Error("unavailable"); }), base, "an unavailable count leaves the outcome unchanged");
+});
