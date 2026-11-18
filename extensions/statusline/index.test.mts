@@ -234,7 +234,7 @@ function makePi(inventory: () => SlashCommandInfo[] = () => [registration("evo")
 	};
 	/** Announce another owner's destinations, as that owner's extension would. */
 	const publish = (owner: string, views: OrdinaryView[]) => publishOperatorViews({ events } as unknown as Pick<ExtensionAPI, "events">, { version: 2, owner, views });
-	return { handlers: session, commands, sent, models, levels, publish };
+	return { handlers: session, commands, sent, models, levels, publish, events };
 }
 
 function makeCtx(over: CtxOverrides = {}) {
@@ -411,6 +411,33 @@ describe("registration and mode gating", () => {
 		assert.equal(mocks.footerCalls.length, 1);
 		installFooter(mocks); // Pi invokes the factory on install
 		assert.equal(liveTicks.size, 1);
+	});
+});
+
+describe("composer presence", () => {
+	it("requests current presence and hides only for a valid true until restored", async () => {
+		const { handlers, events } = makePi();
+		const mocks = makeCtx();
+		const presence = "harness:composer:presence";
+		let requests = 0;
+		events.on("harness:composer:presence-request", payload => {
+			assert.deepEqual(payload, { version: 1 });
+			requests++;
+			events.emit(presence, { version: 1, present: true });
+		});
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		assert.equal(requests, 1);
+		const footer = installFooter(mocks);
+		try {
+			assert.deepEqual(footer.render(100), []);
+			for (const payload of [{ version: 2, present: false }, { version: 1, present: "false" }, null]) events.emit(presence, payload);
+			assert.deepEqual(footer.render(100), []);
+			events.emit(presence, { version: 1, present: false });
+			assert.equal(footer.render(100).length, 2);
+			await handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, mocks.ctx);
+			events.emit(presence, { version: 1, present: true });
+			assert.equal(footer.render(100).length, 2);
+		} finally { footer.dispose(); }
 	});
 });
 
