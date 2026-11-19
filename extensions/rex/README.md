@@ -397,10 +397,12 @@ every two seconds, for the rest of the wait, so questions from several agents qu
 failing.
 
 The answer comes from a person who uses a connected Rex app, and it answers this question only.
-It approves an act only when the question asked about that act and the complete act was shown
-first, as for a policy approval of one exact action; it grants nothing beyond that act. Rex sends
-the question to every app connected to the server, so anyone with access to the server can answer
-it. A question creates no Rex resource, so
+It approves an act only when the question asked about that act, the complete act was shown first,
+and the answer chose that act; any other answer approves nothing, and no answer grants anything
+beyond that act. Rex returns the answer and records no approval of its own: a policy approval of
+one exact action still goes through the policy extension's approval step, which records the
+answer as the operator's decision. Rex sends the question to every app connected to the server,
+so anyone with access to the server can answer it. A question creates no Rex resource, so
 the call keeps no ownership record. Its allowance is its own wait plus 30 seconds for the calls
 around it, not `rex.maxWaitMs`, because a person answers it. When the call ends without an answer,
 for any reason, the extension stops the Rex action, and Rex closes the question in every app. An
@@ -468,22 +470,30 @@ runtime that `/rex setup` installs asks the questions with `rex.ui` in every con
 runs each step with `rex.exec` on the server's machine, and opens the panes. This extension
 publishes no command of its own; the agent and markdown extensions publish theirs.
 
-- Ordinary interactive Pi sessions that heard a publication record the published commands in
-  `<agentDir>/rex/palette.json` when they start and when a publication arrives later. A record
+- Ordinary Pi sessions in the interactive terminal that heard a publication record the published
+  commands in `<agentDir>/rex/palette.json` when they start and when a publication arrives later,
+  provided that Pi's global settings load this harness package; a trial that loads a checkout
+  with `-e` records nothing. A record
   replaces the commands of each extension that the session heard and keeps the commands of other
-  extensions while their program exists, so a trial that loads only some extensions removes
-  nothing. The file is written in one rename and only when it changes. RPC, JSON and print
-  sessions and native hosts record nothing. One warning per extension runtime reports a failed
-  record.
+  extensions while their program and its first argument, when that names a file, exist. A trial
+  that loads only some extensions therefore removes nothing, and the commands of a removed
+  snapshot drop out. The update holds a lock beside the file, so two sessions never merge against
+  the same old record; a session that finds the lock held skips its update, because the holder
+  records the same publications. The file is written in one rename and only when it changes. RPC,
+  JSON and print sessions and native hosts record nothing. One warning per extension runtime
+  reports a failed record.
 - `Pi: Commands…` (the `pi` action) lists every recorded command and runs the chosen one. Each
   command also appears under its own name, `Pi: <title>` (the action `pi_<extension>_<name>`),
   once Rex has reloaded its configuration after the command was first recorded. `Pi: Run Command`
   (`pi_command`) runs one command by its ID for a key binding, for example
   `rex.bind("cmd+shift+o", "pi_command", { id = "markdown.read" })`.
 - The runtime reads the record each time a command runs, so a newly activated harness snapshot
-  takes effect without a reload. It runs at most eight steps of 20 seconds each; the time that a
-  person takes to answer does not count. A question without an answer ends the run quietly. A
-  failed step, an error reply or a notice shows as a one-row message in the palette.
+  takes effect without a reload. `Pi: Commands…` runs the command as it was when the list showed
+  it. The runtime keeps only well-formed recorded commands, runs at most eight steps of 20 seconds
+  each (the time that a person takes to answer does not count), and accepts a reply of at most
+  1 MiB that holds exactly one of `ask`, `show`, `done` or `error` in the contract's shape. A
+  question without an answer ends the run quietly. A failed step, a malformed reply, an error
+  reply or a notice shows as a one-row message in the palette.
 - A pane that a command opens splits the focused pane evenly to the right or below, or floats over
   the middle of its window, without moving focus. It receives the
   [pane stacking feed](#pane-stacking-feed) offer that the record names, closes when its program

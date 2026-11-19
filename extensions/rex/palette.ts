@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /** One command that an extension offers in the Rex palette, as docs/conventions/palette-commands.md defines it. */
 export interface PaletteCommand { id: string; title: string; description?: string; argv: string[] }
@@ -9,7 +9,8 @@ interface RecordedCommand extends PaletteCommand { source: string }
 /** What the Rex-side runtime reads: every recorded command, and the stacking offer for the panes it opens. */
 export interface PaletteRegistry { version: 1; commands: RecordedCommand[]; paneStacking?: string[] }
 
-const SOURCE = /^[a-z][a-z0-9_]{0,23}$/;
+/** Without underscores, so `pi_<source>_<name>` names exactly one command. */
+const SOURCE = /^[a-z][a-z0-9]{0,23}$/;
 const NAME = /^[a-z][a-z0-9_]*$/;
 const PLAIN = /^[^\p{Cc}\p{Cf}\u2028\u2029]+$/u;
 
@@ -28,8 +29,10 @@ function validCommand(source: string, value: unknown): PaletteCommand | undefine
 	if (typeof id !== "string" || id.length > 48 || !id.startsWith(`${source}.`) || !NAME.test(id.slice(source.length + 1))) return undefined;
 	if (!text(title, 64) || (description !== undefined && !text(description, 200))) return undefined;
 	if (!Array.isArray(argv) || argv.length < 1 || argv.length > 16) return undefined;
-	if (!argv.every((word) => typeof word === "string" && word.length <= 4096 && !word.includes("\0")) || !isAbsolute(argv[0] as string)) return undefined;
-	return { id, title: title.trim(), ...(description === undefined ? {} : { description: description.trim() }), argv: [...argv as string[]] };
+	// Array.from visits every index, so a sparse list fails instead of passing with a hole.
+	const words = Array.from(argv as unknown[]);
+	if (!words.every((word) => typeof word === "string" && word.length <= 4096 && !word.includes("\0")) || !isAbsolute(words[0] as string)) return undefined;
+	return { id, title: title.trim(), ...(description === undefined ? {} : { description: description.trim() }), argv: words as string[] };
 }
 
 /** The commands of one publication that meet the contract; a command that does not is left out. */
@@ -62,13 +65,14 @@ export function readPaletteRegistry(path: string): PaletteRegistry | undefined {
 
 /**
  * The registry after the publications that this process heard: each heard source replaces its commands, and every
- * other source keeps its commands while their program exists, so a process that loads only some extensions removes
- * nothing.
+ * other source keeps its commands while their program and its first argument, when that names a file, exist. A
+ * process that loads only some extensions therefore removes nothing, and a removed snapshot's commands drop out.
  */
 export function mergePalette(existing: PaletteRegistry | undefined, heard: ReadonlyMap<string, readonly PaletteCommand[]>, paneStacking: string[] | undefined, exists: (path: string) => boolean = existsSync): PaletteRegistry {
 	const commands = new Map<string, RecordedCommand>();
 	for (const command of existing?.commands ?? []) {
-		if (!heard.has(command.source) && exists(command.argv[0] as string)) commands.set(command.id, command);
+		const [program, first] = command.argv;
+		if (!heard.has(command.source) && exists(program as string) && (first === undefined || !isAbsolute(first) || exists(first))) commands.set(command.id, command);
 	}
 	for (const [source, list] of heard) for (const command of list) commands.set(command.id, { ...command, source });
 	return { version: 1, commands: [...commands.values()].sort((a, b) => a.id.localeCompare(b.id)), ...(paneStacking ? { paneStacking } : {}) };
@@ -87,18 +91,63 @@ export function writePaletteRegistry(path: string, registry: PaletteRegistry): b
 	return true;
 }
 
+// `open(2)` on macOS takes a flock-style exclusive lock atomically with O_EXLOCK.
+const O_EXLOCK = 0x20;
+
+/**
+ * Run `update` while this process holds the registry's lock, so a read, merge and replacement never interleave with
+ * another writer's. One attempt: a contended lock skips the update, because the writer that holds it records the
+ * same publications in an ordinary start.
+ */
+export function withRegistryLock(path: string, update: () => void): boolean {
+	if (process.platform !== "darwin") throw new Error("Recording Pi's palette commands needs macOS file locks.");
+	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	const lockPath = `${path}.lock`;
+	let fd: number;
+	try { fd = openSync(lockPath, constants.O_RDWR | constants.O_CREAT | O_EXLOCK | constants.O_NONBLOCK, 0o600); }
+	catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EAGAIN") return false;
+		throw error;
+	}
+	try {
+		const held = fstatSync(fd);
+		let named: ReturnType<typeof statSync>;
+		try { named = statSync(lockPath); } catch { return false; }
+		// A path that names another file belongs to a successor; acting under it would not exclude anybody.
+		if (named.dev !== held.dev || named.ino !== held.ino) return false;
+		try { update(); } finally { rmSync(lockPath, { force: true }); }
+		return true;
+	} finally { closeSync(fd); }
+}
+
+/**
+ * Whether Pi's global settings load the package at `packageRoot`. A trial that loads a checkout with `-e` is not
+ * loaded this way, so it never points the operator's palette at code that can disappear.
+ */
+export function configuredPackage(agentDir: string, packageRoot: string): boolean {
+	let settings: Record<string, unknown>;
+	try { settings = object(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"))); } catch { return false; }
+	const real = (path: string) => { try { return realpathSync(path); } catch { return undefined; } };
+	const root = real(packageRoot);
+	const sources = Array.isArray(settings.packages) ? settings.packages : [];
+	return root !== undefined && sources.some((entry) => {
+		const source = typeof entry === "string" ? entry : object(entry).source;
+		return typeof source === "string" && (source.startsWith(".") || source.startsWith("/") || source.startsWith("~")) && real(resolve(agentDir, source.replace(/^~(?=\/)/, process.env.HOME ?? "~"))) === root;
+	});
+}
+
 export interface PaletteCollector {
-	/** Record the heard commands when this session is interactive; later publications record again. */
-	start(ctx: { hasUI: boolean; ui: { notify(message: string, type?: "info" | "warning" | "error"): void } }): void;
+	/** Record the heard commands in an interactive terminal session; later publications record again. */
+	start(ctx: Pick<ExtensionContext, "mode"> & { ui: { notify(message: string, type?: "info" | "warning" | "error"): void } }): void;
 	shutdown(): void;
 }
 
 /**
  * Collect the publications of `harness:palette:publish` and record them for the Rex-side runtime. Only interactive
- * sessions that heard a publication record, so print runs and trials of this extension alone leave the operator's
- * palette as it is.
+ * terminal sessions of a package that Pi's settings load, and that heard a publication, record: RPC, JSON and print
+ * sessions and trials leave the operator's palette as it is.
  */
-export function createPaletteCollector(options: { events: ExtensionAPI["events"]; agentDir: string; paneStacking: () => string[] | undefined }): PaletteCollector {
+export function createPaletteCollector(options: { events: ExtensionAPI["events"]; agentDir: string; packageRoot: string; paneStacking: () => string[] | undefined; configured?: () => boolean }): PaletteCollector {
 	const path = paletteRegistryPath(options.agentDir);
 	const heard = new Map<string, PaletteCommand[]>();
 	let active: Parameters<PaletteCollector["start"]>[0] | undefined;
@@ -106,7 +155,7 @@ export function createPaletteCollector(options: { events: ExtensionAPI["events"]
 	const record = () => {
 		// A process that heard no publication, such as a trial of this extension alone, has nothing to record.
 		if (!active || heard.size === 0) return;
-		try { writePaletteRegistry(path, mergePalette(readPaletteRegistry(path), heard, options.paneStacking())); }
+		try { withRegistryLock(path, () => { writePaletteRegistry(path, mergePalette(readPaletteRegistry(path), heard, options.paneStacking())); }); }
 		catch (error) {
 			if (warned) return;
 			warned = true;
@@ -122,7 +171,7 @@ export function createPaletteCollector(options: { events: ExtensionAPI["events"]
 	options.events.emit("harness:palette:request", { version: 1 });
 	return {
 		start(ctx) {
-			active = ctx?.hasUI ? ctx : undefined;
+			active = ctx?.mode === "tui" && (options.configured ?? (() => configuredPackage(options.agentDir, options.packageRoot)))() ? ctx : undefined;
 			record();
 		},
 		shutdown() {

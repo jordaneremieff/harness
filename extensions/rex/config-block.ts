@@ -4,6 +4,7 @@ import { ASK_ACTION } from "./ask.ts";
 export const BLOCK_VERSION = 2;
 const BEGIN = /^-- pi-harness: pi actions v(\d+) begin\r?$/gm;
 const END = /^-- pi-harness: pi actions end\r?$/gm;
+const MARKER = /^-- pi-harness: .*$/gm;
 
 /**
  * The Lua that runs palette commands (docs/conventions/palette-commands.md): it reads the registry that Pi records
@@ -11,6 +12,15 @@ const END = /^-- pi-harness: pi actions end\r?$/gm;
  * command shows. `pi_harness` stays local to the configuration file.
  */
 const RUNTIME = `
+function pi_harness.valid_entry(entry)
+  if type(entry) ~= "table" or type(entry.id) ~= "string" or type(entry.title) ~= "string" then return false end
+  if type(entry.argv) ~= "table" or #entry.argv == 0 then return false end
+  for index, word in pairs(entry.argv) do
+    if type(index) ~= "number" or index > #entry.argv or type(word) ~= "string" then return false end
+  end
+  return true
+end
+
 function pi_harness.read_registry()
   local file = io.open(pi_harness.registry, "r")
   if file == nil then
@@ -22,6 +32,11 @@ function pi_harness.read_registry()
   if not ok or type(value) ~= "table" or value.version ~= 1 or type(value.commands) ~= "table" then
     return nil, "Pi's command list cannot be read. Start Pi in a Rex pane, then try again."
   end
+  local commands = {}
+  for _, entry in ipairs(value.commands) do
+    if pi_harness.valid_entry(entry) then commands[#commands + 1] = entry end
+  end
+  value.commands = commands
   return value
 end
 
@@ -76,39 +91,58 @@ function pi_harness.step(entry, ctx, answers)
   argv[#argv + 1] = pi_harness.request(entry, ctx, answers)
   local result, err = rex.exec(argv, { timeout = 20 })
   if result == nil then return nil, entry.title .. " could not start: " .. tostring(err) end
-  local ok, reply = pcall(rex.json.decode, result.stdout or "")
-  if result.ok and ok and type(reply) == "table" then return reply end
+  local stdout = result.stdout or ""
+  if #stdout > 1048576 then return nil, entry.title .. " printed a reply larger than Pi allows." end
+  local ok, reply = pcall(rex.json.decode, stdout)
+  if result.ok and ok and pi_harness.valid_reply(reply) then return reply end
   local why = (tostring(result.stderr or ""):gsub("%s+$", ""))
-  if why == "" then why = "it printed no reply" end
+  if why == "" then why = "it printed no valid reply" end
   return nil, entry.title .. " failed: " .. why:sub(-300)
 end
 
-function pi_harness.run(ctx, id)
+-- A reply holds exactly one of error, ask, show or done, in the shape the contract gives it.
+function pi_harness.valid_reply(reply)
+  if type(reply) ~= "table" then return false end
+  local count = 0
+  for _, key in ipairs({ "error", "ask", "show", "done" }) do
+    if reply[key] ~= nil then count = count + 1 end
+  end
+  if count ~= 1 then return false end
+  if reply.error ~= nil then return type(reply.error) == "string" end
+  if reply.ask ~= nil then
+    return type(reply.ask) == "table" and (reply.ask.kind == "pick" or reply.ask.kind == "input") and type(reply.ask.prompt) == "table"
+  end
+  if reply.show ~= nil then return type(reply.show) == "table" end
+  return type(reply.done) == "table"
+end
+
+function pi_harness.run_id(ctx, id)
   pi_harness.require_ui()
   local registry, problem = pi_harness.read_registry()
   if registry == nil then return pi_harness.say(problem) end
-  local entry
   for _, candidate in ipairs(registry.commands) do
-    if candidate.id == id then entry = candidate end
+    if candidate.id == id then return pi_harness.run(ctx, registry, candidate) end
   end
-  if entry == nil then
-    return pi_harness.say("Pi has no command " .. tostring(id) .. ". Start Pi in a Rex pane, then try again.")
-  end
+  pi_harness.say("Pi has no command " .. tostring(id) .. ". Start Pi in a Rex pane, then try again.")
+end
+
+-- Runs the entry that the person chose, as it was when it was shown.
+function pi_harness.run(ctx, registry, entry)
   local answers = {}
   for _ = 1, 8 do
     local reply, failure = pi_harness.step(entry, ctx, answers)
     if reply == nil then return pi_harness.say(failure) end
-    if type(reply.error) == "string" then return pi_harness.say(reply.error) end
-    if type(reply.ask) == "table" and type(reply.ask.prompt) == "table" then
+    if reply.error ~= nil then return pi_harness.say(reply.error) end
+    if reply.ask ~= nil then
       local ask = rex.ui.input
       if reply.ask.kind == "pick" then ask = rex.ui.pick end
       local answer = ask(reply.ask.prompt)
       if answer == nil then return end
       answers[#answers + 1] = answer
-    elseif type(reply.show) == "table" then
+    elseif reply.show ~= nil then
       return pi_harness.open(ctx, registry, reply.show)
     else
-      if type(reply.done) == "table" and type(reply.done.notice) == "string" then pi_harness.say(reply.done.notice) end
+      if type(reply.done.notice) == "string" then pi_harness.say(reply.done.notice) end
       return
     end
   end
@@ -143,22 +177,26 @@ rex.action{
     local registry, problem = pi_harness.read_registry()
     if registry == nil then return pi_harness.say(problem) end
     local items = {}
+    local shown = {}
     for _, entry in ipairs(registry.commands) do
-      items[#items + 1] = { id = entry.id, title = entry.title, subtitle = entry.description }
+      if shown[entry.id] == nil then
+        items[#items + 1] = { id = entry.id, title = entry.title, subtitle = entry.description }
+        shown[entry.id] = entry
+      end
     end
     if #items == 0 then return pi_harness.say("Your Pi extensions offer no commands.") end
     local id = rex.ui.pick{ title = "Pi commands", placeholder = "Filter commands", items = items }
-    if id ~= nil then pi_harness.run(ctx, id) end
+    if id ~= nil then pi_harness.run(ctx, registry, shown[id]) end
   end,
 }
 
 rex.action{
   name = "pi_command",
   title = "Pi: Run Command",
-  description = "Runs one Pi command by its ID, for a key binding.",
+  description = "Runs one Pi command by its ID, for a key binding. Pi records its commands in " .. pi_harness.registry .. ".",
   category = "Pi",
   args = { id = "string" },
-  run = function(ctx, args) pi_harness.run(ctx, args.id) end,
+  run = function(ctx, args) pi_harness.run_id(ctx, args.id) end,
 }
 
 do
@@ -172,7 +210,7 @@ do
         title = "Pi: " .. entry.title,
         description = entry.description,
         category = "Pi",
-        run = function(ctx) pi_harness.run(ctx, id) end,
+        run = function(ctx) pi_harness.run_id(ctx, id) end,
       }
     end
   end
@@ -207,6 +245,9 @@ interface Block { start: number; end: number }
 export function findConfigBlock(source: string, registryPath: string): Block | undefined {
 	const begins = [...source.matchAll(BEGIN)];
 	const ends = [...source.matchAll(END)];
+	// Any other marker line belongs to an earlier Pi block, whose actions the current block would define twice.
+	if ([...source.matchAll(MARKER)].length !== begins.length + ends.length)
+		throw new Error("The Rex configuration holds an earlier Pi block (lines that start with \"-- pi-harness:\"). Delete it by hand, then run /rex setup again.");
 	if (begins.length === 0 && ends.length === 0) return undefined;
 	const begin = begins[0];
 	const end = ends[0];

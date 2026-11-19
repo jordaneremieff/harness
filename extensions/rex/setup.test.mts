@@ -49,6 +49,8 @@ class SetupTransport implements RexTransport {
 	calls: string[][] = [];
 	loaded = false;
 	refuseCandidate = false;
+	/** The registry that the loaded block reads, as its `pi_command` description names it. */
+	registry: string | undefined;
 	/** Runs while Rex checks the candidate, as an edit by somebody else would. */
 	duringCheck?: () => Promise<void>;
 	readonly path: string;
@@ -64,11 +66,13 @@ class SetupTransport implements RexTransport {
 			return this.refuseCandidate ? { ...ok(""), exitCode: 1, stderr: "error: init.lua:3: syntax error" } : ok(`path: ${third}\n`);
 		}
 		if (first === "config" && second === "reload") {
-			this.loaded = (await readFile(this.path, "utf8")).includes("name = \"pi_ask\"");
+			const text = await readFile(this.path, "utf8");
+			this.loaded = text.includes("name = \"pi_ask\"");
+			this.registry = /registry = "([^"]+)"/.exec(text)?.[1];
 			return ok("generation: 4\n");
 		}
 		if (first === "whoami") return ok(JSON.stringify({ rex_version: "0.1.0-test", api_revision: this.revision }));
-		if (first === "actions") return ok(JSON.stringify({ actions: this.loaded ? ["pi_ask", "pi", "pi_command"].map((name) => ({ name, kind: "lua" })) : [] }));
+		if (first === "actions") return ok(JSON.stringify({ actions: this.loaded ? ["pi_ask", "pi", "pi_command"].map((name) => ({ name, kind: "lua", description: name === "pi_command" ? `Runs one Pi command by its ID, for a key binding. Pi records its commands in ${this.registry}.` : "" })) : [] }));
 		if (first === "api") return ok(JSON.stringify({ clients: [{ info: { kind: "app", name: "Rex Beta", version: "0.1.0 (2042)", label: "mbp" } }, { info: { kind: "cli", name: "rex" } }] }));
 		return { ...ok(""), exitCode: 1, stderr: `unexpected ${command.join(" ")}` };
 	}
@@ -191,6 +195,7 @@ test("a file that holds the block while the server has not loaded it reloads onl
 	const f = await fixture(withAskAction(operatorConfig), { confirm: false });
 	try {
 		await rexCommand("setup", f.deps);
+		assert.match(f.asked[0] ?? "", /has not loaded pi_ask, pi, pi_command/);
 		assert.match(f.asked[0] ?? "", /^Reload the Rex configuration\?\n.*including any other change in it/s);
 		assert.equal(f.transport.calls.some((call) => call[1] === "reload"), false, "a declined reload runs nothing");
 		f.deps.confirm = async () => true;
@@ -222,8 +227,26 @@ test("status names the recorded palette commands and the actions that the server
 		f.deps.registryPath = registry;
 		await writeFile(f.path, withConfigBlock(operatorConfig, registry));
 		f.transport.loaded = true;
+		f.transport.registry = registry;
 		await rexCommand("status", f.deps);
 		assert.ok(f.lines.includes("info: Pi commands for the palette: Read a Document…."), f.lines.join("\n"));
 		assert.ok(f.lines.includes("warning: The server has not loaded these actions: pi_markdown_read. /rex setup reloads the configuration after you confirm."), f.lines.join("\n"));
+	} finally { await f.done(); }
+});
+
+test("an earlier Pi block is refused, and a loaded block of another agent directory counts as not loaded", async () => {
+	const earlier = "-- pi-harness: pi_ask v1 begin\nrex.action{ name = \"pi_ask\" }\n-- pi-harness: pi_ask end\n";
+	assert.throws(() => withAskAction(`${operatorConfig}${earlier}`), /earlier Pi block/);
+	assert.throws(() => withoutAskAction(`${operatorConfig}${earlier}`), /earlier Pi block/);
+	assert.throws(() => withAskAction(`${withAskAction(operatorConfig)}${earlier}`), /earlier Pi block/);
+	const f = await fixture(withAskAction(operatorConfig));
+	try {
+		f.transport.loaded = true;
+		f.transport.registry = "/another/agent/rex/palette.json";
+		await rexCommand("status", f.deps);
+		assert.ok(f.lines.includes("warning: The server has not loaded these actions: pi_command. /rex setup reloads the configuration after you confirm."), f.lines.join("\n"));
+		await rexCommand("setup", f.deps);
+		assert.match(f.asked.at(-1) ?? "", /^Reload the Rex configuration\?/);
+		assert.equal(f.transport.registry, REGISTRY, "the reload loads the block of this agent directory");
 	} finally { await f.done(); }
 });

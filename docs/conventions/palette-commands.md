@@ -30,7 +30,9 @@ type PaletteRequestEvent = { version: 1 };
 These are process-local payloads on Pi's `pi.events` bus. Only version `1` is
 defined.
 
-- `source` is the publishing extension's directory name, such as `markdown`.
+- `source` is the publishing extension's directory name, such as `markdown`:
+  lowercase letters and digits, without underscores, so that each Rex action
+  name belongs to one command.
 - `id` is `<source>.<name>`: lowercase letters, digits and underscores in each
   part, at most 48 characters, unique within the source. The runtime offers
   the command as the Rex action `pi_<source>_<name>`.
@@ -63,8 +65,9 @@ starts no work and touches no file.
 The Rex extension collects publications in ordinary interactive Pi sessions
 and records them in `<agentDir>/rex/palette.json`, which only its own runtime
 reads. Each write replaces the commands of the sources that the writing
-process heard and keeps the commands of other sources while their program
-exists, so a process that loads only some extensions removes nothing. The
+process heard and keeps the commands of other sources while their program and
+its first argument, when that names a file, exist. A process that loads only
+some extensions therefore removes nothing. The
 runtime reads the registry each time a command runs, so a new snapshot's
 commands take effect without a Rex reload. Rex shows a command under its own
 name in the palette only after it reloads its configuration; until then
@@ -124,9 +127,10 @@ ends the run with an error. A reply is at most 1 MiB.
 ## Authority
 
 A command runs under the operator's account on the Rex server's machine. Its
-answers come from a person who uses a connected Rex app, and on this machine
-only the operator's devices connect to the server. A command acts only on what
-that person chose in the same run. An agent can start a Rex action too, so a
+answers come from a person who uses a connected Rex app; the runtime does not
+check who answered, and on this machine the server admits only the operator's
+own account and devices. A command acts only on what that person chose in the
+same run. An agent can start a Rex action too, so a
 command that changes anything takes its effect only after an answer that names
 it; a command that only shows something needs no answer.
 

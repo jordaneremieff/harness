@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { chmod, copyFile, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { readFileSync, realpathSync, renameSync } from "node:fs";
+import { chmod, copyFile, lstat, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { ASK_ACTION, ASK_API_REVISION } from "./ask.ts";
@@ -60,7 +61,7 @@ async function readConfig(path: string): Promise<Config> {
 	}
 }
 
-interface ServerFacts { version: string; revision: number; actions: Set<string>; apps: string[] }
+interface ServerFacts { version: string; revision: number; actions: Map<string, string>; apps: string[] }
 async function serverFacts(deps: SetupDeps): Promise<ServerFacts | undefined> {
 	const identity = await rexJson(deps, ["whoami", "--json"]);
 	if (!identity) return undefined;
@@ -74,7 +75,7 @@ async function serverFacts(deps: SetupDeps): Promise<ServerFacts | undefined> {
 	return {
 		version: typeof identity.rex_version === "string" ? identity.rex_version : "unknown version",
 		revision: typeof identity.api_revision === "number" ? identity.api_revision : 0,
-		actions: new Set(listed.filter((action) => action.kind === "lua" && typeof action.name === "string").map((action) => action.name as string)),
+		actions: new Map(listed.filter((action) => action.kind === "lua" && typeof action.name === "string").map((action) => [action.name as string, typeof action.description === "string" ? action.description : ""])),
 		apps,
 	};
 }
@@ -84,9 +85,14 @@ function commandActions(deps: SetupDeps): Array<{ action: string; title: string 
 	return (readPaletteRegistry(deps.registryPath)?.commands ?? []).map((command) => ({ action: `pi_${command.id.replaceAll(".", "_")}`, title: command.title }));
 }
 
-/** Actions of the block that the server has not loaded: the question action, the palette entries, and each recorded command. */
+/**
+ * Actions of the block that the server has not loaded: the question action, the palette entries, and each recorded
+ * command. `pi_command` names the registry that its block reads, so a loaded block of another agent directory counts
+ * as not loaded.
+ */
 function missingActions(deps: SetupDeps, facts: ServerFacts): string[] {
-	return [ASK_ACTION, "pi", "pi_command", ...commandActions(deps).map((command) => command.action)].filter((action) => !facts.actions.has(action));
+	const stale = !facts.actions.get("pi_command")?.endsWith(`Pi records its commands in ${deps.registryPath}.`);
+	return [ASK_ACTION, "pi", "pi_command", ...commandActions(deps).map((command) => command.action)].filter((action) => !facts.actions.has(action) || (action === "pi_command" && stale));
 }
 
 function serverLines(deps: SetupDeps, facts: ServerFacts | undefined): Array<[string, "info" | "warning"]> {
@@ -102,9 +108,10 @@ function serverLines(deps: SetupDeps, facts: ServerFacts | undefined): Array<[st
 	];
 }
 
-/** The same configuration: an edit made while the operator read the confirmation must not be overwritten. */
-function unchanged(before: Config, now: Config): boolean {
-	return now.text === before.text && now.file === before.file && (now.mode === undefined) === (before.mode === undefined);
+/** The same configuration as before the confirmation: an edit made meanwhile must not be overwritten. */
+function unchangedNow(path: string, before: Config): boolean {
+	try { return realpathSync(path) === before.file && readFileSync(before.file, "utf8") === before.text && before.mode !== undefined; }
+	catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" && before.mode === undefined; }
 }
 
 /**
@@ -123,15 +130,16 @@ async function install(deps: SetupDeps, path: string, before: Config, after: str
 			deps.report(`Rex refused the new configuration, so ${path} is unchanged: ${checked.stderr || checked.stdout.trim()}`, "error");
 			return false;
 		}
-		if (!unchanged(before, await readConfig(path))) {
+		const changed = () => {
 			deps.report(`${path} changed while Pi waited for your confirmation, so Pi left it as it is. Run the command again.`, "error");
 			return false;
-		}
-		if (before.mode !== undefined) {
-			await copyFile(before.file, `${path}.before-pi-setup`);
-			deps.report(`The previous configuration is in ${path}.before-pi-setup.`);
-		}
-		await rename(candidate, before.file);
+		};
+		if (!unchangedNow(path, before)) return changed();
+		if (before.mode !== undefined) await copyFile(before.file, `${path}.before-pi-setup`);
+		// The last check and the rename run back to back, so an edit can only land in the time of two system calls.
+		if (!unchangedNow(path, before)) return changed();
+		renameSync(candidate, before.file);
+		if (before.mode !== undefined) deps.report(`The previous configuration is in ${path}.before-pi-setup.`);
 	} finally {
 		await rm(candidate, { force: true });
 	}

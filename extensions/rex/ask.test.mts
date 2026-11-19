@@ -300,3 +300,13 @@ test("an answer that arrives before the operator's message stands", async () => 
 		assert.deepEqual(result.data.answer, { choice: "hold" });
 	} finally { await handlers.get("session_shutdown")?.(); }
 });
+
+test("a question whose wait ran out before Rex could show it says so", async () => {
+	const { core: rex, transport } = core();
+	const signal = new AbortController().signal;
+	const budget = { effectiveMs: 40000, startedAt: 0, workEndsAt: 39000, endsAt: 40000, signal, finaliseSignal: signal, phase: "resolve", elapsed: () => 9500, remaining: () => 30000, check: () => {}, stopReason: () => undefined, dispose: () => {} };
+	const result = await rex.execute(ask({ timeoutMs: 10000 }), { ...context, budget: budget as never });
+	assert.equal(result.outcome, "timeout");
+	assert.match(result.error ?? "", /took the whole wait before the question could be shown/);
+	assert.equal(transport.calls.some((entry) => entry.args.includes("do")), false, "nothing was asked");
+});

@@ -80,7 +80,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 	// The agents of this session open their panes on its tab: their inherited launch context is this record.
 	const panes = (options.createSessionPaneRegistrar ?? createSessionPaneRegistrar)({ agentDir });
 	// Commands that extensions offer in the Rex palette, recorded for the runtime that /rex setup installs.
-	const palette = createPaletteCollector({ events: pi.events, agentDir, paneStacking: () => paneStackingCommand(process.env.REX_SERVER ?? "unix:///", process.env) });
+	const palette = createPaletteCollector({ events: pi.events, agentDir, packageRoot: fileURLToPath(new URL("../..", import.meta.url)), paneStacking: () => paneStackingCommand(process.env.REX_SERVER ?? "unix:///", process.env) });
 	const serialise = serialiseOwners();
 	const active = new Set<RexExecutor>();
 	const invocations = liveCalls();

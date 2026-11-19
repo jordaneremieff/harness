@@ -451,15 +451,15 @@ export class RexCore {
 	/** Ask, and while every app shows another question, ask again for the rest of the wait, so questions queue. */
 	private async askInTurn(request: AskRequest, question: ReturnType<typeof askPrompt>, target: ResolvedTarget, context: RexCallContext): Promise<RexResult> {
 		const waitMs = askWaitMs(request.timeoutMs);
-		for (;;) {
-			const left = waitMs - (context.budget?.elapsed() ?? 0);
-			if (left < 1000) return askResult(question.title, target, { outcome: "timeout", detail: "Other questions kept every Rex app busy for the whole wait." });
-			const prompt = { ...question.prompt, timeout: Math.max(1, Math.floor(left / 1000)) };
+		const left = () => waitMs - (context.budget?.elapsed() ?? 0);
+		for (let attempt = 0; ; attempt++) {
+			if (left() < 1000) return askResult(question.title, target, { outcome: "timeout", detail: attempt ? "Other questions kept every Rex app busy for the whole wait." : "Rex took the whole wait before the question could be shown." });
+			const prompt = { ...question.prompt, timeout: Math.max(1, Math.ceil(left() / 1000)) };
 			// An answer that arrived as the call was stopped stands; askCliSettlement reads it from the output.
 			const raw = await this.cli(["do", ASK_ACTION, "--args", JSON.stringify({ kind: question.kind, prompt }), "--json"], target.server.endpoint, context, ASK_BUDGET_LIMIT_MS, { action: true, keepResult: true });
 			const settled = askCliSettlement(request, raw, context.budget?.stopReason());
 			if (settled.outcome !== "busy") return askResult(question.title, target, settled);
-			await delay(this.options.askRetryMs ?? 2000, undefined, { signal: context.signal });
+			await delay(Math.max(0, Math.min(this.options.askRetryMs ?? 2000, left() - 1000)), undefined, { signal: context.signal });
 		}
 	}
 
