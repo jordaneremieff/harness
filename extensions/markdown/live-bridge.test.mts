@@ -157,6 +157,84 @@ test("selection deactivates a handle without retiring its prompt receipts, while
 		registry.close();
 	}
 });
+test("a delivered edit stays uncertain through selection and accepts its original receipt on return", {
+	timeout: 10000,
+}, async () => {
+	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) }, 2000);
+	const config = await bridge.start();
+	const pane = binding();
+	const other = { ...pane, document: randomUUID() };
+	try {
+		const handle = (await post(config, "/connect", pane)).data.handle;
+		const action = {
+			op: "apply" as const,
+			operationId: randomUUID(),
+			baseGeneration: 0,
+			baseDigest: responseDigest("old"),
+			edits: [{ start: 0, end: 3, expected: "old", replacement: "new" }],
+		};
+		const first = bridge.execute(handle, action);
+		const command = (await post(config, "/poll", { ...pane, after: 0 })).data.command;
+		const result = {
+			status: "applied",
+			operationId: action.operationId,
+			generation: 1,
+			digest: responseDigest("new"),
+			retained: true,
+		};
+		const receipt = { requestId: command.requestId, result };
+		await post(config, "/connect", other);
+		assert.equal((await first).status, "uncertain");
+		assert.equal((await bridge.execute(handle, action)).status, "uncertain");
+		assert.equal((await post(config, "/result", { ...pane, ...receipt })).status, 409);
+		await post(config, "/result", { ...other, ...receipt });
+		await post(config, "/connect", pane);
+		assert.equal((await post(config, "/result", { ...pane, ...receipt })).status, 200);
+		assert.deepEqual(await bridge.execute(handle, action), result);
+	} finally {
+		bridge.close();
+	}
+});
+
+test("a retry after selection redelivers the exact unconfirmed command", { timeout: 10000 }, async () => {
+	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) }, 2000, 500);
+	const config = await bridge.start();
+	const pane = binding();
+	try {
+		const handle = (await post(config, "/connect", pane)).data.handle;
+		const action = {
+			op: "apply" as const,
+			operationId: randomUUID(),
+			baseGeneration: 0,
+			baseDigest: responseDigest("old"),
+			edits: [{ start: 0, end: 3, expected: "old", replacement: "new" }],
+		};
+		const first = bridge.execute(handle, action);
+		const command = (await post(config, "/poll", { ...pane, after: 0 })).data.command;
+		await post(config, "/connect", { ...pane, document: randomUUID() });
+		await first;
+		await post(config, "/connect", pane);
+		assert.equal(
+			(await post(config, "/poll", { ...pane, after: 0 })).data.command,
+			null,
+			"reconnection is not a retry",
+		);
+		const repeated = bridge.execute(handle, action);
+		assert.deepEqual((await post(config, "/poll", { ...pane, after: 0 })).data.command, command);
+		const result = {
+			status: "applied",
+			operationId: action.operationId,
+			generation: 1,
+			digest: responseDigest("new"),
+			retained: true,
+		};
+		assert.equal((await post(config, "/result", { ...pane, requestId: command.requestId, result })).status, 200);
+		assert.deepEqual(await repeated, result);
+	} finally {
+		bridge.close();
+	}
+});
+
 test("failed connection startup permits a fresh route without retaining a rejected registry entry", {
 	timeout: 10000,
 }, async () => {

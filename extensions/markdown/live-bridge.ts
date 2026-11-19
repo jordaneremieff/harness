@@ -29,8 +29,7 @@ export interface LiveRoute {
 }
 interface Pending {
 	command: LiveCommand;
-	promise: Promise<LiveResult>;
-	resolve(result: LiveResult): void;
+	waiters: Set<(result: LiveResult) => void>;
 	result?: LiveResult;
 	delivered: boolean;
 	cancelled: boolean;
@@ -39,6 +38,11 @@ type Apply = Extract<LiveAction, { op: "apply" }>;
 export type AnchorIdentity = { key: string; refreshed: boolean };
 type EditReceipt = { fingerprint: string; pending: Pending; anchor?: AnchorIdentity };
 const failure = (status: "closed" | "uncertain", message: string): LiveResult => ({ status, message });
+const disconnectedEdit = () =>
+	failure(
+		"uncertain",
+		"The document disconnected after delivery. Reconcile only the same operation ID and identical edit when the exact document reconnects.",
+	);
 function boundedText(text: string): { text: string; truncated: boolean } {
 	let end = Math.min(text.length, 65536);
 	// The page envelope also has a byte limit after JSON escaping.
@@ -163,40 +167,47 @@ export class LiveBridge {
 	async execute(handle: string, input: LiveAction, signal?: AbortSignal, anchor?: AnchorIdentity): Promise<LiveResult> {
 		const action = readLiveAction(input);
 		const binding = this.list().find((row) => row.handle === handle);
-		if (!binding)
-			return failure(
-				"closed",
-				"The exact live document is no longer connected. Do not replace it with a stored document.",
-			);
+		if (!binding) return this.inactiveResult(handle, action, anchor);
 		if ((action.op === "claim" || action.op === "release") && binding.live !== 2)
 			return {
 				status: "error",
 				message: "This exact pane does not support claims. Claim and release require live: 2.",
 			};
 		signal?.throwIfAborted();
-		let pending = action.op === "apply" ? this.priorEdit(handle, action, anchor) : undefined;
-		if (!pending) {
-			if (this.pending.size >= 16) throw new Error("The live Markdown command queue is full.");
-			let resolve!: (result: LiveResult) => void;
-			const promise = new Promise<LiveResult>((done) => {
-				resolve = done;
-			});
-			pending = {
-				command: { ...readLiveBinding(binding), ...action, requestId: randomUUID() },
-				promise,
-				resolve,
-				delivered: false,
-				cancelled: false,
-			};
-			this.pending.set(pending.command.requestId, pending);
-			if (action.op === "apply")
-				this.edits.set(action.operationId, { fingerprint: JSON.stringify({ handle, action }), pending, anchor });
-			this.wakes.get(handle)?.();
-		}
+		const pending = this.queueCommand(handle, binding, action, anchor);
 		if (pending.result) return pending.result;
 		pending.cancelled = false;
 		this.wakes.get(handle)?.();
 		return this.wait(pending, signal);
+	}
+	private inactiveResult(handle: string, action: LiveAction, anchor?: AnchorIdentity): LiveResult {
+		if (action.op === "apply" && !this.closed && !this.retired.has(handle) && this.edits.has(action.operationId)) {
+			const prior = this.priorEdit(handle, action, anchor);
+			if (prior?.delivered && !prior.result) return disconnectedEdit();
+		}
+		return failure(
+			"closed",
+			"The exact live document is no longer connected. Do not replace it with a stored document.",
+		);
+	}
+	private queueCommand(handle: string, binding: LiveBinding, action: LiveAction, anchor?: AnchorIdentity): Pending {
+		let pending = action.op === "apply" ? this.priorEdit(handle, action, anchor) : undefined;
+		if (pending?.result) return pending;
+		if (!pending || !this.pending.has(pending.command.requestId)) {
+			if (this.pending.size >= 16) throw new Error("The live Markdown command queue is full.");
+			if (!pending) {
+				pending = {
+					command: { ...readLiveBinding(binding), ...action, requestId: randomUUID() },
+					waiters: new Set(),
+					delivered: false,
+					cancelled: false,
+				};
+				if (action.op === "apply")
+					this.edits.set(action.operationId, { fingerprint: JSON.stringify({ handle, action }), pending, anchor });
+			}
+			this.pending.set(pending.command.requestId, pending);
+		}
+		return pending;
 	}
 	private priorEdit(handle: string, action: Apply, anchor?: AnchorIdentity): Pending | undefined {
 		const prior = this.edits.get(action.operationId);
@@ -212,6 +223,7 @@ export class LiveBridge {
 	private wait(selected: Pending, signal?: AbortSignal): Promise<LiveResult> {
 		return new Promise<LiveResult>((resolve) => {
 			const finish = (result: LiveResult) => {
+				if (!selected.waiters.delete(finish)) return;
 				clearTimeout(timer);
 				signal?.removeEventListener("abort", abort);
 				resolve(result);
@@ -224,17 +236,20 @@ export class LiveBridge {
 						"The claim result is unconfirmed. Claims expire automatically and never block the person.",
 					);
 					this.complete(selected, result);
-					finish(result);
 					return;
 				}
-				if (!selected.delivered || selected.command.op === "read")
-					this.complete(selected, failure("closed", "The live read or undelivered command was cancelled."));
 				finish(
 					failure(
 						"uncertain",
 						"The caller withdrew its wait. Reconcile the same operation ID; do not create a replacement edit.",
 					),
 				);
+				if (selected.waiters.size) {
+					selected.cancelled = false;
+					return;
+				}
+				if (!selected.delivered || selected.command.op === "read")
+					this.complete(selected, failure("closed", "The live read or undelivered command was cancelled."));
 			};
 			const timer = setTimeout(() => {
 				if (selected.command.op === "read") {
@@ -243,7 +258,6 @@ export class LiveBridge {
 						message: "The live read timed out. No edit was requested. Retry the read when the exact pane is available.",
 					};
 					this.complete(selected, result);
-					finish(result);
 				} else if (selected.command.op === "apply")
 					finish(
 						failure(
@@ -257,38 +271,48 @@ export class LiveBridge {
 						"The claim result is unconfirmed. Claims expire automatically and never block the person.",
 					);
 					this.complete(selected, result);
-					finish(result);
 				}
 			}, this.commandTimeoutMs);
+			selected.waiters.add(finish);
 			signal?.addEventListener("abort", abort, { once: true });
-			void selected.promise.then(finish);
 			if (signal?.aborted) abort();
 		});
 	}
 	private complete(pending: Pending, result: LiveResult): void {
 		pending.result = result;
 		this.pending.delete(pending.command.requestId);
-		pending.resolve(result);
+		for (const finish of pending.waiters) finish(result);
+	}
+	private disconnectCommand(pending: Pending): void {
+		if (pending.command.op !== "apply" || !pending.delivered) {
+			this.complete(
+				pending,
+				failure("closed", "The exact native document disconnected; no replacement target was selected."),
+			);
+			return;
+		}
+		// Withdraw delivery, not the receipt. Only an exact retry queues this command again.
+		this.pending.delete(pending.command.requestId);
+		const result = disconnectedEdit();
+		for (const finish of pending.waiters) finish(result);
 	}
 	private disconnect(binding: LiveBinding, retire = true): void {
-		if (!this.documents.has(liveHandle(binding))) {
+		const handle = liveHandle(binding);
+		if (!this.documents.has(handle)) {
 			if (!retire) return;
 			if (this.documents.size >= 512) throw new Error("The native document capability limit is reached.");
-			this.documents.add(liveHandle(binding));
+			this.documents.add(handle);
 		}
 		if (this.bindings.get(binding.workspace)?.document === binding.document) this.bindings.delete(binding.workspace);
 		if (retire) {
-			this.retired.add(liveHandle(binding));
-			this.states.delete(liveHandle(binding));
-			this.versions.delete(liveHandle(binding));
+			this.retired.add(handle);
+			this.states.delete(handle);
+			this.versions.delete(handle);
 		}
-		for (const pending of [...this.pending.values()])
-			if (liveHandle(pending.command) === liveHandle(binding))
-				this.complete(
-					pending,
-					failure("closed", "The exact native document disconnected; no replacement target was selected."),
-				);
-		this.wakes.get(liveHandle(binding))?.();
+		for (const pending of this.pending.values()) {
+			if (liveHandle(pending.command) === handle) this.disconnectCommand(pending);
+		}
+		this.wakes.get(handle)?.();
 	}
 	close(): void {
 		if (this.closed) return;
