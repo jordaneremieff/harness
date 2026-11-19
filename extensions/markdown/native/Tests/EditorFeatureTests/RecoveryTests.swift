@@ -160,6 +160,27 @@ private final class DraftWriteGate: @unchecked Sendable {
     #expect(try String(contentsOf: url, encoding: .utf8) == "external")
 }
 
+@Test func fileSaveCountsTheByteOrderMarkBeforeReplacing() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("bom.md")
+    let bom: [UInt8] = [0xef, 0xbb, 0xbf]
+    let original = Data(bom) + Data(repeating: 0x61, count: Limits.sourceBytes - bom.count)
+    try original.write(to: url)
+    let base = try LocalFileSave.open(url).base
+    let tooLong = String(repeating: "b", count: Limits.sourceBytes)
+    #expect(throws: StoreError.tooLarge(name: "Markdown source", bytes: Limits.sourceBytes + bom.count, limit: Limits.sourceBytes)) {
+        try LocalFileSave.save(source: tooLong, base: base)
+    }
+    #expect(try Data(contentsOf: url) == original)
+    #expect(try LocalFileSave.open(url).base == base)
+    let fitting = String(repeating: "b", count: Limits.sourceBytes - bom.count)
+    let saved = try LocalFileSave.save(source: fitting, base: base)
+    #expect(saved.hasBOM)
+    #expect(try Data(contentsOf: url) == Data(bom) + Data(fitting.utf8))
+}
+
 @Test func emptyFileAndExclusiveSaveAreExplicit() throws {
     let root = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: root) }

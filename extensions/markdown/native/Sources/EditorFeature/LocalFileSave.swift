@@ -46,7 +46,7 @@ public enum LocalFileSave {
     }
 
     public static func save(source: String, base: FileEditBase) throws -> FileEditBase {
-        try checkSize(source)
+        try checkSize(source, prefixBytes: base.hasBOM ? 3 : 0)
         var result: Result<FileEditBase, any Error>?
         var coordinationError: NSError?
         let coordinator = NSFileCoordinator()
@@ -81,9 +81,10 @@ public enum LocalFileSave {
         return saved
     }
 
-    private static func checkSize(_ source: String) throws {
-        guard source.utf8.count <= Limits.sourceBytes else {
-            throw StoreError.tooLarge(name: "Markdown source", bytes: source.utf8.count, limit: Limits.sourceBytes)
+    private static func checkSize(_ source: String, prefixBytes: Int = 0) throws {
+        let bytes = source.utf8.count + prefixBytes
+        guard bytes <= Limits.sourceBytes else {
+            throw StoreError.tooLarge(name: "Markdown source", bytes: bytes, limit: Limits.sourceBytes)
         }
     }
 
