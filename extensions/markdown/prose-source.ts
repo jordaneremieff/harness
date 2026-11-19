@@ -1,5 +1,9 @@
 export type ProseLine = { line: number; raw: string; text: string };
-export type ProseBlock = { lines: ProseLine[]; kind: "paragraph" | "heading" | "list" | "table"; codeSpans: { line: number; text: string }[] };
+export type ProseBlock = {
+	lines: ProseLine[];
+	kind: "paragraph" | "heading" | "list" | "table";
+	codeSpans: { line: number; text: string }[];
+};
 const listItem = /^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+/u;
 const heading = /^ {0,3}#{1,6}(?:[ \t]+|$)/u;
 const fenceStart = /^ {0,3}(`{3,}(?!`)(?=[^`]*$)|~{3,})/u;
@@ -12,7 +16,8 @@ const thematicBreak = /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,
 type Segment = { line: number; raw: string; prefix: number };
 function nextRun(text: string): Map<number, number> {
 	const runs = [...text.matchAll(/`+/gu)];
-	const next = new Map<number, number>(), last = new Map<number, number>();
+	const next = new Map<number, number>(),
+		last = new Map<number, number>();
 	for (let i = runs.length - 1; i >= 0; i--) {
 		const { 0: run, index } = runs[i];
 		const close = last.get(run.length);
@@ -22,30 +27,49 @@ function nextRun(text: string): Map<number, number> {
 	return next;
 }
 function balancedParens(text: string): Map<number, number> {
-	const stack: number[] = [], ends = new Map<number, number>();
+	const stack: number[] = [],
+		ends = new Map<number, number>();
 	for (let i = 0; i < text.length; i++) {
-		if (text[i] === "\\") { i++; continue; }
+		if (text[i] === "\\") {
+			i++;
+			continue;
+		}
 		if (text[i] === "(") stack.push(i);
-		else if (text[i] === ")") { const start = stack.pop(); if (start !== undefined) ends.set(start, i + 1); }
+		else if (text[i] === ")") {
+			const start = stack.pop();
+			if (start !== undefined) ends.set(start, i + 1);
+		}
 	}
 	return ends;
 }
-const inlineToken = /\\[!"#$%&'()*+,./:;<=>?@[\]\\^_`{|}~-]|<!--|`+|\[|\]|<(?:(?:[a-z][a-z\d+.-]{1,31}:)[^<>\s]*|[^<>@\s]+@[^<>@\s]+)>/giu;
-const referenceSuffix = /\[[^[\]\n]{0,999}\]/yu;
-const angleDestination = /\([ \t\n]*<(?:\\[<>]|[^<>\n])*>[ \t\n]*\)/yu;
+const inlineToken =
+	/\\[!"#$%&'()*+,./:;<=>?@[\]\\^_`{|}~-]|<!--|`+|\[|\]|<(?:(?:[a-z][a-z\d+.-]{1,31}:)[^<>\s]*|[^<>@\s]+@[^<>@\s]+)>/giu;
+const referenceSuffix = /\[[^[\]\n]{0,999}\]/uy;
+const angleDestination = /\([ \t\n]*<(?:\\[<>]|[^<>\n])*>[ \t\n]*\)/uy;
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: One left-to-right cursor resolves overlapping inline exclusions.
-function project(segments: Segment[], kind: ProseBlock["kind"], openComment: boolean): ProseBlock & { openComment: boolean } {
+function project(
+	segments: Segment[],
+	kind: ProseBlock["kind"],
+	openComment: boolean,
+): ProseBlock & { openComment: boolean } {
 	const text = segments.map(({ raw, prefix }) => " ".repeat(prefix) + raw.slice(prefix)).join("\n");
 	const starts: number[] = [];
 	let offset = 0;
-	for (const { raw } of segments) { starts.push(offset); offset += raw.length + 1; }
+	for (const { raw } of segments) {
+		starts.push(offset);
+		offset += raw.length + 1;
+	}
 	const codeSpans: ProseBlock["codeSpans"] = [];
 	const ranges: { from: number; to: number }[] = [];
-	const hide = (from: number, to: number) => { ranges.push({ from, to }); };
+	const hide = (from: number, to: number) => {
+		ranges.push({ from, to });
+	};
 	const runs = text.includes("`") ? nextRun(text) : undefined;
 	const parens = text.includes("](") ? balancedParens(text) : undefined;
-	let lineIndex = 0, labels = 0, start = 0;
+	let lineIndex = 0,
+		labels = 0,
+		start = 0;
 	if (openComment) {
 		const close = text.indexOf("-->");
 		start = close < 0 ? text.length : close + 3;
@@ -66,7 +90,8 @@ function project(segments: Segment[], kind: ProseBlock["kind"], openComment: boo
 			const end = close + token.length;
 			while (lineIndex + 1 < starts.length && starts[lineIndex + 1] <= index) lineIndex++;
 			codeSpans.push({ line: segments[lineIndex].line, text: text.slice(index, Math.min(end, index + 240)) });
-			hide(index, end); inlineToken.lastIndex = end;
+			hide(index, end);
+			inlineToken.lastIndex = end;
 		} else if (token === "[") labels++;
 		else if (token === "]" && labels) {
 			labels--;
@@ -79,13 +104,18 @@ function project(segments: Segment[], kind: ProseBlock["kind"], openComment: boo
 				referenceSuffix.lastIndex = after;
 				if (referenceSuffix.test(text)) end = referenceSuffix.lastIndex;
 			}
-			if (end !== undefined) { hide(index, end); inlineToken.lastIndex = end; }
+			if (end !== undefined) {
+				hide(index, end);
+				inlineToken.lastIndex = end;
+			}
 		} else if (token.startsWith("<")) hide(index, inlineToken.lastIndex);
 	}
 	let range = 0;
 	const lines = segments.map(({ line, raw, prefix }, i) => {
-		const at = starts[i], end = at + raw.length;
-		let cursor = at + prefix, visible = " ".repeat(prefix);
+		const at = starts[i],
+			end = at + raw.length;
+		let cursor = at + prefix,
+			visible = " ".repeat(prefix);
 		while (range < ranges.length && ranges[range].from < end) {
 			const { from, to } = ranges[range];
 			if (to > cursor) {
@@ -110,8 +140,12 @@ export function* proseBlocks(source: string): Iterable<ProseBlock> {
 		const end = lines.findIndex((line, i) => i > 0 && /^(?:---|\.\.\.)[ \t]*$/u.test(line));
 		if (end > 0) start = end + 1;
 	}
-	let segments: Segment[] = [], kind: ProseBlock["kind"] = "paragraph";
-	let fence: string | undefined, quote = false, comment = false, listIndent = 0;
+	let segments: Segment[] = [],
+		kind: ProseBlock["kind"] = "paragraph";
+	let fence: string | undefined,
+		quote = false,
+		comment = false,
+		listIndent = 0;
 	function* flush(): Iterable<ProseBlock> {
 		if (!segments.length) return;
 		const block = project(segments, kind, comment);
@@ -134,22 +168,47 @@ export function* proseBlocks(source: string): Iterable<ProseBlock> {
 			yield* flush();
 			continue;
 		}
-		if (!raw.trim()) { quote = false; yield* flush(); continue; }
-		if (/^ {0,3}>/u.test(view)) { yield* flush(); quote = true; continue; }
+		if (!raw.trim()) {
+			quote = false;
+			yield* flush();
+			continue;
+		}
+		if (/^ {0,3}>/u.test(view)) {
+			yield* flush();
+			quote = true;
+			continue;
+		}
 		const item = listItem.exec(view)?.[0];
 		const mark = heading.exec(view)?.[0];
 		const opener = fenceStart.exec(item ? view.slice(item.length) : view)?.[1];
 		if (quote && !item && !mark && !opener && !thematicBreak.test(view)) continue;
 		quote = false;
-		if (opener) { yield* flush(); fence = opener; continue; }
-		if (segments.length && kind === "paragraph" && divider.test(view)) { kind = "heading"; yield* flush(); continue; }
-		if (thematicBreak.test(view) || reference.test(view)) { yield* flush(); continue; }
+		if (opener) {
+			yield* flush();
+			fence = opener;
+			continue;
+		}
+		if (segments.length && kind === "paragraph" && divider.test(view)) {
+			kind = "heading";
+			yield* flush();
+			continue;
+		}
+		if (thematicBreak.test(view) || reference.test(view)) {
+			yield* flush();
+			continue;
+		}
 		if (mark) {
-			yield* flush(); kind = "heading"; segments.push({ line: i + 1, raw, prefix: container + mark.length }); yield* flush(); continue;
+			yield* flush();
+			kind = "heading";
+			segments.push({ line: i + 1, raw, prefix: container + mark.length });
+			yield* flush();
+			continue;
 		}
 		if (!segments.length && /^(?: {4}| {0,3}\t)/u.test(view)) continue;
 		if (item) {
-			yield* flush(); kind = "list"; listIndent = Math.min(container + item.length, 12);
+			yield* flush();
+			kind = "list";
+			listIndent = Math.min(container + item.length, 12);
 			const prefix = container + item.length;
 			if (!/^ {4}/u.test(view.slice(prefix - container))) segments.push({ line: i + 1, raw, prefix });
 			continue;
@@ -157,7 +216,11 @@ export function* proseBlocks(source: string): Iterable<ProseBlock> {
 		if (!container && kind !== "list") listIndent = 0;
 		if (kind === "table" && !view.includes("|")) yield* flush();
 		if (view.includes("|") && tableDivider.test(lines[i + 1] ?? "")) {
-			yield* flush(); kind = "table"; segments.push({ line: i + 1, raw, prefix: container }); i++; continue;
+			yield* flush();
+			kind = "table";
+			segments.push({ line: i + 1, raw, prefix: container });
+			i++;
+			continue;
 		}
 		segments.push({ line: i + 1, raw, prefix: container });
 	}

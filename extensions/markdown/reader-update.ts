@@ -34,14 +34,21 @@ export type ReaderState =
 /** True when `ancestor` is an ancestor of `descendant`, false when it is not, undefined when Git cannot tell. */
 export type Ancestry = (ancestor: string, descendant: string) => boolean | undefined;
 
-export function readerState(installed: InstalledBuild | "missing" | "unreadable", loaded: LoadedBuild, ancestry: Ancestry): ReaderState {
+export function readerState(
+	installed: InstalledBuild | "missing" | "unreadable",
+	loaded: LoadedBuild,
+	ancestry: Ancestry,
+): ReaderState {
 	if (installed === "missing" || installed === "unreadable") return { state: "update", reason: installed };
 	if (installed.digest === loaded.digest) return { state: "current" };
 	if (!loaded.source) return { state: "notice", reason: "loaded-untracked" };
 	if (loaded.source.modified) return { state: "notice", reason: "loaded-modified" };
 	const built = installed.source;
 	if (!built) return { state: "update", reason: "unrecorded" };
-	if (built.commit === loaded.source.commit) return built.modified ? { state: "keep", reason: "modified" } : { state: "notice", reason: "unordered", commit: built.commit };
+	if (built.commit === loaded.source.commit)
+		return built.modified
+			? { state: "keep", reason: "modified" }
+			: { state: "notice", reason: "unordered", commit: built.commit };
 	if (ancestry(built.commit, loaded.source.commit) === true) return { state: "update", reason: "older" };
 	if (ancestry(loaded.source.commit, built.commit) === true) return { state: "keep", reason: "newer" };
 	return { state: "notice", reason: "unordered", commit: built.commit };
@@ -58,16 +65,24 @@ export function readInstalled(app: string): InstalledBuild | "missing" | "unread
 		return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable";
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) return "unreadable";
-	const { sourceDigest, source } = value as { sourceDigest?: unknown; source?: { commit?: unknown; modified?: unknown } };
+	const { sourceDigest, source } = value as {
+		sourceDigest?: unknown;
+		source?: { commit?: unknown; modified?: unknown };
+	};
 	return {
 		...(typeof sourceDigest === "string" ? { digest: sourceDigest } : {}),
-		...(source && typeof source.commit === "string" && typeof source.modified === "boolean" ? { source: { commit: source.commit, modified: source.modified } } : {}),
+		...(source && typeof source.commit === "string" && typeof source.modified === "boolean"
+			? { source: { commit: source.commit, modified: source.modified } }
+			: {}),
 	};
 }
 
 export function gitAncestry(cwd: string): Ancestry {
 	return (ancestor, descendant) => {
-		const result = spawnSync("git", ["-C", cwd, "merge-base", "--is-ancestor", ancestor, descendant], { timeout: 10_000, stdio: "ignore" });
+		const result = spawnSync("git", ["-C", cwd, "merge-base", "--is-ancestor", ancestor, descendant], {
+			timeout: 10_000,
+			stdio: "ignore",
+		});
 		return result.status === 0 ? true : result.status === 1 ? false : undefined;
 	};
 }
@@ -136,7 +151,11 @@ export function runUpdate(options: UpdateOptions): UpdateRun {
 	child.unref();
 	const done = new Promise<UpdateOutcome>((resolve) => {
 		const failed = (detail: string) => {
-			writeFileSync(files.failure, `${JSON.stringify({ digest: options.digest, failedAt: new Date().toISOString(), detail })}\n`, { mode: 0o600 });
+			writeFileSync(
+				files.failure,
+				`${JSON.stringify({ digest: options.digest, failedAt: new Date().toISOString(), detail })}\n`,
+				{ mode: 0o600 },
+			);
 			resolve({ status: "failed", detail, log: files.log });
 		};
 		child.once("error", (error) => failed(`the build did not start: ${error.message}`));
@@ -162,7 +181,10 @@ const STARTED = "Updating the Markdown reader app for this harness in the backgr
 
 function installedText(running: number): string {
 	if (running === 0) return "The Markdown reader app is up to date with this harness.";
-	const open = running === 1 ? "One open reader still runs the previous build; close it" : `${running} open readers still run the previous build; close them`;
+	const open =
+		running === 1
+			? "One open reader still runs the previous build; close it"
+			: `${running} open readers still run the previous build; close them`;
 	return `The Markdown reader app is up to date with this harness. ${open} to load the update.`;
 }
 
@@ -174,15 +196,24 @@ export function reportUpdate(run: UpdateRun, reporter: UpdateReporter, explicit:
 		if (!reporter.active()) return;
 		reporter.status(undefined);
 		if (outcome.status === "installed") reporter.notify(installedText(outcome.running));
-		else if (outcome.status === "failed") reporter.notify(`The Markdown reader update failed: ${outcome.detail}. The previous app stays installed. Log: ${outcome.log}. Run /markdown update to try again.`, true);
-		else if (explicit) reporter.notify("Another Markdown reader update is already running. The installed app stays as it is until that update ends.");
+		else if (outcome.status === "failed")
+			reporter.notify(
+				`The Markdown reader update failed: ${outcome.detail}. The previous app stays installed. Log: ${outcome.log}. Run /markdown update to try again.`,
+				true,
+			);
+		else if (explicit)
+			reporter.notify(
+				"Another Markdown reader update is already running. The installed app stays as it is until that update ends.",
+			);
 	});
 }
 
 /** The notice for an installed app that this harness does not replace on its own. */
 export function noticeText(state: Extract<ReaderState, { state: "notice" }>): string {
-	if (state.reason === "loaded-modified") return "This harness has uncommitted changes to the Markdown reader, so the installed reader app was not replaced. Run /markdown update to install a reader built from them.";
-	if (state.reason === "loaded-untracked") return "The installed Markdown reader app differs from this harness, and this harness is not a Git checkout, so the app was not replaced. Run /markdown update to install the reader of this harness.";
+	if (state.reason === "loaded-modified")
+		return "This harness has uncommitted changes to the Markdown reader, so the installed reader app was not replaced. Run /markdown update to install a reader built from them.";
+	if (state.reason === "loaded-untracked")
+		return "The installed Markdown reader app differs from this harness, and this harness is not a Git checkout, so the app was not replaced. Run /markdown update to install the reader of this harness.";
 	return `The installed Markdown reader app was built from ${state.commit ? `commit ${state.commit.slice(0, 12)}` : "other source"}, which is not an earlier version of this harness, so it was not replaced. Run /markdown update to install the reader of this harness.`;
 }
 
@@ -200,7 +231,9 @@ export interface StartupOptions {
  * missing or older. A running update, a current or newer app, and a developer build stay
  * untouched. An update that already failed for these inputs is not retried automatically.
  */
-export async function checkReader(options: StartupOptions): Promise<ReaderState | { state: "busy" } | { state: "failed" }> {
+export async function checkReader(
+	options: StartupOptions,
+): Promise<ReaderState | { state: "busy" } | { state: "failed" }> {
 	const nativeDir = options.nativeDir ?? NATIVE_DIR;
 	const build = await import("./native/build.mts");
 	const loaded: LoadedBuild = { digest: build.sourceDigest(nativeDir), source: build.sourceRecord(nativeDir) };
@@ -212,10 +245,24 @@ export async function checkReader(options: StartupOptions): Promise<ReaderState 
 		return state;
 	}
 	if (failedDigest(options.app) === loaded.digest) {
-		options.reporter.notify(`The last Markdown reader update for this harness failed, so it was not retried. Log: ${updateFiles(options.app).log}. Run /markdown update to try again.`, true);
+		options.reporter.notify(
+			`The last Markdown reader update for this harness failed, so it was not retried. Log: ${updateFiles(options.app).log}. Run /markdown update to try again.`,
+			true,
+		);
 		return { state: "failed" };
 	}
-	reportUpdate((options.run ?? runUpdate)({ app: options.app, store: options.store, digest: loaded.digest, busy: build.INSTALL_BUSY, running: build.runningReaders, nativeDir }), options.reporter, false);
+	reportUpdate(
+		(options.run ?? runUpdate)({
+			app: options.app,
+			store: options.store,
+			digest: loaded.digest,
+			busy: build.INSTALL_BUSY,
+			running: build.runningReaders,
+			nativeDir,
+		}),
+		options.reporter,
+		false,
+	);
 	return state;
 }
 
@@ -229,8 +276,21 @@ export async function updateNow(options: StartupOptions): Promise<void> {
 	const build = await import("./native/build.mts");
 	const holder = build.lockHolder(dirname(options.app));
 	if (holder) {
-		options.reporter.notify(`A Markdown reader update is already running (process ${holder.pid}). Its outcome replaces the installed app when it ends.`);
+		options.reporter.notify(
+			`A Markdown reader update is already running (process ${holder.pid}). Its outcome replaces the installed app when it ends.`,
+		);
 		return;
 	}
-	reportUpdate((options.run ?? runUpdate)({ app: options.app, store: options.store, digest: build.sourceDigest(nativeDir), busy: build.INSTALL_BUSY, running: build.runningReaders, nativeDir }), options.reporter, true);
+	reportUpdate(
+		(options.run ?? runUpdate)({
+			app: options.app,
+			store: options.store,
+			digest: build.sourceDigest(nativeDir),
+			busy: build.INSTALL_BUSY,
+			running: build.runningReaders,
+			nativeDir,
+		}),
+		options.reporter,
+		true,
+	);
 }

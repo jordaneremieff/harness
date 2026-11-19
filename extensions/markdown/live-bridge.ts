@@ -1,6 +1,23 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { isRecord, LIVE_LIFETIME, LIVE_PROMPT_BYTES, LIVE_WIRE_BYTES, liveHandle, liveId, readLiveAction, readLiveBinding, readLiveResult, type LiveAction, type LiveBinding, type LiveCommand, type LiveConfig, type LivePromptReceipt, type LiveResult, type LiveState } from "./live-protocol.ts";
+import {
+	isRecord,
+	LIVE_LIFETIME,
+	LIVE_PROMPT_BYTES,
+	LIVE_WIRE_BYTES,
+	liveHandle,
+	liveId,
+	readLiveAction,
+	readLiveBinding,
+	readLiveResult,
+	type LiveAction,
+	type LiveBinding,
+	type LiveCommand,
+	type LiveConfig,
+	type LivePromptReceipt,
+	type LiveResult,
+	type LiveState,
+} from "./live-protocol.ts";
 import { validUnicode } from "./responses.ts";
 
 export type LivePublisher = (status: LiveState["status"], text: string, operationId: string) => void;
@@ -25,7 +42,7 @@ const failure = (status: "closed" | "uncertain", message: string): LiveResult =>
 function boundedText(text: string): { text: string; truncated: boolean } {
 	let end = Math.min(text.length, 65536);
 	// The page envelope also has a byte limit after JSON escaping.
-	while (Buffer.byteLength(JSON.stringify(text.slice(0, end))) - 2 > 65536) end = Math.floor(end * .9);
+	while (Buffer.byteLength(JSON.stringify(text.slice(0, end))) - 2 > 65536) end = Math.floor(end * 0.9);
 	if (/[\uD800-\uDBFF]/u.test(text[end - 1] ?? "")) end--;
 	return { text: text.slice(0, end), truncated: end !== text.length };
 }
@@ -43,7 +60,10 @@ export class LiveBridge {
 	private readonly documents = new Set<string>();
 	private readonly pending = new Map<string, Pending>();
 	private readonly edits = new Map<string, EditReceipt>();
-	private readonly prompts = new Map<string, { handle: string; fingerprint: string; promise: Promise<LivePromptReceipt>; result?: LivePromptReceipt }>();
+	private readonly prompts = new Map<
+		string,
+		{ handle: string; fingerprint: string; promise: Promise<LivePromptReceipt>; result?: LivePromptReceipt }
+	>();
 	private readonly wakes = new Map<string, () => void>();
 	private readonly states = new Map<string, Map<string, LiveState>>();
 	private sequence = 0;
@@ -51,25 +71,48 @@ export class LiveBridge {
 	private readonly commandTimeoutMs: number;
 	private readonly pollTimeoutMs: number;
 	constructor(route: LiveRoute, commandTimeoutMs = 30000, pollTimeoutMs = 25000) {
-		this.route = route; this.commandTimeoutMs = commandTimeoutMs; this.pollTimeoutMs = pollTimeoutMs;
+		this.route = route;
+		this.commandTimeoutMs = commandTimeoutMs;
+		this.pollTimeoutMs = pollTimeoutMs;
 	}
 	async start(): Promise<LiveConfig> {
 		if (this.closed) throw new Error("The live Markdown host closed.");
 		if (this.config) return this.config;
-		const server = createServer((request, response) => { void this.serve(request, response); });
+		const server = createServer((request, response) => {
+			void this.serve(request, response);
+		});
 		this.server = server;
 		server.maxConnections = 32;
 		server.headersTimeout = 10000;
 		server.requestTimeout = 35000;
-		await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
+		await new Promise<void>((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(0, "127.0.0.1", () => {
+				server.off("error", reject);
+				resolve();
+			});
+		});
 		const address = server.address();
-		if (!address || typeof address === "string" || this.closed) { this.close(); throw new Error("The live Markdown connection closed before startup."); }
-		this.config = { version: 1, endpoint: `http://127.0.0.1:${address.port}`, token: this.token, [LIVE_LIFETIME]: this.lifetime.signal };
+		if (!address || typeof address === "string" || this.closed) {
+			this.close();
+			throw new Error("The live Markdown connection closed before startup.");
+		}
+		this.config = {
+			version: 1,
+			endpoint: `http://127.0.0.1:${address.port}`,
+			token: this.token,
+			[LIVE_LIFETIME]: this.lifetime.signal,
+		};
 		try {
 			this.detach = await this.route.observe?.((status, text, operationId) => this.publish(status, text, operationId));
-			if (this.closed) { this.detach?.(); throw new Error("The live Markdown host closed."); }
+			if (this.closed) {
+				this.detach?.();
+				throw new Error("The live Markdown host closed.");
+			}
+		} catch {
+			this.close();
+			throw new Error("The conversation progress connection failed.");
 		}
-		catch { this.close(); throw new Error("The conversation progress connection failed."); }
 		return this.config;
 	}
 	publish(status: LiveState["status"], text: string, operationId: string): void {
@@ -93,35 +136,61 @@ export class LiveBridge {
 		return latest;
 	}
 	list(): { handle: string; workspace: string; document: string; live: 1 | 2 }[] {
-		return [...this.bindings.values()].map((binding) => ({ handle: liveHandle(binding), ...binding, live: this.versions.get(liveHandle(binding)) ?? 1 }));
+		return [...this.bindings.values()].map((binding) => ({
+			handle: liveHandle(binding),
+			...binding,
+			live: this.versions.get(liveHandle(binding)) ?? 1,
+		}));
 	}
 	private binding(binding: LiveBinding): string {
 		const handle = liveHandle(binding);
-		if (this.closed || this.bindings.get(binding.workspace)?.document !== binding.document) throw new Error("The live Markdown document closed or changed.");
+		if (this.closed || this.bindings.get(binding.workspace)?.document !== binding.document)
+			throw new Error("The live Markdown document closed or changed.");
 		return handle;
 	}
 	resolvedEdit(handle: string, operationId: string, key: string): { action: Apply; refreshed: boolean } | undefined {
 		const prior = this.edits.get(operationId);
 		if (!prior) return;
 		const action = prior.pending.command;
-		if (action.op !== "apply" || liveHandle(action) !== handle || prior.anchor?.key !== key) throw new Error("The operation ID already names a different live edit.");
+		if (action.op !== "apply" || liveHandle(action) !== handle || prior.anchor?.key !== key)
+			throw new Error("The operation ID already names a different live edit.");
 		const { baseGeneration, baseDigest, edits } = action;
-		return { action: { op: "apply", operationId, baseGeneration, baseDigest, edits }, refreshed: prior.anchor.refreshed };
+		return {
+			action: { op: "apply", operationId, baseGeneration, baseDigest, edits },
+			refreshed: prior.anchor.refreshed,
+		};
 	}
 	async execute(handle: string, input: LiveAction, signal?: AbortSignal, anchor?: AnchorIdentity): Promise<LiveResult> {
 		const action = readLiveAction(input);
 		const binding = this.list().find((row) => row.handle === handle);
-		if (!binding) return failure("closed", "The exact live document is no longer connected. Do not replace it with a stored document.");
-		if ((action.op === "claim" || action.op === "release") && binding.live !== 2) return { status: "error", message: "This exact pane does not support claims. Claim and release require live: 2." };
+		if (!binding)
+			return failure(
+				"closed",
+				"The exact live document is no longer connected. Do not replace it with a stored document.",
+			);
+		if ((action.op === "claim" || action.op === "release") && binding.live !== 2)
+			return {
+				status: "error",
+				message: "This exact pane does not support claims. Claim and release require live: 2.",
+			};
 		signal?.throwIfAborted();
 		let pending = action.op === "apply" ? this.priorEdit(handle, action, anchor) : undefined;
 		if (!pending) {
 			if (this.pending.size >= 16) throw new Error("The live Markdown command queue is full.");
 			let resolve!: (result: LiveResult) => void;
-			const promise = new Promise<LiveResult>((done) => { resolve = done; });
-			pending = { command: { ...readLiveBinding(binding), ...action, requestId: randomUUID() }, promise, resolve, delivered: false, cancelled: false };
+			const promise = new Promise<LiveResult>((done) => {
+				resolve = done;
+			});
+			pending = {
+				command: { ...readLiveBinding(binding), ...action, requestId: randomUUID() },
+				promise,
+				resolve,
+				delivered: false,
+				cancelled: false,
+			};
 			this.pending.set(pending.command.requestId, pending);
-			if (action.op === "apply") this.edits.set(action.operationId, { fingerprint: JSON.stringify({ handle, action }), pending, anchor });
+			if (action.op === "apply")
+				this.edits.set(action.operationId, { fingerprint: JSON.stringify({ handle, action }), pending, anchor });
 			this.wakes.get(handle)?.();
 		}
 		if (pending.result) return pending.result;
@@ -131,32 +200,64 @@ export class LiveBridge {
 	}
 	private priorEdit(handle: string, action: Apply, anchor?: AnchorIdentity): Pending | undefined {
 		const prior = this.edits.get(action.operationId);
-		if (prior && (prior.anchor?.key !== anchor?.key || prior.fingerprint !== JSON.stringify({ handle, action }))) throw new Error("The operation ID already names a different live edit.");
-		if (!prior && this.edits.size >= 128) throw new Error("The live edit receipt limit is reached. Existing receipts remain valid.");
+		if (prior && (prior.anchor?.key !== anchor?.key || prior.fingerprint !== JSON.stringify({ handle, action })))
+			throw new Error("The operation ID already names a different live edit.");
+		if (!prior && this.edits.size >= 128)
+			throw new Error("The live edit receipt limit is reached. Existing receipts remain valid.");
 		const pending = prior?.pending;
-		return pending?.result && pending.result.status !== "applied" && !(anchor && pending.result.status === "stale") ? undefined : pending;
+		return pending?.result && pending.result.status !== "applied" && !(anchor && pending.result.status === "stale")
+			? undefined
+			: pending;
 	}
 	private wait(selected: Pending, signal?: AbortSignal): Promise<LiveResult> {
 		return new Promise<LiveResult>((resolve) => {
-			const finish = (result: LiveResult) => { clearTimeout(timer); signal?.removeEventListener("abort", abort); resolve(result); };
+			const finish = (result: LiveResult) => {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", abort);
+				resolve(result);
+			};
 			const abort = () => {
 				selected.cancelled = true;
 				if (selected.command.op === "claim" || selected.command.op === "release") {
-					const result = failure("uncertain", "The claim result is unconfirmed. Claims expire automatically and never block the person.");
-					this.complete(selected, result); finish(result); return;
+					const result = failure(
+						"uncertain",
+						"The claim result is unconfirmed. Claims expire automatically and never block the person.",
+					);
+					this.complete(selected, result);
+					finish(result);
+					return;
 				}
-				if (!selected.delivered || selected.command.op === "read") this.complete(selected, failure("closed", "The live read or undelivered command was cancelled."));
-				finish(failure("uncertain", "The caller withdrew its wait. Reconcile the same operation ID; do not create a replacement edit."));
+				if (!selected.delivered || selected.command.op === "read")
+					this.complete(selected, failure("closed", "The live read or undelivered command was cancelled."));
+				finish(
+					failure(
+						"uncertain",
+						"The caller withdrew its wait. Reconcile the same operation ID; do not create a replacement edit.",
+					),
+				);
 			};
 			const timer = setTimeout(() => {
 				if (selected.command.op === "read") {
-					const result: LiveResult = { status: "error", message: "The live read timed out. No edit was requested. Retry the read when the exact pane is available." };
+					const result: LiveResult = {
+						status: "error",
+						message: "The live read timed out. No edit was requested. Retry the read when the exact pane is available.",
+					};
 					this.complete(selected, result);
 					finish(result);
-				} else if (selected.command.op === "apply") finish(failure("uncertain", "The native result is unconfirmed. Retry only the same operation ID and identical edit; do not infer that it failed."));
+				} else if (selected.command.op === "apply")
+					finish(
+						failure(
+							"uncertain",
+							"The native result is unconfirmed. Retry only the same operation ID and identical edit; do not infer that it failed.",
+						),
+					);
 				else {
-					const result = failure("uncertain", "The claim result is unconfirmed. Claims expire automatically and never block the person.");
-					this.complete(selected, result); finish(result);
+					const result = failure(
+						"uncertain",
+						"The claim result is unconfirmed. Claims expire automatically and never block the person.",
+					);
+					this.complete(selected, result);
+					finish(result);
 				}
 			}, this.commandTimeoutMs);
 			signal?.addEventListener("abort", abort, { once: true });
@@ -181,7 +282,12 @@ export class LiveBridge {
 			this.states.delete(liveHandle(binding));
 			this.versions.delete(liveHandle(binding));
 		}
-		for (const pending of [...this.pending.values()]) if (liveHandle(pending.command) === liveHandle(binding)) this.complete(pending, failure("closed", "The exact native document disconnected; no replacement target was selected."));
+		for (const pending of [...this.pending.values()])
+			if (liveHandle(pending.command) === liveHandle(binding))
+				this.complete(
+					pending,
+					failure("closed", "The exact native document disconnected; no replacement target was selected."),
+				);
 		this.wakes.get(liveHandle(binding))?.();
 	}
 	close(): void {
@@ -214,12 +320,22 @@ export class LiveBridge {
 	private authorised(request: IncomingMessage): boolean {
 		const auth = Buffer.from(request.headers.authorization ?? "");
 		const expected = Buffer.from(`Bearer ${this.token}`);
-		return !this.closed && request.method === "POST" && request.headers.origin === undefined && request.headers.host === this.config?.endpoint.slice(7) && request.headers["content-type"]?.split(";", 1)[0] === "application/json" && auth.length === expected.length && timingSafeEqual(auth, expected);
+		return (
+			!this.closed &&
+			request.method === "POST" &&
+			request.headers.origin === undefined &&
+			request.headers.host === this.config?.endpoint.slice(7) &&
+			request.headers["content-type"]?.split(";", 1)[0] === "application/json" &&
+			auth.length === expected.length &&
+			timingSafeEqual(auth, expected)
+		);
 	}
 	private connect(binding: LiveBinding, version: unknown): object {
-		if (version !== undefined && version !== 1 && version !== 2) throw new Error("Invalid live Markdown capability version.");
+		if (version !== undefined && version !== 1 && version !== 2)
+			throw new Error("Invalid live Markdown capability version.");
 		const handle = liveHandle(binding);
-		if (this.retired.has(handle) || (!this.documents.has(handle) && this.documents.size >= 512)) throw new Error("The native document capability expired. It is not reconnected by document identity.");
+		if (this.retired.has(handle) || (!this.documents.has(handle) && this.documents.size >= 512))
+			throw new Error("The native document capability expired. It is not reconnected by document identity.");
 		const previous = this.bindings.get(binding.workspace);
 		if (previous && previous.document !== binding.document) this.disconnect(previous, false);
 		if (!previous && this.bindings.size >= 8) throw new Error("The native workspace limit is reached.");
@@ -230,13 +346,22 @@ export class LiveBridge {
 	}
 	private async poll(binding: LiveBinding, after: unknown, response: ServerResponse): Promise<object> {
 		const handle = liveHandle(binding);
-		if (!Number.isSafeInteger(after) || Number(after) < 0 || this.wakes.has(handle)) throw new Error("Invalid or duplicate live poll.");
-		const available = () => [...this.pending.values()].find((item) => !item.cancelled && liveHandle(item.command) === handle);
-		if (!available() && after === this.stateAfter(handle, Number(after)).sequence) await new Promise<void>((resolve) => {
-			const finish = () => { clearTimeout(timer); this.wakes.delete(handle); response.off("close", finish); resolve(); };
-			const timer = setTimeout(finish, this.pollTimeoutMs);
-			this.wakes.set(handle, finish); response.once("close", finish);
-		});
+		if (!Number.isSafeInteger(after) || Number(after) < 0 || this.wakes.has(handle))
+			throw new Error("Invalid or duplicate live poll.");
+		const available = () =>
+			[...this.pending.values()].find((item) => !item.cancelled && liveHandle(item.command) === handle);
+		if (!available() && after === this.stateAfter(handle, Number(after)).sequence)
+			await new Promise<void>((resolve) => {
+				const finish = () => {
+					clearTimeout(timer);
+					this.wakes.delete(handle);
+					response.off("close", finish);
+					resolve();
+				};
+				const timer = setTimeout(finish, this.pollTimeoutMs);
+				this.wakes.set(handle, finish);
+				response.once("close", finish);
+			});
 		this.binding(binding);
 		const pending = available();
 		if (pending) pending.delivered = true;
@@ -244,55 +369,93 @@ export class LiveBridge {
 	}
 	private result(binding: LiveBinding, body: Record<string, unknown>): object {
 		if (!liveId(body.requestId)) throw new Error("Invalid native result identity.");
-		const pending = this.pending.get(body.requestId) ?? [...this.edits.values()].find((entry) => entry.pending.command.requestId === body.requestId)?.pending;
+		const pending =
+			this.pending.get(body.requestId) ??
+			[...this.edits.values()].find((entry) => entry.pending.command.requestId === body.requestId)?.pending;
 		if (!pending || liveHandle(pending.command) !== liveHandle(binding)) return { ok: true };
 		const result = readLiveResult(body.result, pending.command);
-		if (pending.result && JSON.stringify(pending.result) !== JSON.stringify(result)) throw new Error("The native receipt changed after acknowledgement.");
+		if (pending.result && JSON.stringify(pending.result) !== JSON.stringify(result))
+			throw new Error("The native receipt changed after acknowledgement.");
 		this.complete(pending, result);
 		return { ok: true };
 	}
 	private async prompt(binding: LiveBinding, body: Record<string, unknown>): Promise<object> {
 		const rejected = (message: string) => ({ ok: true, status: "rejected", message });
-		if (!liveId(body.operationId) || typeof body.text !== "string" || !body.text.trim() || !validUnicode(body.text) || Buffer.byteLength(body.text) > LIVE_PROMPT_BYTES) return rejected("Invalid live Markdown prompt; this request was not submitted.");
+		if (
+			!liveId(body.operationId) ||
+			typeof body.text !== "string" ||
+			!body.text.trim() ||
+			!validUnicode(body.text) ||
+			Buffer.byteLength(body.text) > LIVE_PROMPT_BYTES
+		)
+			return rejected("Invalid live Markdown prompt; this request was not submitted.");
 		const handle = liveHandle(binding);
 		const fingerprint = JSON.stringify({ handle, text: body.text });
 		let prior = this.prompts.get(body.operationId);
-		if (prior && prior.fingerprint !== fingerprint) return rejected("The prompt ID already names a different request; the changed request was not submitted.");
+		if (prior && prior.fingerprint !== fingerprint)
+			return rejected("The prompt ID already names a different request; the changed request was not submitted.");
 		if (!prior || (prior.result?.status === "uncertain" && prior.result.retryable)) {
-			if (!prior && this.prompts.size >= 128) return rejected("The live prompt receipt limit is reached; this request was not submitted.");
+			if (!prior && this.prompts.size >= 128)
+				return rejected("The live prompt receipt limit is reached; this request was not submitted.");
 			const operationId = body.operationId;
 			const text = `This question (${operationId}) comes from the live Markdown pane ${handle}. Answer in your final message; the Ask card shows it. Use markdown_live with this handle to read context or apply {find, replace} edits. Do not substitute a stored document, file write or new pane.\n\n${body.text}`;
-			const promise = Promise.resolve().then(() => this.route.submit(text, operationId)).catch((): LivePromptReceipt => ({
-				status: "uncertain", retryable: this.route.retryFailedSubmission === true,
-				message: this.route.retryFailedSubmission ? "Admission is unconfirmed. Retry the same request ID to reconcile it." : "Admission is unconfirmed and this route cannot safely resubmit. Check the conversation before another request.",
-			}));
+			const promise = Promise.resolve()
+				.then(() => this.route.submit(text, operationId))
+				.catch(
+					(): LivePromptReceipt => ({
+						status: "uncertain",
+						retryable: this.route.retryFailedSubmission === true,
+						message: this.route.retryFailedSubmission
+							? "Admission is unconfirmed. Retry the same request ID to reconcile it."
+							: "Admission is unconfirmed and this route cannot safely resubmit. Check the conversation before another request.",
+					}),
+				);
 			const entry: NonNullable<typeof prior> = { handle, fingerprint, promise };
-			prior = entry; this.prompts.set(operationId, entry);
+			prior = entry;
+			this.prompts.set(operationId, entry);
 			this.publish("queued", "", operationId);
-			void promise.then((result) => { entry.result = result; });
+			void promise.then((result) => {
+				entry.result = result;
+			});
 		}
-		return { ok: true, ...await prior.promise };
+		return { ok: true, ...(await prior.promise) };
 	}
 	private async dispatch(path: string, body: Record<string, unknown>, response: ServerResponse): Promise<object> {
 		const binding = readLiveBinding(body);
 		if (path === "/connect") return this.connect(binding, body.live);
-		if (path === "/close") { this.disconnect(binding); return { ok: true }; }
+		if (path === "/close") {
+			this.disconnect(binding);
+			return { ok: true };
+		}
 		this.binding(binding);
 		switch (path) {
-			case "/poll": return this.poll(binding, body.after, response);
-			case "/result": return this.result(binding, body);
-			case "/prompt": return this.prompt(binding, body);
-			default: throw new Error("Unknown live Markdown operation.");
+			case "/poll":
+				return this.poll(binding, body.after, response);
+			case "/result":
+				return this.result(binding, body);
+			case "/prompt":
+				return this.prompt(binding, body);
+			default:
+				throw new Error("Unknown live Markdown operation.");
 		}
 	}
 	private async serve(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		try {
-			if (!this.authorised(request)) { this.send(response, 403, { ok: false, error: "Unauthorised live Markdown request." }); return; }
-			if (!["/connect", "/poll", "/result", "/prompt", "/close"].includes(request.url ?? "")) { this.send(response, 404, { ok: false, error: "Unknown live Markdown operation." }); return; }
+			if (!this.authorised(request)) {
+				this.send(response, 403, { ok: false, error: "Unauthorised live Markdown request." });
+				return;
+			}
+			if (!["/connect", "/poll", "/result", "/prompt", "/close"].includes(request.url ?? "")) {
+				this.send(response, 404, { ok: false, error: "Unknown live Markdown operation." });
+				return;
+			}
 			const result = await this.dispatch(request.url ?? "", await this.body(request), response);
 			this.send(response, 200, result);
 		} catch (error) {
-			this.send(response, 409, { ok: false, error: error instanceof Error ? error.message.slice(0, 500) : "The live Markdown operation failed." });
+			this.send(response, 409, {
+				ok: false,
+				error: error instanceof Error ? error.message.slice(0, 500) : "The live Markdown operation failed.",
+			});
 		}
 	}
 }
@@ -307,15 +470,27 @@ export class LiveBridges {
 		if (!promise) {
 			if (this.bridges.size >= 32) throw new Error("The live conversation limit is reached.");
 			const bridge = new LiveBridge(route());
-			promise = bridge.start().then(() => bridge).catch((error: unknown) => {
-				bridge.close();
-				if (this.bridges.get(key) === promise) this.bridges.delete(key);
-				throw error;
-			});
+			promise = bridge
+				.start()
+				.then(() => bridge)
+				.catch((error: unknown) => {
+					bridge.close();
+					if (this.bridges.get(key) === promise) this.bridges.delete(key);
+					throw error;
+				});
 			this.bridges.set(key, promise);
 		}
 		return promise;
 	}
-	async find(key: string): Promise<LiveBridge | undefined> { return this.bridges.get(key); }
-	close(): void { this.closed = true; for (const promise of this.bridges.values()) void promise.then((bridge) => bridge.close(), () => {}); }
+	async find(key: string): Promise<LiveBridge | undefined> {
+		return this.bridges.get(key);
+	}
+	close(): void {
+		this.closed = true;
+		for (const promise of this.bridges.values())
+			void promise.then(
+				(bridge) => bridge.close(),
+				() => {},
+			);
+	}
 }
