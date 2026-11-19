@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { watch } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { EDITOR_WRITER_SOURCES, INSTALL_BUSY, runningReaders } from "./native/build.mts";
 import {
@@ -136,7 +137,7 @@ function runFixture(t: TestContext, running = 0) {
 	return { app, child, calls, options };
 }
 
-test("an update runs build.mts detached, with its output in the log beside the app", (t) => {
+test("an update starts a detached worker with its output in the log beside the app", (t) => {
 	const f = runFixture(t);
 	mkdirSync(join(f.app, ".."), { recursive: true });
 	writeFileSync(join(f.app, "..", "update.log"), "earlier run");
@@ -144,9 +145,11 @@ test("an update runs build.mts detached, with its output in the log beside the a
 	assert.equal(f.calls.length, 1);
 	const [call] = f.calls;
 	assert.equal(call.command, "/usr/local/bin/node");
-	assert.deepEqual(call.args, ["/package/native/build.mts"]);
+	assert.match(call.args[0], /\/markdown\/reader-update\.ts$/u);
+	assert.deepEqual(call.args.slice(1), ["--update-worker", "/package/native", f.options.digest, String(INSTALL_BUSY)]);
 	assert.equal(call.options.cwd, "/package/native");
 	assert.equal(call.options.detached, true);
+	assert.equal((call.options.stdio as unknown[]).at(-1), "ipc");
 	const env = call.options.env as Record<string, string>;
 	assert.equal(env.PI_MARKDOWN_APP, f.app);
 	assert.equal(env.PI_MARKDOWN_DIR, "/store");
@@ -155,34 +158,97 @@ test("an update runs build.mts detached, with its output in the log beside the a
 	assert.equal(readFileSync(run.log, "utf8"), "", "each run starts a fresh log");
 });
 
-test("a failed update is recorded against its digest until an update succeeds", async (t) => {
-	const f = runFixture(t, 2);
-	const failed = runUpdate(f.options);
-	f.child.emit("exit", 1, null);
-	assert.deepEqual(await failed.done, {
-		status: "failed",
-		detail: "the build exited with status 1",
-		log: updateFiles(f.app).log,
-	});
-	assert.equal(failedDigest(f.app), "sha256:loaded");
-	f.child.removeAllListeners();
-	const busy = runUpdate(f.options);
-	f.child.emit("exit", INSTALL_BUSY, null);
-	assert.deepEqual(await busy.done, { status: "busy" });
-	assert.equal(failedDigest(f.app), "sha256:loaded", "a busy install changes no record");
-	f.child.removeAllListeners();
-	const installed = runUpdate(f.options);
-	f.child.emit("exit", 0, null);
-	assert.deepEqual(await installed.done, { status: "installed", running: 2 });
-	assert.equal(failedDigest(f.app), undefined);
-	f.child.removeAllListeners();
-	const unstarted = runUpdate(f.options);
+test("Pi reports and records an update worker that did not start", async (t) => {
+	const f = runFixture(t);
+	const run = runUpdate(f.options);
 	f.child.emit("error", new Error("spawn ENOENT"));
-	assert.deepEqual(await unstarted.done, {
+	assert.deepEqual(await run.done, {
 		status: "failed",
-		detail: "the build did not start: spawn ENOENT",
+		detail: "the update process did not start: spawn ENOENT",
 		log: updateFiles(f.app).log,
 	});
+	assert.equal(failedDigest(f.app), f.options.digest);
+});
+
+function childFixture(t: TestContext, source: string) {
+	const app = appFixture(t);
+	const nativeDir = dirname(app);
+	mkdirSync(nativeDir, { recursive: true });
+	writeFileSync(join(nativeDir, "build.mts"), source);
+	const module = new URL("./reader-update.ts", import.meta.url).href;
+	const store = join(nativeDir, "fixture-store");
+	const script = `import { runUpdate } from ${JSON.stringify(module)}; const run = runUpdate({ ...${JSON.stringify({ app, store, nativeDir, digest: "sha256:fixture", busy: INSTALL_BUSY })}, running: () => 2 });`;
+	const invoke = (code: string) =>
+		execFileSync(process.execPath, ["--input-type=module", "-e", script + code], {
+			encoding: "utf8",
+			timeout: 4000,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+	const outcome = (): UpdateOutcome =>
+		JSON.parse(
+			invoke(
+				"const deadline = setTimeout(() => { throw new Error('No result'); }, 3000); console.log(JSON.stringify(await run.done)); clearTimeout(deadline);",
+			),
+		);
+	return { app, nativeDir, invoke, outcome };
+}
+
+test("a detached reader update records failure after its Pi process exits", { timeout: 10000 }, async (t) => {
+	const f = childFixture(
+		t,
+		`
+		import { existsSync, watch } from "node:fs";
+		await new Promise((resolve) => {
+			const watcher = watch(".", () => { if (existsSync("release")) { watcher.close(); resolve(); } });
+			if (existsSync("release")) { watcher.close(); resolve(); }
+		});
+		process.exitCode = 42;
+	`,
+	);
+	const child = f.invoke("console.log(run.pid);");
+	assert.doesNotThrow(() => process.kill(Number(child.trim()), 0), "the build remains alive without Pi");
+	const { failure } = updateFiles(f.app);
+	const recorded = (async () => {
+		for await (const { filename } of watch(f.nativeDir, { signal: AbortSignal.timeout(2500) })) {
+			if (filename === "update-failure.json" && failedDigest(f.app) === "sha256:fixture") {
+				return JSON.parse(readFileSync(failure, "utf8"));
+			}
+		}
+	})();
+	writeFileSync(join(f.nativeDir, "release"), "");
+	assert.match((await recorded).detail, /exited with status 42/u);
+});
+
+test("a failed update is recorded against its digest until an update succeeds", (t) => {
+	const f = childFixture(t, "process.exitCode = 42;");
+	assert.deepEqual(f.outcome(), {
+		status: "failed",
+		detail: "the build exited with status 42",
+		log: updateFiles(f.app).log,
+	});
+	assert.equal(failedDigest(f.app), "sha256:fixture");
+	writeFileSync(join(f.nativeDir, "build.mts"), `process.exitCode = ${INSTALL_BUSY};`);
+	assert.deepEqual(f.outcome(), { status: "busy" });
+	assert.equal(failedDigest(f.app), "sha256:fixture", "a busy install changes no record");
+	writeFileSync(join(f.nativeDir, "build.mts"), "process.exitCode = 0;");
+	assert.deepEqual(f.outcome(), { status: "installed", running: 2 });
+	assert.equal(failedDigest(f.app), undefined);
+});
+
+test("a build failure and a failure-record error both reach Pi without crashing it", async (t) => {
+	const f = childFixture(t, "process.exitCode = 42;");
+	const files = updateFiles(f.app);
+	mkdirSync(files.failure);
+	const result = f.outcome();
+	assert.equal(result.status, "failed");
+	assert.match(result.detail, /exited with status 42/u);
+	assert.match(result.recordIssue ?? "", /could not record.+EISDIR/u);
+	assert.match(readFileSync(files.log, "utf8"), /could not record.+EISDIR/u);
+	const report = reporterFixture();
+	reportUpdate(settled(result), report.reporter, false);
+	await flush();
+	assert.match(report.notices[1][0], /exited with status 42.+could not record.+EISDIR/u);
+	assert.equal(report.notices[1][1], true);
 });
 
 function reporterFixture(active = true) {

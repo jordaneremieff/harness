@@ -103,10 +103,12 @@ export function failedDigest(app: string): string | undefined {
 	}
 }
 
+type BuildOutcome = { status: "installed" } | { status: "busy" } | { status: "failed"; detail: string };
+type RecordedOutcome = BuildOutcome & { recordIssue?: string };
 export type UpdateOutcome =
-	| { status: "installed"; running: number }
+	| { status: "installed"; running: number; recordIssue?: string }
 	| { status: "busy" }
-	| { status: "failed"; detail: string; log: string };
+	| { status: "failed"; detail: string; log: string; recordIssue?: string };
 
 export interface UpdateRun {
 	pid?: number;
@@ -128,10 +130,52 @@ export interface UpdateOptions {
 	start?: (command: string, args: string[], options: Parameters<typeof spawn>[2]) => ChildProcess;
 }
 
-/**
- * Runs build.mts as a separate process that outlives this session, with its output in the
- * update log. The install lock in build.mts decides between concurrent updates.
- */
+function recordOutcome(app: string, digest: string, outcome: BuildOutcome): RecordedOutcome {
+	if (outcome.status === "busy") return outcome;
+	const { failure } = updateFiles(app);
+	try {
+		if (outcome.status === "installed") rmSync(failure, { force: true });
+		else
+			writeFileSync(
+				failure,
+				`${JSON.stringify({ digest, failedAt: new Date().toISOString(), detail: outcome.detail })}\n`,
+				{ mode: 0o600 },
+			);
+		return outcome;
+	} catch (error) {
+		const action =
+			outcome.status === "installed" ? "remove the previous update failure record" : "record the update failure";
+		const reason = (error as NodeJS.ErrnoException).code ?? "filesystem error";
+		return { ...outcome, recordIssue: `The reader updater could not ${action} (${reason}).` };
+	}
+}
+
+/** The detached process owns the failure record. Pi's optional receipt is only for display. */
+function updateWorker(nativeDir: string, digest: string, busy: number): void {
+	const app = process.env.PI_MARKDOWN_APP;
+	if (!app) throw new Error("The Markdown reader updater requires an app path.");
+	const result = spawnSync(process.execPath, [join(nativeDir, "build.mts")], { cwd: nativeDir, stdio: "inherit" });
+	const built: BuildOutcome = result.error
+		? { status: "failed", detail: `the build did not start: ${result.error.message}` }
+		: result.status === 0
+			? { status: "installed" }
+			: result.status === busy
+				? { status: "busy" }
+				: {
+						status: "failed",
+						detail: result.signal
+							? `the build stopped on ${result.signal}`
+							: `the build exited with status ${result.status}`,
+					};
+	const recorded = recordOutcome(app, digest, built);
+	if (recorded.recordIssue) console.error(recorded.recordIssue);
+	if (process.connected && process.send)
+		process.send(recorded, () => {
+			/* The starting session may already have exited. */
+		});
+}
+
+/** The detached updater reports outcomes independently of the installer lock in build.mts. */
 export function runUpdate(options: UpdateOptions): UpdateRun {
 	const nativeDir = options.nativeDir ?? NATIVE_DIR;
 	const files = updateFiles(options.app);
@@ -139,34 +183,39 @@ export function runUpdate(options: UpdateOptions): UpdateRun {
 	const output = openSync(files.log, "w", 0o600);
 	let child: ChildProcess;
 	try {
-		child = (options.start ?? spawn)(options.execPath ?? process.execPath, [join(nativeDir, "build.mts")], {
-			cwd: nativeDir,
-			detached: true,
-			stdio: ["ignore", output, output],
-			env: { ...process.env, PI_MARKDOWN_APP: options.app, PI_MARKDOWN_DIR: options.store },
-		});
+		child = (options.start ?? spawn)(
+			options.execPath ?? process.execPath,
+			[fileURLToPath(import.meta.url), "--update-worker", nativeDir, options.digest, String(options.busy)],
+			{
+				cwd: nativeDir,
+				detached: true,
+				stdio: ["ignore", output, output, "ipc"],
+				env: { ...process.env, PI_MARKDOWN_APP: options.app, PI_MARKDOWN_DIR: options.store },
+			},
+		);
 	} finally {
 		closeSync(output);
 	}
-	child.unref();
 	const done = new Promise<UpdateOutcome>((resolve) => {
-		const failed = (detail: string) => {
-			writeFileSync(
-				files.failure,
-				`${JSON.stringify({ digest: options.digest, failedAt: new Date().toISOString(), detail })}\n`,
-				{ mode: 0o600 },
-			);
-			resolve({ status: "failed", detail, log: files.log });
+		let settled = false;
+		const finish = (outcome: RecordedOutcome) => {
+			if (settled) return;
+			settled = true;
+			if (outcome.status === "installed") resolve({ ...outcome, running: options.running(options.app) });
+			else if (outcome.status === "failed") resolve({ ...outcome, log: files.log });
+			else resolve({ status: "busy" });
 		};
-		child.once("error", (error) => failed(`the build did not start: ${error.message}`));
-		child.once("exit", (code, signal) => {
-			if (code === 0) {
-				rmSync(files.failure, { force: true });
-				resolve({ status: "installed", running: options.running(options.app) });
-			} else if (code === options.busy) resolve({ status: "busy" });
-			else failed(signal ? `the build stopped on ${signal}` : `the build exited with status ${code}`);
-		});
+		const failed = (detail: string) => {
+			if (!settled) finish(recordOutcome(options.app, options.digest, { status: "failed", detail }));
+		};
+		child.once("message", (outcome: RecordedOutcome) => finish(outcome));
+		child.once("error", (error) => failed(`the update process did not start: ${error.message}`));
+		child.once("close", (code, signal) =>
+			failed(`the update process ended without an outcome (${signal ?? `status ${code}`})`),
+		);
 	});
+	child.unref();
+	child.channel?.unref();
 	return { pid: child.pid, log: files.log, done };
 }
 
@@ -195,15 +244,20 @@ export function reportUpdate(run: UpdateRun, reporter: UpdateReporter, explicit:
 	void run.done.then((outcome) => {
 		if (!reporter.active()) return;
 		reporter.status(undefined);
-		if (outcome.status === "installed") reporter.notify(installedText(outcome.running));
-		else if (outcome.status === "failed")
+		if (outcome.status === "busy") {
+			if (explicit)
+				reporter.notify(
+					"Another Markdown reader update is already running. The installed app stays as it is until that update ends.",
+				);
+			return;
+		}
+		const record = outcome.recordIssue ? ` ${outcome.recordIssue}` : "";
+		if (outcome.status === "installed")
+			reporter.notify(`${installedText(outcome.running)}${record}`, !!outcome.recordIssue || undefined);
+		else
 			reporter.notify(
-				`The Markdown reader update failed: ${outcome.detail}. The previous app stays installed. Log: ${outcome.log}. Run /markdown update to try again.`,
+				`The Markdown reader update failed: ${outcome.detail}.${record} The previous app stays installed. Log: ${outcome.log}. Run /markdown update to try again.`,
 				true,
-			);
-		else if (explicit)
-			reporter.notify(
-				"Another Markdown reader update is already running. The installed app stays as it is until that update ends.",
 			);
 	});
 }
@@ -293,4 +347,8 @@ export async function updateNow(options: StartupOptions): Promise<void> {
 		options.reporter,
 		true,
 	);
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1] && process.argv[2] === "--update-worker") {
+	updateWorker(process.argv[3], process.argv[4], Number(process.argv[5]));
 }
