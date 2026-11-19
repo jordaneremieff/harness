@@ -182,11 +182,26 @@ final class ReaderSurface: NSView {
             finishAgent(operation, result: .refused(reason: message["reason"] as? String ?? "stale", range: Self.range(message["range"])))
         case "prompt":
             guard let request = message["requestId"] as? String, let thread = message["threadId"] as? String,
-                  let text = message["text"] as? String, let generation = Self.generation(message["generation"]) else { throw BridgeFailure.invalid }
+                  let generation = Self.generation(message["generation"]) else { throw BridgeFailure.invalid }
+            await waitForPendingChanges()
             let expected = workspace?.active?.text.generation ?? 0
-            guard generation == expected, let client = workspace?.collaboration else { return ["accepted": false, "detail": "The conversation connection is not available for this document."] }
-            let accepted = await client.submitPrompt(requestId: request, threadId: thread, text: text, quote: message["quote"] as? String)
-            return ["accepted": accepted]
+            guard generation == expected, let client = workspace?.collaboration else { return ["accepted": false, "detail": "The conversation connection is not available for this document version."] }
+            let result: CollaborationClient.PromptSubmission
+            if let records = message["annotations"] as? [[String: Any]] {
+                let annotations = try records.map { record in
+                    guard let text = record["text"] as? String else { throw BridgeFailure.invalid }
+                    return CollaborationClient.Annotation(text: text, quote: record["quote"] as? String)
+                }
+                result = await client.submitBatch(requestId: request, threadId: thread, annotations: annotations)
+            } else {
+                guard let text = message["text"] as? String else { throw BridgeFailure.invalid }
+                result = await client.submitAnnotation(requestId: request, threadId: thread, text: text, quote: message["quote"] as? String)
+            }
+            switch result {
+            case .submitted: return ["accepted": true]
+            case .unknown: return ["accepted": false, "uncertain": true]
+            case .refused(let detail): return ["accepted": false, "detail": detail]
+            }
         case "query":
             if message["kind"] as? String == "library", message["collection"] as? String == "drafts" { return try await draftLibrary(message) }
             guard message["kind"] as? String == "review", message["against"] as? String == "base",

@@ -370,6 +370,30 @@ import Testing
         }
     }
 
+    @Test func batchPromptRequiresBoundedAnnotationsAndNoSingleFields() throws {
+        let header: [String: Any] = ["requestId": "first-request", "threadId": "first-request", "generation": 1]
+        let quote = "😀\n"
+        let annotation: [String: Any] = ["text": "Rewrite this.", "quote": quote, "quoteRange": ["start": 0, "end": 3]]
+        func decode(_ fields: [String: Any]) throws -> ReaderBridgeMessage {
+            try ReaderBridgeCodec.decode(body: envelope("prompt", header.merging(fields) { _, field in field }))
+        }
+        let batch = try decode(["annotations": [annotation, ["text": "Explain the title."]]])
+        #expect(batch.type == .prompt)
+        #expect((batch.fields["annotations"] as? [[String: Any]])?.first?["quote"] as? String == quote)
+        #expect(try decode(["annotations": Array(repeating: annotation, count: 50)]).type == .prompt)
+        for fields: [String: Any] in [
+            ["annotations": []], ["annotations": Array(repeating: annotation, count: 51)],
+            ["annotations": [annotation], "text": "Both"], ["annotations": [annotation], "quote": quote],
+            ["annotations": [["text": " \n"]]], ["annotations": [["text": true]]],
+            ["annotations": [["text": String(repeating: "é", count: 32769)]]],
+            ["annotations": [["text": "Invalid", "quoteRange": ["start": 3, "end": 2]]]],
+            ["annotations": [["text": "Unknown", "range": ["start": 0, "end": 3]]]],
+            ["annotations": Array(repeating: ["text": String(repeating: "é", count: 32768)], count: 4)],
+        ] {
+            #expect(throws: ReaderBridgeError.self) { try decode(fields) }
+        }
+    }
+
     @Test func imagePickerRequiresAnExactGenerationAndSourceRange() throws {
         for generation in [0, ReaderBridgeCodec.maxInteger] {
             let message = try ReaderBridgeCodec.decode(body: envelope("command", ["name": "pickImage",

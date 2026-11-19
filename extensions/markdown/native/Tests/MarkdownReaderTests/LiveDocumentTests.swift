@@ -144,6 +144,68 @@ import ReaderFeature
         #expect(state["submissions"] as? Int == 1)
     }
 
+    @Test func batchMessageKeepsExactQuotesAndCommentText() throws {
+        let quote = "Opening \"line\" / 😀\nSecond line"
+        let text = "  Please change this.\nKeep the example.  "
+        let message = try CollaborationClient.batchMessage([
+            .init(text: text, quote: quote), .init(text: "Use direct language.", quote: nil),
+        ])
+        #expect(message.contains("Address every comment in one pass."))
+        #expect(message.contains("reply to each comment by its number."))
+        let expectedFirst = "Comment 1\nSelected passage (JSON string):\n"
+        let tail = try #require(message.components(separatedBy: expectedFirst).last)
+        let quotedJSON = try #require(tail.split(separator: "\n").first)
+        #expect(try JSONDecoder().decode(String.self, from: Data(quotedJSON.utf8)) == quote)
+        #expect(tail.hasSuffix("\nComment:\n\(text)\n\nComment 2\nAbout the whole document.\nComment:\nUse direct language."))
+    }
+
+    @Test func batchMessageEnforcesByteAndCountLimits() throws {
+        typealias Item = CollaborationClient.Annotation
+        let quote = String(repeating: "😀", count: 2048)
+        #expect(throws: CollaborationClient.BatchRefusal.self) { try CollaborationClient.batchMessage([]) }
+        #expect(throws: CollaborationClient.BatchRefusal.self) {
+            try CollaborationClient.batchMessage(Array(repeating: Item(text: "One", quote: nil), count: 51))
+        }
+        #expect(throws: CollaborationClient.BatchRefusal.self) {
+            try CollaborationClient.batchMessage([Item(text: " \n", quote: nil)])
+        }
+        let article = [Item(text: "First", quote: nil), Item(text: "Second", quote: quote)]
+        let base = try CollaborationClient.batchMessage(article)
+        #expect(base.contains(quote))
+        do {
+            _ = try CollaborationClient.batchMessage([article[0], Item(text: "Second", quote: quote + "!")])
+            Issue.record("An oversized quote was accepted")
+        } catch let refusal as CollaborationClient.BatchRefusal {
+            #expect(refusal.detail == "Select a shorter passage for comment 2.")
+        }
+        let first = String(repeating: "a", count: 65536)
+        let second = String(repeating: "b", count: 131072 - base.utf8.count - first.utf8.count)
+        let boundary = [Item(text: "First" + first, quote: nil), Item(text: "Second" + second, quote: quote)]
+        #expect(try CollaborationClient.batchMessage(boundary).utf8.count == 131072)
+        #expect(throws: CollaborationClient.BatchRefusal.self) {
+            try CollaborationClient.batchMessage([boundary[0], Item(text: boundary[1].text + "!", quote: quote)])
+        }
+    }
+
+    @Test func batchAndFollowUpUseOneThreadAndSeparateRequests() async throws {
+        let server = try LiveTestBridge(mode: "ordinary"); defer { server.stop() }
+        let document = UUID()
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: document) { _ in LiveResult(status: "closed") }
+        defer { client.stop() }
+        client.start()
+        try await eventually { client.status == "Agent connected" }
+        let thread = UUID().uuidString, followUp = UUID().uuidString
+        let batch: [CollaborationClient.Annotation] = [.init(text: "First", quote: "A passage"), .init(text: "Second", quote: "Another passage")]
+        #expect(await client.submitBatch(requestId: thread, threadId: thread, annotations: batch) == .submitted)
+        #expect(client.currentAdmittedThreadId(for: document) == thread)
+        #expect(await client.submitPrompt(requestId: followUp, threadId: thread, text: "Follow-up"))
+        let state = try await server.request(["op": "state"])
+        let prompts = try #require(state["prompts"] as? [[String: String]])
+        #expect(prompts.map { $0["operationId"] } == [thread, followUp])
+        #expect(try prompts.first?["text"] == CollaborationClient.batchMessage(batch))
+        #expect(prompts.last?["text"] == "This follows the earlier request \(thread) in this document thread. Keep that request’s comments and quoted passages as context.\n\nFollow-up")
+    }
+
     @Test func ordinaryReplyReachesItsQuestionAndAllowsAFollowUp() async throws {
         let server = try LiveTestBridge(mode: "ordinary"); defer { server.stop() }
         let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }

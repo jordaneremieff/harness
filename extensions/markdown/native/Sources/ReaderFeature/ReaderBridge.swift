@@ -243,13 +243,20 @@ public enum ReaderBridgeCodec {
             try BridgeField.choice(fields, "lock", values: ["reading", "writing"])
             _ = try BridgeField.bool(fields, "copy")
         case .prompt:
-            try BridgeField.keys(fields, allowed: ["requestId", "threadId", "quote", "quoteRange", "text", "generation"])
+            try BridgeField.keys(fields, allowed: ["requestId", "threadId", "quote", "quoteRange", "text", "annotations", "generation"])
             _ = try BridgeField.string(fields, "requestId", limit: 256)
             _ = try BridgeField.string(fields, "threadId", limit: 256)
-            _ = try BridgeField.optionalString(fields, "quote", limit: 64 * 1024, empty: true)
-            _ = try BridgeField.optionalRange(fields, "quoteRange")
-            _ = try BridgeField.string(fields, "text", limit: 64 * 1024)
             _ = try BridgeField.integer(fields, "generation")
+            if let value = fields["annotations"] {
+                guard fields["text"] == nil, fields["quote"] == nil, fields["quoteRange"] == nil,
+                      let annotations = value as? [[String: Any]], (1...50).contains(annotations.count) else {
+                    throw ReaderBridgeError.invalid("annotations")
+                }
+                for annotation in annotations {
+                    try BridgeField.keys(annotation, allowed: ["text", "quote", "quoteRange"])
+                    try validateAnnotation(annotation, nonblank: true)
+                }
+            } else { try validateAnnotation(fields) }
         case .command:
             try BridgeField.keys(fields, allowed: ["name", "args"])
             try validateCommand(fields)
@@ -261,6 +268,15 @@ public enum ReaderBridgeCodec {
             _ = try BridgeField.string(fields, "message", limit: 8192, empty: true)
         }
         return ReaderBridgeMessage(type: type, id: id, fields: fields, change: change, pageState: pageState)
+    }
+
+    private static func validateAnnotation(_ fields: [String: Any], nonblank: Bool = false) throws {
+        let text = try BridgeField.string(fields, "text", limit: 64 * 1024)
+        if nonblank && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw ReaderBridgeError.invalid("text")
+        }
+        _ = try BridgeField.optionalString(fields, "quote", limit: 64 * 1024, empty: true)
+        _ = try BridgeField.optionalRange(fields, "quoteRange")
     }
 
     /// Validates a complete native-to-page envelope before WebKit receives it.

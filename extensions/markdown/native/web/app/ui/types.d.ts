@@ -27,10 +27,17 @@ declare global {
 		state: ReaderAskState;
 		detail?: string;
 	}
+	interface ReaderComment {
+		text: string;
+		quote?: string;
+		range?: ReaderRange;
+	}
 	interface ReaderThread {
 		threadId: string;
 		quote?: string;
 		range?: ReaderRange;
+		pendingComment?: ReaderComment;
+		comments?: ReaderComment[];
 		draft: string;
 		messages: ReaderAskMessage[];
 	}
@@ -98,6 +105,7 @@ declare global {
 		currentHeading(rows: { start: number; top: number }[], threshold: number): number;
 		promptTransition(old: ReaderAskState, next: ReaderAskState): ReaderAskState;
 		promptLabel(state: ReaderAskState): string;
+		reanchorQuote(source: string, quote?: string, range?: ReaderRange): ReaderRange | undefined;
 		diffWords(oldText: string, newText: string): ReaderDiffPart[] | null;
 		changeContext(source: string, span: ReaderRange, edit: ReaderRange & { oldText: string; newText: string }): { prefix: string; suffix: string } | null;
 	}
@@ -130,6 +138,7 @@ declare global {
 		notice(text: string, tone?: string, actions?: { label: string; run: () => void }[], id?: string): void;
 		toast(text: string, action?: { label: string; run: () => void }): void;
 		onMenuOpen?(): void;
+		clearSelection?(): void;
 		/** Shows the document text that holds a node before a find match there comes into view. */
 		reveal?(node: Node): void;
 	}

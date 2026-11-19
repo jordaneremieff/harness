@@ -388,6 +388,18 @@
 					optional(m.match, (v) => one(v, ["title", "source"])),
 			);
 	}
+	function annotation(m: Fields, nonblank = false) {
+		ensure(string(m.text, META, !nonblank) && (!nonblank || m.text.trim()));
+		ensure(optional(m.quote, (v) => string(v, META, true)));
+		if (m.quoteRange !== undefined) range(m.quoteRange);
+	}
+	function prompt(m: Fields) {
+		ensure(string(m.requestId, 200) && string(m.threadId, 200) && integer(m.generation));
+		if (m.annotations === undefined) return annotation(m);
+		ensure(m.text === undefined && m.quote === undefined && m.quoteRange === undefined);
+		ensure(Array.isArray(m.annotations) && m.annotations.length > 0 && m.annotations.length <= 50);
+		for (const item of m.annotations) annotation(object(item), true);
+	}
 	const pageValidators: Record<string, (m: Fields) => void> = {
 		ready(m) {
 			ensure(string(m.version, 200));
@@ -410,16 +422,7 @@
 		},
 		render: (m) => ensure(integer(m.generation) && optional(m.full, (v) => typeof v === "boolean")),
 		lock: (m) => ensure(one(m.lock, ["reading", "writing"]) && typeof m.copy === "boolean"),
-		prompt(m) {
-			ensure(
-				string(m.requestId, 200) &&
-					string(m.threadId, 200) &&
-					string(m.text, META, true) &&
-					integer(m.generation) &&
-					optional(m.quote, (v) => string(v, META, true)),
-			);
-			if (m.quoteRange !== undefined) range(m.quoteRange);
-		},
+		prompt,
 		command: hostCommand,
 		query,
 		log: (m) => ensure(one(m.level, ["debug", "info", "warn", "error"]) && string(m.message, 8192, true)),
@@ -539,7 +542,8 @@
 			ensure(integer(m.generation));
 			blocks(m.blocks);
 		}
-		if (kind === "prompt") ensure(typeof m.accepted === "boolean" && optional(m.detail, (v) => string(v, 8192, true)));
+		if (kind === "prompt") ensure(typeof m.accepted === "boolean" &&
+			(m.uncertain === undefined || (m.uncertain === true && !m.accepted)) && optional(m.detail, (v) => string(v, 8192, true)));
 		if (kind === "query") queryReply(m, fields);
 		if (kind === "command") commandReply(m, fields);
 		return m;

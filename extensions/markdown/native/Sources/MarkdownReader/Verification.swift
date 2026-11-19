@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry", "wide-code-and-tables", "layout-fits-every-pane-size",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-batch-sends-one-prompt", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "code-syntax-and-rendered-markdown", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -79,6 +79,7 @@ struct Verification {
                 await run("escape-layers-notices-and-focus") { await context.escapeLayers(keep: &keep) }
                 await run("agent-hold-change-panel-find-and-code") { await context.agentPanels(keep: &keep) }
                 await run("ask-card-keeps-newest-exchange-in-view") { await context.askCardLatest(keep: &keep) }
+                await run("ask-batch-sends-one-prompt") { await context.askBatch(keep: &keep) }
                 await run("ask-from-open-block-and-let-it") { await context.askFromOpenBlock(keep: &keep) }
                 await run("narrow-writing-bar-keeps-save-icon") { await context.narrowWritingBar(keep: &keep) }
                 await run("agent-change-keeps-reading-position") { await context.agentChangeKeepsPlace(keep: &keep) }
@@ -827,6 +828,79 @@ struct Context {
             await model.close()
             return .init(name: name, pass: opened && first && second && prompts.count == 2 && geometry == "visible",
                          detail: "card open \(opened); question sent \(first); follow-up sent \(second); prompts \(prompts.count); newest answer \(geometry)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    func askBatch(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "ask-batch-sends-one-prompt"
+        do {
+            let quotes = ["First passage, with \"quotes\".", "Second passage, with punctuation!"]
+            let comments = ["Clarify the example.", "Replace this sentence."]
+            let file = workspace.appendingPathComponent("ask-batch.md")
+            try Data("# Ask batch\n\n\(quotes.joined(separator: "\n\n"))\n".utf8).write(to: file)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: ReadingStateStore(directory: nil))
+            var prompts: [[String: Any]] = []
+            model.page.onMessage = { message in
+                guard message["type"] as? String == "prompt" else { return [:] }
+                prompts.append(message)
+                return ["accepted": true]
+            }
+            keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+
+            var added: [Bool] = []
+            for index in quotes.indices {
+                let didAdd = await js(model, """
+                const passage = [...document.querySelectorAll('[data-role="document"] p')].find(p => p.textContent === quote);
+                if (!passage) return false;
+                const range = document.createRange(); range.selectNodeContents(passage);
+                getSelection().removeAllRanges(); getSelection().addRange(range);
+                document.dispatchEvent(new Event('selectionchange'));
+                passage.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                await new Promise(r => setTimeout(r, 60));
+                const ask = [...document.querySelectorAll('[data-role="selection-strip"] button')].find(b => b.textContent.trim() === 'Ask');
+                if (!ask) return false;
+                ask.click();
+                const card = document.querySelector('.ask-card[data-open]');
+                const field = card?.querySelector('textarea');
+                if (!field) return false;
+                field.value = comment;
+                field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: comment }));
+                const add = card.querySelector(selector);
+                if (!add || add.disabled) return false;
+                add.click();
+                return !card.hasAttribute('data-open');
+                """, ["quote": quotes[index], "comment": comments[index], "selector": index == 0 ? ".ask-secondary" : ".ask-primary"]) as? Bool == true
+                added.append(didAdd)
+            }
+            let highlights = await js(model, """
+            return Array.from(CSS.highlights.get('comment') ?? [], range => range.toString());
+            """) as? [String] ?? []
+            let deferred = !(await wait(seconds: 0.2) { !prompts.isEmpty })
+            let sent = await js(model, """
+            const send = document.getElementById('ask-batch-send');
+            if (!send || send.disabled || !send.getClientRects().length) return false;
+            send.click();
+            return true;
+            """) as? Bool == true
+            if sent { _ = await wait(seconds: 3) { !prompts.isEmpty } }
+            let prompt = prompts.first ?? [:]
+            let annotations = prompt["annotations"] as? [[String: Any]] ?? []
+            let exact = prompt["text"] == nil && annotations.count == quotes.count && quotes.indices.allSatisfy {
+                annotations[$0]["quote"] as? String == quotes[$0] && annotations[$0]["text"] as? String == comments[$0]
+            }
+            let reply = "Both batch comments are addressed."
+            if sent, deferred, prompts.count == 1, let request = prompt["requestId"] as? String, let thread = prompt["threadId"] as? String {
+                _ = try await model.sendEnvelope(["v": 1, "type": "promptState", "requestId": request, "threadId": thread, "state": "answered", "detail": reply])
+            }
+            let answered = await js(model, """
+            const card = document.querySelector('.ask-card[data-open]');
+            return !!card?.querySelector('.batch-sent') && card.querySelector('.reply')?.textContent.endsWith(reply);
+            """, ["reply": reply]) as? Bool == true
+            await model.close()
+            return .init(name: name, pass: added.allSatisfy { $0 } && highlights.sorted() == quotes.sorted() && deferred && sent && prompts.count == 1 && exact && answered,
+                         detail: "added \(added); comment highlights \(highlights); deferred \(deferred); tray Send \(sent); prompts \(prompts.count); exact annotations \(exact); batch reply \(answered)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 

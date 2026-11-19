@@ -169,6 +169,11 @@
 			toast,
 			notice,
 			onMenuOpen: () => hideSelection(),
+			clearSelection() {
+				getSelection()?.removeAllRanges();
+				selection = null;
+				hideSelection();
+			},
 		};
 		const navigation = api.createNavigation(context),
 			codeViews = api.createCodeViews(context, { onChange: () => navigation.refreshFind() }),

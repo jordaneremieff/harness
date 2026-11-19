@@ -310,6 +310,12 @@
 			}
 			return index;
 		},
+		reanchorQuote(source, quote, range) {
+			if (!quote) return undefined;
+			if (range && source.slice(range.start, range.end) === quote) return range;
+			const start = source.indexOf(quote);
+			return start < 0 || source.indexOf(quote, start + 1) >= 0 ? undefined : { start, end: start + quote.length };
+		},
 		promptLabel: (state) =>
 			({
 				draft: "Ask about this passage",

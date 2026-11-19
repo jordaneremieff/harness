@@ -4,7 +4,14 @@
 	api.createAskUI = (ctx, navigation) => {
 		const { controller, editor, host, app, doc, page } = ctx,
 			card = get("#askcard"),
-			activity = get("#activity");
+			activity = get("#activity"),
+			tray = get("#ask-batch-tray"),
+			batchList = get("#ask-batch-list");
+		const batches = new Map<string, ReaderComment[]>(),
+			localBatch: ReaderComment[] = [],
+			batchLimit = 50,
+			utf8 = new TextEncoder();
+		let comments = localBatch;
 		const threads: ReaderThread[] = [],
 			payloads = new Map<string, Record<string, unknown>>();
 		const off: (() => void)[] = [];
@@ -49,10 +56,10 @@
 			return api.sourceModel.point(node, display);
 		}
 		function threadRange() {
-			if (!current) return undefined;
-			return current.range ?? operations(current).at(-1)?.edits[0];
+			if (!current || current.comments) return undefined;
+			return (current.pendingComment ?? current).range ?? operations(current).at(-1)?.edits[0];
 		}
-		function mapThread(thread: ReaderThread, edits: ReaderEdit[]) {
+		function mapThread(thread: { range?: ReaderRange; quote?: string }, edits: ReaderEdit[]) {
 			if (!thread.range) return;
 			try {
 				const [mapped] = api.exact.mapEdits(
@@ -96,9 +103,16 @@
 			card.style.top = `${place.top}px`;
 			card.dataset.side = place.side;
 		}
+		function passageRanges(items: ReaderComment[]) {
+			return items.flatMap((item) => {
+				const range = rangeFor(item.range);
+				return range ? [range] : [];
+			});
+		}
 		function paintPassage() {
 			const range = visible ? rangeFor(threadRange()) : null;
-			editor.highlight("passage", range ? [range] : []);
+			editor.highlight("comment", passageRanges(comments.filter((comment) => !visible || current?.pendingComment !== comment)));
+			editor.highlight("passage", visible && current?.comments ? passageRanges(current.comments) : range ? [range] : []);
 		}
 		function action(label: string, run: () => void) {
 			return button(label, "", run, { className: "link agent" });
@@ -131,7 +145,12 @@
 				selectionAction(),
 				el("div", { class: "sep" }),
 			);
-			if (!threads.length) activity.append(el("div", { class: "sec" }, "Select a passage and choose Ask."));
+			if (comments.length)
+				activity.append(button(`Pending batch · ${commentCount(comments.length)}`, "ask", () => {
+					activity.hidePopover();
+					openBatchList();
+				}, { className: "item" }));
+			else if (!threads.length) activity.append(el("div", { class: "sec" }, "Select a passage and choose Ask."));
 			for (const thread of threads) {
 				const b = button(
 					"",
@@ -153,7 +172,17 @@
 				activity.append(b);
 			}
 		}
-		function composer(thread: ReaderThread, followUp: boolean) {
+		function composerActions(thread: ReaderThread, followUp: boolean) {
+			const send = () => void sendMessage();
+			if (followUp) return { primary: "Send", run: send, hint: "⌘↩ send" };
+			if (thread.pendingComment) return { primary: "Done", run: () => ask.close(),
+				secondary: `Send all ${comments.length}`, runSecondary: () => void sendBatch(), hint: "⌘↩ done · ⇧⌘↩ send" };
+			const add = () => addComment(thread);
+			if (!comments.length) return { primary: "Send", run: send, secondary: "Add to batch", runSecondary: add, hint: "⌘↩ send · ⇧⌘↩ add" };
+			return { primary: "Add to batch", run: add, secondary: `Send all ${comments.length + 1}`,
+				runSecondary: () => { if (add()) void sendBatch(); }, hint: "⌘↩ add · ⇧⌘↩ send" };
+		}
+		function composerField(thread: ReaderThread, followUp: boolean) {
 			const field = el("textarea", {
 				"aria-label": followUp ? "Follow-up message" : "Message to the agent",
 				placeholder: followUp
@@ -163,36 +192,225 @@
 						: "Ask about this document or ask for a change",
 				rows: "2",
 			});
-			field.value = thread.draft;
-			const send = button("Send", "send", () => void sendMessage(), { iconOnly: true, className: "send" });
-			delete send.dataset.tip;
-			send.disabled = !thread.draft.trim() || pending(thread);
+			field.value = thread.pendingComment?.text ?? thread.draft;
+			return field;
+		}
+		function composer(thread: ReaderThread, followUp: boolean) {
+			const field = composerField(thread, followUp), comment = thread.pendingComment;
+			const { primary: label, run, secondary: alternative, runSecondary, hint } = composerActions(thread, followUp);
+			const primary = label === "Send"
+				? button(label, "send", run, { iconOnly: true, key: "⌘↩", className: "ask-primary send" })
+				: button(label, "", run, { className: "ask-primary batch-primary" });
+			const secondary = alternative && runSecondary ? button(alternative, "", runSecondary, { className: "ask-secondary batch-secondary" }) : null;
+			function updateButtons() {
+				primary.disabled = !comment && (!field.value.trim() || pending(thread));
+				if (secondary) secondary.disabled = !field.value.trim();
+			}
+			updateButtons();
 			field.addEventListener("input", () => {
-				thread.draft = field.value;
-				send.disabled = !thread.draft.trim() || pending(thread);
+				if (comment) comment.text = field.value;
+				else thread.draft = field.value;
+				updateButtons();
 			});
 			field.addEventListener("keydown", (event) => {
-				if (event.key === "Enter" && event.metaKey && !event.isComposing) {
+				if (event.key === "Enter" && event.metaKey && !event.altKey && !event.ctrlKey && !event.isComposing) {
 					event.preventDefault();
 					event.stopPropagation();
-					if (!send.disabled) void sendMessage();
+					(event.shiftKey ? secondary : primary)?.click();
 				}
 			});
 			return el(
 				"div",
 				{ class: `composer${followUp ? " follow-up" : ""}` },
 				field,
-				el("div", { class: "foot" }, el("span", { class: "hint" }, "⌘↩ to send"), send),
+				el("div", { class: "foot" }, el("span", { class: "hint" }, hint), secondary, primary),
 			);
 		}
+		function threadTitle(thread: ReaderThread) {
+			if (thread.comments) return `Batch of ${commentCount(thread.comments.length)}`;
+			if (thread.pendingComment) return "Edit batch comment";
+			return thread.quote ? "Ask about this passage" : "Ask about this document";
+		}
 		function drawHead(thread: ReaderThread) {
+			const comment = thread.pendingComment;
 			return el(
 				"div",
 				{ class: "ask-head" },
 				el("span", { class: "kind" }, icon("spark")),
-				el("span", { class: "who" }, thread.quote ? "Ask about this passage" : "Ask about this document"),
-				button("Close question", "x", () => ask.close(), { iconOnly: true, key: "esc" }),
+				el("span", { class: "who" }, threadTitle(thread)),
+				comment ? button("Remove comment", "minus", () => removeComment(comment), { iconOnly: true }) : null,
+				button(comment ? "Close comment" : "Close question", "x", () => ask.close(), { iconOnly: true, key: "esc" }),
 			);
+		}
+		function commentCount(count: number) {
+			return `${count} ${count === 1 ? "comment" : "comments"}`;
+		}
+		function commentPreview(comment: ReaderComment) {
+			return el("span", { class: "batch-preview" },
+				el("span", { class: "batch-quote" }, comment.quote ?? "Whole document"),
+				el("span", { class: "batch-text" }, comment.text));
+		}
+		function drawBatchList() {
+			const body = el("ol", { class: "batch-list-body" });
+			for (const [index, comment] of comments.entries()) {
+				const open = button("", "", () => {
+					batchList.hidePopover();
+					const target = comment.range && blockAt(comment.range.start);
+					if (target) navigation.jumpElement(target);
+					openThread({ threadId: "", quote: comment.quote, pendingComment: comment, draft: "", messages: [] }, false);
+				}, { className: "batch-row-open" });
+				open.setAttribute("aria-label", `Edit comment ${index + 1}: ${comment.text}`);
+				open.replaceChildren(commentPreview(comment));
+				body.append(el("li", {}, open, button(`Remove comment ${index + 1}`, "minus", () => removeComment(comment), { iconOnly: true })));
+			}
+			batchList.replaceChildren(el("h2", {}, "Pending batch"), body,
+				el("div", { class: "batch-list-foot" },
+					button("Remove all", "", removeAll, { className: "batch-secondary" }),
+					button(`Send ${commentCount(comments.length)}`, "", () => void sendBatch(), { className: "batch-primary" })));
+		}
+		function openBatchList() {
+			if (!comments.length) return;
+			batchList.togglePopover();
+		}
+		const trayOpen = button("", "ask", openBatchList, { className: "batch-tray-open" });
+		const trayCount = el("span");
+		trayOpen.lastElementChild?.replaceWith(trayCount);
+		trayOpen.id = "ask-batch-open";
+		trayOpen.setAttribute("aria-controls", batchList.id);
+		trayOpen.setAttribute("aria-expanded", "false");
+		const traySend = button("Send", "send", () => void sendBatch(), { className: "batch-primary" });
+		traySend.id = "ask-batch-send";
+		tray.append(trayOpen, traySend);
+		function refreshBatch() {
+			if (!comments.length) batchList.hidePopover();
+			tray.hidden = !comments.length;
+			const label = commentCount(comments.length);
+			trayOpen.setAttribute("aria-label", `Pending batch: ${label}`);
+			trayCount.textContent = label;
+			if (batchList.matches(":popover-open")) drawBatchList();
+		}
+		function discardEmptyComment() {
+			const comment = current?.pendingComment;
+			if (comment && !comment.text.trim()) {
+				const index = comments.indexOf(comment);
+				if (index >= 0) comments.splice(index, 1);
+			}
+		}
+		function removeComment(comment: ReaderComment) {
+			const index = comments.indexOf(comment);
+			if (index < 0) return;
+			comments.splice(index, 1);
+			if (current?.pendingComment === comment) {
+				current = null;
+				visible = false;
+			}
+			ask.refresh();
+			if (batchList.matches(":popover-open")) {
+				const rows = batchList.querySelectorAll<HTMLButtonElement>(".batch-row-open");
+				rows[Math.min(index, rows.length - 1)]?.focus({ preventScroll: true });
+			}
+		}
+		function removeAll() {
+			const batch = comments, removed = batch.splice(0), docAtRemoval = controller.doc;
+			const generation = docAtRemoval?.generation;
+			if (current?.pendingComment) {
+				current = null;
+				visible = false;
+			}
+			ask.refresh();
+			ctx.toast(`Removed ${commentCount(removed.length)}.`, { label: "Undo", run: () => {
+				if (!removed.length) return;
+				const document = controller.doc;
+				if (comments === batch && document && (docAtRemoval !== document || generation !== document.generation))
+					reanchor(removed, document.source);
+				batch.unshift(...removed.splice(0));
+				ask.refresh();
+			} });
+		}
+		function quoteFits(quote?: string) {
+			if (quote && utf8.encode(quote).length > 8192) {
+				ctx.notice("Select a shorter passage. The quote is too long.", "warn");
+				return false;
+			}
+			return true;
+		}
+		function addComment(thread: ReaderThread) {
+			if (!thread.draft.trim() || !quoteFits(thread.quote)) return false;
+			if (comments.length >= batchLimit) {
+				ctx.notice("The batch is full. Send it before adding another comment.", "warn");
+				return false;
+			}
+			comments.push({ text: thread.draft, quote: thread.quote, range: thread.range });
+			threads.splice(threads.indexOf(thread), 1);
+			ctx.clearSelection?.();
+			ask.close();
+			current = null;
+			return true;
+		}
+		function reanchor(items: ReaderComment[], source: string) {
+			for (const comment of items) comment.range = api.uiLogic.reanchorQuote(source, comment.quote, comment.range);
+		}
+		function batchPacket(id: string, items: ReaderComment[]) {
+			return {
+				requestId: id, threadId: id, generation: controller.doc?.generation ?? 0,
+				annotations: items.map(({ text, quote, range }) => ({ text, ...(quote ? { quote } : {}), ...(range ? { quoteRange: range } : {}) })),
+			};
+		}
+		function restoreBatch(batch: ReaderComment[], thread: ReaderThread, items: ReaderComment[], sourceAtSend: ReaderExactDocument | null) {
+			const sourceNow = controller.doc;
+			if (batch === comments && sourceAtSend !== sourceNow && sourceNow) reanchor(items, sourceNow.source);
+			batch.unshift(...items);
+			const index = threads.indexOf(thread);
+			if (index >= 0) threads.splice(index, 1);
+			if (current === thread) {
+				current = null;
+				visible = false;
+			}
+			const detail = activeMessage(thread)?.detail ?? "The conversation did not accept it.";
+			if (batch === comments) ctx.notice(`Batch not sent. ${detail} Your comments are kept.`, "warn");
+		}
+		const sendingBatches = new Set<ReaderComment[]>();
+		function batchReady() {
+			if (current?.pendingComment && !current.pendingComment.text.trim()) ask.close();
+			if (!comments.length) return false;
+			if (sendingBatches.has(comments)) {
+				ctx.notice("Wait for the current batch to reach the conversation before sending another.", "warn");
+				return false;
+			}
+			if (comments.length > batchLimit) {
+				ctx.notice("Remove comments until the batch fits, then send it.", "warn");
+				return false;
+			}
+			return batchTextFits();
+		}
+		function batchTextFits() {
+			const long = comments.findIndex(({ text }) => utf8.encode(text).length > 64 * 1024);
+			if (long < 0) return true;
+			ctx.notice(`Shorten comment ${long + 1} before sending the batch.`, "warn");
+			return false;
+		}
+		async function sendBatch() {
+			if (!batchReady()) return;
+			const batch = comments, documentAtSend = controller.doc;
+			const additions = [...batch], id = crypto.randomUUID(), payload = batchPacket(id, additions);
+			if (utf8.encode(JSON.stringify(payload)).length > 256 * 1024 - 128) {
+				ctx.notice("The batch is too long. Shorten or remove comments before sending it.", "warn");
+				return;
+			}
+			const message: ReaderAskMessage = { requestId: id, text: `Batch of ${commentCount(additions.length)}`, state: "sending" };
+			const thread: ReaderThread = { threadId: id, comments: additions, draft: "", messages: [message] };
+			sendingBatches.add(batch);
+			batch.length = 0;
+			if (controller.doc?.active) editor.close();
+			threads.unshift(thread);
+			payloads.set(id, payload);
+			openThread(thread, false);
+			ask.refresh();
+			await deliverMessage(message);
+			payloads.delete(id);
+			sendingBatches.delete(batch);
+			if (message.state === "failed") restoreBatch(batch, thread, additions, documentAtSend);
+			ask.refresh();
 		}
 		function drawStatus(message: ReaderAskMessage, changeCount: number) {
 			const glyph = ({ failed: "info", unanswered: "info", answered: "check" } as Record<string, string>)[message.state] ?? "spark";
@@ -205,13 +423,23 @@
 				el("span", {}, label),
 			);
 		}
+		function sentComments(items: ReaderComment[]) {
+			return el("ol", { class: "batch-sent" }, ...items.map((item) => el("li", {}, commentPreview(item))));
+		}
+		function promptAnswer(message: ReaderAskMessage) {
+			if (!message.detail) return null;
+			if (message.state === "answered") return el("div", { class: "reply" }, el("span", { class: "from" }, "Agent"), message.detail);
+			if (message.state === "unanswered") return el("p", { class: "send-failure" }, message.detail);
+			return null;
+		}
 		function drawMessages(thread: ReaderThread) {
 			const log = el("div", { class: "ask-messages" });
-			for (const m of thread.messages) {
-				log.append(el("div", { class: "ask-question" }, el("span", { class: "from" }, "You"), m.text));
-				if (m.state === "answered" && m.detail)
-					log.append(el("div", { class: "reply" }, el("span", { class: "from" }, "Agent"), m.detail));
-				if (m.state === "unanswered" && m.detail) log.append(el("p", { class: "send-failure" }, m.detail));
+			for (const [index, m] of thread.messages.entries()) {
+				const question = index === 0 && thread.comments ? sentComments(thread.comments) :
+					el("div", { class: "ask-question" }, el("span", { class: "from" }, "You"), m.text);
+				const answer = promptAnswer(m);
+				log.append(question);
+				if (answer) log.append(answer);
 			}
 			return log;
 		}
@@ -221,7 +449,7 @@
 					el(
 						"p",
 						{ class: "send-failure" },
-						"Not sent: the conversation did not accept the message. Your text is kept.",
+						`Not sent: ${message.detail || "the conversation did not accept the message."} Your text is kept.`,
 					),
 					action("Retry", () => void sendMessage(message)),
 				);
@@ -281,7 +509,7 @@
 			card.dataset.state = activeMessage(thread)?.state ?? "draft";
 			card.setAttribute("data-open", "");
 			card.append(drawHead(thread));
-			card.append(
+			if (!thread.comments) card.append(
 				el(
 					"div",
 					{ class: "quote" },
@@ -331,7 +559,7 @@
 		async function sendMessage(retry?: ReaderAskMessage) {
 			const thread = current;
 			if (!thread) return;
-			if (!retry && (!thread.draft.trim() || pending(thread))) return;
+			if (!retry && (!thread.draft.trim() || pending(thread) || !quoteFits(thread.quote))) return;
 			const message = retry ?? newMessage(thread);
 			message.state = "sending";
 			// Sending a request is the person's consent to the agent's change: the open block, which
@@ -366,18 +594,15 @@
 			thread.draft = "I closed the passage I had open. Please make the change now.";
 			void sendMessage();
 		}
+		function receiveReceipt(message: ReaderAskMessage, value: unknown) {
+			const receipt = value as { accepted: boolean; uncertain?: true; detail?: string };
+			const state = receipt.uncertain ? "unknown" : receipt.accepted ? "sent" : "failed";
+			message.state = api.uiLogic.promptTransition(message.state, state);
+			if (message.state === "failed" && state === "failed") message.detail = receipt.detail;
+		}
 		async function deliverMessage(message: ReaderAskMessage) {
 			try {
-				const receipt = (await host.request("prompt", payloads.get(message.requestId) ?? {})) as {
-					accepted: boolean;
-					detail?: string;
-				};
-				if (receipt.accepted) {
-					message.state = api.uiLogic.promptTransition(message.state, "sent");
-				} else {
-					message.state = api.uiLogic.promptTransition(message.state, "failed");
-					if (message.state === "failed") message.detail = receipt.detail;
-				}
+				receiveReceipt(message, await host.request("prompt", payloads.get(message.requestId) ?? {}));
 			} catch (error) {
 				message.state = api.uiLogic.promptTransition(message.state, "unknown");
 				if (message.state === "unknown") message.detail = String(error);
@@ -414,12 +639,14 @@
 			review = [];
 			clearDiff();
 		}
-		function openThread(thread: ReaderThread) {
+		function openThread(thread: ReaderThread, focus = true) {
 			closeReview();
+			if (current !== thread) discardEmptyComment();
 			current = thread;
 			visible = true;
+			refreshBatch();
 			draw();
-			card.querySelector("textarea")?.focus({ preventScroll: true });
+			if (focus) card.querySelector("textarea")?.focus({ preventScroll: true });
 		}
 		function visitChange(index: number, focusLabel?: string) {
 			changeIndex = index;
@@ -559,12 +786,16 @@
 					return true;
 				}
 				if (!visible) return false;
+				discardEmptyComment();
+				if (current?.pendingComment) current = null;
 				visible = false;
 				card.removeAttribute("data-open");
+				refreshBatch();
 				paintPassage();
 				return true;
 			},
 			refresh() {
+				refreshBatch();
 				if (activity.matches(":popover-open")) drawActivity();
 				const count = [...controller.agentOperations.values()]
 						.filter((op) => op.unread)
@@ -585,6 +816,7 @@
 				if (!selected) return;
 				const group = selected.threadId ? all.filter((op) => op.threadId === selected.threadId) : [selected];
 				editor.close();
+				if (current?.pendingComment) ask.close();
 				visible = false;
 				draw();
 				review = group.flatMap((operation) => operation.edits.map((edit) => ({ operation, edit })));
@@ -598,7 +830,11 @@
 		off.push(
 			host.on("promptState", receivePrompt),
 			controller.on("change", (change) => {
-				for (const thread of threads) mapThread(thread, change.edits);
+				for (const thread of threads) {
+					mapThread(thread, change.edits);
+					for (const item of thread.comments ?? []) mapThread(item, change.edits);
+				}
+				for (const item of comments) mapThread(item, change.edits);
 			}),
 			controller.on("agentOperations", () => ask.refresh()),
 			controller.on("view", () => {
@@ -621,13 +857,32 @@
 					);
 			}),
 			controller.on("document", () => {
+				closeReview();
 				ask.close();
+				batchList.hidePopover();
 				threads.length = 0;
 				payloads.clear();
 				current = null;
-				closeReview();
+				heldThread = null;
+				const key = controller.payload?.meta.documentId;
+				if (typeof key === "string" && key) {
+					comments = batches.get(key) ?? [];
+					batches.set(key, comments);
+				} else {
+					localBatch.length = 0;
+					comments = localBatch;
+				}
+				reanchor(comments, controller.doc?.source ?? "");
+				refreshBatch();
 			}),
 		);
+		const onBatchToggle = (event: ToggleEvent) => {
+			const open = event.newState === "open";
+			trayOpen.setAttribute("aria-expanded", String(open));
+			if (open) drawBatchList();
+		};
+		batchList.addEventListener("beforetoggle", onBatchToggle);
+		off.push(() => batchList.removeEventListener("beforetoggle", onBatchToggle));
 		const onToggle = (event: ToggleEvent) => { if (event.newState === "open") drawActivity(); };
 		activity.addEventListener("beforetoggle", onToggle);
 		off.push(() => activity.removeEventListener("beforetoggle", onToggle));

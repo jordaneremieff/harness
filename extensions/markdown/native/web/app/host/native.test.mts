@@ -50,6 +50,26 @@ test("ready and format use the current command vocabulary", () => {
 		api.bridge.native({ v: 1, type: "command", name: "format", args: { command: "heading", level: 7 } }),
 	);
 });
+test("the page sends a batch as one prompt and refuses mixed or invalid shapes", async () => {
+	const api = bridge(), calls: unknown[] = [];
+	const host = api.createNativeHost((m) => {
+		calls.push(m);
+		return { v: 1, type: "reply", id: m.id, ok: true, accepted: false, detail: "Batch too long." };
+	});
+	const header = { requestId: "request", threadId: "thread", generation: 1 };
+	const annotations = [{ text: "Change this.", quote: "😀\n", quoteRange: { start: 0, end: 3 } }, { text: "Reduce repetition." }];
+	const receipt = (await host.request("prompt", { ...header, annotations })) as { accepted: boolean; detail: string };
+	assert.equal(receipt.accepted, false);
+	assert.equal(receipt.detail, "Batch too long.");
+	assert.equal((calls[0] as { annotations: unknown }).annotations, annotations);
+	for (const fields of [{ annotations: [] }, { annotations, text: "Mixed" }, { annotations: [{ text: " \n" }] },
+		{ annotations: Array.from({ length: 51 }, () => annotations[0]) },
+		{ annotations: [{ text: "Change this.", quoteRange: { start: 4, end: 1 } }] }]) {
+		await assert.rejects(host.request("prompt", { ...header, ...fields }));
+	}
+	assert.equal(calls.length, 1);
+	host.dispose();
+});
 test("a long Ask reply reaches its thread with its final paragraph intact", () => {
 	const api = bridge(), host = api.createNativeHost(() => undefined);
 	const detail = `${"A paragraph for this document.\n\n".repeat(1000)}Last paragraph.`;

@@ -1,7 +1,7 @@
 import { SOURCE_BYTES, responseDigest, validUnicode } from "./responses.ts";
 
 export const LIVE_WIRE_BYTES = 32 * 1024 * 1024;
-export const LIVE_PROMPT_BYTES = 32768;
+export const LIVE_PROMPT_BYTES = 128 * 1024;
 /** Runtime ownership never enters the native JSON configuration. */
 export const LIVE_LIFETIME = Symbol("markdown-live-lifetime");
 export interface LiveConfig { version: 1; endpoint: string; token: string; [LIVE_LIFETIME]?: AbortSignal }
