@@ -241,7 +241,13 @@ export class Frame {
 	private row = { y: 0, targets: [] as Array<{ x: number; width: number; run(): void }> };
 	/** What More lists, from the last drawn key row. */
 	private hidden: Control[] = [];
-	private menu?: { readonly list: SelectList; readonly entries: readonly Control[]; top: number };
+	private menu?: {
+		list: SelectList;
+		readonly entries: readonly Control[];
+		limit: number;
+		top: number;
+		header: boolean;
+	};
 
 	constructor(options: FrameOptions) {
 		this.options = options;
@@ -506,6 +512,16 @@ export class Frame {
 		}
 		const entries = this.hidden;
 		if (!entries.length) return;
+		const limit = this.menuLimit(entries.length, this.body.height);
+		this.menu = { list: this.menuList(entries, limit), entries, limit, top: 0, header: false };
+	}
+
+	private menuLimit(length: number, height: number): number {
+		const withoutHeader = height - 1;
+		return Math.max(1, length <= withoutHeader ? withoutHeader : withoutHeader - 1);
+	}
+
+	private menuList(entries: readonly Control[], limit: number): SelectList {
 		const theme = this.options.theme;
 		const keyColumn = Math.min(14, Math.max(0, ...entries.map((entry) => visibleWidth(keysText(entry.keys)))));
 		const items = entries.map((entry, index) => ({
@@ -519,10 +535,9 @@ export class Frame {
 					}
 				: {}),
 		}));
-		const rows = Math.max(1, this.body.height - 1);
 		const list = new SelectList(
 			items,
-			items.length > rows ? Math.max(1, rows - 1) : rows,
+			limit,
 			{
 				selectedPrefix: (text) => theme.fg("accent", text),
 				selectedText: (text) => theme.bg("selectedBg", text),
@@ -533,7 +548,24 @@ export class Frame {
 			{ minPrimaryColumnWidth: 16, maxPrimaryColumnWidth: 44 },
 		);
 		list.onSelect = (item) => this.choose(entries[Number(item.value)]);
-		this.menu = { list, entries, top: 0 };
+		return list;
+	}
+
+	private renderMenu(body: string[], width: number, menu: NonNullable<Frame["menu"]>): void {
+		const limit = this.menuLimit(menu.entries.length, this.body.height);
+		if (menu.limit !== limit) {
+			const selected = menu.list.getSelectedItem();
+			menu.list = this.menuList(menu.entries, limit);
+			if (selected) menu.list.setSelectedIndex(Number(selected.value));
+			menu.limit = limit;
+		}
+		menu.header = this.body.height > 1;
+		const header = menu.header ? [this.options.theme.fg("muted", "More")] : [];
+		// Clip only the scroll indicator at the shortest heights, never an item the pointer can select.
+		const lines = [...header, ...menu.list.render(width)].slice(0, this.body.height);
+		const start = this.body.height - lines.length;
+		menu.top = this.body.top + start + header.length;
+		body.splice(start, lines.length, ...lines.map((line) => fitLine(line, width)));
 	}
 
 	private choose(entry: Control | undefined): void {
@@ -559,14 +591,7 @@ export class Frame {
 		const body = this.renderBody(width, bodyHeight);
 		// The view has laid itself out at this size, so its keys are current when the row is drawn.
 		const row = this.keyRow(width, height - 1);
-		if (this.menu) {
-			const menu = [
-				fitLine(theme.fg("muted", "More"), width),
-				...this.menu.list.render(width).map((line) => fitLine(line, width)),
-			].slice(-bodyHeight);
-			this.menu.top = this.body.top + bodyHeight - menu.length;
-			body.splice(bodyHeight - menu.length, menu.length, ...menu);
-		}
+		if (this.menu) this.renderMenu(body, width, this.menu);
 		return [...lines, ...body, ...(notice ? [notice] : []), row].slice(0, height);
 	}
 
@@ -722,8 +747,8 @@ export class Frame {
 		const menu = this.menu;
 		const bottom = this.body.top + this.body.height;
 		if (!menu || event.y < this.body.top || event.y >= bottom) return undefined;
-		if (event.y > menu.top || (event.y === menu.top && event.type === "wheel")) {
-			menu.list.handleMouse({ ...event, y: event.y - menu.top - 1, height: bottom - menu.top - 1 });
+		if (event.y >= menu.top || (menu.header && event.y === menu.top - 1 && event.type === "wheel")) {
+			menu.list.handleMouse({ ...event, y: event.y - menu.top, height: bottom - menu.top });
 		}
 		return { handled: true };
 	}

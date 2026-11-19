@@ -241,6 +241,101 @@ test("New and Edit require explicit actions and preserve the response copy label
 	f.controller.abort();
 });
 
+test("a cancelled Read ends its pending notice and drops its late result", async () => {
+	let finish!: (notice: string) => void;
+	let readSignal: AbortSignal | undefined;
+	const frame = new Frame({
+		theme,
+		target: { id: "session", label: "This session" },
+		expandKey: "ctrl+o",
+		rows: () => 18,
+		requestRender: () => {},
+		close: () => {},
+		open: (host) =>
+			markdownView(host, {
+				load: async () => ({ rows: [row("one"), row("two")], coverage: "2 responses" }),
+				read: async (_row, signal) => {
+					readSignal = signal;
+					return new Promise<string>((resolve) => {
+						finish = resolve;
+					});
+				},
+				latest: async () => "latest",
+				newScratchpad: async () => "new",
+				edit: async () => "edit",
+			}),
+	});
+	try {
+		await tick();
+		const screen = () => frame.render(110).join("\n");
+		screen();
+		frame.handleInput("\r");
+		assert.match(screen(), /Preparing the document/);
+		frame.handleInput("\u001b[B");
+		assert.equal(readSignal?.aborted, true);
+		assert.doesNotMatch(screen(), /Preparing the document/);
+		finish("Late reveal notice");
+		await tick();
+		assert.doesNotMatch(screen(), /Preparing the document|Late reveal notice/);
+	} finally {
+		frame.dispose();
+	}
+});
+
+test("a click in More runs the displayed command after the frame shrinks", async () => {
+	let height = 18;
+	const calls: string[] = [];
+	const frame = new Frame({
+		theme,
+		target: { id: "session", label: "This session" },
+		expandKey: "ctrl+o",
+		rows: () => height,
+		requestRender: () => {},
+		close: () => {},
+		open: (host) =>
+			markdownView(host, {
+				load: async () => ({ rows: [row("one"), row("two")], coverage: "2 responses" }),
+				read: async () => {
+					calls.push("Read");
+					return "Read";
+				},
+				latest: async () => {
+					calls.push("Read latest");
+					return "Read latest";
+				},
+				newScratchpad: async () => "new",
+				edit: async () => "edit",
+			}),
+	});
+	try {
+		await tick();
+		const width = 38;
+		frame.render(width);
+		frame.handleInput("x");
+		assert.ok(frame.render(width).some((line) => line.trim() === "More"));
+		height = 13;
+		const y = frame.render(width).findIndex((line) => /read latest/i.test(line));
+		assert.ok(y > 0);
+		frame.handleMouse({
+			type: "click",
+			button: "left",
+			x: 12,
+			y,
+			screenX: 12,
+			screenY: y,
+			width,
+			height,
+			ctrl: false,
+			alt: false,
+			shift: false,
+		});
+		await tick();
+		assert.deepEqual(calls, ["Read latest"]);
+	} finally {
+		frame.dispose();
+	}
+});
+
 test("key conflicts, More, and Escape follow the focus in the Markdown frame", () => {
 	let closed = 0;
 	let effect = 0;

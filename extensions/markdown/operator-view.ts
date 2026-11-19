@@ -33,12 +33,14 @@ export function markdownView(host: ViewHost, operations: MarkdownOperations, sta
 	let busy = false;
 	/** True while a list replaces the rows; a selection that moves because rows arrived is not the operator's change. */
 	let listing = false;
-	const cancel = () => {
-		effect?.abort();
+	const cancel = (announce = true) => {
+		if (!effect) return;
+		effect.abort();
 		effect = undefined;
 		busy = false;
+		if (announce && !host.signal.aborted) host.notify("Document action cancelled.");
 	};
-	host.signal.addEventListener("abort", cancel, { once: true });
+	host.signal.addEventListener("abort", () => cancel(false), { once: true });
 	const filter = () => {
 		const query = state.query.toLocaleLowerCase();
 		listing = true;
@@ -71,7 +73,7 @@ export function markdownView(host: ViewHost, operations: MarkdownOperations, sta
 		filter();
 	};
 	const perform = async (operation: (signal: AbortSignal) => Promise<string>) => {
-		cancel();
+		cancel(false);
 		const controller = new AbortController();
 		effect = controller;
 		const signal = AbortSignal.any([host.signal, controller.signal]);
