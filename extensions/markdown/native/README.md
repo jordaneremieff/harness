@@ -145,8 +145,9 @@ snapshot; failed recovery leaves the document open.
 
 Edits to a local file or a published document coalesce into automatic saves to that destination.
 Scratchpads and copies remain private until an explicit Save. Closing first retains the draft
-and tries to finish a pending destination save within the close deadline. If the destination save
-is not confirmed, the reader keeps the window open and says that the edits are in Drafts.
+and tries to finish a pending destination save within the close deadline. An unresolved conflict
+does not block close; Drafts retains the edits and the conflict. If a destination save still needs
+confirmation, the reader keeps the window open and says that the edits are in Drafts.
 A save acknowledges only its submitted source, not later typing. Local-file saves check the original file identity and content.
 Outside replacements retain the buffer and report a conflict. A no-op file save preserves
 bytes and inode, including a UTF-8 BOM and mixed endings. Library publication retains an
@@ -241,7 +242,10 @@ terminal loss and bounded shutdown remain native. The pane never activates the r
 application or claims keyboard focus on load. A person clicks the page to use the keyboard.
 Top-level Escape sends `command returnFocus` and gives focus back to the terminal.
 
-A pinned open request displays its exact revision and digest. `:open <document ID>` in the
+A pinned open request (`--pane <request path>`) displays its exact revision and digest.
+To open an exact revision without a request file, use
+`--pane --store <store root> <document ID> --revision <n> --digest <sha256:...>`.
+The reader checks the digest before it changes the terminal. `:open <document ID>` in the
 pane selects the current revision in the same window. The placeholder names the displayed
 document, revision and build. A malformed request leaves the current document intact.
 Closing restores the terminal and retains the reading position within the shutdown deadline.
