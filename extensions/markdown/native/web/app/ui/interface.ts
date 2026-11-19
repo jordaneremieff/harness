@@ -385,9 +385,10 @@
 					else toast("Select text to ask about it.");
 				},
 				askDocument: () => ask.open(),
-				copyMarkdown: () => {
-					void hostCommand("copy", { text: controller.doc?.source ?? "", markdown: true });
-					toast("Copied Markdown");
+				copyMarkdown: async () => {
+					if (!controller.doc) return;
+					const reply = await hostCommand("copy", { text: controller.doc.source });
+					if (reply !== undefined) toast("Copied Markdown");
 				},
 				copyPassage,
 				open: () => views.open(),
@@ -410,7 +411,7 @@
 				back: () => navigation.back(),
 				forward: () => navigation.back(true),
 				latest: () => {
-					void hostCommand("showRevision", { n: "latest" });
+					void hostCommand("showLatest");
 				},
 				selectAll: () => {
 					const range = document.createRange();

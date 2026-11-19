@@ -259,6 +259,7 @@ final class ReaderSurface: NSView {
         case "showRevision":
             guard !model.isDraft, let n = args["n"] as? Int, n > 0 else { throw BridgeFailure.invalid }
             await model.showRevision(n)
+        case "showLatest": await model.refresh()
         case "reviewChanges":
             var arguments = args
             if workspace?.active != nil { arguments["against"] = "base" }

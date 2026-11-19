@@ -71,6 +71,7 @@ struct Verification {
                 await run("layout-fits-every-pane-size") { await context.layoutAcrossPaneSizes(keep: &keep) }
                 await run("document-script-inert-under-csp") { await context.contentScript(keep: &keep) }
                 await run("reading-lock-blocks-edit") { await context.readingLock(keep: &keep) }
+                await run("document-shortcuts-copy-and-refresh") { await context.documentShortcuts(keep: &keep) }
                 await run("bridge-typing-exact-line-endings") { await context.typing(keep: &keep) }
                 await run("published-writing-undo-matches-source") { await context.publishedWritingUndo(keep: &keep) }
                 await run("escape-layers-notices-and-focus") { await context.escapeLayers(keep: &keep) }
@@ -428,6 +429,35 @@ struct Context {
 
     /// Writing on a published document in a pane surface: rapid edits, then the bar's Undo.
     /// The rendered block must show the source the mirror and store hold, with no failure notice.
+    func documentShortcuts(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "document-shortcuts-copy-and-refresh"
+        do {
+            let id = VerifyStore.newId()
+            let original = "# First revision\n\nCopy **Markdown**, not the rendered text.\n"
+            try store.write(id, revision: 1, source: original)
+            let state = ReadingStateStore(directory: nil)
+            let model = ReaderModel(reference: store.reference(id), platform: CheckRunner.platform(), state: state)
+            model.followsLatest = false
+            let surface = ReaderSurface(model: model, state: state, chrome: "pane", draftDirectory: workspace.appendingPathComponent("shortcut-drafts"))
+            defer { withExtendedLifetime(surface) {} }
+            keep.append(readerWindow(model))
+            await model.open(revision: 1, origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            CheckRunner.checkPasteboard.clearContents()
+            let copyKey = await js(model, "return !document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'C', metaKey: true, shiftKey: true, bubbles: true, cancelable: true }));") as? Bool == true
+            let copied = await wait(seconds: 3) { CheckRunner.checkPasteboard.string(forType: .string) == original }
+            let acknowledged = await wait(seconds: 3) {
+                await js(model, "const toast = document.querySelector('#toast'); return !toast.hidden && toast.textContent === 'Copied Markdown';") as? Bool == true
+            }
+            try store.write(id, revision: 2, source: "# Latest revision\n")
+            let refreshKey = await js(model, "return !document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', metaKey: true, bubbles: true, cancelable: true }));") as? Bool == true
+            let refreshed = await wait(seconds: 5) { model.snapshot?.revision == 2 }
+            await model.close()
+            return .init(name: name, pass: copyKey && copied && acknowledged && refreshKey && refreshed,
+                         detail: "copy key handled: \(copyKey); copied exact Markdown: \(copied); success notice: \(acknowledged); refresh key handled: \(refreshKey); opened latest revision: \(refreshed)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
     func publishedWritingUndo(keep: inout [NSWindow]) async -> Verification.Check {
         let name = "published-writing-undo-matches-source"
         do {

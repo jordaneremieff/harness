@@ -360,7 +360,7 @@ public enum ReaderBridgeCodec {
         let args: [String: Any]
         if fields["args"] != nil { args = try BridgeField.object(fields, "args") } else { args = [:] }
         switch name {
-        case "returnFocus", "close", "showOriginal", "details", "newDraft", "chooseStore", "readClipboard":
+        case "returnFocus", "close", "showOriginal", "details", "newDraft", "chooseStore", "readClipboard", "showLatest":
             try BridgeField.keys(args, allowed: [])
         case "pickImage":
             try BridgeField.keys(args, allowed: ["generation", "range"])

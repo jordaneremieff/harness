@@ -343,6 +343,7 @@
 		"export",
 		"open",
 		"showRevision",
+		"showLatest",
 		"reviewChanges",
 		"inspectImage",
 		"showOriginal",
@@ -365,6 +366,7 @@
 		export: (a) => ensure(one(a.format, ["archive", "sharing", "pdf"])),
 		open: (a) => ensure(optional(a.ref, (v) => string(v, 8192))),
 		showRevision: (a) => ensure(integer(a.n)),
+		showLatest: (a) => ensure(Object.keys(a).length === 0),
 		reviewChanges: (a) => ensure(one(a.against, ["previous", "base"]) || integer(a.against)),
 		inspectImage: (a) => ensure(integer(a.index)),
 		pickImage(a) {
