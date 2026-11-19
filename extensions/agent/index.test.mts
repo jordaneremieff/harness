@@ -92,8 +92,8 @@ test("ordinary fleet calls forward exact selection and reject incompatible query
 		observe: async () => { throw new Error("fleet must not observe native storage"); } });
 	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[Symbol.for("pi.extension.agent.owners")];
 	owners.managers.set(root, manager);
-	t.after(() => {
-		manager.close(); owners.managers.delete(root);
+	t.after(async () => {
+		await manager.close(); owners.managers.delete(root);
 		for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 		rmSync(root, { recursive: true, force: true });
 	});
@@ -203,7 +203,7 @@ test("session start restores sent-work figures in a fresh manager and admissions
 	await start();
 	const path = session.getSessionFile();
 	assert.ok(path);
-	manager.close();
+	await manager.close();
 	manager = createManager();
 	owners.managers.set(root, manager);
 	session = SessionManager.open(path, join(root, "sessions"));

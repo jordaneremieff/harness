@@ -223,7 +223,7 @@ for (const stopReason of ["pending", "stop"] as const) it(`serves the uncommitte
 		});
 		// The stream stays open until the test releases it, so the committed
 		// partial is observable as the live tail.
-		release.promise.then(() => {
+		void release.promise.then(() => {
 			const message = { ...base, content: [{ type: "text" as const, text: "streaming answer" }] };
 			events.push({ type: "done", reason: "stop", message });
 			events.end(message);

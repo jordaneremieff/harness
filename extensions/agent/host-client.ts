@@ -820,16 +820,16 @@ class HostConnectionImpl implements HostConnection {
 		const token = randomUUID();
 		const opened = (await this.client.request({ method: "observe-open", params: observationParams(entry.scope, token), requestId: token, contract: HOST_CONTRACT.operations["observe-open"] })) as { frame?: unknown } | undefined;
 		if (this.closedValue || entry.disposed) {
-			this.closeObservationToken(token);
+			void this.closeObservationToken(token);
 			return;
 		}
 		const subscription = await this.client.subscribe("observation", token, (value) => {
 			if (value === null) { this.failObservation(entry); return; }
 			if (isObservationFrame(value)) this.deliverObservation(entry, value, false);
-		}).catch((error: unknown) => { this.closeObservationToken(token); throw error; });
+		}).catch((error: unknown) => { void this.closeObservationToken(token); throw error; });
 		if (this.closedValue || entry.disposed) {
 			await subscription.dispose().catch(() => undefined);
-			this.closeObservationToken(token);
+			void this.closeObservationToken(token);
 			return;
 		}
 		const openedFrame = isObservationFrame(opened?.frame) ? opened.frame : undefined;

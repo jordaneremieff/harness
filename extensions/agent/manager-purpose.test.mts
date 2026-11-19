@@ -11,7 +11,7 @@ import { retainedPurpose } from "./effort-purpose.ts";
 it("does not promote a later remark after a complete resumed history scan", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "primary-resume-purpose-"));
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
-	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	const session = SessionManager.inMemory(root);
 	session.appendMessage({ role: "user", content: "Implement the parser", timestamp: 0 });
 	const purpose = retainedPurpose(session, "resume");
@@ -33,7 +33,7 @@ it("does not promote a later remark after a complete resumed history scan", asyn
 it("captures only the first eligible interactive input and closes empty capture", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "primary-first-purpose-"));
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
-	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	const id = randomUUID(), emptyId = randomUUID();
 	for (const sessionId of [id, emptyId]) await manager.registerPrimary(sessionId, { signal: new AbortController().signal, cwd: root, send: () => {}, observedInputComplete: true, observedInputCanCapture: true });
 	assert.equal(manager.recordPrimaryInput(id, "Injected text", "extension"), false);
@@ -49,7 +49,7 @@ it("names collaboration selectors before routing malformed identities", async (t
 	const root = mkdtempSync(join(tmpdir(), "collaboration-selector-fields-"));
 	const noHost = async (): Promise<never> => { throw new Error("Malformed selectors must not contact a host"); };
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root, acquire: noHost, connect: noHost });
-	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	const caller = { id: randomUUID(), cwd: root };
 	await assert.rejects(manager.collaborate({ action: "create", sessionId: "bad" }, caller), /sessionId.*canonical/u);
 	await assert.rejects(manager.collaborate({ action: "create", sessionId: randomUUID(), integrator: "bad" }, caller), /integrator.*canonical/u);

@@ -185,7 +185,7 @@ for (const failure of ["persistence", "status", "listener"] as const) it(`keeps 
 		}),
 	}));
 	let unsubscribe = () => {};
-	t.after(() => { failCallbacks = false; unsubscribe(); manager.close(); });
+	t.after(async () => { failCallbacks = false; unsubscribe(); await manager.close(); });
 	const target = createRecord(manager, root, "other-primary").storageId;
 	manager.catalog.updateView(target, {
 		updatedAt: new Date().toISOString(), coverage: { complete: true, omitted: 0 },
@@ -518,7 +518,7 @@ it("preserves a successful spawn admission when its status snapshot fails", asyn
 		assert.equal(outcome.admission.submissionId, 9);
 		assert.equal(outcome.snapshotError, "snapshot unavailable");
 		assert.equal(manager.catalog.read(outcome.sessionId).storageId, outcome.sessionId);
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 });
 
 for (const placement of ["placed", "unplaced"] as const) it(`labels a forwarded report as an event and preserves its ${placement} receipt`, async (t) => {
@@ -578,7 +578,7 @@ for (const operation of ["submit", "task-submit"] as const) it(`preserves caller
 			assert.notEqual(mutations[index + 1].params.requestId, mutations[index].params.requestId);
 		}
 		assert.ok(seen.some((entry) => entry.method === "status"), "mutation snapshots add filtered status requests");
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 });
 
 for (const rich of [false, true]) it(`preserves an explicit reply recipient or reports the missing rich admission contract (${rich})`, async (t) => {
@@ -630,7 +630,7 @@ it("closes a host opened for a primary that aborts mid-registration", { timeout:
 	await waitForConnectionClose(connection);
 	assert.equal(connection.closed, true, "the raced host client is closed");
 	assert.deepEqual(manager.connectedStorageIds(), []);
-	manager.close();
+	await manager.close();
 });
 
 it("dedups primary channel deliveries by source ID within the bounded memory", async (t) => {
@@ -649,7 +649,7 @@ it("dedups primary channel deliveries by source ID within the bounded memory", a
 		assert.deepEqual(primary.sent.map((message) => message.text), ["one", "two"]);
 		await channel.options.deliver({ sourceId: "s1", text: "one after eviction" });
 		assert.deepEqual(primary.sent.map((message) => message.text), ["one", "two", "one after eviction"], "the bounded memory evicts the oldest source ID");
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 });
 
 it("dedups the same source ID once per recipient when every primary receives it", async (t) => {
@@ -674,7 +674,7 @@ it("dedups the same source ID once per recipient when every primary receives it"
 		await secondChannel.options.deliver(delivery);
 		assert.deepEqual(first.sent.map((message) => message.text), ["broadcast"], "a repeated delivery dedups on the first recipient");
 		assert.deepEqual(second.sent.map((message) => message.text), ["broadcast"], "a repeated delivery dedups on the second recipient");
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 });
 
 it("clears the footer and closes the primary channel when the primary aborts", { timeout: 15000 }, async (t) => {
@@ -694,7 +694,7 @@ it("clears the footer and closes the primary channel when the primary aborts", {
 		assert.equal(primary.statuses.at(-1), undefined, "abort clears the durable footer");
 		assert.throws(() => channel.options.deliver({ sourceId: "s2", text: "after" }), /closed/u);
 		assert.deepEqual(primary.sent.map((message) => message.text), ["before"], "no delivery reaches a released primary");
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 });
 
 it("awaits the previous channel close before re-registering the same primary", async (t) => {
@@ -736,7 +736,7 @@ it("awaits the previous channel close before re-registering the same primary", a
 		assert.deepEqual(second.sent.map((message) => message.text), ["after re-register"]);
 	} finally {
 		closeGate.resolve();
-		manager.close();
+		await manager.close();
 	}
 });
 
@@ -759,7 +759,7 @@ it("re-registers the same owner with the real primary channel after abort", { ti
 		}
 		assert.deepEqual(second.sent.map((message) => message.text), ["real channel"]);
 	} finally {
-		manager.close();
+		await manager.close();
 	}
 });
 
@@ -809,7 +809,7 @@ it("refreshes the durable footer from published views at startup and after a hos
 		assert.equal(changes, afterClose);
 		await primary.statuses.waitFor((items) => items.includes("agents: 0/1+ active"));
 		assert.equal(methods.includes("dashboard"), false, "the footer never requests native dashboard state");
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 });
 
 for (const scope of ["creation", "sent-work"] as const) it(`refreshes ${scope} footer counts from external catalog publications without a dashboard or host connection`, { timeout: 15000 }, async (t) => {
@@ -904,7 +904,7 @@ it("shares catalog observation across primary reload, replacement, and roster te
 	assert.equal(reload.statuses.length, stoppedCount, "an aborted primary receives no late publication");
 	offRoster();
 	assert.deepEqual(registrations(), []);
-	manager.close();
+	await manager.close();
 	offRoster();
 	assert.deepEqual(registrations(), [], "repeated teardown leaves no observation registration");
 });
@@ -1132,7 +1132,7 @@ it("validates the spawn model before writing a catalog record", async (t) => {
 		await assert.rejects(manager.spawn({ model: "acme/missing" }, { id: "caller", cwd: root }), /configured catalog/u);
 		const page = await manager.catalog.page({});
 		assert.equal(page.records.length, 0, "no catalog record is written before validation");
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 });
 
 it("stores and reports the effective thinking level before ordinary dispatch", async (t) => {
@@ -1151,7 +1151,7 @@ it("stores and reports the effective thinking level before ordinary dispatch", a
 		assert.deepEqual(outcome.thinking, { requested: "max", effective: "off" });
 		assert.deepEqual(levels, ["off"]);
 		assert.equal(manager.catalog.read(outcome.sessionId).thinkingLevel, "off");
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 });
 
 it("discards its own catalog record when the first acquire fails", async (t) => {
@@ -1166,7 +1166,7 @@ it("discards its own catalog record when the first acquire fails", async (t) => 
 		await assert.rejects(manager.spawn({ model: "acme/model-x", prompt: "start" }, { id: "caller", cwd: root }), /host process failed to start/u);
 		const page = await manager.catalog.page({});
 		assert.equal(page.records.length, 0, "the unopened record is discarded");
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 });
 
 it("returns a failed attach configuration instead of a recovery status", async (t) => {
@@ -1184,7 +1184,7 @@ it("returns a failed attach configuration instead of a recovery status", async (
 		const outcome = await manager.control("attach", { sessionId: record.storageId, model: { provider: "acme", modelId: "missing" } }, { id: "caller", cwd: root }) as { outcome?: string; recovery?: string };
 		assert.equal(outcome.outcome, "failed");
 		assert.equal(outcome.recovery, undefined);
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 });
 
 for (const [kind, error] of [
@@ -1786,7 +1786,7 @@ it("pages list rows and reports unavailable storages", { timeout: 15000 }, async
 	const bootstrap = new AgentManager(managerOptions(root, { connect: noHost }));
 	const first = createRecord(bootstrap, root, "owner-a");
 	createRecord(bootstrap, root, "owner-a");
-	bootstrap.close();
+	await bootstrap.close();
 	const manager = new AgentManager(managerOptions(root, {
 		connect: noHost,
 		observe: async (metadata, method, params) => {
@@ -1802,7 +1802,7 @@ it("pages list rows and reports unavailable storages", { timeout: 15000 }, async
 	assert.deepEqual(result.rows.map((row) => row.identity), [`${first.storageId}:1`, `${first.storageId}:2`]);
 	assert.equal(result.rows.every((row) => row.storageId === first.storageId), true);
 	assert.equal(result.coverage.unavailable.length, 1);
-	manager.close();
+	await manager.close();
 });
 
 for (const operation of ["submit", "task-submit"] as const) it(`preserves explicit origins and uses the ${operation} contract for absent origin`, async (t) => {
@@ -1847,7 +1847,7 @@ for (const operation of ["submit", "task-submit"] as const) it(`preserves explic
 		assert.equal(submits.length, 7, "a promptless spawn arms no task");
 		assert.ok(submits.every((entry) => entry.params.requester === caller.id));
 	} finally {
-		manager.close();
+		await manager.close();
 		if (previous === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES;
 		else process.env.PI_AGENT_CHECK_IN_MINUTES = previous;
 	}
@@ -1917,7 +1917,7 @@ it("returns a compact status snapshot from a mutation instead of the full status
 		assert.equal(serialized.includes("lastText"), false, "live assistant text stays out of the spawn result");
 		assert.equal(serialized.includes("submissions"), false, "the submission inventory stays out of the spawn result");
 		assert.ok(JSON.stringify(outcome.status).length < 1024, "the compact status stays bounded independently of execution selection evidence");
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 });
 
 it("shares one real attach across concurrent reads and a canceled live selection", { timeout: 15000 }, async (t) => {
@@ -1932,7 +1932,7 @@ it("shares one real attach across concurrent reads and a canceled live selection
 	}));
 	const record = createRecord(manager, root);
 	const host = await runHost(() => ({ request: async () => ({ conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, live: false, storageId: record.storageId }), close: async () => {}, isIdle: () => true }), { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
-	t.after(async () => { gate.resolve(); manager.close(); await host.close(); });
+	t.after(async () => { gate.resolve(); await manager.close(); await host.close(); });
 	const cancel = new AbortController();
 	const reads = Promise.all([manager.status(record.storageId), manager.snapshot(record.storageId), manager.observeLive(record.storageId, "conversation", () => {}, cancel.signal)]);
 	await entered.promise;
@@ -1943,7 +1943,7 @@ it("shares one real attach across concurrent reads and a canceled live selection
 	assert.equal(results[2], undefined);
 	assert.equal(links.length, 1);
 	assert.equal(acquisitions, 0);
-	manager.close();
+	await manager.close();
 	await waitForConnectionClose(links[0]);
 	assert.equal(links.every((link) => link.closed), true);
 });
@@ -2005,7 +2005,7 @@ it("keeps acquired clients usable when only their current change contracts disag
 		assert.deepEqual(manager.connectedStorageIds(), []);
 		const afterClose = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
 		assert.equal(afterClose.failures.some((failure) => failure.storageId === `changes:${record.storageId}`), false);
-		manager.close();
+		await manager.close();
 	}
 });
 
@@ -2036,12 +2036,12 @@ it("closes a shared attachment that completes after manager shutdown", async (t)
 		connect: async (metadata) => { const link = fakeConnection(metadata, async () => ({})); links.push(link); entered.resolve(); await gate.promise; return link; },
 		acquire: noHost,
 	}));
-	t.after(() => { gate.resolve(); manager.close(); });
+	t.after(async () => { gate.resolve(); await manager.close(); });
 	const record = createRecord(manager, root);
 	const reading = manager.status(record.storageId);
 	await entered.promise;
 	assert.equal(links[0].closed, false);
-	manager.close();
+	await manager.close();
 	gate.resolve();
 	await assert.rejects(reading, /released while opening/u);
 	assert.equal(links[0].closed, true);
@@ -2058,7 +2058,7 @@ it("lets explicit acquisition follow a failed shared attachment without making t
 		acquire: async (metadata) => { acquisitions++; return fakeConnection(metadata, async () => ({})); },
 		observe: async () => ({}),
 	}));
-	t.after(() => { gate.resolve(); manager.close(); });
+	t.after(async () => { gate.resolve(); await manager.close(); });
 	const record = createRecord(manager, root);
 	const read = manager.status(record.storageId);
 	await entered.promise;
@@ -2191,7 +2191,7 @@ it("refreshes the registered primary identity after model, thinking, and name ch
 		assert.deepEqual(channel.updates.at(-1), { name: "primary review", model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "xhigh" });
 		const status = await manager.status() as { primaries: Array<{ sessionId: string; name?: string; model?: { provider: string; modelId: string }; thinkingLevel?: string }> };
 		assert.deepEqual(status.primaries, [{ sessionId: "owner-1", cwd: process.cwd(), name: "primary review", model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "xhigh" }]);
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 });
 
 it("retains a primary's admission phases for both spawn forms, a send and a steer", async (t) => {

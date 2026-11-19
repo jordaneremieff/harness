@@ -144,7 +144,7 @@ test("foreign Stop guards an active native group with every exact owned input", 
 
 async function holdUntilAbort(context: Context, release: Promise<void>): Promise<void> {
 	await new Promise<void>(resolve => {
-		release.then(resolve);
+		void release.then(resolve);
 		if (context.abortSignal?.aborted) resolve();
 		else context.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
 	});

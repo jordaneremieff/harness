@@ -19,7 +19,7 @@ it("samples activity writes and keeps observed purpose separate from declared in
 		return { ...created, touch: (at) => { touches++; created.touch(at); } };
 	} });
 	const signal = new AbortController();
-	t.after(async () => { signal.abort(); manager.close(); await channel?.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { signal.abort(); await manager.close(); await channel?.close(); rmSync(root, { recursive: true, force: true }); });
 	const id = randomUUID();
 	await manager.registerPrimary(id, { signal: signal.signal, cwd: root, send: () => {}, observedInput: "Review the parser" });
 	assert.ok(channel);
@@ -55,7 +55,7 @@ it("does not replace unvisited first-input provenance after resume", async (t) =
 		channel = await createPrimaryChannel(options);
 		return channel;
 	} });
-	t.after(async () => { manager.close(); await channel?.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); await channel?.close(); rmSync(root, { recursive: true, force: true }); });
 	const session = SessionManager.inMemory(root);
 	session.appendCustomEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: "Original task" });
 	for (let i = 0; i < 256; i++) session.appendCustomEntry("other");
@@ -79,7 +79,7 @@ it("carries the current primary name and published purpose on direct session mes
 	const senderSignal = new AbortController();
 	const received: Array<{ details?: unknown; replyTo?: string; text: string }> = [];
 	const recipient = await createPrimaryChannel({ id: recipientId, cwd: root, sessionsRoot: root, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
-	t.after(async () => { senderSignal.abort(); manager.close(); await recipient.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { senderSignal.abort(); await manager.close(); await recipient.close(); rmSync(root, { recursive: true, force: true }); });
 	await manager.registerPrimary(senderId, { signal: senderSignal.signal, cwd: root, send: () => {}, name: "Registered source", observedInput: "Review the parser" });
 	await manager.control("submit", { sessionId: recipientId, message: "Direct message", requestId: "named", replyTo: senderId, origin: "operator" }, { id: senderId, cwd: root, name: "Current source", model: { provider: "provider", modelId: "model" }, thinkingLevel: "high" });
 	const named = received[0]?.details as Record<string, unknown>;

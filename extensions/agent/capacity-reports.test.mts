@@ -88,7 +88,7 @@ function stepGate(): { tool: ToolRegistration; entered(index: number): Promise<v
 			current.enter();
 			if (open) return {};
 			await new Promise<void>((resolve) => {
-				current.released.then(() => resolve());
+				void current.released.then(() => resolve());
 				if (call.abortSignal?.aborted) resolve();
 				else call.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
 			});

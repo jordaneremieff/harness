@@ -122,7 +122,7 @@ async function guidanceFixture(t: TestContext, holdStartup = false) {
 		async direct(method: "submit" | "report", sourceId: string, origin: "operator" | "model" = "model") {
 			const manager = new AgentManager({ root: sessionsRoot, agentDir, packageDir: getPackageDir() });
 			try { return await manager.control(method, { sessionId: sessionManager.getSessionId(), message: "DIRECT_NOTICE", requestId: sourceId, origin }, { id: "00000000-0000-4000-8000-000000000001", cwd }) as { admitted: boolean; boundary: string }; }
-			finally { manager.close(); }
+			finally { await manager.close(); }
 		},
 		async deliver(sourceId: string, text: string, wake = true) {
 			const connection = await connectPrimaryChannel({ id: sessionManager.getSessionId(), sessionsRoot });

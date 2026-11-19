@@ -92,7 +92,7 @@ export function gateTool(release: Promise<void>, onStarted?: () => void): ToolRe
 		execute: async (_args, _api, context) => {
 			onStarted?.();
 			await new Promise<void>((resolve) => {
-				release.then(() => resolve());
+				void release.then(() => resolve());
 				if (context.abortSignal?.aborted) resolve();
 				else context.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
 			});

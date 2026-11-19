@@ -50,7 +50,7 @@ async function dispatch({ method, params }: Command): Promise<unknown> {
 	}
 	if (method === "disconnect") {
 		controller.abort();
-		manager.close();
+		await manager.close();
 		await Promise.all([...connections.values()].map((connection) => connection.close()));
 		return { disconnected: true };
 	}
@@ -62,5 +62,5 @@ process.on("message", (input: Command) => {
 		(error: unknown) => process.send?.({ id: input.id, error: error instanceof Error ? error.message : String(error) }),
 	);
 });
-process.once("disconnect", () => { controller.abort(); manager.close(); process.exit(0); });
+process.once("disconnect", () => { controller.abort(); void manager.close(); process.exit(0); });
 process.send({ event: "ready", pid: process.pid, identity: id });

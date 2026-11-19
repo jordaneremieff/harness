@@ -299,7 +299,7 @@ test("selected native Agent retains delegation ownership across generation hando
 				const stop = () => { aborted.add(args.role); done(); };
 				if (callContext.abortSignal?.aborted) stop();
 				else callContext.abortSignal?.addEventListener("abort", stop, { once: true });
-				releaseTools.promise.then(done);
+				void releaseTools.promise.then(done);
 			});
 			return {};
 		},

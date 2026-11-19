@@ -69,7 +69,7 @@ it("accepts and forwards exact result references with their native request ident
 it("rejects native receipt continuation selectors on an ordinary primary", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "ordinary-inspect-"));
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
-	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	await assert.rejects(manager.observePrimary("ordinary", { receiptCursor: "captured" }), /does not support receiptCursor/u);
 });
 it("keeps successful report sender receipts free of recipient bodies", async (t) => {

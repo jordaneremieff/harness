@@ -30,7 +30,7 @@ for (const nonroot of [false, true]) it(`native terminal discovers, reads and po
 	const waiters = new Set<() => void>();
 	const tui = { terminal: { columns: 100, rows: 30 }, requestRender() { for (const check of [...waiters]) check(); } } as unknown as TUI;
 	screen = new TerminalScreen(tui, theme, terminalKeys(), controller, () => {});
-	t.after(() => { screen.dispose(); controller.close(); });
+	t.after(async () => { screen.dispose(); await controller.close(); });
 	const text = () => stripVTControlCharacters(screen.render(100).join("\n"));
 	const waitFor = (predicate: () => boolean) => new Promise<void>((resolve) => {
 		const check = () => { if (predicate()) { waiters.delete(check); resolve(); } };

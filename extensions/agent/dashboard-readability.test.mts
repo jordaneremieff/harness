@@ -111,7 +111,7 @@ it("dashboard reconciliation and roster events reuse the scanned page for sessio
 	t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
 	const root = mkdtempSync(join(tmpdir(), "dashboard-page-reuse-"));
 	const manager = new AgentManager({ root, agentDir: join(root, "agent"), packageDir: join(root, "package") });
-	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	const record = manager.catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: "test", modelId: "model" }, thinkingLevel: "high", ownerId: "primary" });
 	const published = page([row(record.storageId, { storageId: record.storageId })]);
 	// Session figures read ownership from the manager's observed inventory, so observe the record once before the page is stubbed.

@@ -12,7 +12,7 @@ import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-
 test("primary close awaits its endpoint removal and leaves a replacement registration intact", async (t) => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "primary-shutdown-")));
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
-	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	const id = randomUUID(), first = new AbortController(), second = new AbortController();
 	await manager.registerPrimary(id, { signal: first.signal, cwd: root, send() {} });
 	const peerId = randomUUID();
@@ -48,8 +48,8 @@ test("ordinary shutdown awaits close even when the status callback throws", asyn
 		update() {}, publishIntent() {}, touch() {}, setObservedPurpose() {}, close: async () => { closes++; started(); await gate; },
 	}) });
 	owners.managers.set(root, manager);
-	t.after(() => {
-		release(); manager.close(); owners.managers.delete(root);
+	t.after(async () => {
+		release(); await manager.close(); owners.managers.delete(root);
 		for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 		rmSync(root, { recursive: true, force: true });
 	});
@@ -85,7 +85,7 @@ test("primary close reports endpoint cleanup rejection",  async (t) => {
 		id: options.id, socketPath: "unused", info: () => ({ id: options.id, cwd: root, hostname: "fixture", pid: process.pid, socketPath: "unused", startedAt: new Date().toISOString() }),
 		update() {}, publishIntent() {}, touch() {}, setObservedPurpose() {}, close: async () => { throw new Error("Endpoint cleanup failed"); },
 	}) });
-	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	const abort = new AbortController(), id = randomUUID();
 	await manager.registerPrimary(id, { signal: abort.signal, cwd: root, send() {} });
 	abort.abort();
@@ -105,7 +105,7 @@ test("primary shutdown waits for a channel that finishes creation after abort", 
 		return { id: options.id, socketPath: "unused", info: () => ({ id: options.id, cwd: root, hostname: "fixture", pid: process.pid, socketPath: "unused", startedAt: new Date().toISOString() }),
 			update() {}, publishIntent() {}, touch() {}, setObservedPurpose() {}, close: async () => { closing(); await closeGate; } };
 	} });
-	t.after(() => { releaseCreate(); releaseClose(); manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { releaseCreate(); releaseClose(); await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	const id = randomUUID(), abort = new AbortController();
 	const registering = manager.registerPrimary(id, { signal: abort.signal, cwd: root, send() {} });
 	await createStarted; abort.abort();
@@ -128,7 +128,7 @@ test("failed primary replacement removes the closed registration and rejects its
 		return { id: options.id, socketPath: "unused", info: () => ({ id: options.id, cwd: root, hostname: "fixture", pid: process.pid, socketPath: "unused", startedAt: new Date().toISOString() }),
 			update() {}, publishIntent() {}, touch() {}, setObservedPurpose() {}, close: async () => { closed++; } };
 	} });
-	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	const id = randomUUID();
 	await manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, send: () => { delivered++; } });
 	await assert.rejects(manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, send() {} }), /Replacement unavailable/u);
@@ -141,7 +141,7 @@ test("failed primary replacement removes the closed registration and rejects its
 test("manager close contains a status exception and closes every owned endpoint", async (t) => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "manager-close-status-")));
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
-	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	const first = randomUUID(), second = randomUUID();
 	const firstSignal = new AbortController().signal, secondSignal = new AbortController().signal;
 	let fail = false;

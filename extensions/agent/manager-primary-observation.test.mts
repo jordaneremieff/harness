@@ -23,7 +23,7 @@ it("reads ordinary status and ancestry without host acquisition or message deliv
 	const channel = await createPrimaryChannel({ id, cwd: root, sessionFile, sessionsRoot: root, deliver: () => { deliveries++; }, promptTrust: async () => { prompts++; return undefined; } });
 	const noHost = async (): Promise<never> => { throw new Error("Ordinary observation must not contact a host"); };
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root, acquire: noHost, connect: noHost, observe: noHost });
-	t.after(async () => { manager.close(); await channel.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); await channel.close(); rmSync(root, { recursive: true, force: true }); });
 	const before = readFileSync(sessionFile, "utf8");
 	assert.equal(readPrimaryEndpointDescriptor(root, id).info?.sessionFile, sessionFile);
 	const status = await manager.status(id) as OrdinaryPrimaryObservation;
@@ -50,7 +50,7 @@ it("publishes an ordinary session file at primary registration", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "ordinary-file-publication-"));
 	const id = randomUUID(), sessionFile = join(root, "retained.jsonl");
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
-	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	await manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, sessionFile, send: () => {} });
 	assert.equal(readPrimaryEndpointDescriptor(root, id).info?.sessionFile, sessionFile);
 	const result = await manager.status(id) as OrdinaryPrimaryObservation;

@@ -389,7 +389,7 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false, "completion, delivery acknowledgement, and clean idle retirement clear the marker");
 	} finally {
 		controller.abort();
-		manager.close();
+		await manager.close();
 	}
 });
 

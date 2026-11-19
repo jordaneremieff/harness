@@ -104,7 +104,7 @@ function fixture(t: { after(fn: () => void | Promise<void>): void }) {
 	const root = mkdtempSync(join(tmpdir(), "catalog-events-"));
 	let acquisitions = 0;
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root, acquire: async () => { acquisitions++; throw new Error("Observation must not acquire a host"); } });
-	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	return { root, manager, acquisitions: () => acquisitions };
 }
 
@@ -213,7 +213,7 @@ it("notifies every manager for external rewrite and discard, then releases its r
 	const recordName = records[0];
 	assert.ok(recordName);
 	const registration = JSON.parse(readFileSync(join(f.manager.catalog.root, ".observers", recordName), "utf8")) as { socketPath: string };
-	second.close();
+	await second.close();
 	assert.deepEqual(readdirSync(join(f.manager.catalog.root, ".observers")), []);
 	offSecond();
 	assert.throws(() => second.subscribeRoster(() => {}), /closed/u);
@@ -268,7 +268,7 @@ it("refreshes a real cold thread after external publication without acquiring a 
 it("refuses excess subscriptions and reclaims only proven-dead local slots", async (t) => {
 	const f = fixture(t);
 	const managers: AgentManager[] = [];
-	t.after(() => { for (const manager of managers) manager.close(); });
+	t.after(async () => { await Promise.all(managers.map((manager) => manager.close())); });
 	for (let index = 0; index < 32; index++) {
 		const manager = new AgentManager({ root: f.root, agentDir: f.root, packageDir: f.root });
 		managers.push(manager);
@@ -277,7 +277,7 @@ it("refuses excess subscriptions and reclaims only proven-dead local slots", asy
 	assert.throws(() => f.manager.subscribeRoster(() => {}), /capacity/u);
 	const slot = join(f.manager.catalog.root, ".observers", "0.json");
 	const previous = readFileSync(slot, "utf8");
-	managers[0]?.close();
+	await managers[0]?.close();
 	const dead = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" });
 	assert.ok(dead.pid);
 	writeFileSync(slot, JSON.stringify({ ...JSON.parse(previous), id: randomUUID(), pid: dead.pid, hostname: hostname() }));

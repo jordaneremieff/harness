@@ -52,7 +52,7 @@ it("selects a manager spawn before storage exists and attaches to its real host"
 			await connection.request("close").catch(() => undefined);
 			await connection.close();
 		}
-		manager.close();
+		await manager.close();
 		rmSync(root, { recursive: true, force: true });
 	};
 	const metadata = await launched.promise;
@@ -104,7 +104,7 @@ it("observes an absent catalog storage without acquiring a host", { timeout: 150
 		assert.equal(source.frame(record.storageId), undefined);
 	} finally {
 		off();
-		manager.close();
+		await manager.close();
 		rmSync(root, { recursive: true, force: true });
 	}
 });
