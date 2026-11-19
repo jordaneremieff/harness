@@ -130,7 +130,7 @@ export function runtimeFixture(t: FixtureContext, options: RuntimeFixtureOptions
 			...(options.retry === true ? { DURABLE_TEST_RETRY: "1" } : {}),
 			DURABLE_TEST_NOTIFY: markers.notifyPath,
 			...(options.httpEndpoint === undefined ? {} : { DURABLE_TEST_HTTP: "1" }),
-			PI_AGENT_IDLE_MINUTES: "0.05",
+			PI_AGENT_IDLE_MINUTES: "0.01",
 		}),
 		marker: markers.marker,
 	};
