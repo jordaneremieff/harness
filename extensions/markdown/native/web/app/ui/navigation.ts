@@ -79,18 +79,14 @@
 					.textNodes(root)
 					.map((node) => node.data)
 					.join(""),
-				text = source.toLocaleLowerCase(),
-				needle = query.toLocaleLowerCase(),
 				found: ReturnType<ReaderEditor["find"]> = [];
-			let at = text.indexOf(needle);
-			while (at >= 0) {
-				const start = api.sourceModel.point(root, at),
-					end = api.sourceModel.point(root, at + needle.length),
+			for (const { start, end } of api.find.literal(query)(source)) {
+				const from = api.sourceModel.point(root, start),
+					to = api.sourceModel.point(root, end),
 					range = document.createRange();
-				range.setStart(start.node, start.offset);
-				range.setEnd(end.node, end.offset);
-				found.push({ key: "overlay", start: at, end: at + needle.length, ranges: [range] });
-				at = text.indexOf(needle, at + needle.length);
+				range.setStart(from.node, from.offset);
+				range.setEnd(to.node, to.offset);
+				found.push({ key: "overlay", start, end, ranges: [range] });
 			}
 			return found;
 		}

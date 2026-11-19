@@ -38,6 +38,7 @@ for (const file of [
 	"app/host/native.ts",
 	"app/core/exact.ts",
 	"app/core/source-model.ts",
+	"app/core/find.ts",
 	"app/core/controller.ts",
 	"app/core/render-html.ts",
 	"app/editor/block-editor.ts",

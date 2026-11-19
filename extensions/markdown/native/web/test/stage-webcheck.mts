@@ -5,10 +5,11 @@ const root = new URL("../", import.meta.url);
 const destination = process.argv[2];
 if (!destination) throw new Error("usage: node stage-webcheck.mts <output directory>");
 const files = [
- "app/host/native.ts",
- "app/core/render-html.ts",
+	"app/host/native.ts",
+	"app/core/render-html.ts",
 	"app/core/exact.ts",
 	"app/core/source-model.ts",
+	"app/core/find.ts",
 	"app/core/controller.ts",
 	"app/editor/block-editor.ts",
 	"test/host-memory.ts",

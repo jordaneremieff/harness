@@ -111,6 +111,7 @@ declare global {
 			DesyncError: new (edit: ReaderEdit, found: string) => Error;
 		};
 		sourceModel: ReaderSourceModelAPI;
+		find: { literal(query: string): (text: string) => ReaderRange[] };
 		createController(
 			host: ReaderCoreHost,
 			options?: { document?: ReaderCoreDocument; now?: () => number },

@@ -11,9 +11,10 @@ Load these scripts in order, followed by the page's UI and entry script:
 1. `app/host/native.js`
 2. `app/core/exact.js`
 3. `app/core/source-model.js`
-4. `app/core/controller.js`
-5. `app/core/render-html.js`
-6. `app/editor/block-editor.js`
+4. `app/core/find.js`
+5. `app/core/controller.js`
+6. `app/core/render-html.js`
+7. `app/editor/block-editor.js`
 
 ## Host and controller
 

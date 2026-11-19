@@ -900,16 +900,11 @@
 			},
 			find(query) {
 				if (!query) return [];
-				const needle = query.toLocaleLowerCase();
 				const results: { key: string; start: number; end: number; ranges: Range[] }[] = [];
-				for (const item of editor.index()) {
-					const haystack = item.text.toLocaleLowerCase();
-					let p = haystack.indexOf(needle);
-					while (p >= 0) {
-						results.push({ key: item.key, start: p, end: p + query.length, ranges: item.ranges(p, p + query.length) });
-						p = haystack.indexOf(needle, p + query.length);
-					}
-				}
+				const matches = api.find.literal(query);
+				for (const item of editor.index())
+					for (const { start, end } of matches(item.text))
+						results.push({ key: item.key, start, end, ranges: item.ranges(start, end) });
 				return results;
 			},
 			highlight(name, ranges) {
