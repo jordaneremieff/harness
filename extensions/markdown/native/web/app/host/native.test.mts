@@ -165,6 +165,18 @@ test("review HTML has the large bound only for a matching review request", () =>
 	message.html += "a";
 	assert.throws(() => api.bridge.reply(message, "review", "query", { kind: "review" }), /byte limit/);
 });
+test("a code block's Markdown goes out as text and returns as HTML within the rendering bound", () => {
+	const api = bridge();
+	for (const text of ["## Install\n\n- item\n", ""])
+		assert.equal(api.bridge.page({ v: 1, type: "query", id: "q", kind: "markdown", text }).type, "query");
+	for (const fields of [{}, { text: 1 }, { text: "a".repeat(256 * 1024 + 1) }])
+		assert.throws(() => api.bridge.page({ v: 1, type: "query", id: "q", kind: "markdown", ...fields }));
+	const message = { v: 1, type: "reply", id: "q", ok: true, html: "a".repeat(16 * 1024 * 1024) };
+	assert.equal(typeof api.bridge.reply(message, "q", "query", { kind: "markdown" }).html, "string");
+	assert.throws(() => api.bridge.reply({ ...message, html: undefined }, "q", "query", { kind: "markdown" }));
+	message.html += "a";
+	assert.throws(() => api.bridge.reply(message, "q", "query", { kind: "markdown" }), /byte limit/);
+});
 test("edits use their exact compact JSON bound independently of metadata", () => {
 	const api = bridge(),
 		n = 512 * 1024,

@@ -40,6 +40,15 @@ strings with their escapes and interpolated code, numbers, comments, types, func
 members, builtins, operators and delimiters. An unlabelled block that parses as JSON or reads as a
 shell transcript is coloured as one. `web/app/ui/highlight.ts` wraps the existing text in spans, so
 the visible text and its source offsets stay unchanged; other blocks stay plain.
+The label of a block opens a menu of those syntaxes, kept by `web/app/ui/code-views.ts`. Like the
+context menu, it takes no focus, so an open block keeps its caret; keys reach it while it is open. A
+choice recolours that block in the page only and lasts while the block's text is unchanged. A block
+coloured as Markdown also switches between its source and a rendered view. Native renders that view
+with the document renderer as detached text, which has no folder: its images stay placeholders
+without assets, actions or indexes. The page removes ids from the view, and its fragment links do
+nothing. The controls and the view carry `data-reader-control`, so the text index, find and source
+offsets cover the source alone; a find match in a rendered block shows the source again. The view
+has no source positions, so editing it opens the block at the first character of its code.
 Prose keeps a reading measure. A code block or table whose unwrapped width exceeds that measure
 takes the whole width beside the prose, up to about 120 columns of code, so its lines scroll or
 wrap only where the page runs out. In a window narrower than 1100 points the outline opens as a
@@ -61,7 +70,8 @@ One reply-capable script handler named `reader` accepts versioned JSON envelopes
 `{v: 1, type, id?, ...}`. Native sends envelopes through `reader.receive` in the page
 content world. Unknown versions, unknown types and oversized messages are refused.
 The source limit is 2 MiB raw UTF-8. Document blocks and render replies have a separate
-16 MiB compact-JSON limit; review HTML has a 16 MiB raw UTF-8 limit. Edits and agent edits
+16 MiB compact-JSON limit; review HTML and the HTML of a `markdown` query, which renders a code
+block's text, have a 16 MiB raw UTF-8 limit. Edits and agent edits
 have a 5 MiB compact-JSON limit. Other fields have a 256 KiB compact-JSON limit; messages
 without a large field have a 256 KiB total limit.
 

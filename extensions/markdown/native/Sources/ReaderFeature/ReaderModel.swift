@@ -539,6 +539,11 @@ public final class ReaderModel {
             return ["address": inspection.address, "facts": rows, "width": inspection.naturalSize?.width ?? 0, "height": inspection.naturalSize?.height ?? 0]
         case "library":
             return try await queryLibrary(fields)
+        case "markdown":
+            // The rendered view of a code block: its text is Markdown that belongs to no file.
+            guard let text = fields["text"] as? String else { throw ReaderBridgeError.invalid("text") }
+            let html = await Task.detached(priority: .userInitiated) { MarkdownRenderer.detachedHTML(text) }.value
+            return ["html": html]
         default: throw ReaderBridgeError.invalid("query")
         }
     }

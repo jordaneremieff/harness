@@ -171,9 +171,11 @@
 			onMenuOpen: () => hideSelection(),
 		};
 		const navigation = api.createNavigation(context),
+			codeViews = api.createCodeViews(context, { onChange: () => navigation.refreshFind() }),
 			ask = api.createAskUI(context, navigation),
 			views = api.createViewsUI(context, navigation),
 			contextMenu = api.createContextMenu(context, (id, c) => runMenu(id, c));
+		context.reveal = (node) => codeViews.reveal(node);
 		const findbar = get(".find");
 		bar.insertBefore(findbar, bar.querySelector(".spacer"));
 		function showKind() {
@@ -479,6 +481,8 @@
 			if (!key) return;
 			const oneOff = controller.lock === "reading";
 			controller.setLock("writing");
+			const hit = document.elementFromPoint(c.point.x, c.point.y);
+			if (hit && codeViews.edit(hit, { oneOff })) return;
 			editor.open(key, { x: c.point.x, y: c.point.y }, { oneOff });
 		}
 		function followLink(link: HTMLAnchorElement) {
@@ -516,7 +520,11 @@
 				copyLink: () => copyText(c.link?.getAttribute("href") ?? "", "Copied link address"),
 				inspectImage: () => views.show("image", { index: Number(c.image?.dataset.image ?? 0) }),
 				copyImageText: () => copyText(c.image?.getAttribute("alt") || c.image?.getAttribute("aria-label") || ""),
-				copyCode: () => c.block?.querySelector<HTMLButtonElement>('[data-role="code-copy"]')?.click(),
+				copyCode: () => {
+					const hit = document.elementFromPoint(c.point.x, c.point.y);
+					if (!hit || !codeViews.copy(hit))
+						c.block?.querySelector<HTMLButtonElement>('[data-role="code-copy"]')?.click();
+				},
 				copyTable: () => copyBlockSource(c.block),
 				editSelection: () => void editSelection(),
 				editHere: () => editHere(c),
@@ -526,35 +534,6 @@
 			const action = actions[id];
 			if (action) await action();
 			else formatAction(id);
-		}
-		function codeControls() {
-			for (const block of doc.querySelectorAll<HTMLElement>("[data-block]")) {
-				if (block.dataset.role === "block-editor") continue;
-				const pre = block.querySelector("pre");
-				if (!pre || block.querySelector('[data-role="code-copy"]')) continue;
-				const code = pre.querySelector("code"),
-					text = code?.textContent ?? pre.textContent ?? "";
-				const b = button(
-					"Copy code",
-					"copy",
-					() => {
-						const value = text.replace(/\n$/u, "");
-						const source = controller.doc?.source ?? "";
-						void hostCommand("copy", {
-							text: source.includes("\r\n") && !/(?<!\r)\n/u.test(source) ? value.replaceAll("\n", "\r\n") : value,
-						});
-						toast("Copied code");
-					},
-					{ className: "copy code-copy" },
-				);
-				b.dataset.role = "code-copy";
-				b.dataset.blockStart = block.dataset.start;
-				b.setAttribute("data-reader-control", "");
-				b.addEventListener("click", (event) => event.stopPropagation());
-				// Appended last so rendered text offsets before it stay exact; CSS places it on the
-				// caption row beside the language label.
-				(pre.closest("figure.code") ?? pre).append(b);
-			}
 		}
 		function claims() {
 			for (const node of doc.querySelectorAll<HTMLElement>("[data-claim-label]")) {
@@ -666,7 +645,7 @@
 			}),
 			controller.on("selection", selectionTools),
 			controller.on("view", () => {
-				codeControls();
+				codeViews.decorate();
 				claims();
 			}),
 			controller.on("claims", claims),
@@ -693,7 +672,7 @@
 				notices.replaceChildren();
 				selection = null;
 				saveStatus("saved");
-				codeControls();
+				codeViews.decorate();
 			}),
 		);
 		off.push(
@@ -734,6 +713,7 @@
 				disposed = true;
 				for (const fn of off) fn();
 				navigation.dispose();
+				codeViews.dispose();
 				contextMenu.dispose();
 				ask.dispose();
 				views.dispose();

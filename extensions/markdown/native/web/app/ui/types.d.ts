@@ -130,6 +130,18 @@ declare global {
 		notice(text: string, tone?: string, actions?: { label: string; run: () => void }[], id?: string): void;
 		toast(text: string, action?: { label: string; run: () => void }): void;
 		onMenuOpen?(): void;
+		/** Shows the document text that holds a node before a find match there comes into view. */
+		reveal?(node: Node): void;
+	}
+	interface ReaderCodeViews {
+		/** Adds the controls of new code blocks and applies each block's chosen view. */
+		decorate(): void;
+		reveal(node: Node): void;
+		/** Opens the block of a rendered code view at its code; false when no rendered view holds the element. */
+		edit(target: Element, options: { oneOff?: boolean }): boolean;
+		/** Copies the code of the block at an element; false when no fenced block holds it. */
+		copy(target: Element): boolean;
+		dispose(): void;
 	}
 	interface ReaderNavigation {
 		rebuild(): void;
@@ -178,6 +190,7 @@ declare global {
 		createAskUI(context: ReaderUIContext, navigation: ReaderNavigation): ReaderAskUI;
 		createViewsUI(context: ReaderUIContext, navigation: ReaderNavigation): ReaderViewsUI;
 		createContextMenu(context: ReaderUIContext, run: (id: string, context: ReaderMenuContext) => void | Promise<void>): ReaderContextMenu;
+		createCodeViews(context: ReaderUIContext, options?: { onChange?(): void }): ReaderCodeViews;
 		createUI(host: ReaderCoreHost, controller: ReaderController, editor: ReaderEditor): ReaderUI;
 		boot(host?: ReaderCoreHost): {
 			host: ReaderCoreHost;

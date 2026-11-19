@@ -374,9 +374,10 @@
 		saveSettings: (a) => settings(a.patch),
 	};
 	function query(m: Fields) {
-		ensure(one(m.kind, ["review", "details", "image", "library"]));
+		ensure(one(m.kind, ["review", "details", "image", "library", "markdown"]));
 		if (m.kind === "review") ensure(one(m.against, ["previous", "base"]) || integer(m.against));
 		if (m.kind === "image") ensure(integer(m.index));
+		if (m.kind === "markdown") ensure(string(m.text, META, true));
 		if (m.kind === "library")
 			ensure(
 				one(m.collection, ["drafts", "recent", "published"]) &&
@@ -476,6 +477,10 @@
 		}
 	}
 	function queryReply(m: Fields, fields: Fields) {
+		if (fields.kind === "markdown") {
+			ensure(string(m.html, BODY, true));
+			return;
+		}
 		if (fields.kind === "review") {
 			ensure(string(m.html, BODY, true));
 			reviewSummary(m.summary);
@@ -499,7 +504,7 @@
 	}
 	function replyBody(kind: string, fields: Fields) {
 		if (kind === "render") return "blocks";
-		if (kind === "query" && fields.kind === "review") return "html";
+		if (kind === "query" && (fields.kind === "review" || fields.kind === "markdown")) return "html";
 		if (kind === "command" && fields.name === "readClipboard") return "text";
 		return undefined;
 	}

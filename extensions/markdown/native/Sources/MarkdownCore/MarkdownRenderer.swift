@@ -66,9 +66,21 @@ public enum MarkdownRenderer {
     public static let assetScheme = "reader-asset"
 
     public static func render(_ source: String, resolver: AssetResolving, nonce: String = newNonce()) -> RenderedDocument {
+        render(source, resolver: resolver, nonce: nonce, detached: false)
+    }
+
+    /// HTML for Markdown text that belongs to no file, such as the text of a code block that a
+    /// person shows rendered. It uses the same parser, substitutions and safe output as a document.
+    /// Its images stay placeholders without an asset, action or index: the text has no folder for
+    /// them, and none of them is an image of the document that shows the text.
+    public static func detachedHTML(_ source: String) -> String {
+        render(source, resolver: NoAssetResolver(), nonce: newNonce(), detached: true).body
+    }
+
+    static func render(_ source: String, resolver: AssetResolving, nonce: String, detached: Bool) -> RenderedDocument {
         let withoutCRLF = source.replacingOccurrences(of: "\r\n", with: "")
         let codeLineEnding = source.contains("\r\n") && !withoutCRLF.contains("\r") && !withoutCRLF.contains("\n") ? "\r\n" : "\n"
-        var context = Context(resolver: resolver, nonce: nonce, codeLineEnding: codeLineEnding)
+        var context = Context(resolver: resolver, nonce: nonce, codeLineEnding: codeLineEnding, detached: detached)
         let (frontMatter, body) = splitFrontMatter(source)
         var html = ""
         var frontHTML = ""
@@ -134,6 +146,8 @@ public enum MarkdownRenderer {
         let resolver: AssetResolving
         let nonce: String
         let codeLineEnding: String
+        /// The text belongs to no file; see `detachedHTML`.
+        let detached: Bool
         var outline: [OutlineEntry] = []
         var usedAnchors: Set<String> = []
         /// The next numeric suffix to try for each anchor base.
@@ -151,10 +165,11 @@ public enum MarkdownRenderer {
         var webMapping: WebTextMap?
         var leadingBlock: (text: String, isHeading: Bool)?
 
-        init(resolver: AssetResolving, nonce: String, codeLineEnding: String) {
+        init(resolver: AssetResolving, nonce: String, codeLineEnding: String, detached: Bool = false) {
             self.resolver = resolver
             self.nonce = nonce
             self.codeLineEnding = codeLineEnding
+            self.detached = detached
         }
     }
 
@@ -370,6 +385,7 @@ public enum MarkdownRenderer {
     /// inside a placeholder.
     static func imageHTML(reference: String, alt: String, title: String, linked: Bool = false, mappedAlt: String? = nil, context: inout Context) -> String {
         let shownAlt = alt.isEmpty ? "" : "<span class=\"ph-alt\">\(mappedAlt ?? escape(alt))</span>"
+        if context.detached { return detachedImageHTML(reference: reference, alt: alt, shownAlt: shownAlt, resolver: context.resolver) }
         let index = context.images.count
         let action = "\(actionScheme):inspect-image/\(context.nonce)/\(index)"
         func record(_ source: RenderedImage.Source) {
@@ -404,6 +420,30 @@ public enum MarkdownRenderer {
                 + "<span class=\"ph-kind\">Image unavailable (\(escape(reasonLabel(reason))))</span>"
                 + shownAlt + "<code>\(escape(reference))</code>" + details + "</span>"
         }
+    }
+
+    /// An image of detached text: a placeholder that names the image and loads nothing. A remote
+    /// image keeps the link to its address, as in a document.
+    static func detachedImageHTML(reference: String, alt: String, shownAlt: String, resolver: AssetResolving) -> String {
+        let kind: String
+        var shownReference = "<code>\(escape(reference))</code>"
+        switch resolver.resolve(reference) {
+        case .external(let url):
+            let host = url.host ?? url.absoluteString
+            return "<span class=\"img-ph remote\" role=\"img\" aria-label=\"Remote image not loaded: \(escape(alt.isEmpty ? host : alt))\">"
+                + "<span class=\"ph-kind\">Remote image not loaded</span>"
+                + "<a class=\"ext\" href=\"\(escape(url.absoluteString))\" title=\"\(escape(url.absoluteString))\">\(escape(host))</a>"
+                + shownAlt + "</span>"
+        case .embedded:
+            kind = "Embedded image not shown"
+            shownReference = ""
+        case .local:
+            kind = "Image not shown"
+        case .unavailable(let reason):
+            kind = "Image unavailable (\(reasonLabel(reason)))"
+        }
+        return "<span class=\"img-ph unavailable\" role=\"img\" aria-label=\"\(escape(kind)): \(escape(alt.isEmpty ? "image" : alt))\">"
+            + "<span class=\"ph-kind\">\(escape(kind))</span>" + shownAlt + shownReference + "</span>"
     }
 
     /// Whether a Markdown link holds the node. A link inside a link is not valid HTML, so such an

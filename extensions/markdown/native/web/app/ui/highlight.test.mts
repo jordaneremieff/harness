@@ -83,3 +83,22 @@ test("markup, data and diff languages use their own scanners", () => {
 	assert.equal(syntax.detect("$ ls -la\ntotal 0"), "shell");
 	assert.equal(syntax.detect("Plain words."), "");
 });
+
+test("each language label has one canonical syntax, and every choice colours as its labels do", () => {
+	const expected: [string, string][] = [
+		["ts", "js"], ["tsx", "js"], ["javascript", "js"], ["md", "markdown"], ["Markdown", "markdown"], ["html", "markup"],
+		["svg", "markup"], ["yml", "yaml"], ["toml", "yaml"], ["front matter", "yaml"], ["sh", "shell"], ["console", "shell"],
+		["py", "python"], ["rs", "rust"], ["cpp", "clike"], ["java", "clike"], ["jsonc", "json"], ["patch", "diff"],
+		["scss", "css"], ["golang", "go"], ["markup", "markup"], ["text", ""], ["code", ""], ["constructor", ""],
+		["__proto__", ""], ["toString", ""],
+	];
+	for (const [label, key] of expected) assert.equal(syntax.canonical(label), key, label);
+	const ids = plain(syntax.choices.map((choice) => choice.id));
+	assert.equal(new Set(ids).size, ids.length, "one choice for each syntax");
+	for (const id of ids) assert.equal(syntax.canonical(id), id, `${id} is its own canonical key`);
+	const labels = plain(syntax.choices.map((choice) => choice.label));
+	assert.deepEqual(labels, [...labels].sort((a, b) => a.localeCompare(b)), "choices in alphabetical order");
+	for (const [language, text] of samples.slice(0, 13))
+		assert.deepEqual(kinds(text, syntax.canonical(language)), kinds(text, language), language);
+	assert.equal(syntax.supports("constructor"), false);
+});

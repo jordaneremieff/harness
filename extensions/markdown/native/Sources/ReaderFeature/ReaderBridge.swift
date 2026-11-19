@@ -304,7 +304,7 @@ public enum ReaderBridgeCodec {
             var metadata = fields
             metadata.removeValue(forKey: "text")
             try validateJSONSize(metadata, limit: messageLimit)
-        } else if request.type == .query, request.fields["kind"] as? String == "review" {
+        } else if request.type == .query, ["review", "markdown"].contains(request.fields["kind"] as? String) {
             guard let html = fields["html"] as? String else { throw ReaderBridgeError.invalid("html") }
             guard html.utf8.count <= renderedLimit else { throw ReaderBridgeError.oversized }
             var metadata = fields
@@ -348,6 +348,9 @@ public enum ReaderBridgeCodec {
             if fields["match"] != nil { try BridgeField.choice(fields, "match", values: ["title", "source"]) }
             _ = try BridgeField.optionalString(fields, "query", limit: 8192, empty: true)
             _ = try BridgeField.optionalString(fields, "cursor", limit: 4096)
+        case "markdown":
+            try BridgeField.keys(fields, allowed: ["kind", "text"])
+            _ = try BridgeField.string(fields, "text", limit: messageLimit, empty: true)
         default: throw ReaderBridgeError.invalid("query kind")
         }
     }

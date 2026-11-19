@@ -36,10 +36,13 @@
 				}),
 			};
 		}
-		// A document link, not the reader's own image and code action addresses.
+		// A document link, not the reader's own image and code action addresses. A rendered view of
+		// a code block has no anchors, so its fragment links lead nowhere.
 		function documentLink(target: Element) {
-			const link = target.closest<HTMLAnchorElement>("a[href]");
-			return link && !(link.getAttribute("href") ?? "").startsWith("reader-action:") ? link : null;
+			const link = target.closest<HTMLAnchorElement>("a[href]"),
+				href = link?.getAttribute("href") ?? "";
+			if (!link || href.startsWith("reader-action:")) return null;
+			return href.startsWith("#") && link.closest("[data-reader-view]") ? null : link;
 		}
 		function blockType(block: HTMLElement | null) {
 			if (!block) return "";
@@ -68,7 +71,8 @@
 		function describe(target: Element, x: number, y: number): ReaderMenuContext | null {
 			const field = inputTarget(target);
 			if (field) return describeInput(field, x, y);
-			if (!doc.contains(target) || target.closest("[data-reader-control]")) return null;
+			// Controls have no menu; a rendered view of a block is read like the block itself.
+			if (!doc.contains(target) || target.closest("[data-reader-control]:not([data-reader-view])")) return null;
 			const selection = editor.selection(),
 				block = target.closest<HTMLElement>("[data-block]"),
 				link = documentLink(target);

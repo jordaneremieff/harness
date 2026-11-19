@@ -184,7 +184,6 @@
 	};
 	const special: Record<string, (text: string) => Token[]> = {};
 	const name = (language: string) => language.trim().toLowerCase();
-	const grammarOf = (language: string) => grammars[aliases[name(language)] ?? name(language)];
 
 	function scan(text: string, pattern: RegExp, kind: (match: RegExpExecArray) => Kind | undefined): Token[] {
 		const tokens: Token[] = [];
@@ -447,20 +446,49 @@
 		return /^\$ \S/mu.test(text) ? "shell" : "";
 	}
 
+	/** The key of the scanner or grammar that colours a language label, or "" when none does. */
+	function canonical(language: string) {
+		const key = name(language);
+		if (Object.hasOwn(SPECIAL, key)) return SPECIAL[key];
+		if (Object.hasOwn(special, key)) return key;
+		const grammar = Object.hasOwn(aliases, key) ? aliases[key] : key;
+		return Object.hasOwn(grammars, grammar) ? grammar : "";
+	}
+	// One choice for each scanner and grammar, by the name a person knows it by.
+	const choices = [
+		{ id: "clike", label: "C family" },
+		{ id: "css", label: "CSS" },
+		{ id: "diff", label: "Diff" },
+		{ id: "go", label: "Go" },
+		{ id: "markup", label: "HTML / XML" },
+		{ id: "json", label: "JSON" },
+		{ id: "lua", label: "Lua" },
+		{ id: "markdown", label: "Markdown" },
+		{ id: "python", label: "Python" },
+		{ id: "ruby", label: "Ruby" },
+		{ id: "rust", label: "Rust" },
+		{ id: "shell", label: "Shell" },
+		{ id: "sql", label: "SQL" },
+		{ id: "swift", label: "Swift" },
+		{ id: "js", label: "TypeScript / JavaScript" },
+		{ id: "yaml", label: "YAML / TOML" },
+	] as const;
+
 	api.syntax = {
-		supports: (language) => !!grammarOf(language) || !!SPECIAL[name(language)],
+		supports: (language) => !!canonical(language),
 		tokens(text, language) {
-			const scanner = special[SPECIAL[name(language)] ?? ""];
-			if (scanner) return scanner(text);
-			const grammar = grammarOf(language);
-			return grammar ? code(text, grammar) : [{ text }];
+			const key = canonical(language);
+			if (special[key]) return special[key](text);
+			return key ? code(text, grammars[key]) : [{ text }];
 		},
 		detect,
+		canonical,
+		choices,
 	};
 
-	// Colours the code of rendered code figures by their language label, or by the text of an
-	// unlabelled block. Only spans are added around existing text, so the visible text and its
-	// source offsets stay unchanged.
+	// Colours the code of rendered code figures by a chosen syntax, else by their language label or
+	// by the text of an unlabelled block. Only spans are added around existing text, so the visible
+	// text and its source offsets stay unchanged; a new choice unwraps them first.
 	const LIMIT = 200_000;
 	function colourText(node: Text, language: string) {
 		if (node.data.length > LIMIT) return;
@@ -480,19 +508,32 @@
 		}
 		node.replaceWith(fragment);
 	}
-	function colourFigure(figure: HTMLElement) {
-		const block = figure.querySelector<HTMLElement>("pre > code"),
-			label = figure.querySelector(".lang")?.textContent ?? "";
-		if (!block || block.dataset.highlighted !== undefined) return;
-		const language = api.syntax.supports(label) ? label : detect(block.textContent ?? "");
-		if (!language) return;
-		block.dataset.highlighted = "";
+	function automatic(figure: HTMLElement, block: HTMLElement) {
+		return canonical(figure.querySelector(":scope > figcaption .lang")?.textContent ?? "") || detect(block.textContent ?? "");
+	}
+	function uncolour(block: HTMLElement) {
+		for (const span of block.querySelectorAll("span[class^='syn-']")) span.replaceWith(span.textContent ?? "");
+		block.normalize();
+		delete block.dataset.highlighted;
+	}
+	function colour(block: HTMLElement, key: string) {
+		block.dataset.highlighted = key;
 		const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT),
 			nodes: Text[] = [];
 		for (let node = walker.nextNode(); node; node = walker.nextNode()) nodes.push(node as Text);
-		for (const node of nodes) colourText(node, language);
+		for (const node of nodes) colourText(node, key);
+	}
+	function colourFigure(figure: HTMLElement, language?: string) {
+		const block = figure.querySelector<HTMLElement>(":scope > pre > code");
+		if (!block) return "";
+		const key = language === undefined ? automatic(figure, block) : canonical(language);
+		if ((block.dataset.highlighted ?? "") === key) return key;
+		if (block.dataset.highlighted !== undefined) uncolour(block);
+		if (key) colour(block, key);
+		return key;
 	}
 	api.highlightCode = (root) => {
 		for (const figure of root.querySelectorAll<HTMLElement>("figure.code")) colourFigure(figure);
 	};
+	api.colourCode = colourFigure;
 })();

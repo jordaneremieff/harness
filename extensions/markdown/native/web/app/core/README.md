@@ -128,11 +128,12 @@ Span classes are `plain`, `mark`, `prefix`, `bold`, `italic`, `code`, `link` and
 font size. The editor owns hanging-prefix geometry. Mark/prefix CSS uses 0.86em
 and accessible contrast. Do not use `content-visibility:auto` on document blocks.
 Mark UI controls inside document blocks with `data-reader-control` so they do not
-enter the text index. Controls that preserve the document caret prevent focus
+enter the text index. A control that shows content, such as the rendered view of a
+code block, also carries `data-reader-view`; the context menu treats it as its block. Controls that preserve the document caret prevent focus
 on pointer down.
 
 `reader.setRenderedHTML(element, html)` is the single cmark Trusted Types sink.
-Pass only HTML from host document or review renderer replies. It shares one
+Pass only HTML from host document, review or `markdown` query replies. It shares one
 policy per document. Never pass Markdown source, prompt text or arbitrary markup.
 
 ## Find and highlights

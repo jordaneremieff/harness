@@ -99,6 +99,7 @@
 		function revealCurrentMatch() {
 			const range = matches[index]?.ranges[0];
 			if (!range || overlayBody()) return;
+			ctx.reveal?.(range.startContainer);
 			const rect = range.getBoundingClientRect(),
 				view = page.getBoundingClientRect();
 			if (rect.top >= view.top + 50 && rect.bottom <= view.bottom - 8) return;
@@ -109,6 +110,7 @@
 				range.startContainer.parentElement?.scrollIntoView({ block: "center" });
 				return;
 			}
+			ctx.reveal?.(range.startContainer);
 			saveJump();
 			const rect = range.getBoundingClientRect();
 			page.scrollTop += rect.top - page.getBoundingClientRect().top - page.clientHeight * 0.35;

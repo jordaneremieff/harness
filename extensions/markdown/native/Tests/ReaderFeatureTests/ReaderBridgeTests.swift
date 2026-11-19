@@ -119,6 +119,12 @@ import Testing
         reviewed["ok"] = true
         reviewed["summary"] = ["detail": large]
         #expect(throws: ReaderBridgeError.oversized) { try ReaderBridgeCodec.validateReply(reviewed, request: review) }
+
+        let markdown = try ReaderBridgeCodec.decode(body: envelope("query", ["kind": "markdown", "text": "# T", "id": "request"]))
+        var detached: [String: Any] = ["v": 1, "type": "reply", "id": "request", "ok": true, "html": large]
+        try ReaderBridgeCodec.validateReply(detached, request: markdown)
+        detached["html"] = String(repeating: "a", count: ReaderBridgeCodec.renderedLimit + 1)
+        #expect(throws: ReaderBridgeError.oversized) { try ReaderBridgeCodec.validateReply(detached, request: markdown) }
         reviewed["summary"] = [:]
         reviewed["html"] = ""
         reviewed["id"] = "different"
@@ -274,9 +280,11 @@ import Testing
         let queries: [[String: Any]] = [
             ["kind": "details"], ["kind": "review", "against": "previous"], ["kind": "review", "against": "base"], ["kind": "review", "against": 2],
             ["kind": "image", "index": 0], ["kind": "library", "collection": "drafts", "query": "", "cursor": "next"],
+            ["kind": "markdown", "text": "# Title\n\n- item\n"], ["kind": "markdown", "text": ""],
         ]
         for query in queries { #expect(try ReaderBridgeCodec.decode(body: envelope("query", query)).type == .query) }
-        for query: [String: Any] in [["kind": "unknown"], ["kind": "review", "against": "next"], ["kind": "image", "index": true], ["kind": "library", "collection": "all"]] {
+        for query: [String: Any] in [["kind": "unknown"], ["kind": "review", "against": "next"], ["kind": "image", "index": true], ["kind": "library", "collection": "all"],
+                                     ["kind": "markdown"], ["kind": "markdown", "text": 1], ["kind": "markdown", "text": "x", "generation": 1]] {
             #expect(throws: (any Error).self) { try ReaderBridgeCodec.decode(body: envelope("query", query)) }
         }
         #expect(try ReaderBridgeCodec.decode(body: envelope("command", ["name": "openLink", "args": ["href": "https://example.org/"]])).type == .command)

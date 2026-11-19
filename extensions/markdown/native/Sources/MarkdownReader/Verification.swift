@@ -28,7 +28,7 @@ struct Verification {
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
         "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
-        "code-copy-exact", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
+        "code-copy-exact", "code-syntax-and-rendered-markdown", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
         "position-survives-refresh", "position-survives-reopen", "launch-origin-per-open", "webcontent-recovery",
         "selected-revision-exports",
@@ -90,6 +90,7 @@ struct Verification {
                 await run("image-inspection-deadline") { await context.imageInspectionDeadline(keep: &keep) }
                 await run("find-moves-selection") { await context.find(keep: &keep) }
                 await run("code-copy-exact") { await context.codeCopy(keep: &keep) }
+                await run("code-syntax-and-rendered-markdown") { await context.codeViews(keep: &keep) }
                 await run("external-link-confirmation") { await context.externalLink(keep: &keep) }
                 await run("pinned-open-request") { await context.pinnedOpen(keep: &keep) }
                 await run("initial-gap-announces-update") { await context.initialRevisionGap(followsLatest: false, keep: &keep) }
@@ -2286,6 +2287,102 @@ struct Context {
             return .init(name: "code-copy-exact", pass: pass, detail: "page copy command preserved fenced-code bytes: \(pass)")
         } catch {
             return .init(name: "code-copy-exact", pass: false, detail: String(describing: error))
+        }
+    }
+
+    func codeViews(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "code-syntax-and-rendered-markdown"
+        do {
+            let literal = "## Install\n\nRun **one** [guide](https://example.org/g) or [top](#code).\n\n- [ ] task"
+            let source = "# Code\n\n```text\nconst answer = \"forty\" // two\n```\n\n```markdown\n\(literal)\n```\n"
+            let model = try await openFile("code-views.md", source, keep: &keep)
+            let chosen = await js(model, """
+                const figure = document.querySelectorAll('figure.code')[0], code = figure.querySelector(':scope > pre > code'), before = code.textContent;
+                figure.querySelector('[data-role="code-syntax"]').click();
+                const menu = document.getElementById('codemenu'), opened = menu.matches(':popover-open'), items = [...menu.querySelectorAll('button.item')];
+                items.find((item) => item.textContent.includes('TypeScript')).click();
+                return [opened, items.length, menu.matches(':popover-open'), code.querySelector('.syn-k')?.textContent ?? '', code.textContent === before,
+                    figure.querySelector('[data-role="code-syntax"] .name').textContent, getComputedStyle(figure.querySelector('figcaption .lang')).visibility,
+                    figure.querySelector('figcaption').textContent.trim()];
+                """) as? [Any] ?? []
+            let syntax = chosen.count == 8 && chosen[0] as? Bool == true && (chosen[1] as? Int ?? 0) > 10 && chosen[2] as? Bool == false
+                && chosen[3] as? String == "const" && chosen[4] as? Bool == true && chosen[5] as? String == "TypeScript / JavaScript"
+                && chosen[6] as? String == "hidden" && chosen[7] as? String == "text"
+            let plain = await js(model, """
+                const figure = document.querySelectorAll('figure.code')[0];
+                figure.querySelector('[data-role="code-syntax"]').click();
+                [...document.querySelectorAll('#codemenu button.item')].find((item) => item.textContent.trim() === 'Plain text').click();
+                return figure.querySelectorAll(':scope > pre > code span').length;
+                """) as? Int
+            let switcher = await js(model, "const f = document.querySelectorAll('figure.code'); return [f[0], f[1]].map((x) => x.querySelector('[data-role=\"code-view\"]').hidden);") as? [Bool] ?? []
+            _ = await js(model, "document.querySelectorAll('figure.code')[1].querySelector('[data-role=\"code-show-rendered\"]').click(); return true;")
+            let shown = await wait(seconds: 3) { (await js(model, "return !!document.querySelector('figure.code[data-rendered] [data-role=\"code-rendered\"] h2');") as? Bool) == true }
+            let view = await js(model, """
+                const figure = document.querySelectorAll('figure.code')[1], view = figure.querySelector('[data-role="code-rendered"]');
+                return [getComputedStyle(figure.querySelector(':scope > pre')).display, view.querySelector('h2')?.textContent.trim() ?? '', view.querySelectorAll('[id]').length,
+                    view.querySelector('strong')?.textContent ?? '', view.querySelector('a.ext')?.getAttribute('href') ?? '', view.querySelectorAll('input[type=checkbox]').length,
+                    figure.querySelector('[data-role="code-show-rendered"]').getAttribute('aria-pressed')];
+                """) as? [Any] ?? []
+            let rendered = shown && view.count == 7 && view[0] as? String == "none" && view[1] as? String == "Install" && view[2] as? Int == 0
+                && view[3] as? String == "one" && view[4] as? String == "https://example.org/g" && view[5] as? Int == 1 && view[6] as? String == "true"
+            _ = await js(model, "document.querySelector('[data-role=\"code-rendered\"] a.ext').click(); return true;")
+            let asked = await wait(seconds: 3) { model.pendingExternalURL?.absoluteString == "https://example.org/g" }
+            model.pendingExternalURL = nil
+            CheckRunner.checkPasteboard.clearContents()
+            _ = await js(model, "document.querySelectorAll('figure.code')[1].querySelector('[data-role=\"code-copy\"]').click(); return true;")
+            let copied = await wait(seconds: 3) { CheckRunner.checkPasteboard.string(forType: .string) == literal }
+            let found = await findState(model, query: "Install")
+            await model.sendCommand("findNext")
+            let revealed = await wait(seconds: 3) { (await js(model, "return !document.querySelectorAll('figure.code')[1].hasAttribute('data-rendered');") as? Bool) == true }
+            await model.sendCommand("escape")
+            // Keys reach the syntax menu without moving the focus.
+            let keys = await js(model, """
+                const figure = document.querySelectorAll('figure.code')[0], before = document.activeElement;
+                const key = (k) => window.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+                figure.querySelector('[data-role="code-syntax"]').click();
+                key('End');
+                const last = document.querySelector('#codemenu [data-active]')?.textContent.trim() ?? '';
+                key('Home'); key('Enter');
+                return [last, document.getElementById('codemenu').matches(':popover-open'), figure.querySelector('[data-role="code-syntax"] .name').textContent,
+                    document.activeElement === before, figure.querySelectorAll(':scope > pre > code span').length];
+                """) as? [Any] ?? []
+            let keyed = keys.count == 5 && keys[0] as? String == "YAML / TOML" && keys[1] as? Bool == false && keys[2] as? String == "text"
+                && keys[3] as? Bool == true && keys[4] as? Int == 0
+            // Editing a rendered view opens its block at the first character of the code: by a click
+            // in Writing, and by Edit Here, which returns to Reading when the block closes.
+            let editorCaret = """
+                const editor = document.querySelector('[data-role="block-editor"]'), selection = getSelection();
+                return editor && selection.anchorNode ? [editor.textContent.slice(0, 11), reader.sourceModel.offset(editor, selection.anchorNode, selection.anchorOffset)] : [];
+                """
+            let showRendered = "document.querySelectorAll('figure.code')[1].querySelector('[data-role=\"code-show-rendered\"]').click(); return true;"
+            _ = await js(model, showRendered)
+            _ = await wait(seconds: 3) { (await js(model, "return document.querySelectorAll('figure.code')[1].hasAttribute('data-rendered');") as? Bool) == true }
+            await model.sendCommand("toggleLock", args: ["lock": "writing"])
+            _ = await js(model, """
+                getSelection().removeAllRanges();
+                const p = document.querySelector('[data-role="code-rendered"] p'), r = p.getBoundingClientRect();
+                p.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, clientX: r.left + 4, clientY: r.top + r.height / 2 }));
+                return true;
+                """)
+            let clickedOpen = await js(model, editorCaret) as? [Any] ?? []
+            await model.sendCommand("escape")
+            await model.sendCommand("toggleLock", args: ["lock": "reading"])
+            _ = await wait(seconds: 3) { (await js(model, "return !document.querySelector('[data-role=\"block-editor\"]') && !!document.querySelector('[data-role=\"code-rendered\"] p');") as? Bool) == true }
+            _ = await js(model, """
+                const p = document.querySelector('[data-role="code-rendered"] p'), r = p.getBoundingClientRect();
+                p.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: r.left + 4, clientY: r.top + r.height / 2 }));
+                document.querySelector('[data-role="context-menu"] [data-id="editHere"]').click();
+                return true;
+                """)
+            let menuOpen = await js(model, editorCaret) as? [Any] ?? []
+            await model.sendCommand("escape")
+            let backToReading = await wait(seconds: 3) { (await js(model, "return document.getElementById('app').dataset.mode;") as? String) == "reading" }
+            let edits = [clickedOpen, menuOpen].allSatisfy { $0.count == 2 && $0[0] as? String == "```markdown" && $0[1] as? Int == 12 } && backToReading
+            let pass = syntax && plain == 0 && switcher == [true, false] && rendered && asked && copied && found?.count == 1 && revealed
+                && keyed && edits && model.snapshot?.source == source
+            return .init(name: name, pass: pass, detail: "chosen syntax: \(chosen); plain spans: \(plain ?? -1); view switch hidden: \(switcher); rendered: \(view); link asked: \(asked); copy exact: \(copied); find count: \(found?.count ?? -1); source revealed: \(revealed); menu keys: \(keys); click edit: \(clickedOpen); Edit Here: \(menuOpen); back to Reading: \(backToReading)")
+        } catch {
+            return .init(name: name, pass: false, detail: String(describing: error))
         }
     }
 

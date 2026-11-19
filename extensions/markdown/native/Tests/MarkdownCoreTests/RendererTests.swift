@@ -94,6 +94,41 @@ private func render(_ source: String, resolver: AssetResolving = NoAssetResolver
         #expect(MarkdownRenderer.plainText(link) == "retained")
     }
 
+    @Test func detachedTextRendersLikeADocumentWithoutAssetsOrActions() {
+        let source = """
+        ---
+        name: guide
+        ---
+        ## Install
+
+        Run **one** command from the [guide](https://example.org/g), the [notes](notes.md) or [below](#install).
+
+        ![shot](shot.png) ![remote](https://example.org/i.png) ![inline](data:image/png;base64,iVBORw0KGgo=)
+
+        <b>raw</b>
+
+        ```ts
+        let x = 1
+        ```
+        """
+        let html = MarkdownRenderer.detachedHTML(source)
+        #expect(html.contains("Front matter"))
+        #expect(html.contains("<h2 id=\"install\">\nInstall\n</h2>"))
+        #expect(html.contains("<strong>one</strong>"))
+        #expect(html.contains("<a class=\"ext\" href=\"https://example.org/g\""))
+        #expect(html.contains("<span class=\"inert-link\" title=\"Not opened by the reader: notes.md\">"))
+        #expect(html.contains("<figure class=\"code\"") && html.contains("<span class=\"lang\">ts</span>"))
+        #expect(html.contains("&lt;b&gt;") && !html.contains("<b>"))
+        #expect(html.contains("Image unavailable (no folder to resolve it against)"))
+        #expect(html.contains("Remote image not loaded") && html.contains("href=\"https://example.org/i.png\""))
+        #expect(html.contains("Embedded image not shown") && !html.contains("iVBORw0KGgo"))
+        for absent in ["<img", "data-image", "reader-action:", "reader-asset:", "img-inspect", "img-open"] {
+            #expect(!html.contains(absent), "\(absent) in detached HTML")
+        }
+        let document = render(source.replacingOccurrences(of: "shot.png", with: "data:image/png;base64,iVBORw0KGgo=")).body
+        #expect(document.contains("<img") && document.contains("reader-action:inspect-image/"))
+    }
+
     @Test func nestedListsKeepStructure() {
         let html = render("- a\n  - b\n    1. c\n    2. d\n- e\n").body
         #expect(html.components(separatedBy: "<ul>").count == 3)
